@@ -1,0 +1,4 @@
+{
+  "extends": "@muvance/config/tsconfig-preset/tsconfig.json",
+  "include": ["src"]
+}

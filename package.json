@@ -1,0 +1,20 @@
+{
+  "name": "muvance",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Muvance Monorepo",
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev --parallel",
+    "lint": "turbo run lint",
+    "test": "turbo run test",
+    "format": "prettier --write \"**/*.{ts,tsx,md,json}\""
+  },
+  "devDependencies": {
+    "prettier": "^3.2.5",
+    "turbo": "^2.5.5",
+    "typescript": "^5.4.5"
+  },
+  "packageManager": "pnpm@9.4.0",
+  "type": "module"
+}

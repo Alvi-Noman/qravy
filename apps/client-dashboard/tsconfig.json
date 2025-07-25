@@ -1,0 +1,39 @@
+{
+  "extends": "@muvance/config/tsconfig-preset/tsconfig.json",
+  "compilerOptions": {
+    "jsx": "react-jsx",
+    "lib": ["DOM", "DOM.Iterable", "ESNext"],
+    "baseUrl": ".",
+    "moduleResolution": "bundler",
+    "paths": {
+      "@/*": ["./src/*"]
+    },
+    "allowJs": true,
+    "checkJs": true,
+    "module": "esnext",
+    "types": ["vite/client", "react", "react-dom", "@types/jest", "@testing-library/jest-dom"]
+  },
+  "include": [
+    "**/*.js",
+    "**/*.cjs",
+    "**/*.mjs",
+    "**/*.ts",
+    "**/*.tsx",
+    "**/*.jsx",
+    "**/*.d.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "vite.config.ts",
+    "jest.config.mjs",
+    "postcss.config.js",
+    "tailwind.config.js",
+    "eslint.config.js",
+    ".prettierrc.js"
+  ],
+  "references": [
+    {
+      "path": "./tsconfig.node.json"
+    }
+  ]
+}

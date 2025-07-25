@@ -1,0 +1,9 @@
+{
+  "extends": "@muvance/config/tsconfig-preset/tsconfig.json",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["./src/*"]
+    }
+  }
+}

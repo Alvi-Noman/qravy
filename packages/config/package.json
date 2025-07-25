@@ -1,0 +1,30 @@
+{
+  "name": "@muvance/config",
+  "version": "1.0.0",
+  "private": true,
+  "main": "index.js",
+  "type": "module",
+  "exports": {
+    "./eslint-preset": "./eslint-preset/index.js",
+    "./tsconfig-preset/tsconfig.json": "./tsconfig-preset/tsconfig.json",
+    "./jest-preset": "./jest-preset/index.js"
+  },
+  "files": [
+    "tsconfig-preset",
+    "eslint-preset",
+    "jest-preset",
+    "prettier-preset"
+  ],
+  "devDependencies": {
+    "eslint": "^9.9.0",
+    "prettier": "^3.2.5",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.1.4",
+    "typescript": "^5.4.5",
+    "@typescript-eslint/parser": "^7.0.0",
+    "@typescript-eslint/eslint-plugin": "^7.0.0",
+    "eslint-config-prettier": "^9.1.0",
+    "eslint-plugin-react": "^7.37.5",
+    "eslint-plugin-react-hooks": "^5.0.0"
+  }
+}

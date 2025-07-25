@@ -1,0 +1,41 @@
+{
+  "name": "erp-dashboard",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "test": "jest",
+    "lint": "eslint \"**/*.ts*\""
+  },
+  "dependencies": {
+    "@muvance/shared": "workspace:*",
+    "@tanstack/react-query": "^5.83.0",
+    "axios": "^1.11.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-hook-form": "^7.61.1",
+    "react-router-dom": "^6.30.1"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.9.0",
+    "@muvance/config": "workspace:*",
+    "@testing-library/jest-dom": "^6.0.0",
+    "@testing-library/react": "^14.0.0",
+    "@types/jest": "^29.5.12",
+    "@typescript-eslint/parser": "^7.0.0",
+    "autoprefixer": "^10.4.21",
+    "eslint": "^9.9.0",
+    "eslint-plugin-react": "^7.37.5",
+    "eslint-plugin-react-hooks": "^5.0.0",
+    "jest": "^29.7.0",
+    "jest-environment-jsdom": "^29.7.0",
+    "postcss": "^8.5.6",
+    "tailwindcss": "^3.4.17",
+    "ts-jest": "^29.1.4",
+    "typescript": "^5.4.5",
+    "vite": "^5.0.0"
+  }
+}
