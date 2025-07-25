@@ -14,7 +14,6 @@
     "types": ["vite/client", "react", "react-dom", "@types/jest", "@testing-library/jest-dom"]
   },
   "include": [
-    "src",
     "**/*.js",
     "**/*.cjs",
     "**/*.mjs",
