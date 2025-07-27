@@ -11,7 +11,7 @@
     "allowJs": true,
     "checkJs": true,
     "module": "esnext",
-    "types": ["vite/client", "react", "react-dom", "@types/jest", "@testing-library/jest-dom"]
+    "types": ["vite/client", "react", "react-dom", "jest", "@testing-library/jest-dom"]
   },
   "include": [
     "**/*.js",
