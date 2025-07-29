@@ -14,8 +14,7 @@ build/
 .env
 .env*.local
 
-*.timestamp*
-__tests__/
+*.timestamp-*.mjs
 
 # Logs
 npm-debug.log*

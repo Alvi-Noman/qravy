@@ -1,10 +1,12 @@
 {
   "extends": "@muvance/config/tsconfig-preset/tsconfig.json",
   "compilerOptions": {
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
     "baseUrl": ".",
     "paths": {
       "@/*": ["./src/*"]
     },
-    "types": ["node", "jest"]  
+    "types": ["node", "jest"]
   }
 }

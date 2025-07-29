@@ -27,6 +27,7 @@
     "vite.config.ts",
     "jest.config.mjs",
     "postcss.config.js",
+    "dist",
     "tailwind.config.js",
     "eslint.config.js",
     ".prettierrc.js"
