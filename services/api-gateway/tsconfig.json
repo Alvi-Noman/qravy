@@ -5,6 +5,15 @@
     "paths": {
       "@/*": ["./src/*"]
     },
-    "types": ["node", "jest"]  
-  }
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "types": ["node", "jest", "@types/express", "@types/cors", "@types/jsonwebtoken"],
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "skipLibCheck": true
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist"]
 }
