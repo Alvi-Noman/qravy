@@ -12,6 +12,7 @@ build/
 
 # Env files
 .env
+.env.*
 .env*.local
 
 *.timestamp-*.mjs

@@ -1,61 +1,110 @@
-import { useForm } from 'react-hook-form';
-import { useAuth } from '../hooks/useAuth';
 import { Link } from 'react-router-dom';
-
-interface LoginForm {
-  email: string;
-  password: string;
-}
+import { useState } from 'react';
+import { sendMagicLink } from '../api/auth';
 
 export default function Login() {
-  const { register, handleSubmit, formState: { errors } } = useForm<LoginForm>();
-  const { login, isLoading, error } = useAuth();
+  const [showEmail, setShowEmail] = useState(false);
 
-  const onSubmit = async (data: LoginForm) => {
-    await login(data.email, data.password);
-  };
+  if (showEmail) {
+    return <EmailEntry onBack={() => setShowEmail(false)} />;
+  }
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-100">
-      <div className="bg-white p-8 rounded-lg shadow-lg w-full max-w-md">
-        <h2 className="text-2xl font-bold mb-6 text-center">Login</h2>
-        {error && <p className="text-red-500 mb-4">{(error as Error).message}</p>}
-        <form onSubmit={handleSubmit(onSubmit)}>
-          <div className="mb-4">
-            <label htmlFor="email" className="block text-sm font-medium text-gray-700">
-              Email
-            </label>
-            <input
-              id="email"
-              type="email"
-              className="mt-1 p-2 w-full border rounded-md"
-              {...register('email', { required: 'Email is required', pattern: { value: /^\S+@\S+$/i, message: 'Invalid email' } })}
-            />
-            {errors.email && <p className="text-red-500 text-sm mt-1">{errors.email.message}</p>}
-          </div>
-          <div className="mb-6">
-            <label htmlFor="password" className="block text-sm font-medium text-gray-700">
-              Password
-            </label>
-            <input
-              id="password"
-              type="password"
-              className="mt-1 p-2 w-full border rounded-md"
-              {...register('password', { required: 'Password is required', minLength: { value: 6, message: 'Password must be at least 6 characters' } })}
-            />
-            {errors.password && <p className="text-red-500 text-sm mt-1">{errors.password.message}</p>}
-          </div>
+      <div className="bg-white p-8 rounded-lg shadow-lg w-full max-w-md text-center">
+        <img src="/logo.svg" alt="Logo" className="mx-auto mb-6" style={{ width: 48, height: 48 }} />
+        <h2 className="text-2xl font-bold mb-6">Log in to Linear</h2>
+        <button className="w-full bg-blue-600 text-white p-2 rounded-md font-semibold mb-4" disabled>
+          Continue with Google
+        </button>
+        <button
+          className="w-full border p-2 rounded-md font-semibold mb-4"
+          onClick={() => setShowEmail(true)}
+        >
+          Continue with email
+        </button>
+        <button className="w-full border p-2 rounded-md font-semibold mb-4" disabled>
+          Continue with Facebook
+        </button>
+        <p className="text-xs text-gray-500 mb-4"></p>
+        <p>
+          Don’t have an account? <Link to="/signup" className="text-blue-500 hover:underline">Sign up</Link> or <a href="#" className="text-blue-500 hover:underline">Learn more</a>
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function EmailEntry({ onBack }: { onBack: () => void }) {
+  const [email, setEmail] = useState('');
+  const [sent, setSent] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleSend = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsLoading(true);
+    setError(null);
+    try {
+      await sendMagicLink(email);
+      setSent(true);
+    } catch (err) {
+      setError('Failed to send magic link. Please try again.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  if (sent) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-100">
+        <div className="bg-white p-8 rounded-lg shadow-lg w-full max-w-md text-center">
+          <img src="/logo.svg" alt="Logo" className="mx-auto mb-6" style={{ width: 48, height: 48 }} />
+          <h2 className="text-2xl font-bold mb-4">Check your email</h2>
+          <p className="mb-2">We've sent you a temporary login link.<br />Please check your inbox at</p>
+          <p className="font-semibold">{email}</p>
+          <button
+            className="w-full text-gray-500 underline mt-6"
+            onClick={onBack}
+          >
+            Back
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-gray-100">
+      <div className="bg-white p-8 rounded-lg shadow-lg w-full max-w-md text-center">
+        <img src="/logo.svg" alt="Logo" className="mx-auto mb-6" style={{ width: 48, height: 48 }} />
+        <h2 className="text-2xl font-bold mb-6">What's your email address?</h2>
+        <form onSubmit={handleSend}>
+          <input
+            type="email"
+            placeholder="Enter your email address..."
+            className="mt-1 p-2 w-full border rounded-md mb-4"
+            value={email}
+            onChange={e => setEmail(e.target.value)}
+            required
+            disabled={isLoading}
+          />
+          {error && <div className="text-red-500 mb-2" aria-live="polite">{error}</div>}
           <button
             type="submit"
+            className="w-full bg-blue-500 text-white p-2 rounded-md font-semibold mb-4"
             disabled={isLoading}
-            className="w-full bg-blue-500 text-white p-2 rounded-md hover:bg-blue-600 disabled:bg-gray-400"
           >
-            {isLoading ? 'Logging in...' : 'Login'}
+            {isLoading ? 'Sending...' : 'Continue with email'}
           </button>
         </form>
-        <p className="mt-4 text-center">
-          Don&apos;t have an account? <Link to="/signup" className="text-blue-500 hover:underline">Sign up</Link>
-        </p>
+        <button
+          className="w-full text-gray-500 underline"
+          onClick={onBack}
+          disabled={isLoading}
+        >
+          Back
+        </button>
       </div>
     </div>
   );

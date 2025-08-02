@@ -4,23 +4,25 @@ import { createProxyMiddleware } from 'http-proxy-middleware';
 
 const app: Application = express();
 
-  app.use((req, res, next) => {
-    console.log(`[API Gateway] ${req.method} ${req.url}`);
-    next();
-  });
+app.use((req, res, next) => {
+  console.log(`[API Gateway] ${req.method} ${req.url}`);
+  next();
+});
 
 app.use(cors({
   origin: 'http://localhost:5173',
+  credentials: true,
   methods: ['GET', 'POST', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
 }));
 
 app.use(
-  '/api/auth',
+  '/api/v1/auth',
   createProxyMiddleware({
     target: 'http://localhost:3001',
     changeOrigin: true,
-    pathRewrite: (path, req) => '/api/auth' + path.replace(/^\/api\/auth/, ''),
+    pathRewrite: (path, req) => '/api/v1/auth' + path.replace(/^\/api\/v1\/auth/, ''),
+    cookieDomainRewrite: "localhost",
   })
 );
 

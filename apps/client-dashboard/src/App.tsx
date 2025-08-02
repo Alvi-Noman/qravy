@@ -1,31 +1,45 @@
 import { Routes, Route, useLocation, useNavigate } from 'react-router-dom';
+import { useEffect, useState } from 'react';
 import { AuthProvider, useAuthContext } from './context/AuthContext';
 import Dashboard from './pages/dashboard/index';
 import Login from './pages/login';
 import Signup from './pages/signup';
-import { useEffect, useState } from 'react';
+import MagicLink from './pages/magic-link';
+import CompleteProfile from './pages/complete-profile';
+
+function RequireProfile({ children }: { children: React.ReactNode }) {
+  const { user } = useAuthContext();
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    if (user && (!user.name || !user.company)) {
+      navigate('/complete-profile');
+    }
+  }, [user, navigate]);
+
+  return <>{children}</>;
+}
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
-  const { token } = useAuthContext();
+  const { token, loading } = useAuthContext();
   const navigate = useNavigate();
   const location = useLocation();
-  const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
-    // Allow time for AuthContext to rehydrate from localStorage
-    const timer = setTimeout(() => setIsLoading(false), 100); // Slight delay for state sync
-    return () => clearTimeout(timer);
-  }, []);
-
-  useEffect(() => {
-    if (!isLoading && !token) {
+    if (!loading && !token) {
       navigate('/login', { replace: true, state: { from: location } });
     }
-  }, [token, navigate, location, isLoading]);
+  }, [token, navigate, location, loading]);
 
-  if (isLoading) return null; // Prevent render until state is ready
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-100">
+        <div className="text-xl font-bold">Loading...</div>
+      </div>
+    );
+  }
 
-  return token ? <>{children}</> : null;
+  return token ? <RequireProfile>{children}</RequireProfile> : null;
 }
 
 function App() {
@@ -42,6 +56,8 @@ function App() {
         />
         <Route path="/login" element={<Login />} />
         <Route path="/signup" element={<Signup />} />
+        <Route path="/magic-link" element={<MagicLink />} />
+        <Route path="/complete-profile" element={<CompleteProfile />} />
         <Route path="/" element={<Login />} />
       </Routes>
     </AuthProvider>

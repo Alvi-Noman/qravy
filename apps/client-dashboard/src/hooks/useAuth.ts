@@ -1,43 +1,46 @@
 import { useAuthContext } from '../context/AuthContext';
-import { useLogin, useSignup } from '../api/auth';
 import { useNavigate } from 'react-router-dom';
+import { useState } from 'react';
 
 export const useAuth = () => {
   const { login: setAuth, logout: clearAuth } = useAuthContext();
-  const loginMutation = useLogin();
-  const signupMutation = useSignup();
   const navigate = useNavigate();
+  const [error, setError] = useState<Error | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
 
-  const login = async (email: string, password: string) => {
-    await loginMutation.mutateAsync({ email, password }, {
-      onSuccess: (response) => {
-        setAuth(response.token, response.user);
-        navigate('/dashboard');
-      },
-      onError: () => {},
-    });
+  const login = async (
+    token: string,
+    user: { id: string; email: string; name: string; company: string }
+  ) => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      setAuth(token, user);
+      navigate('/dashboard');
+    } catch (err) {
+      setError(err as Error);
+    } finally {
+      setIsLoading(false);
+    }
   };
 
-  const signup = async (email: string, password: string, name: string) => {
-    await signupMutation.mutateAsync({ email, password, name }, {
-      onSuccess: (response) => {
-        setAuth(response.token, response.user);
-        navigate('/dashboard');
-      },
-      onError: () => {},
-    });
+  const signup = async (email: string) => {
+    // No-op for magic link flow
   };
 
   const logout = () => {
-    localStorage.removeItem('token');
-    clearAuth();
+    try {
+      clearAuth();
+    } catch (err) {
+      setError(err as Error);
+    }
   };
 
   return {
     login,
     signup,
     logout,
-    isLoading: loginMutation.isPending || signupMutation.isPending,
-    error: loginMutation.error || signupMutation.error,
+    isLoading,
+    error,
   };
 };

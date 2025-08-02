@@ -1,10 +1,25 @@
 import { ObjectId } from 'mongodb';
 
-     interface User {
-       _id?: ObjectId;
-       email: string;
-       password: string;
-       name: string;
-     }
+export interface RefreshToken {
+  tokenId: string;
+  tokenHash: string; 
+  createdAt: Date;
+  expiresAt: Date;
+  userAgent?: string;
+  ip?: string;
+}
 
-     export default User;
+interface User {
+  _id?: ObjectId;
+  email: string;
+  name: string;
+  company: string;
+  failedLoginAttempts?: number;
+  lockUntil?: Date | null;
+  refreshTokens?: RefreshToken[];
+  isVerified?: boolean;
+  magicLinkToken?: string;
+  magicLinkTokenExpires?: Date;
+}
+
+export default User;
