@@ -73,10 +73,14 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     );
     refreshToken();
 
+    // Tab sync for login/logout
     const handleStorage = (e: StorageEvent) => {
       if (e.key === 'logout') {
         setToken(null);
         setUser(null);
+      }
+      if (e.key === 'login') {
+        window.location.reload();
       }
     };
     window.addEventListener('storage', handleStorage);
@@ -87,6 +91,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const login = (token: string, user: AuthUser) => {
     setToken(token);
     setUser(user);
+    localStorage.setItem('login', Date.now().toString());
   };
 
   const logout = async () => {

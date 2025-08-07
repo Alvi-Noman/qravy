@@ -3,15 +3,6 @@ import { useMutation } from '@tanstack/react-query';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3001';
 
-interface MagicLinkCredentials {
-  email: string;
-}
-
-interface AuthResponse {
-  token: string;
-  user: { id: string; email: string };
-}
-
 const api = axios.create({
   baseURL: API_BASE_URL,
   withCredentials: true,
@@ -52,21 +43,46 @@ export const attachAuthInterceptor = (
   );
 };
 
+// Helper to extract a user-friendly error message from Axios errors
+function extractErrorMessage(error: unknown): string {
+  if (axios.isAxiosError(error)) {
+    const msg =
+      error.response?.data?.message ||
+      error.message ||
+      'Request failed';
+    return msg;
+  }
+  if (error instanceof Error) return error.message;
+  if (typeof error === 'string') return error;
+  return 'Request failed';
+}
+
 export async function sendMagicLink(email: string) {
-  await api.post('/api/v1/auth/magic-link', { email });
+  try {
+    await api.post('/api/v1/auth/magic-link', { email });
+  } catch (error) {
+    throw new Error(extractErrorMessage(error));
+  }
 }
 
 export async function verifyMagicLink(token: string) {
-  const response = await api.get(`/api/v1/auth/magic-link/verify?token=${encodeURIComponent(token)}`);
-  return response.data;
+  try {
+    const response = await api.get(`/api/v1/auth/magic-link/verify?token=${encodeURIComponent(token)}`);
+    return response.data;
+  } catch (error) {
+    throw new Error(extractErrorMessage(error));
+  }
 }
 
-// Updated: Accepts an optional token parameter
 export async function getMe(token?: string) {
-  const response = await api.get('/api/v1/auth/me', {
-    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
-  });
-  return response.data;
+  try {
+    const response = await api.get('/api/v1/auth/me', {
+      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+    });
+    return response.data;
+  } catch (error) {
+    throw new Error(extractErrorMessage(error));
+  }
 }
 
 export default api;

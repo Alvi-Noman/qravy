@@ -28,6 +28,7 @@
     "typescript": "^5.4.5"
   },
   "dependencies": {
-    "zod": "^4.0.14"
+    "zod": "^4.0.14",
+    "dotenv": "^16.6.1"
   }
 }

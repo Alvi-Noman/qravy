@@ -1,4 +1,5 @@
 import nodemailer from 'nodemailer';
+import logger from './logger.js'; // Use your shared Winston logger
 
 const transporter = nodemailer.createTransport({
   host: process.env.SMTP_HOST,
@@ -10,6 +11,7 @@ const transporter = nodemailer.createTransport({
   },
 });
 
+// Send a magic link email for login
 export async function sendMagicLinkEmail(to: string, magicLink: string) {
   try {
     await transporter.sendMail({
@@ -18,14 +20,14 @@ export async function sendMagicLinkEmail(to: string, magicLink: string) {
       subject: 'Your Magic Login Link',
       html: `<p>Click <a href="${magicLink}">here</a> to log in. This link will expire in 15 minutes.</p>`,
     });
-    console.log(`Magic link email sent to ${to}`);
+    logger.info(`Magic link email sent to ${to}`);
   } catch (err) {
-    console.error('Failed to send magic link email:', err);
-    throw err; // Rethrow so the caller can handle the error
+    logger.error(`Failed to send magic link email to ${to}: ${(err as Error).message}`);
+    throw err;
   }
 }
 
-// NEW: Session notification email
+// Send a session notification email (new device login or session revoked)
 export async function sendSessionNotificationEmail(
   to: string,
   deviceInfo: string,
@@ -57,9 +59,9 @@ export async function sendSessionNotificationEmail(
         <p>If this wasn't you, please secure your account immediately.</p>
       `,
     });
-    console.log(`Session notification email sent to ${to}`);
+    logger.info(`Session notification email sent to ${to}`);
   } catch (err) {
-    console.error('Failed to send session notification email:', err);
+    logger.error(`Failed to send session notification email to ${to}: ${(err as Error).message}`);
     throw err;
   }
 }

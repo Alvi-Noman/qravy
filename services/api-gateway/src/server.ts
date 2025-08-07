@@ -1,25 +1,29 @@
 import app from './app.js';
 import { config } from 'dotenv';
+import logger from './utils/logger.js'; // Use your shared Winston logger
 
 config();
 
-const PORT = process.env.PORT || 8080;
+// Ensure PORT is a number for app.listen
+const PORT = Number(process.env.PORT) || 8080;
 
-const server = app.listen(PORT, () => {
-  console.log(
+// Start the server and listen on 0.0.0.0 for Docker compatibility
+const server = app.listen(PORT, '0.0.0.0', () => {
+  logger.info(
     `API Gateway running on port ${PORT} in ${process.env.NODE_ENV || 'development'} mode`
   );
 });
 
 server.on('error', (err) => {
-  console.error('API Gateway failed to start:', err.message);
+  logger.error('API Gateway failed to start: ' + err.message);
   process.exit(1);
 });
 
+// Graceful shutdown for SIGTERM/SIGINT
 const shutdown = () => {
-  console.log('Shutting down API Gateway...');
+  logger.info('Shutting down API Gateway...');
   server.close(() => {
-    console.log('API Gateway closed.');
+    logger.info('API Gateway closed.');
     process.exit(0);
   });
 };

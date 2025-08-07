@@ -2,6 +2,7 @@
   "extends": "@muvance/config/tsconfig-preset/tsconfig.json",
   "compilerOptions": {
     "baseUrl": ".",
+    "outDir": "dist",
     "paths": {
       "@/*": ["./src/*"]
     },

@@ -1,5 +1,5 @@
 import { Routes, Route, useLocation, useNavigate } from 'react-router-dom';
-import { useEffect, useState } from 'react';
+import { useEffect } from 'react';
 import { AuthProvider, useAuthContext } from './context/AuthContext';
 import Dashboard from './pages/dashboard/index';
 import Login from './pages/login';

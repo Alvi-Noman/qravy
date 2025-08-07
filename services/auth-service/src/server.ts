@@ -1,21 +1,12 @@
 import { env } from '../../../packages/config/validateEnv.js';
 import app from './app.js';
 import { MongoClient } from 'mongodb';
-import winston from 'winston';
-import { ensureUserIndexes } from './utils/initDb.js'; // <-- Add this import
-
-const logger = winston.createLogger({
-  level: 'info',
-  format: winston.format.combine(
-    winston.format.timestamp(),
-    winston.format.simple()
-  ),
-  transports: [new winston.transports.Console()],
-});
+import logger from './utils/logger.js';
+import { ensureUserIndexes } from './utils/initDb.js';
 
 export const client = new MongoClient(env.MONGODB_URI!);
 
-const PORT = env.PORT || 3001;
+const PORT = Number(env.PORT) || 3001;
 
 let server: ReturnType<typeof app.listen> | null = null;
 
@@ -26,10 +17,11 @@ async function startServer() {
     await client.connect();
     logger.info('Connected to MongoDB!');
 
-    // Ensure indexes
+    // Ensure indexes exist for performance and reliability
     await ensureUserIndexes(client);
 
-    server = app.listen(PORT, () => {
+    // Listen on 0.0.0.0 for Docker compatibility
+    server = app.listen(PORT, '0.0.0.0', () => {
       logger.info(`Auth service running on port ${PORT}`);
     });
   } catch (err) {

@@ -1,51 +1,68 @@
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useRef } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
+import { useQuery } from '@tanstack/react-query';
 import { verifyMagicLink } from '../api/auth';
 import { useAuthContext } from '../context/AuthContext';
 
 export default function MagicLink() {
   const [searchParams] = useSearchParams();
-  const [status, setStatus] = useState<'pending' | 'success' | 'error'>('pending');
-  const [message, setMessage] = useState('');
+  const token = searchParams.get('token');
   const navigate = useNavigate();
   const { login } = useAuthContext();
-  const fetched = useRef(false);
-  const timeoutRef = useRef<number | null>(null); // Use number for browser
+  const timeoutRef = useRef<number | null>(null);
+
+  // React Query for verifying the magic link
+  const { data, error, isPending, isSuccess, isError } = useQuery({
+    queryKey: ['verify-magic-link', token],
+    queryFn: () => verifyMagicLink(token!),
+    enabled: !!token,
+    retry: false,
+  });
 
   useEffect(() => {
-    const token = searchParams.get('token');
-    if (!token || fetched.current) {
-      return;
+    // Only log in if both token and user are present (i.e., magic link is valid)
+    if (isSuccess && data && data.token && data.user) {
+      login(data.token, data.user);
+      timeoutRef.current = window.setTimeout(() => {
+        if (!data.user.name || !data.user.company) {
+          navigate('/complete-profile');
+        } else {
+          navigate('/dashboard');
+        }
+      }, 1500);
     }
-    fetched.current = true;
-    setStatus('pending');
-    verifyMagicLink(token)
-      .then((data) => {
-        login(data.token, data.user);
-        setStatus('success');
-        setMessage('You are now logged in!');
-        timeoutRef.current = window.setTimeout(() => {
-          if (!data.user.name || !data.user.company) {
-            navigate('/complete-profile');
-          } else {
-            navigate('/dashboard');
-          }
-        }, 1500);
-      })
-      .catch((err) => {
-        setStatus('error');
-        setMessage(
-          err?.response?.data?.message ||
-          'Magic link verification failed. Please try again or request a new link.'
-        );
-      });
-
     return () => {
       if (timeoutRef.current) {
         clearTimeout(timeoutRef.current);
       }
     };
-  }, [searchParams, login, navigate]);
+  }, [isSuccess, data, login, navigate]);
+
+  // Helper to show user-friendly error messages
+  const getErrorMessage = () => {
+    if (!error) return '';
+    const msg =
+      (error as any)?.response?.data?.message ||
+      (error as Error).message ||
+      '';
+    if (msg.includes('expired magic link')) return 'Your magic link has expired. Please request a new one.';
+    if (msg.includes('Invalid magic link')) return 'The magic link is invalid. Please check your email or request a new link.';
+    if (msg.includes('429')) return 'Too many requests. Please wait and try again.';
+    if (msg.includes('Network Error')) return 'Network error. Please check your connection.';
+    return 'Could not verify your magic link. Please try again.';
+  };
+
+  let status: 'pending' | 'success' | 'error' = 'pending';
+  let message = '';
+  if (isPending) {
+    status = 'pending';
+  } else if (isSuccess) {
+    status = 'success';
+    message = 'You are now logged in!';
+  } else if (isError) {
+    status = 'error';
+    message = getErrorMessage();
+  }
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-100">
