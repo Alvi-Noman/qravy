@@ -11,9 +11,11 @@
     "lint": "eslint \"**/*.ts*\""
   },
   "dependencies": {
+    "@heroicons/react": "^2.2.0",
     "@muvance/shared": "workspace:*",
     "@tanstack/react-query": "^5.83.0",
     "axios": "^1.11.0",
+    "framer-motion": "^12.23.12",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-hook-form": "^7.61.1",

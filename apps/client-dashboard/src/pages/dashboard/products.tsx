@@ -1,7 +1,7 @@
-export default function Dashboard() {
+export default function Products() {
   return (
     <div className="text-[#2e2e30] text-2xl font-semibold">
-      Welcome to Dashboard
+      Products Page
     </div>
   );
 }

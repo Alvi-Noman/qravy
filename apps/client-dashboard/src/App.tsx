@@ -1,11 +1,16 @@
 import { Routes, Route, useLocation, useNavigate } from 'react-router-dom';
 import { useEffect } from 'react';
 import { AuthProvider, useAuthContext } from './context/AuthContext';
+import DashboardLayout from './layout/DashboardLayout';
 import Dashboard from './pages/dashboard/index';
+import Orders from './pages/dashboard/orders';
+import Products from './pages/dashboard/products';
+import Categories from './pages/dashboard/categories';
 import Login from './pages/login';
 import Signup from './pages/signup';
 import MagicLink from './pages/magic-link';
 import CompleteProfile from './pages/complete-profile';
+import HomeRedirect from './pages/HomeRedirect';
 
 function RequireProfile({ children }: { children: React.ReactNode }) {
   const { user } = useAuthContext();
@@ -50,15 +55,20 @@ function App() {
           path="/dashboard"
           element={
             <RequireAuth>
-              <Dashboard />
+              <DashboardLayout />
             </RequireAuth>
           }
-        />
+        >
+          <Route index element={<Dashboard />} />
+          <Route path="orders" element={<Orders />} />
+          <Route path="products" element={<Products />} />
+          <Route path="categories" element={<Categories />} />
+        </Route>
         <Route path="/login" element={<Login />} />
         <Route path="/signup" element={<Signup />} />
         <Route path="/magic-link" element={<MagicLink />} />
         <Route path="/complete-profile" element={<CompleteProfile />} />
-        <Route path="/" element={<Login />} />
+        <Route path="/" element={<HomeRedirect />} />
       </Routes>
     </AuthProvider>
   );
