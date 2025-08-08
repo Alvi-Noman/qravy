@@ -11,6 +11,7 @@ import Signup from './pages/signup';
 import MagicLink from './pages/magic-link';
 import CompleteProfile from './pages/complete-profile';
 import HomeRedirect from './pages/HomeRedirect';
+import LoadingScreen from './components/LoadingScreen'; // <-- import here
 
 function RequireProfile({ children }: { children: React.ReactNode }) {
   const { user } = useAuthContext();
@@ -37,11 +38,7 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
   }, [token, navigate, location, loading]);
 
   if (loading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-gray-100">
-        <div className="text-xl font-bold">Loading...</div>
-      </div>
-    );
+    return <LoadingScreen />; // <-- use your illustration here
   }
 
   return token ? <RequireProfile>{children}</RequireProfile> : null;

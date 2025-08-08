@@ -4,6 +4,7 @@ import { useMutation } from '@tanstack/react-query';
 import { sendMagicLink } from '../api/auth';
 import { useAuthContext } from '../context/AuthContext';
 import { AnimatePresence, motion } from 'framer-motion';
+import Logo from '../components/Logo';
 
 export default function Login() {
   const { token, loading } = useAuthContext();
@@ -29,7 +30,7 @@ export default function Login() {
   return (
     <div className="min-h-screen w-full bg-[#fcfcfc] flex flex-col font-inter">
       <div className="w-full max-w-md flex flex-col items-center mx-auto mt-60">
-        <img src="/logo.svg" alt="Logo" className="mb-8" style={{ width: 48, height: 48 }} />
+        <Logo />
         <AnimatePresence mode="wait">
           {!showEmail ? (
             <motion.div

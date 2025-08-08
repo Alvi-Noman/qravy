@@ -1,30 +1,15 @@
-import React, { useEffect, useState } from 'react';
-
 export default function LoadingScreen() {
-  const [visible, setVisible] = useState(false);
-
-  // Fade-in effect
-  useEffect(() => {
-    const timeout = setTimeout(() => setVisible(true), 10);
-    return () => clearTimeout(timeout);
-  }, []);
-
   return (
-    <div
-      className={`fixed inset-0 z-50 flex flex-col items-center justify-center transition-opacity duration-500 ${
-        visible ? 'opacity-100' : 'opacity-0'
-      }`}
-      style={{ background: 'linear-gradient(135deg, #f5f5f5 0%, #fcfcfc 100%)' }}
-    >
-      <img
-        src="/logo.svg"
-        alt="Logo"
-        className="mb-8"
-        style={{ width: 56, height: 56, filter: 'drop-shadow(0 2px 8px rgba(0,0,0,0.04))' }}
-      />
-      <div className="mt-2 text-gray-700 text-lg font-semibold tracking-wide">
-        Loading...
-      </div>
+    <div className="flex h-screen bg-[#f5f5f5]">
+      <aside className="h-full w-64 bg-[#f5f5f5]" />
+      <main className="flex-1 flex items-start justify-center bg-[#f5f5f5]">
+        <div className="flex-1 mr-4 my-2 h-[calc(100vh-1rem)] flex">
+          <div
+            className="bg-[#fcfcfc] rounded-xl border border-[#ececec] h-full w-full"
+            style={{ minWidth: 0 }}
+          />
+        </div>
+      </main>
     </div>
   );
 }

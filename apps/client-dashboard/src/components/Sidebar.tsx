@@ -19,12 +19,14 @@ export default function Sidebar() {
 
   return (
     <aside className="flex flex-col h-full w-64 bg-[#f5f5f5] px-4 py-4">
-      {/* Logo */}
-      <div className="flex items-center gap-2 mb-6">
-        <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-purple-400 to-blue-400 flex items-center justify-center">
-          <span className="text-white text-2xl font-bold">D</span>
-        </div>
-        <span className="text-xl font-bold text-[#2e2e30]">Dialin</span>
+      {/* Logo (left aligned) */}
+      <div className="flex items-center mb-6">
+        <img
+          src="/qravy-logo-250X100.png"
+          alt="Qravy Logo"
+          className="h-10 w-auto"
+          style={{ maxWidth: 140, objectFit: 'contain' }}
+        />
       </div>
 
       {/* Search */}

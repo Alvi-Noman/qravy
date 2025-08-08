@@ -3,6 +3,8 @@ import { useSearchParams, useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { verifyMagicLink } from '../api/auth';
 import { useAuthContext } from '../context/AuthContext';
+import AuthSuccessScreen from '../components/AuthSuccessScreen';
+import AuthErrorScreen from '../components/AuthErrorScreen'; // <-- import your error screen
 
 export default function MagicLink() {
   const [searchParams] = useSearchParams();
@@ -20,7 +22,6 @@ export default function MagicLink() {
   });
 
   useEffect(() => {
-    // Only log in if both token and user are present (i.e., magic link is valid)
     if (isSuccess && data && data.token && data.user) {
       login(data.token, data.user);
       timeoutRef.current = window.setTimeout(() => {
@@ -65,20 +66,10 @@ export default function MagicLink() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-100">
-      <div className="bg-white p-8 rounded-lg shadow-lg w-full max-w-md text-center">
-        {status === 'pending' && (
-          <div className="flex flex-col items-center justify-center">
-            <svg className="animate-spin h-8 w-8 text-blue-500 mb-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"></path>
-            </svg>
-            <div className="text-xl font-bold">Loading...</div>
-          </div>
-        )}
-        {status === 'success' && <div className="text-green-600 text-xl font-bold mb-4">{message}</div>}
-        {status === 'error' && <div className="text-red-600 text-xl font-bold mb-4">{message}</div>}
-      </div>
+    <div className="min-h-screen w-full bg-[#fcfcfc] font-inter">
+      {status === 'success' && <AuthSuccessScreen />}
+      {status === 'error' && <AuthErrorScreen />}
+      {/* status === 'pending' renders nothing (just background) */}
     </div>
   );
 }
