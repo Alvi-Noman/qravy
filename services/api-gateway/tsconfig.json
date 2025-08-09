@@ -1,18 +1,18 @@
 {
-  "extends": "@muvance/config/tsconfig-preset/tsconfig.json",
+  "extends": "../../packages/config/tsconfig-preset/tsconfig.json",
   "compilerOptions": {
-    "baseUrl": ".",
-    "paths": {
-      "@/*": ["./src/*"]
-    },
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
+    "target": "ES2022",
     "esModuleInterop": true,
     "allowSyntheticDefaultImports": true,
-    "types": ["node", "jest", "@types/express", "@types/cors", "@types/jsonwebtoken"],
-    "outDir": "./dist",
-    "rootDir": "./src",
-    "skipLibCheck": true
+    "baseUrl": ".",
+    "outDir": "dist",
+    "types": ["node", "jest"],
+    "skipLibCheck": true,
+    "paths": {
+      "@/*": ["./src/*"]
+    }
   },
   "include": ["src/**/*"],
   "exclude": ["node_modules", "dist"]

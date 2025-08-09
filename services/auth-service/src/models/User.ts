@@ -12,8 +12,7 @@ export interface RefreshToken {
 interface User {
   _id?: ObjectId;
   email: string;
-  name: string;
-  company: string;
+  isOnboarded?: boolean;
   failedLoginAttempts?: number;
   lockUntil?: Date | null;
   refreshTokens?: RefreshToken[];

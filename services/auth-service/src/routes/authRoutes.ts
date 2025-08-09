@@ -6,7 +6,6 @@ import {
   logout,
   logoutAll,
   revokeSession,
-  updateProfile,
   getUsersCollection
 } from '../controllers/authController.js';
 import { authenticateJWT } from '../middleware/auth.js';
@@ -57,8 +56,5 @@ router.get('/me', authenticateJWT, async (req: Request, res: Response) => {
   }
   res.json({ user });
 });
-
-// Profile update route with Zod validation
-router.post('/me', authenticateJWT, validateRequest(profileUpdateSchema), updateProfile);
 
 export default router;

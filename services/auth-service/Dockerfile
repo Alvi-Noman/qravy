@@ -1,17 +1,14 @@
-FROM node:18-alpine
+FROM node:20-alpine
 
 WORKDIR /app
 
-# Copy the entire monorepo into the container
 COPY . .
 
-# Install pnpm globally
-RUN npm install -g pnpm
+RUN npm uninstall -g ts-node || true
+RUN npm install -g pnpm nodemon typescript ts-node@latest tsx
 
-# Install all dependencies for the monorepo
 RUN pnpm install --frozen-lockfile
 
-# Only build the target service and its dependencies using Turbo and pnpm
 RUN pnpm turbo run build --filter=@muvance/auth-service...
 
 WORKDIR /app/services/auth-service

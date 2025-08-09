@@ -9,22 +9,11 @@ import Categories from './pages/dashboard/categories';
 import Login from './pages/login';
 import Signup from './pages/signup';
 import MagicLink from './pages/magic-link';
-import CompleteProfile from './pages/complete-profile';
 import HomeRedirect from './pages/HomeRedirect';
-import LoadingScreen from './components/LoadingScreen'; // <-- import here
+import LoadingScreen from './components/LoadingScreen';
 
-function RequireProfile({ children }: { children: React.ReactNode }) {
-  const { user } = useAuthContext();
-  const navigate = useNavigate();
-
-  useEffect(() => {
-    if (user && (!user.name || !user.company)) {
-      navigate('/complete-profile');
-    }
-  }, [user, navigate]);
-
-  return <>{children}</>;
-}
+import CreateRestaurant from './pages/create-restaurant/CreateRestaurant';
+import OnboardingWizard from './pages/restaurant/OnboardingWizard';
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const { token, loading } = useAuthContext();
@@ -38,10 +27,25 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
   }, [token, navigate, location, loading]);
 
   if (loading) {
-    return <LoadingScreen />; // <-- use your illustration here
+    return <LoadingScreen />;
   }
 
-  return token ? <RequireProfile>{children}</RequireProfile> : null;
+  return token ? <>{children}</> : null;
+}
+
+// Protect onboarding so only users who need onboarding can access it
+function RequireOnboarding({ children }: { children: React.ReactNode }) {
+  const { user } = useAuthContext();
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    // If user is already onboarded, redirect to dashboard
+    if (user && user.isOnboarded) {
+      navigate('/dashboard');
+    }
+  }, [user, navigate]);
+
+  return <>{children}</>;
 }
 
 function App() {
@@ -64,7 +68,18 @@ function App() {
         <Route path="/login" element={<Login />} />
         <Route path="/signup" element={<Signup />} />
         <Route path="/magic-link" element={<MagicLink />} />
-        <Route path="/complete-profile" element={<CompleteProfile />} />
+        <Route path="/create-restaurant" element={
+          <RequireAuth>
+            <CreateRestaurant />
+          </RequireAuth>
+        } />
+        <Route path="/:restaurantUrl/welcome" element={
+          <RequireAuth>
+            <RequireOnboarding>
+              <OnboardingWizard />
+            </RequireOnboarding>
+          </RequireAuth>
+        } />
         <Route path="/" element={<HomeRedirect />} />
       </Routes>
     </AuthProvider>

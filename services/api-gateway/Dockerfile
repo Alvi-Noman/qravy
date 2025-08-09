@@ -1,10 +1,11 @@
-FROM node:18-alpine
+FROM node:20-alpine
 
 WORKDIR /app
 
 COPY . .
 
-RUN npm install -g pnpm
+RUN npm uninstall -g ts-node || true
+RUN npm install -g pnpm nodemon typescript ts-node@latest tsx
 
 RUN pnpm install --frozen-lockfile
 

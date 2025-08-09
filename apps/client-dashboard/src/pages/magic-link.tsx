@@ -4,7 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import { verifyMagicLink } from '../api/auth';
 import { useAuthContext } from '../context/AuthContext';
 import AuthSuccessScreen from '../components/AuthSuccessScreen';
-import AuthErrorScreen from '../components/AuthErrorScreen'; // <-- import your error screen
+import AuthErrorScreen from '../components/AuthErrorScreen';
 
 export default function MagicLink() {
   const [searchParams] = useSearchParams();
@@ -25,10 +25,11 @@ export default function MagicLink() {
     if (isSuccess && data && data.token && data.user) {
       login(data.token, data.user);
       timeoutRef.current = window.setTimeout(() => {
-        if (!data.user.name || !data.user.company) {
-          navigate('/complete-profile');
-        } else {
+        // Redirect based on onboarding status
+        if (data.user.isOnboarded) {
           navigate('/dashboard');
+        } else {
+          navigate('/create-restaurant');
         }
       }, 1500);
     }

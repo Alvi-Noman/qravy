@@ -1,11 +1,10 @@
 import { createContext, useContext, useState, useEffect, useRef, ReactNode } from 'react';
 import { attachAuthInterceptor, getMe } from '../api/auth';
 
-interface AuthUser {
+export interface AuthUser {
   id: string;
   email: string;
-  name: string;
-  company: string;
+  isOnboarded?: boolean;
 }
 
 interface AuthContextType {
@@ -26,7 +25,6 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const [token, setToken] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // Use useRef for isRefreshing to avoid race conditions
   const isRefreshing = useRef(false);
 
   const refreshToken = async () => {

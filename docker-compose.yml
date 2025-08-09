@@ -1,0 +1,30 @@
+services:
+  auth-service:
+    build:
+      context: .
+      dockerfile: services/auth-service/Dockerfile
+    ports:
+      - "3001:3001"
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+    restart: unless-stopped
+    # volumes:
+      #   - ./services/auth-service:/app/services/auth-service
+    command: nodemon --watch src --ext ts,json --exec "/usr/local/bin/tsx src/server.ts"
+  api-gateway:
+    build:
+      context: .
+      dockerfile: services/api-gateway/Dockerfile
+    ports:
+      - "8080:8080"
+    depends_on:
+      - auth-service
+    restart: unless-stopped
+    # volumes:
+      #   - ./services/auth-service:/app/services/auth-service
+    command: nodemon --watch src --ext ts,json --exec "/usr/local/bin/tsx src/server.ts"
+
+networks:
+  default:
+    driver: bridge

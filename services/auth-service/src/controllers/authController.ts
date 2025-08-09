@@ -2,7 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import { Db, Collection, ObjectId } from 'mongodb';
 import { config } from 'dotenv';
-import { client } from '../server.js';
+import { client } from '../db.js';
 import { generateRefreshToken, verifyRefreshToken } from '../utils/token.js';
 import { sendMagicLinkEmail } from '../utils/email.js';
 import logger from '../utils/logger.js';
@@ -61,8 +61,7 @@ export const sendMagicLink = async (req: Request, res: Response, next: NextFunct
         refreshTokens: [],
         magicLinkToken,
         magicLinkTokenExpires,
-        name: "",
-        company: ""
+        isOnboarded: false // <-- Added!
       });
       user = await collection.findOne({ _id: insertResult.insertedId });
       logger.info(`Created new user: ${email} from IP ${ip}`);
@@ -160,34 +159,33 @@ export const verifyMagicLink = async (req: Request, res: Response, next: NextFun
         maxAge: 30 * 24 * 60 * 60 * 1000,
       })
       .status(200)
-      .json({ token: accessToken, user: { id: user._id!.toString(), email: user.email, name: user.name, company: user.company } });
+      .json({ 
+        token: accessToken, 
+        user: { 
+          id: user._id!.toString(), 
+          email: user.email, 
+          isOnboarded: user.isOnboarded // <-- Added!
+        } 
+      });
   } catch (error) {
     logger.error(`verifyMagicLink error: ${(error as Error).message}`);
     next(error);
   }
 };
 
-export const updateProfile = async (req: Request, res: Response, next: NextFunction) => {
+// New: Mark onboarding as complete
+export const completeOnboarding = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const userId = (req as any).user.id;
-    const { name, company } = req.body;
-    if (!name || !company) {
-      logger.warn(`Profile update failed: missing name or company for user ${userId}`);
-      return res.status(400).json({ message: 'Name and company are required.' });
-    }
     const collection = await getUsersCollection();
-    const result = await collection.updateOne(
+    await collection.updateOne(
       { _id: new ObjectId(userId) },
-      { $set: { name, company } }
+      { $set: { isOnboarded: true } }
     );
-    if (result.modifiedCount === 0) {
-      logger.warn(`Profile update failed for user ${userId}`);
-      return res.status(400).json({ message: 'Profile update failed.' });
-    }
-    logger.info(`Profile updated for user ${userId}`);
-    res.json({ message: 'Profile updated' });
+    logger.info(`User onboarding completed: ${userId}`);
+    res.json({ message: 'Onboarding complete' });
   } catch (error) {
-    logger.error(`updateProfile error: ${(error as Error).message}`);
+    logger.error(`completeOnboarding error: ${(error as Error).message}`);
     next(error);
   }
 };
@@ -269,7 +267,7 @@ export const refreshToken = async (req: Request, res: Response, next: NextFuncti
     logger.info(`Refresh token issued for user: ${userInfo(user)} from IP ${ip}`);
 
     const newAccessToken = jwt.sign(
-      { id: user._id!.toString(), email: user.email, name: user.name, company: user.company },
+      { id: user._id!.toString(), email: user.email },
       process.env.JWT_SECRET!,
       { expiresIn: '15m' }
     );
