@@ -1,5 +1,4 @@
 import axios, { AxiosError, AxiosResponse, InternalAxiosRequestConfig } from 'axios';
-import { useMutation } from '@tanstack/react-query';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3001';
 
@@ -43,7 +42,6 @@ export const attachAuthInterceptor = (
   );
 };
 
-// Helper to extract a user-friendly error message from Axios errors
 function extractErrorMessage(error: unknown): string {
   if (axios.isAxiosError(error)) {
     const msg =
@@ -79,6 +77,15 @@ export async function getMe(token?: string) {
     const response = await api.get('/api/v1/auth/me', {
       headers: token ? { Authorization: `Bearer ${token}` } : undefined,
     });
+    return response.data;
+  } catch (error) {
+    throw new Error(extractErrorMessage(error));
+  }
+}
+
+export async function refreshToken() {
+  try {
+    const response = await api.post('/api/v1/auth/refresh-token');
     return response.data;
   } catch (error) {
     throw new Error(extractErrorMessage(error));

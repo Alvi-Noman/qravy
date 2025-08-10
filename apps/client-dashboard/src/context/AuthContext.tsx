@@ -1,5 +1,5 @@
 import { createContext, useContext, useState, useEffect, useRef, ReactNode } from 'react';
-import { attachAuthInterceptor, getMe } from '../api/auth';
+import { attachAuthInterceptor, getMe, refreshToken as apiRefreshToken } from '../api/auth';
 
 export interface AuthUser {
   id: string;
@@ -18,8 +18,6 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL;
-
 export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [token, setToken] = useState<string | null>(null);
@@ -31,27 +29,18 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     if (isRefreshing.current) return;
     isRefreshing.current = true;
     try {
-      const res = await fetch(`${API_BASE_URL}/api/v1/auth/refresh-token`, {
-        method: 'POST',
-        credentials: 'include',
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setToken(data.token);
-        if (data.user) {
-          setUser(data.user);
-        } else if (data.token) {
-          try {
-            const me = await getMe(data.token);
-            setUser(me.user);
-          } catch {
-            setUser(null);
-          }
-        } else {
+      const data = await apiRefreshToken();
+      setToken(data.token);
+      if (data.user) {
+        setUser(data.user);
+      } else if (data.token) {
+        try {
+          const me = await getMe(data.token);
+          setUser(me.user);
+        } catch {
           setUser(null);
         }
       } else {
-        setToken(null);
         setUser(null);
       }
     } catch {
@@ -95,7 +84,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const logout = async () => {
     setToken(null);
     setUser(null);
-    await fetch(`${API_BASE_URL}/api/v1/auth/logout`, { method: 'POST', credentials: 'include' });
+    await fetch(`${import.meta.env.VITE_API_BASE_URL}/api/v1/auth/logout`, { method: 'POST', credentials: 'include' });
     localStorage.setItem('logout', Date.now().toString());
   };
 
