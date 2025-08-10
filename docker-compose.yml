@@ -9,8 +9,9 @@ services:
       - 8.8.8.8
       - 1.1.1.1
     restart: unless-stopped
-    #volumes:
-      #- ./services/auth-service:/app/services/auth-service
+    volumes:
+       - ./services/auth-service:/app/services/auth-service
+       - /app/services/auth-service/node_modules
     command: nodemon --watch src --ext ts,json --exec "/usr/local/bin/tsx src/server.ts"
 
   api-gateway:
@@ -22,8 +23,9 @@ services:
     depends_on: 
       - auth-service
     restart: unless-stopped
-    #volumes:
-     #- ./services/api-gateway:/app/services/api-gateway
+    volumes:
+     - ./services/api-gateway:/app/services/api-gateway
+     - /app/services/api-gateway/node_modules
     env_file:
       - ./services/api-gateway/.env
     command: nodemon --watch src --ext ts,json --exec "/usr/local/bin/tsx src/server.ts"
