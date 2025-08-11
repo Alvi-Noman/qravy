@@ -1,9 +1,15 @@
+/**
+ * Auth context for user + token state and auth actions.
+ * - Handles refresh flow on app start
+ * - Exposes login/logout/refresh/reloadUser
+ */
 import { createContext, useContext, useState, useEffect, useRef, ReactNode } from 'react';
 import { attachAuthInterceptor, getMe, refreshToken as apiRefreshToken } from '../api/auth';
 
 export interface AuthUser {
   id: string;
   email: string;
+  isVerified?: boolean;
   isOnboarded?: boolean;
 }
 
@@ -14,6 +20,7 @@ interface AuthContextType {
   login: (token: string, user: AuthUser) => void;
   logout: () => void;
   refreshToken: () => Promise<void>;
+  reloadUser: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -52,12 +59,36 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     }
   };
 
+  const reloadUser = async () => {
+    if (!token) return;
+    try {
+      const me = await getMe(token);
+      setUser(me.user);
+    } catch {
+      // ignore
+    }
+  };
+
+  const login = (tok: string, usr: AuthUser) => {
+    setToken(tok);
+    setUser(usr);
+    localStorage.setItem('login', Date.now().toString());
+  };
+
+  const logout = async () => {
+    setToken(null);
+    setUser(null);
+    await fetch(`${import.meta.env.VITE_API_BASE_URL}/api/v1/auth/logout`, { method: 'POST', credentials: 'include' });
+    localStorage.setItem('logout', Date.now().toString());
+  };
+
   useEffect(() => {
     attachAuthInterceptor(
       () => token,
       refreshToken,
       logout
     );
+    // Attempt refresh on app boot
     refreshToken();
 
     // Tab sync for login/logout
@@ -72,24 +103,11 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     };
     window.addEventListener('storage', handleStorage);
     return () => window.removeEventListener('storage', handleStorage);
-    // eslint-disable-next-line
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const login = (token: string, user: AuthUser) => {
-    setToken(token);
-    setUser(user);
-    localStorage.setItem('login', Date.now().toString());
-  };
-
-  const logout = async () => {
-    setToken(null);
-    setUser(null);
-    await fetch(`${import.meta.env.VITE_API_BASE_URL}/api/v1/auth/logout`, { method: 'POST', credentials: 'include' });
-    localStorage.setItem('logout', Date.now().toString());
-  };
-
   return (
-    <AuthContext.Provider value={{ user, token, loading, login, logout, refreshToken }}>
+    <AuthContext.Provider value={{ user, token, loading, login, logout, refreshToken, reloadUser }}>
       {children}
     </AuthContext.Provider>
   );

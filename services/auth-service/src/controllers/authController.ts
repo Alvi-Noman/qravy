@@ -1,3 +1,9 @@
+/**
+ * Auth controller
+ * - Magic link send/verify
+ * - Refresh/logout/session management
+ * - Complete onboarding
+ */
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import { Db, Collection, ObjectId } from 'mongodb';
@@ -11,7 +17,6 @@ config();
 
 let db: Db | null = null;
 
-// Helper to format user info for logs
 function userInfo(user: any) {
   return user ? `${user.email} (${user._id})` : 'unknown user';
 }
@@ -61,7 +66,7 @@ export const sendMagicLink = async (req: Request, res: Response, next: NextFunct
         refreshTokens: [],
         magicLinkToken,
         magicLinkTokenExpires,
-        isOnboarded: false // <-- Added!
+        isOnboarded: false
       });
       user = await collection.findOne({ _id: insertResult.insertedId });
       logger.info(`Created new user: ${email} from IP ${ip}`);
@@ -99,7 +104,7 @@ export const verifyMagicLink = async (req: Request, res: Response, next: NextFun
 
     if (!token || typeof token !== 'string') {
       logger.warn(`Invalid magic link token received from IP ${ip}`);
-      return res.status(400).json({ message: 'Invalid magic link.' });
+      return res.status(400).json({ message: 'Invalid or expired magic link.' });
     }
 
     const collection = await getUsersCollection();
@@ -128,7 +133,6 @@ export const verifyMagicLink = async (req: Request, res: Response, next: NextFun
 
     const cleanedTokens = cleanupTokens(user.refreshTokens);
 
-    // Device info
     const userAgent = req.headers['user-agent'] || 'unknown';
 
     cleanedTokens.push({
@@ -159,13 +163,14 @@ export const verifyMagicLink = async (req: Request, res: Response, next: NextFun
         maxAge: 30 * 24 * 60 * 60 * 1000,
       })
       .status(200)
-      .json({ 
-        token: accessToken, 
-        user: { 
-          id: user._id!.toString(), 
-          email: user.email, 
-          isOnboarded: user.isOnboarded // <-- Added!
-        } 
+      .json({
+        token: accessToken,
+        user: {
+          id: user._id!.toString(),
+          email: user.email,
+          isVerified: true,
+          isOnboarded: user.isOnboarded
+        }
       });
   } catch (error) {
     logger.error(`verifyMagicLink error: ${(error as Error).message}`);
@@ -173,7 +178,7 @@ export const verifyMagicLink = async (req: Request, res: Response, next: NextFun
   }
 };
 
-// New: Mark onboarding as complete
+// Mark onboarding as complete (JWT-protected)
 export const completeOnboarding = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const userId = (req as any).user.id;
@@ -234,16 +239,13 @@ export const refreshToken = async (req: Request, res: Response, next: NextFuncti
       return next(error);
     }
 
-    // Remove the used/old refresh token
     cleanedTokens.splice(existingTokenIndex, 1);
 
-    // Add the new refresh token
     const newRefreshToken = generateRefreshToken({ id: user._id!.toString(), email: user.email });
     const tokenId = crypto.randomUUID();
     const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
     const tokenHash = hashToken(newRefreshToken);
 
-    // Device info
     const userAgent = req.headers['user-agent'] || 'unknown';
 
     cleanedTokens.push({
