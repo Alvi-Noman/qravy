@@ -17,6 +17,7 @@ interface User {
   lockUntil?: Date | null;
   refreshTokens?: RefreshToken[];
   isVerified?: boolean;
+  restaurantId?: ObjectId;
   magicLinkToken?: string;
   magicLinkTokenExpires?: Date;
 }

@@ -1,11 +1,7 @@
 import { createContext, useContext, useState, useEffect, useRef, ReactNode } from 'react';
+import { useLocation } from 'react-router-dom';
 import { attachAuthInterceptor, getMe, refreshToken as apiRefreshToken } from '../api/auth';
-
-export interface AuthUser {
-  id: string;
-  email: string;
-  isOnboarded?: boolean;
-}
+import { AuthUser } from '../types';
 
 interface AuthContextType {
   user: AuthUser | null;
@@ -18,12 +14,21 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
+// List of public routes that should NOT trigger refreshToken on mount
+const PUBLIC_ROUTES = [
+  '/login',
+  '/signup',
+  '/magic-link',
+  '/verify',
+];
+
 export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [token, setToken] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   const isRefreshing = useRef(false);
+  const location = useLocation();
 
   const refreshToken = async () => {
     if (isRefreshing.current) return;
@@ -32,11 +37,21 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       const data = await apiRefreshToken();
       setToken(data.token);
       if (data.user) {
-        setUser(data.user);
+        setUser({
+          id: data.user.id,
+          email: data.user.email,
+          isOnboarded: data.user.isOnboarded,
+          isVerified: data.user.isVerified,
+        });
       } else if (data.token) {
         try {
           const me = await getMe(data.token);
-          setUser(me.user);
+          setUser({
+            id: me.user.id,
+            email: me.user.email,
+            isOnboarded: me.user.isOnboarded,
+            isVerified: me.user.isVerified,
+          });
         } catch {
           setUser(null);
         }
@@ -58,7 +73,13 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       refreshToken,
       logout
     );
-    refreshToken();
+
+    // Only call refreshToken on mount if NOT on a public route
+    if (!PUBLIC_ROUTES.some(route => location.pathname.startsWith(route))) {
+      refreshToken();
+    } else {
+      setLoading(false); // Not loading if on a public page
+    }
 
     // Tab sync for login/logout
     const handleStorage = (e: StorageEvent) => {
@@ -73,7 +94,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     window.addEventListener('storage', handleStorage);
     return () => window.removeEventListener('storage', handleStorage);
     // eslint-disable-next-line
-  }, []);
+  }, [location.pathname]);
 
   const login = (token: string, user: AuthUser) => {
     setToken(token);

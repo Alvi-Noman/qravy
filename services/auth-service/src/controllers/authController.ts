@@ -164,7 +164,8 @@ export const verifyMagicLink = async (req: Request, res: Response, next: NextFun
         user: { 
           id: user._id!.toString(), 
           email: user.email, 
-          isOnboarded: user.isOnboarded // <-- Added!
+          isOnboarded: user.isOnboarded, // <-- Added!
+          isVerified: true // <-- Added for frontend context!
         } 
       });
   } catch (error) {
@@ -173,7 +174,7 @@ export const verifyMagicLink = async (req: Request, res: Response, next: NextFun
   }
 };
 
-// New: Mark onboarding as complete
+// Mark onboarding as complete
 export const completeOnboarding = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const userId = (req as any).user.id;
@@ -279,7 +280,15 @@ export const refreshToken = async (req: Request, res: Response, next: NextFuncti
         sameSite: 'strict',
         maxAge: 30 * 24 * 60 * 60 * 1000,
       })
-      .json({ token: newAccessToken });
+      .json({ 
+        token: newAccessToken,
+        user: {
+          id: user._id!.toString(),
+          email: user.email,
+          isOnboarded: user.isOnboarded,
+          isVerified: user.isVerified
+        }
+      });
   } catch (error) {
     logger.error(`refreshToken error: ${(error as Error).message}`);
     next(error);

@@ -296,6 +296,9 @@ importers:
       mongodb:
         specifier: ^6.18.0
         version: 6.18.0
+      morgan:
+        specifier: ^1.10.1
+        version: 1.10.1
       nodemailer:
         specifier: ^7.0.5
         version: 7.0.5
@@ -336,6 +339,9 @@ importers:
       '@types/jsonwebtoken':
         specifier: ^9.0.6
         version: 9.0.10
+      '@types/morgan':
+        specifier: ^1.9.10
+        version: 1.9.10
       '@types/node':
         specifier: ^20.12.12
         version: 20.19.9

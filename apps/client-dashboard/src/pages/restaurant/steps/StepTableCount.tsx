@@ -1,6 +1,7 @@
-// pages/restaurant/steps/StepTableCount.tsx
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { completeOnboarding } from '../../../api/auth';
+import { useAuthContext } from '../../../context/AuthContext';
 
 type StepProps = {
   onBack?: () => void;
@@ -9,11 +10,30 @@ type StepProps = {
 export default function StepTableCount({ onBack }: StepProps) {
   const [tableCount, setTableCount] = useState('');
   const navigate = useNavigate();
+  const { refreshToken } = useAuthContext();
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
+  const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    // TODO: Save table count info
-    navigate('/dashboard');
+    setLoading(true);
+    setError(null);
+    try {
+      // Optionally: Save table count info to backend here
+
+      // 1. Mark onboarding complete in backend
+      await completeOnboarding();
+
+      // 2. Refresh user context (so isOnboarded is true)
+      await refreshToken();
+
+      // 3. Redirect to dashboard
+      navigate('/dashboard');
+    } catch (err: any) {
+      setError(err.message || 'Failed to complete onboarding');
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -32,8 +52,15 @@ export default function StepTableCount({ onBack }: StepProps) {
         {onBack && (
           <button type="button" onClick={onBack} className="bg-gray-300 text-black p-2 rounded">Back</button>
         )}
-        <button type="submit" className="bg-blue-500 text-white p-2 rounded">Finish</button>
+        <button
+          type="submit"
+          className="bg-blue-500 text-white p-2 rounded"
+          disabled={loading}
+        >
+          {loading ? 'Finishing...' : 'Finish'}
+        </button>
       </div>
+      {error && <div className="text-red-500 mt-2">{error}</div>}
     </form>
   );
 }

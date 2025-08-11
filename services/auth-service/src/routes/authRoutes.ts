@@ -6,7 +6,8 @@ import {
   logout,
   logoutAll,
   revokeSession,
-  getUsersCollection
+  getUsersCollection,
+  completeOnboarding, // <-- Import this
 } from '../controllers/authController.js';
 import { authenticateJWT } from '../middleware/auth.js';
 import { validateRequest } from '../middleware/validateRequest.js';
@@ -56,5 +57,8 @@ router.get('/me', authenticateJWT, async (req: Request, res: Response) => {
   }
   res.json({ user });
 });
+
+// Mark onboarding as complete
+router.post('/onboarding/complete', authenticateJWT, completeOnboarding);
 
 export default router;

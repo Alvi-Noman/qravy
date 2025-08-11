@@ -1,35 +1,50 @@
-import express, { Application, Request, Response, NextFunction } from 'express';
+import express, { Application, Request, Response } from 'express';
 import cors from 'cors';
 import { createProxyMiddleware } from 'http-proxy-middleware';
-import logger from './utils/logger.js'; // Use your shared Winston logger
+import { IncomingMessage, ServerResponse } from 'http';
+import logger from './utils/logger.js';
+import morgan from 'morgan';
+
+const CORS_ORIGIN = process.env.CORS_ORIGIN || 'http://localhost:5173';
 
 const app: Application = express();
 
-// Log every request for debugging and monitoring
-app.use((req: Request, res: Response, next: NextFunction) => {
-  logger.http(`[API Gateway] ${req.method} ${req.url}`);
-  next();
-});
-
-// CORS setup for frontend dev/prod flexibility
 app.use(cors({
-  origin: process.env.CORS_ORIGIN || 'http://localhost:5173',
+  origin: CORS_ORIGIN,
   credentials: true,
   methods: ['GET', 'POST', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
 }));
 
-// Proxy to Auth Service ONLY
+app.use(express.json());
+
+app.use(morgan('combined', {
+  stream: {
+    write: (message: string) => logger.http(message.trim())
+  }
+}));
+
+// Proxy to Auth Service ONLY, with logging
 if (process.env.AUTH_SERVICE_URL) {
   app.use(
     '/api/v1/auth',
     createProxyMiddleware({
       target: process.env.AUTH_SERVICE_URL,
       changeOrigin: true,
-      pathRewrite: (path: string, req: Request) =>
+      pathRewrite: (path: string, req: IncomingMessage) =>
         '/api/v1/auth' + path.replace(/^\/api\/v1\/auth/, ''),
       cookieDomainRewrite: "localhost",
-    })
+      onProxyReq: (proxyReq: any, req: IncomingMessage, res: ServerResponse) => {
+        console.log(`[API-GATEWAY] Proxying ${req.method} ${req.url} to ${process.env.AUTH_SERVICE_URL}`);
+      },
+      onError: (err: any, req: IncomingMessage, res: ServerResponse) => {
+        console.error('[API-GATEWAY] Proxy error:', err);
+        if (res.writeHead) {
+          res.writeHead(502, { 'Content-Type': 'application/json' });
+        }
+        res.end(JSON.stringify({ message: 'Proxy error', error: (err as Error).message }));
+      }
+    } as any) // 
   );
 }
 
