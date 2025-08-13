@@ -18,6 +18,8 @@ import {
 import {
   listCategories,
   createCategory,
+  updateCategory,
+  deleteCategory,
 } from '../controllers/categoriesController.js';
 import { authenticateJWT } from '../middleware/auth.js';
 import { validateRequest } from '../middleware/validateRequest.js';
@@ -26,6 +28,7 @@ import {
   menuItemSchema,
   menuItemUpdateSchema,
   categorySchema,
+  categoryUpdateSchema,
 } from '../validation/schemas.js';
 import { ObjectId } from 'mongodb';
 
@@ -42,15 +45,17 @@ router.post('/logout', logout);
 // Complete onboarding (protected)
 router.post('/onboarding/complete', authenticateJWT, completeOnboarding);
 
-// Menu items (protected; using POST for update/delete per your current setup)
+// Menu items (protected; POST for update/delete per your current setup)
 router.get('/menu-items', authenticateJWT, listMenuItems);
 router.post('/menu-items', authenticateJWT, validateRequest(menuItemSchema), createMenuItem);
 router.post('/menu-items/:id/update', authenticateJWT, validateRequest(menuItemUpdateSchema), updateMenuItem);
 router.post('/menu-items/:id/delete', authenticateJWT, deleteMenuItem);
 
-// Categories (protected)
+// Categories (protected; POST for update/delete)
 router.get('/categories', authenticateJWT, listCategories);
 router.post('/categories', authenticateJWT, validateRequest(categorySchema), createCategory);
+router.post('/categories/:id/update', authenticateJWT, validateRequest(categoryUpdateSchema), updateCategory);
+router.post('/categories/:id/delete', authenticateJWT, deleteCategory);
 
 // Sessions management (protected)
 router.post('/logout-all', authenticateJWT, logoutAll);

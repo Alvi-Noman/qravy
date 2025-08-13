@@ -1,6 +1,6 @@
 /**
  * Categories API (per-user)
- * - List and create categories
+ * - List, create, update, delete
  * - Explicit Authorization header via token
  */
 import api from './auth';
@@ -25,8 +25,7 @@ export async function getCategories(token: string): Promise<Category[]> {
   const res = await api.get('/api/v1/auth/categories', {
     headers: { Authorization: `Bearer ${token}` },
   });
-  const items = res.data.items as any[];
-  return items.map(mapCategory);
+  return (res.data.items as any[]).map(mapCategory);
 }
 
 export async function createCategory(name: string, token: string): Promise<Category> {
@@ -36,4 +35,21 @@ export async function createCategory(name: string, token: string): Promise<Categ
     { headers: { Authorization: `Bearer ${token}` } }
   );
   return mapCategory(res.data.item);
+}
+
+export async function updateCategory(id: string, name: string, token: string): Promise<Category> {
+  const res = await api.post(
+    `/api/v1/auth/categories/${encodeURIComponent(id)}/update`,
+    { name },
+    { headers: { Authorization: `Bearer ${token}` } }
+  );
+  return mapCategory(res.data.item);
+}
+
+export async function deleteCategory(id: string, token: string): Promise<void> {
+  await api.post(
+    `/api/v1/auth/categories/${encodeURIComponent(id)}/delete`,
+    null,
+    { headers: { Authorization: `Bearer ${token}` } }
+  );
 }

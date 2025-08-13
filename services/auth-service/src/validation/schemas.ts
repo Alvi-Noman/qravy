@@ -36,3 +36,8 @@ export const menuItemUpdateSchema = z
 export const categorySchema = z.object({
   name: z.string().min(1, 'Name is required'),
 });
+
+// Schema for POST /categories/:id/update
+export const categoryUpdateSchema = z.object({
+  name: z.string().min(1, 'Name is required'),
+});

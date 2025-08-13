@@ -5,7 +5,7 @@ type CategorySelectProps = {
   value: string | '';
   categories: string[];
   onChange: (value: string) => void;
-  onCreateCategory: (name: string) => Promise<string>; // should return the created category name
+  onCreateCategory: (name: string) => Promise<string>; // return created category name
   placeholder?: string;
   disabled?: boolean;
   label?: string;
@@ -25,8 +25,10 @@ export default function CategorySelect({
   const [newName, setNewName] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
   const rootRef = useRef<HTMLDivElement>(null);
 
+  // Outside click closes
   useEffect(() => {
     const onClick = (e: MouseEvent) => {
       if (!rootRef.current) return;
@@ -41,6 +43,7 @@ export default function CategorySelect({
     return () => document.removeEventListener('mousedown', onClick);
   }, []);
 
+  // Save new category
   const handleCreate = async () => {
     if (!newName.trim()) return;
     setSaving(true);
@@ -71,93 +74,100 @@ export default function CategorySelect({
         </label>
       )}
 
+      {/* Trigger (custom select button) */}
       <button
         type="button"
         disabled={disabled}
         onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
         className={`w-full border border-[#cecece] rounded-md px-3 py-2 bg-white text-left flex items-center justify-between ${
           disabled ? 'opacity-50 cursor-not-allowed' : 'hover:bg-[#f7f7f9]'
         }`}
-        aria-expanded={open}
       >
         <span className={`truncate ${value ? 'text-[#2e2e30]' : 'text-[#9b9ba1]'}`}>{display}</span>
         <ChevronDownIcon className="h-5 w-5 text-[#6b6b70]" />
       </button>
 
+      {/* Dropdown panel (NO internal scroll; grows to fit content) */}
       {open && (
-        <div className="absolute z-50 mt-1 w-full rounded-md border border-[#ececec] bg-white shadow-lg overflow-hidden">
-          <div className="max-h-60 overflow-auto py-1">
-            <OptionRow
-              selected={value === ''}
-              label={placeholder}
-              onClick={() => {
-                onChange('');
-                setOpen(false);
-              }}
-            />
-            {categories.map((c) => (
+        <div className="absolute left-0 right-0 z-[100] mt-1">
+          <div className="w-full rounded-md border border-[#ececec] bg-white shadow-lg overflow-visible">
+            {/* Options list (no max-height, no overflow) */}
+            <div className="py-1">
               <OptionRow
-                key={c}
-                selected={value === c}
-                label={c}
+                selected={value === ''}
+                label={placeholder}
                 onClick={() => {
-                  onChange(c);
+                  onChange('');
                   setOpen(false);
                 }}
               />
-            ))}
-
-            <div className="my-1 h-px bg-[#f1f1f3]" />
-
-            {!addMode ? (
-              <button
-                type="button"
-                className="w-full flex items-center gap-2 px-3 py-2 text-sm text-[#4a56e2] hover:bg-[#f7f8ff]"
-                onClick={() => {
-                  setAddMode(true);
-                  setError(null);
-                  setNewName('');
-                }}
-              >
-                <PlusCircleIcon className="h-5 w-5" />
-                <span className="font-medium">Add New Category</span>
-              </button>
-            ) : (
-              <div className="px-3 py-2 space-y-2">
-                <input
-                  className="w-full border border-[#e6e6e9] rounded-md px-3 py-2 bg-[#f7f7fb] placeholder-[#9b9ba1] text-sm"
-                  placeholder="Input Category Name"
-                  value={newName}
-                  onChange={(e) => setNewName(e.target.value)}
-                  autoFocus
+              {categories.map((c) => (
+                <OptionRow
+                  key={c}
+                  selected={value === c}
+                  label={c}
+                  onClick={() => {
+                    onChange(c);
+                    setOpen(false);
+                  }}
                 />
-                {error && <div className="text-red-600 text-xs">{error}</div>}
-                <div className="flex justify-end gap-2">
-                  <button
-                    type="button"
-                    className="px-3 py-1.5 rounded-md border border-[#cecece] text-sm hover:bg-[#f5f5f5]"
-                    onClick={() => {
-                      setAddMode(false);
-                      setNewName('');
-                      setError(null);
-                    }}
-                    disabled={saving}
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleCreate}
-                    className={`px-4 py-1.5 rounded-md text-white text-sm ${
-                      saving ? 'bg-[#b0b0b5]' : 'bg-[#3b5bff] hover:opacity-90'
-                    }`}
-                    disabled={saving || !newName.trim()}
-                  >
-                    {saving ? 'Saving…' : 'Save'}
-                  </button>
+              ))}
+
+              {/* Divider */}
+              <div className="my-1 h-px bg-[#f1f1f3]" />
+
+              {/* Add New Category inline (inside the dropdown) */}
+              {!addMode ? (
+                <button
+                  type="button"
+                  className="w-full flex items-center gap-2 px-3 py-2 text-sm text-[#4a56e2] hover:bg-[#f7f8ff]"
+                  onClick={() => {
+                    setAddMode(true);
+                    setError(null);
+                    setNewName('');
+                  }}
+                >
+                  <PlusCircleIcon className="h-5 w-5" />
+                  <span className="font-medium">Add New Category</span>
+                </button>
+              ) : (
+                <div className="px-3 py-2 space-y-2">
+                  <input
+                    className="w-full border border-[#e6e6e9] rounded-md px-3 py-2 bg-[#f7f7fb] placeholder-[#9b9ba1] text-sm"
+                    placeholder="Input Category Name"
+                    value={newName}
+                    onChange={(e) => setNewName(e.target.value)}
+                    autoFocus
+                  />
+                  {error && <div className="text-red-600 text-xs">{error}</div>}
+                  <div className="flex justify-end gap-2">
+                    <button
+                      type="button"
+                      className="px-3 py-1.5 rounded-md border border-[#cecece] text-sm hover:bg-[#f5f5f5]"
+                      onClick={() => {
+                        setAddMode(false);
+                        setNewName('');
+                        setError(null);
+                      }}
+                      disabled={saving}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleCreate}
+                      className={`px-4 py-1.5 rounded-md text-white text-sm ${
+                        saving ? 'bg-[#b0b0b5]' : 'bg-[#3b5bff] hover:opacity-90'
+                      }`}
+                      disabled={saving || !newName.trim()}
+                    >
+                      {saving ? 'Saving…' : 'Save'}
+                    </button>
+                  </div>
                 </div>
-              </div>
-            )}
+              )}
+            </div>
           </div>
         </div>
       )}
