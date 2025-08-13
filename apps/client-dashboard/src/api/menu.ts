@@ -1,7 +1,7 @@
 /**
  * Menu API (per-user)
- * - List and create products for the authenticated user
- * - Uses the shared axios instance (Authorization header via interceptor)
+ * - List, create, update (POST), delete (POST) products
+ * - Accept a token to guarantee Authorization header
  */
 import api from './auth';
 
@@ -34,13 +34,33 @@ function mapItem(d: any): MenuItem {
   };
 }
 
-export async function getMenuItems(): Promise<MenuItem[]> {
-  const res = await api.get('/api/v1/auth/menu-items');
-  const items = res.data.items as any[];
-  return items.map(mapItem);
+export async function getMenuItems(token: string): Promise<MenuItem[]> {
+  const res = await api.get('/api/v1/auth/menu-items', {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  return (res.data.items as any[]).map(mapItem);
 }
 
-export async function createMenuItem(payload: NewMenuItem): Promise<MenuItem> {
-  const res = await api.post('/api/v1/auth/menu-items', payload);
+export async function createMenuItem(payload: NewMenuItem, token: string): Promise<MenuItem> {
+  const res = await api.post('/api/v1/auth/menu-items', payload, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
   return mapItem(res.data.item);
+}
+
+export async function updateMenuItem(
+  id: string,
+  payload: Partial<NewMenuItem>,
+  token: string
+): Promise<MenuItem> {
+  const res = await api.post(`/api/v1/auth/menu-items/${encodeURIComponent(id)}/update`, payload, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  return mapItem(res.data.item);
+}
+
+export async function deleteMenuItem(id: string, token: string): Promise<void> {
+  await api.post(`/api/v1/auth/menu-items/${encodeURIComponent(id)}/delete`, null, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
 }

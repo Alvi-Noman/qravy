@@ -1,8 +1,17 @@
+version: "3.9"
+
 services:
   auth-service:
     build:
       context: .
       dockerfile: services/auth-service/Dockerfile
+    env_file:
+      - ./services/auth-service/.env
+    environment:
+      NODE_ENV: development
+      PORT: "3001"
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:5173}
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:5173}
     ports:
       - "3001:3001"
     dns:
@@ -10,26 +19,31 @@ services:
       - 1.1.1.1
     restart: unless-stopped
     volumes:
-       - ./services/auth-service:/app/services/auth-service
-       - /app/services/auth-service/node_modules
+      - ./services/auth-service:/app/services/auth-service
+      - /app/services/auth-service/node_modules
     command: nodemon --watch src --ext ts,json --exec "/usr/local/bin/tsx src/server.ts"
 
   api-gateway:
     build:
       context: .
       dockerfile: services/api-gateway/Dockerfile
+    env_file:
+      - ./services/api-gateway/.env
+    environment:
+      NODE_ENV: development
+      PORT: "8080"
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:5173}
+      AUTH_SERVICE_URL: http://auth-service:3001
     ports:
       - "8080:8080"
-    depends_on: 
+    depends_on:
       - auth-service
     restart: unless-stopped
     volumes:
-     - ./services/api-gateway:/app/services/api-gateway
-     - /app/services/api-gateway/node_modules
-    env_file:
-      - ./services/api-gateway/.env
+      - ./services/api-gateway:/app/services/api-gateway
+      - /app/services/api-gateway/node_modules
     command: nodemon --watch src --ext ts,json --exec "/usr/local/bin/tsx src/server.ts"
 
-networks:  
+networks:
   default:
     driver: bridge
