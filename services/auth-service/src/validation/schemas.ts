@@ -19,7 +19,7 @@ export const menuItemSchema = z.object({
   category: z.string().max(100).optional(),
 });
 
-// Schema for PATCH /menu-items/:id (at least one field)
+// Schema for PATCH/POST update /menu-items/:id (at least one field)
 export const menuItemUpdateSchema = z
   .object({
     name: z.string().min(1, 'Name is required').optional(),
@@ -31,3 +31,8 @@ export const menuItemUpdateSchema = z
     message: 'At least one field must be provided to update',
     path: ['_'],
   });
+
+// Schema for POST /categories
+export const categorySchema = z.object({
+  name: z.string().min(1, 'Name is required'),
+});

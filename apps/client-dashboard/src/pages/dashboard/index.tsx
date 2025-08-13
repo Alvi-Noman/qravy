@@ -1,7 +1,8 @@
 /**
  * Dashboard: per-user menu
  * - List items
- * - Add, Edit, Delete items (modals + confirmation)
+ * - Add, Edit, Delete items (modals)
+ * - Category dropdown sourced from /categories
  */
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
@@ -13,6 +14,7 @@ import {
   type MenuItem as TMenuItem,
   type NewMenuItem,
 } from '../../api/menu';
+import { getCategories, type Category } from '../../api/categories';
 import { useAuthContext } from '../../context/AuthContext';
 import { useNavigate } from 'react-router-dom';
 
@@ -23,7 +25,7 @@ export default function Dashboard() {
   const { token } = useAuthContext();
   const navigate = useNavigate();
 
-  const { data, isLoading, isError } = useQuery({
+  const itemsQuery = useQuery({
     queryKey: ['menu-items', token],
     queryFn: () => getMenuItems(token as string),
     enabled: !!token,
@@ -31,15 +33,21 @@ export default function Dashboard() {
     refetchOnWindowFocus: false,
   });
 
+  const categoriesQuery = useQuery({
+    queryKey: ['categories', token],
+    queryFn: () => getCategories(token as string),
+    enabled: !!token,
+    retry: false,
+    refetchOnWindowFocus: false,
+  });
+
+  const categories = (categoriesQuery.data || []).map((c: Category) => c.name);
+
   const createMut = useMutation<TMenuItem, Error, NewMenuItem>({
     mutationFn: (payload) => createMenuItem(payload, token as string),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['menu-items', token] });
       setOpenAdd(false);
-    },
-    onError: (err) => {
-      if (!token) navigate('/login', { replace: true });
-      console.error('[Create menu item] error:', err);
     },
   });
 
@@ -73,18 +81,21 @@ export default function Dashboard() {
 
       {/* Content */}
       <div className="flex-1 p-6 text-[#2e2e30]">
-        {isLoading && <div className="text-[#5b5b5d]">Loading menu…</div>}
-        {isError && <div className="text-red-600">Failed to load menu. Please try again.</div>}
-        {!isLoading && !isError && (
+        {itemsQuery.isLoading && <div className="text-[#5b5b5d]">Loading menu…</div>}
+        {itemsQuery.isError && <div className="text-red-600">Failed to load menu.</div>}
+
+        {!itemsQuery.isLoading && !itemsQuery.isError && (
           <>
-            {!data || data.length === 0 ? (
+            {!itemsQuery.data || itemsQuery.data.length === 0 ? (
               <EmptyState onAdd={() => setOpenAdd(true)} />
             ) : (
               <MenuList
-                items={data}
+                items={itemsQuery.data}
                 onEdit={(item) => setOpenEdit(item)}
                 onDelete={(id) => {
-                  if (confirm('Delete this item?')) deleteMut.mutate({ id });
+                  if (confirm('Delete this item?')) {
+                    deleteMut.mutate({ id });
+                  }
                 }}
               />
             )}
@@ -92,20 +103,25 @@ export default function Dashboard() {
         )}
       </div>
 
+      {/* Modals */}
       {openAdd && (
         <ProductModal
           title="Add Product"
+          categories={categories}
           initial={{ name: '', price: '', category: '', description: '' }}
           onClose={() => setOpenAdd(false)}
           onSubmit={(values) => createMut.mutate(values)}
           isSubmitting={createMut.isPending}
           error={normalizeError(createMut.error)}
+          categoriesLoading={categoriesQuery.isLoading}
+          onManageCategories={() => navigate('/dashboard/categories')}
         />
       )}
 
       {openEdit && (
         <ProductModal
           title="Edit Product"
+          categories={categories}
           initial={{
             name: openEdit.name,
             price: String(openEdit.price),
@@ -126,6 +142,8 @@ export default function Dashboard() {
           }
           isSubmitting={updateMut.isPending}
           error={normalizeError(updateMut.error)}
+          categoriesLoading={categoriesQuery.isLoading}
+          onManageCategories={() => navigate('/dashboard/categories')}
         />
       )}
     </div>
@@ -149,7 +167,10 @@ function EmptyState({ onAdd }: { onAdd: () => void }) {
       <div className="text-center">
         <div className="text-xl font-medium mb-2">No products yet</div>
         <p className="text-[#5b5b5d] mb-4">Create your first menu item to get started.</p>
-        <button className="px-4 py-2 bg-[#2e2e30] text-white rounded-md hover:opacity-90" onClick={onAdd}>
+        <button
+          className="px-4 py-2 bg-[#2e2e30] text-white rounded-md hover:opacity-90"
+          onClick={onAdd}
+        >
           Add Product
         </button>
       </div>
@@ -175,7 +196,9 @@ function MenuList({
             <span className="text-sm font-medium text-[#2e2e30]">${item.price.toFixed(2)}</span>
           </div>
           {item.category && <div className="text-xs mt-1 text-[#5b5b5d]">{item.category}</div>}
-          {item.description && <p className="text-sm mt-2 text-[#2e2e30]">{item.description}</p>}
+          {item.description && (
+            <p className="text-sm mt-2 text-[#2e2e30]">{item.description}</p>
+          )}
 
           <div className="flex gap-2 mt-4">
             <button
@@ -206,18 +229,24 @@ type ProductValues = {
 
 function ProductModal({
   title,
+  categories,
   initial,
   onClose,
   onSubmit,
   isSubmitting,
   error,
+  categoriesLoading,
+  onManageCategories,
 }: {
   title: string;
+  categories: string[];
   initial: ProductValues;
   onClose: () => void;
   onSubmit: (values: { name: string; price: number; description?: string; category?: string }) => void;
   isSubmitting: boolean;
   error?: string;
+  categoriesLoading: boolean;
+  onManageCategories: () => void;
 }) {
   const [values, setValues] = useState<ProductValues>(initial);
   const [localError, setLocalError] = useState<string | null>(null);
@@ -242,7 +271,7 @@ function ProductModal({
       name: values.name.trim(),
       price: priceNum,
       description: values.description?.trim() || undefined,
-      category: values.category?.trim() || undefined,
+      category: values.category || undefined,
     });
   };
 
@@ -255,46 +284,77 @@ function ProductModal({
             ✕
           </button>
         </div>
-        <form onSubmit={handleSubmit} className="p-4">
-          <label className="block text-sm font-medium mb-1">Name</label>
-          <input
-            className="w-full border border-[#cecece] rounded-md px-3 py-2 mb-3"
-            value={values.name}
-            onChange={(e) => setValues((s) => ({ ...s, name: e.target.value }))}
-            placeholder="e.g., Margherita Pizza"
-            required
-          />
+        <form onSubmit={handleSubmit} className="p-4 space-y-3">
+          <div>
+            <label className="block text-sm font-medium mb-1">Name</label>
+            <input
+              className="w-full border border-[#cecece] rounded-md px-3 py-2"
+              value={values.name}
+              onChange={(e) => setValues((s) => ({ ...s, name: e.target.value }))}
+              placeholder="e.g., Margherita Pizza"
+              required
+            />
+          </div>
 
-          <label className="block text-sm font-medium mb-1">Price</label>
-          <input
-            className="w-full border border-[#cecece] rounded-md px-3 py-2 mb-3"
-            value={values.price}
-            onChange={(e) => setValues((s) => ({ ...s, price: e.target.value }))}
-            placeholder="e.g., 8.99"
-            inputMode="decimal"
-            required
-          />
+          <div>
+            <label className="block text-sm font-medium mb-1">Price</label>
+            <input
+              className="w-full border border-[#cecece] rounded-md px-3 py-2"
+              value={values.price}
+              onChange={(e) => setValues((s) => ({ ...s, price: e.target.value }))}
+              placeholder="e.g., 8.99"
+              inputMode="decimal"
+              required
+            />
+          </div>
 
-          <label className="block text-sm font-medium mb-1">Category (optional)</label>
-          <input
-            className="w-full border border-[#cecece] rounded-md px-3 py-2 mb-3"
-            value={values.category || ''}
-            onChange={(e) => setValues((s) => ({ ...s, category: e.target.value }))}
-            placeholder="e.g., Pizza"
-          />
+          <div>
+            <label className="block text-sm font-medium mb-1">
+              Category
+              {!categoriesLoading && categories.length === 0 && (
+                <span className="ml-2 text-xs text-[#9b9ba1]">(no categories yet)</span>
+              )}
+            </label>
+            <div className="flex gap-2">
+              <select
+                className="flex-1 border border-[#cecece] rounded-md px-3 py-2 bg-white"
+                value={values.category || ''}
+                onChange={(e) => setValues((s) => ({ ...s, category: e.target.value }))}
+                disabled={categoriesLoading}
+              >
+                <option value="">Uncategorized</option>
+                {categories.map((c) => (
+                  <option key={c} value={c}>
+                    {c}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                onClick={onManageCategories}
+                className="rounded-md border border-[#cecece] px-3 py-2 text-sm hover:bg-[#f5f5f5]"
+              >
+                Manage
+              </button>
+            </div>
+          </div>
 
-          <label className="block text-sm font-medium mb-1">Description (optional)</label>
-          <textarea
-            className="w-full border border-[#cecece] rounded-md px-3 py-2 mb-2"
-            value={values.description || ''}
-            onChange={(e) => setValues((s) => ({ ...s, description: e.target.value }))}
-            placeholder="Short description"
-            rows={3}
-          />
+          <div>
+            <label className="block text-sm font-medium mb-1">Description (optional)</label>
+            <textarea
+              className="w-full border border-[#cecece] rounded-md px-3 py-2"
+              rows={3}
+              value={values.description || ''}
+              onChange={(e) => setValues((s) => ({ ...s, description: e.target.value }))}
+              placeholder="Short description"
+            />
+          </div>
 
-          {(localError || error) && <div className="text-red-600 text-sm mb-2">{localError || error}</div>}
+          {(localError || error) && (
+            <div className="text-red-600 text-sm">{localError || error}</div>
+          )}
 
-          <div className="flex justify-end gap-2 mt-2">
+          <div className="flex justify-end gap-2 pt-2">
             <button
               type="button"
               className="px-4 py-2 rounded-md border border-[#cecece] text-[#2e2e30] hover:bg-[#f5f5f5]"
@@ -305,7 +365,9 @@ function ProductModal({
             </button>
             <button
               type="submit"
-              className={`px-4 py-2 rounded-md text-white ${isSubmitting ? 'bg-[#b0b0b5]' : 'bg-[#2e2e30] hover:opacity-90'}`}
+              className={`px-4 py-2 rounded-md text-white ${
+                isSubmitting ? 'bg-[#b0b0b5]' : 'bg-[#2e2e30] hover:opacity-90'
+              }`}
               disabled={isSubmitting}
             >
               {isSubmitting ? 'Saving…' : 'Save'}

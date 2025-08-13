@@ -15,9 +15,18 @@ import {
   updateMenuItem,
   deleteMenuItem,
 } from '../controllers/menuController.js';
+import {
+  listCategories,
+  createCategory,
+} from '../controllers/categoriesController.js';
 import { authenticateJWT } from '../middleware/auth.js';
 import { validateRequest } from '../middleware/validateRequest.js';
-import { magicLinkSchema, menuItemSchema, menuItemUpdateSchema } from '../validation/schemas.js';
+import {
+  magicLinkSchema,
+  menuItemSchema,
+  menuItemUpdateSchema,
+  categorySchema,
+} from '../validation/schemas.js';
 import { ObjectId } from 'mongodb';
 
 const router: Router = Router();
@@ -33,13 +42,17 @@ router.post('/logout', logout);
 // Complete onboarding (protected)
 router.post('/onboarding/complete', authenticateJWT, completeOnboarding);
 
-// Per-user menu items (protected, POST-only to avoid CORS method issues)
+// Menu items (protected; using POST for update/delete per your current setup)
 router.get('/menu-items', authenticateJWT, listMenuItems);
 router.post('/menu-items', authenticateJWT, validateRequest(menuItemSchema), createMenuItem);
 router.post('/menu-items/:id/update', authenticateJWT, validateRequest(menuItemUpdateSchema), updateMenuItem);
 router.post('/menu-items/:id/delete', authenticateJWT, deleteMenuItem);
 
-// Sessions (protected)
+// Categories (protected)
+router.get('/categories', authenticateJWT, listCategories);
+router.post('/categories', authenticateJWT, validateRequest(categorySchema), createCategory);
+
+// Sessions management (protected)
 router.post('/logout-all', authenticateJWT, logoutAll);
 router.post('/revoke-session', authenticateJWT, revokeSession);
 
@@ -49,6 +62,7 @@ router.get('/sessions', authenticateJWT, async (req: Request, res: Response) => 
   const collection = await getUsersCollection();
   const user = await collection.findOne({ _id: new ObjectId(userId) });
   if (!user) return res.status(404).json({ message: 'User not found' });
+
   res.json({
     sessions: (user.refreshTokens || []).map((t: any) => ({
       tokenId: t.tokenId,
@@ -60,7 +74,7 @@ router.get('/sessions', authenticateJWT, async (req: Request, res: Response) => 
   });
 });
 
-// Me (protected) — keep your existing behavior
+// Me (protected)
 router.get('/me', authenticateJWT, async (req: Request, res: Response) => {
   const collection = await getUsersCollection();
   const user = await collection.findOne({ _id: new ObjectId((req as any).user.id) });
