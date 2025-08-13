@@ -2,9 +2,10 @@
  * Dashboard: per-user menu
  * - List items
  * - Add, Edit, Delete items (modals)
- * - Category dropdown sourced from /categories
+ * - Category dropdown with inline "Add New Category" inside the dropdown panel (CategorySelect)
+ * - On creating a category, update cache and broadcast to refresh /dashboard/categories
  */
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   createMenuItem,
@@ -14,9 +15,14 @@ import {
   type MenuItem as TMenuItem,
   type NewMenuItem,
 } from '../../api/menu';
-import { getCategories, type Category } from '../../api/categories';
+import {
+  getCategories,
+  createCategory as apiCreateCategory,
+  type Category,
+} from '../../api/categories';
 import { useAuthContext } from '../../context/AuthContext';
 import { useNavigate } from 'react-router-dom';
+import CategorySelect from '../../components/CategorySelect';
 
 export default function Dashboard() {
   const [openAdd, setOpenAdd] = useState(false);
@@ -111,10 +117,6 @@ export default function Dashboard() {
           initial={{ name: '', price: '', category: '', description: '' }}
           onClose={() => setOpenAdd(false)}
           onSubmit={(values) => createMut.mutate(values)}
-          isSubmitting={createMut.isPending}
-          error={normalizeError(createMut.error)}
-          categoriesLoading={categoriesQuery.isLoading}
-          onManageCategories={() => navigate('/dashboard/categories')}
         />
       )}
 
@@ -140,25 +142,10 @@ export default function Dashboard() {
               },
             })
           }
-          isSubmitting={updateMut.isPending}
-          error={normalizeError(updateMut.error)}
-          categoriesLoading={categoriesQuery.isLoading}
-          onManageCategories={() => navigate('/dashboard/categories')}
         />
       )}
     </div>
   );
-}
-
-function normalizeError(err: unknown): string | undefined {
-  if (!err) return undefined;
-  if (err instanceof Error) return err.message;
-  if (typeof err === 'string') return err;
-  try {
-    return (err as any)?.message ?? JSON.stringify(err);
-  } catch {
-    return undefined;
-  }
 }
 
 function EmptyState({ onAdd }: { onAdd: () => void }) {
@@ -233,23 +220,53 @@ function ProductModal({
   initial,
   onClose,
   onSubmit,
-  isSubmitting,
-  error,
-  categoriesLoading,
-  onManageCategories,
 }: {
   title: string;
   categories: string[];
   initial: ProductValues;
   onClose: () => void;
   onSubmit: (values: { name: string; price: number; description?: string; category?: string }) => void;
-  isSubmitting: boolean;
-  error?: string;
-  categoriesLoading: boolean;
-  onManageCategories: () => void;
 }) {
   const [values, setValues] = useState<ProductValues>(initial);
   const [localError, setLocalError] = useState<string | null>(null);
+
+  const { token } = useAuthContext();
+  const queryClient = useQueryClient();
+
+  // Maintain a local categories list so the dropdown updates instantly
+  const [localCats, setLocalCats] = useState<string[]>(categories);
+  useEffect(() => setLocalCats(categories), [categories]);
+
+  const createCatMut = useMutation({
+    mutationFn: (name: string) => apiCreateCategory(name, token as string),
+    onSuccess: (created) => {
+      // 1) Update local dropdown immediately
+      setLocalCats((prev) =>
+        prev.includes(created.name) ? prev : [...prev, created.name].sort()
+      );
+      setValues((s) => ({ ...s, category: created.name }));
+
+      // 2) Update React Query cache for /categories instantly (so /dashboard/categories updates)
+      queryClient.setQueryData<Category[]>(
+        ['categories', token],
+        (prev) => {
+          const list = prev ?? [];
+          const exists = list.some((c) => c.name === created.name);
+          return exists ? list : [...list, created].sort((a, b) => a.name.localeCompare(b.name));
+        }
+      );
+
+      // 3) Broadcast to any other tabs/routes to refetch categories if needed
+      try {
+        localStorage.setItem('categories:updated', String(Date.now()));
+      } catch {
+        // ignore
+      }
+
+      // 4) Ensure active queries also refetch to stay in sync with server
+      queryClient.invalidateQueries({ queryKey: ['categories', token] });
+    },
+  });
 
   const toNumber = (v: string) => Number(v);
 
@@ -309,34 +326,17 @@ function ProductModal({
           </div>
 
           <div>
-            <label className="block text-sm font-medium mb-1">
-              Category
-              {!categoriesLoading && categories.length === 0 && (
-                <span className="ml-2 text-xs text-[#9b9ba1]">(no categories yet)</span>
-              )}
-            </label>
-            <div className="flex gap-2">
-              <select
-                className="flex-1 border border-[#cecece] rounded-md px-3 py-2 bg-white"
-                value={values.category || ''}
-                onChange={(e) => setValues((s) => ({ ...s, category: e.target.value }))}
-                disabled={categoriesLoading}
-              >
-                <option value="">Uncategorized</option>
-                {categories.map((c) => (
-                  <option key={c} value={c}>
-                    {c}
-                  </option>
-                ))}
-              </select>
-              <button
-                type="button"
-                onClick={onManageCategories}
-                className="rounded-md border border-[#cecece] px-3 py-2 text-sm hover:bg-[#f5f5f5]"
-              >
-                Manage
-              </button>
-            </div>
+            <CategorySelect
+              label="Category"
+              value={values.category || ''}
+              categories={localCats}
+              onChange={(val) => setValues((s) => ({ ...s, category: val }))}
+              onCreateCategory={async (name) => {
+                const created = await createCatMut.mutateAsync(name);
+                return created.name;
+              }}
+              placeholder="Uncategorized"
+            />
           </div>
 
           <div>
@@ -350,8 +350,10 @@ function ProductModal({
             />
           </div>
 
-          {(localError || error) && (
-            <div className="text-red-600 text-sm">{localError || error}</div>
+          {(localError || createCatMut.isError) && (
+            <div className="text-red-600 text-sm">
+              {localError || (createCatMut.error as Error)?.message || 'Something went wrong.'}
+            </div>
           )}
 
           <div className="flex justify-end gap-2 pt-2">
@@ -359,18 +361,14 @@ function ProductModal({
               type="button"
               className="px-4 py-2 rounded-md border border-[#cecece] text-[#2e2e30] hover:bg-[#f5f5f5]"
               onClick={onClose}
-              disabled={isSubmitting}
             >
               Cancel
             </button>
             <button
               type="submit"
-              className={`px-4 py-2 rounded-md text-white ${
-                isSubmitting ? 'bg-[#b0b0b5]' : 'bg-[#2e2e30] hover:opacity-90'
-              }`}
-              disabled={isSubmitting}
+              className="px-4 py-2 rounded-md text-white bg-[#2e2e30] hover:opacity-90"
             >
-              {isSubmitting ? 'Saving…' : 'Save'}
+              Save
             </button>
           </div>
         </form>

@@ -2,8 +2,9 @@
  * Categories page
  * - Add new categories
  * - List existing categories
+ * - Reacts to "categories:updated" broadcast to refresh automatically
  */
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useAuthContext } from '../../context/AuthContext';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { createCategory, getCategories, type Category } from '../../api/categories';
@@ -13,7 +14,7 @@ export default function CategoriesPage() {
   const queryClient = useQueryClient();
   const [name, setName] = useState('');
 
-  const { data, isLoading, isError } = useQuery({
+  const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ['categories', token],
     queryFn: () => getCategories(token as string),
     enabled: !!token,
@@ -21,11 +22,37 @@ export default function CategoriesPage() {
 
   const createMut = useMutation({
     mutationFn: (n: string) => createCategory(n, token as string),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['categories', token] });
+    onSuccess: (created) => {
+      // Update cache immediately for snappy UI
+      queryClient.setQueryData<Category[]>(
+        ['categories', token],
+        (prev) => {
+          const list = prev ?? [];
+          const exists = list.some((c) => c.name === created.name);
+          return exists ? list : [...list, created].sort((a, b) => a.name.localeCompare(b.name));
+        }
+      );
       setName('');
+      // Also broadcast so other routes/tabs refresh (optional)
+      try {
+        localStorage.setItem('categories:updated', String(Date.now()));
+      } catch {}
     },
   });
+
+  // Listen for broadcasts and refresh
+  useEffect(() => {
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === 'categories:updated') {
+        // invalidate and refetch
+        queryClient.invalidateQueries({ queryKey: ['categories'] });
+        // option: force immediate refetch if page is visible
+        refetch();
+      }
+    };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, [queryClient, refetch]);
 
   return (
     <div className="p-6">
@@ -73,7 +100,6 @@ export default function CategoriesPage() {
                   Added {new Date(c.createdAt).toLocaleDateString()}
                 </div>
               </div>
-              {/* Future: add rename/delete */}
             </li>
           ))}
           {(data || []).length === 0 && (
