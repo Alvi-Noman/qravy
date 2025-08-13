@@ -1,26 +1,43 @@
-import { useAuth } from '../hooks/useAuth';
-import { useNavigate } from 'react-router-dom';
-import { DocumentTextIcon, ChartBarIcon, Cog6ToothIcon } from '@heroicons/react/24/outline';
-
-const mainItems = [
-  { icon: <DocumentTextIcon className="w-5 h-5" />, label: 'Contracts' },
-  { icon: <ChartBarIcon className="w-5 h-5" />, label: 'Analysts' },
-  { icon: <Cog6ToothIcon className="w-5 h-5" />, label: 'Setting' },
-];
+import { NavLink } from 'react-router-dom';
+import BottomProfileMenu from './BottomProfileMenu';
 
 export default function Sidebar() {
-  const { logout } = useAuth();
-  const navigate = useNavigate();
+  const sections: {
+    heading: string;
+    items: { name: string; to: string }[];
+  }[] = [
+    {
+      heading: 'Dashboard',
+      items: [
+        { name: 'Orders', to: '/dashboard/orders' },
+        { name: 'Assistance', to: '/dashboard/assistance' },
+        { name: 'Menu Items', to: '/dashboard/menu-items' },
+        { name: 'Categories', to: '/dashboard/categories' },
+      ],
+    },
+    {
+      heading: 'Diner View',
+      items: [
+        { name: 'Online Store', to: '/dashboard/online-store' },
+        { name: 'Offers', to: '/dashboard/offers' },
+        { name: 'QR Code', to: '/dashboard/qr-code' },
+      ],
+    },
+    {
+      heading: 'Reports',
+      items: [{ name: 'Menu Performance', to: '/dashboard/reports/menu-performance' }],
+    },
+  ];
 
-  const handleLogout = async () => {
-    await logout();
-    navigate('/login');
-  };
+  const linkClass = (isActive: boolean) =>
+    `flex items-center gap-3 px-3 py-2 rounded-lg transition text-[#2e2e30] ${
+      isActive ? 'bg-[#ececec] font-semibold' : 'hover:bg-[#ececec]'
+    }`;
 
   return (
-    <aside className="flex flex-col h-full w-64 bg-[#f5f5f5] px-4 py-4">
-      {/* Logo (left aligned) */}
-      <div className="flex items-center mb-6">
+    <aside className="flex h-full w-64 flex-col bg-[#f5f5f5] px-4 py-4">
+      {/* Logo */}
+      <div className="mb-6 flex items-center">
         <img
           src="/qravy-logo-250X100.png"
           alt="Qravy Logo"
@@ -34,43 +51,39 @@ export default function Sidebar() {
         <input
           type="text"
           placeholder="Search"
-          className="w-full px-3 py-2 rounded-lg bg-[#fcfcfc] text-[#2e2e30] border border-[#ececec] focus:outline-none focus:ring-2 focus:ring-[#e0e0e5]"
+          className="w-full rounded-lg border border-[#ececec] bg-[#fcfcfc] px-3 py-2 text-[#2e2e30] focus:outline-none focus:ring-2 focus:ring-[#e0e0e5]"
         />
       </div>
 
-      {/* MAIN section, duplicated 3 times */}
-      {[1, 2, 3].map((section) => (
-        <div key={section} className="mb-6">
-          <div className="text-xs font-semibold uppercase tracking-wider mb-2" style={{ color: '#b0b0b5' }}>
-            MAIN
+      {/* Sections */}
+      <nav className="flex-1 overflow-y-auto">
+        {sections.map((section) => (
+          <div key={section.heading} className="mb-6">
+            <div
+              className="mb-2 text-xs font-semibold uppercase tracking-wider"
+              style={{ color: '#b0b0b5' }}
+            >
+              {section.heading}
+            </div>
+            <ul className="space-y-1">
+              {section.items.map((item) => (
+                <li key={item.to}>
+                  <NavLink to={item.to} className={({ isActive }) => linkClass(isActive)}>
+                    <span className="font-medium">{item.name}</span>
+                  </NavLink>
+                </li>
+              ))}
+            </ul>
           </div>
-          <ul className="space-y-1">
-            {mainItems.map((item, idx) => (
-              <li key={idx}>
-                <a
-                  href="#"
-                  className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-[#ececec] text-[#2e2e30] transition"
-                >
-                  {item.icon}
-                  <span className="font-medium">{item.label}</span>
-                </a>
-              </li>
-            ))}
-          </ul>
-        </div>
-      ))}
+        ))}
+      </nav>
 
-      <div className="flex-1" />
-
-      {/* Logout */}
-      <div className="mb-2">
-        <button
-          onClick={handleLogout}
-          className="w-full text-left text-[#2e2e30] hover:bg-[#ececec] px-3 py-2 rounded transition"
-        >
-          Logout
-        </button>
-      </div>
+      {/* Bottom profile menu (drop-up) */}
+      <BottomProfileMenu
+        logoUrl="/qravy-icon-200X200.png"
+        restaurantName="Your Restaurant"
+        // restaurantEmail={user?.email} // Optionally pass dynamic email if you have it
+      />
     </aside>
   );
 }
