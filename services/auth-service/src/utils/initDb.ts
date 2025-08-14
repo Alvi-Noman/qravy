@@ -4,7 +4,7 @@ import logger from './logger.js';
 /**
  * Ensure required indexes and JSON Schema validators exist.
  * - users: unique email, magicLinkToken idx, $jsonSchema validator
- * - menuItems: userId+createdAt idx, $jsonSchema validator
+ * - menuItems: userId+createdAt idx, userId+category idx, $jsonSchema validator
  * - categories: unique (userId,name) idx, $jsonSchema validator
  */
 
@@ -13,10 +13,10 @@ function userJsonSchema() {
     $jsonSchema: {
       bsonType: 'object',
       required: ['email'],
-      additionalProperties: true, // keep flexible; tighten later if desired
+      additionalProperties: true,
       properties: {
         _id: { bsonType: 'objectId' },
-        email: { bsonType: 'string', description: 'must be a string and is required' },
+        email: { bsonType: 'string' },
         isVerified: { bsonType: ['bool', 'null'] },
         isOnboarded: { bsonType: ['bool', 'null'] },
         refreshTokens: {
@@ -51,12 +51,10 @@ function menuItemJsonSchema() {
       additionalProperties: true,
       properties: {
         _id: { bsonType: 'objectId' },
-        userId: { bsonType: 'objectId', description: 'owner id' },
-        name: { bsonType: 'string', minLength: 1 },
-        // Accept numeric types Mongo can store
+        userId: { bsonType: 'objectId' },
+        name: { bsonType: 'string' },
         price: { bsonType: ['double', 'int', 'long', 'decimal'] },
         description: { bsonType: ['string', 'null'] },
-        // Storing label for now; if switching to categoryId, update this and controllers
         category: { bsonType: ['string', 'null'] },
         createdAt: { bsonType: 'date' },
         updatedAt: { bsonType: 'date' },
@@ -73,8 +71,8 @@ function categoryJsonSchema() {
       additionalProperties: true,
       properties: {
         _id: { bsonType: 'objectId' },
-        userId: { bsonType: 'objectId', description: 'owner id' },
-        name: { bsonType: 'string', minLength: 1 },
+        userId: { bsonType: 'objectId' },
+        name: { bsonType: 'string' },
         createdAt: { bsonType: 'date' },
         updatedAt: { bsonType: 'date' },
       },
@@ -88,7 +86,7 @@ async function ensureValidator(client: MongoClient, collection: string, schema: 
     await db.command({
       collMod: collection,
       validator: schema,
-      validationLevel: 'moderate', // validate new/updated docs, tolerate legacy
+      validationLevel: 'moderate',
       validationAction: 'error',
     });
     logger.info(`Applied validator to ${collection} (collMod).`);
@@ -120,8 +118,10 @@ export async function ensureUserIndexes(client: MongoClient) {
   const menuItems = db.collection('menuItems');
   await menuItems.createIndex({ userId: 1, createdAt: -1 });
   logger.info('Ensured compound index on menuItems.userId,createdAt');
+  await menuItems.createIndex({ userId: 1, category: 1 });
+  logger.info('Ensured compound index on menuItems.userId,category');
 
-  // Categories (unique per user by name)
+  // Categories (unique per user)
   const categories = db.collection('categories');
   await categories.createIndex({ userId: 1, name: 1 }, { unique: true });
   logger.info('Ensured unique compound index on categories.userId,name');

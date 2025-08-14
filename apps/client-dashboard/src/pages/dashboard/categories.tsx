@@ -1,7 +1,7 @@
 /**
  * Categories page
  * - Add, Edit (inline), Delete
- * - Reacts to "categories:updated" broadcast to refresh automatically
+ * - Broadcasts updates so dashboard and other tabs refresh
  */
 import { useEffect, useState } from 'react';
 import { useAuthContext } from '../../context/AuthContext';
@@ -27,6 +27,13 @@ export default function CategoriesPage() {
   const [name, setName] = useState('');
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState('');
+
+  const broadcast = () => {
+    try {
+      localStorage.setItem('categories:updated', String(Date.now()));
+      localStorage.setItem('menu:updated', String(Date.now())); // notify menu pages too
+    } catch {}
+  };
 
   const createMut = useMutation({
     mutationFn: (n: string) => createCategory(n, token as string),
@@ -65,20 +72,16 @@ export default function CategoriesPage() {
   const deleteMut = useMutation({
     mutationFn: (id: string) => deleteCategory(id, token as string),
     onSuccess: (_data, id) => {
+      // Update categories cache
       queryClient.setQueryData<Category[]>(
         ['categories', token],
         (prev) => (prev ?? []).filter((c) => c.id !== id)
       );
+      // Products may have been deleted by cascade: refresh menu-items
+      queryClient.invalidateQueries({ queryKey: ['menu-items', token] });
       broadcast();
     },
   });
-
-  // Broadcast helper
-  const broadcast = () => {
-    try {
-      localStorage.setItem('categories:updated', String(Date.now()));
-    } catch {}
-  };
 
   // Listen for broadcasts and refresh
   useEffect(() => {
@@ -167,7 +170,9 @@ export default function CategoriesPage() {
                       <button
                         className="px-3 py-1 text-sm rounded-md border border-[#cecece] text-red-600 hover:bg-[#fff0f0]"
                         onClick={() => {
-                          if (confirm('Delete this category?')) deleteMut.mutate(c.id);
+                          if (confirm('Delete this category? All products under it will be deleted.')) {
+                            deleteMut.mutate(c.id);
+                          }
                         }}
                       >
                         Delete

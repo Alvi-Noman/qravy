@@ -1,11 +1,11 @@
 /**
  * Dashboard: per-user menu
  * - List items
- * - Add, Edit, Delete items (modals)
- * - Category dropdown with inline "Add New Category" inside the dropdown panel (CategorySelect)
- * - On creating a category, update cache and broadcast to refresh /dashboard/categories
+ * - Add, Edit, Delete items (drawers from the right)
+ * - Listens for "menu:updated" to refresh after category cascades
  */
 import { useEffect, useState } from 'react';
+import { AnimatePresence, motion } from 'framer-motion';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   createMenuItem,
@@ -21,7 +21,6 @@ import {
   type Category,
 } from '../../api/categories';
 import { useAuthContext } from '../../context/AuthContext';
-import { useNavigate } from 'react-router-dom';
 import CategorySelect from '../../components/CategorySelect';
 
 export default function Dashboard() {
@@ -29,7 +28,6 @@ export default function Dashboard() {
   const [openEdit, setOpenEdit] = useState<null | TMenuItem>(null);
   const queryClient = useQueryClient();
   const { token } = useAuthContext();
-  const navigate = useNavigate();
 
   const itemsQuery = useQuery({
     queryKey: ['menu-items', token],
@@ -48,6 +46,17 @@ export default function Dashboard() {
   });
 
   const categories = (categoriesQuery.data || []).map((c: Category) => c.name);
+
+  // Listen for menu updates broadcast (e.g., after category cascade delete)
+  useEffect(() => {
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === 'menu:updated') {
+        queryClient.invalidateQueries({ queryKey: ['menu-items', token] });
+      }
+    };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, [queryClient, token]);
 
   const createMut = useMutation<TMenuItem, Error, NewMenuItem>({
     mutationFn: (payload) => createMenuItem(payload, token as string),
@@ -99,9 +108,7 @@ export default function Dashboard() {
                 items={itemsQuery.data}
                 onEdit={(item) => setOpenEdit(item)}
                 onDelete={(id) => {
-                  if (confirm('Delete this item?')) {
-                    deleteMut.mutate({ id });
-                  }
+                  if (confirm('Delete this item?')) deleteMut.mutate({ id });
                 }}
               />
             )}
@@ -109,41 +116,45 @@ export default function Dashboard() {
         )}
       </div>
 
-      {/* Modals */}
-      {openAdd && (
-        <ProductModal
-          title="Add Product"
-          categories={categories}
-          initial={{ name: '', price: '', category: '', description: '' }}
-          onClose={() => setOpenAdd(false)}
-          onSubmit={(values) => createMut.mutate(values)}
-        />
-      )}
+      {/* Drawers */}
+      <AnimatePresence>
+        {openAdd && (
+          <ProductDrawer
+            key="add"
+            title="Add Product"
+            categories={categories}
+            initial={{ name: '', price: '', category: '', description: '' }}
+            onClose={() => setOpenAdd(false)}
+            onSubmit={(values) => createMut.mutate(values)}
+          />
+        )}
 
-      {openEdit && (
-        <ProductModal
-          title="Edit Product"
-          categories={categories}
-          initial={{
-            name: openEdit.name,
-            price: String(openEdit.price),
-            category: openEdit.category || '',
-            description: openEdit.description || '',
-          }}
-          onClose={() => setOpenEdit(null)}
-          onSubmit={(values) =>
-            updateMut.mutate({
-              id: openEdit.id,
-              payload: {
-                name: values.name,
-                price: Number(values.price),
-                category: values.category || undefined,
-                description: values.description || undefined,
-              },
-            })
-          }
-        />
-      )}
+        {openEdit && (
+          <ProductDrawer
+            key="edit"
+            title="Edit Product"
+            categories={categories}
+            initial={{
+              name: openEdit.name,
+              price: String(openEdit.price),
+              category: openEdit.category || '',
+              description: openEdit.description || '',
+            }}
+            onClose={() => setOpenEdit(null)}
+            onSubmit={(values) =>
+              updateMut.mutate({
+                id: openEdit.id,
+                payload: {
+                  name: values.name,
+                  price: Number(values.price),
+                  category: values.category || undefined,
+                  description: values.description || undefined,
+                },
+              })
+            }
+          />
+        )}
+      </AnimatePresence>
     </div>
   );
 }
@@ -154,10 +165,7 @@ function EmptyState({ onAdd }: { onAdd: () => void }) {
       <div className="text-center">
         <div className="text-xl font-medium mb-2">No products yet</div>
         <p className="text-[#5b5b5d] mb-4">Create your first menu item to get started.</p>
-        <button
-          className="px-4 py-2 bg-[#2e2e30] text-white rounded-md hover:opacity-90"
-          onClick={onAdd}
-        >
+        <button className="px-4 py-2 bg-[#2e2e30] text-white rounded-md hover:opacity-90" onClick={onAdd}>
           Add Product
         </button>
       </div>
@@ -214,7 +222,7 @@ type ProductValues = {
   category?: string;
 };
 
-function ProductModal({
+function ProductDrawer({
   title,
   categories,
   initial,
@@ -237,16 +245,20 @@ function ProductModal({
   const [localCats, setLocalCats] = useState<string[]>(categories);
   useEffect(() => setLocalCats(categories), [categories]);
 
+  // ESC to close
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
   const createCatMut = useMutation({
     mutationFn: (name: string) => apiCreateCategory(name, token as string),
     onSuccess: (created) => {
-      // 1) Update local dropdown immediately
-      setLocalCats((prev) =>
-        prev.includes(created.name) ? prev : [...prev, created.name].sort()
-      );
+      setLocalCats((prev) => (prev.includes(created.name) ? prev : [...prev, created.name].sort()));
       setValues((s) => ({ ...s, category: created.name }));
-
-      // 2) Update React Query cache for /categories instantly (so /dashboard/categories updates)
       queryClient.setQueryData<Category[]>(
         ['categories', token],
         (prev) => {
@@ -255,15 +267,9 @@ function ProductModal({
           return exists ? list : [...list, created].sort((a, b) => a.name.localeCompare(b.name));
         }
       );
-
-      // 3) Broadcast to any other tabs/routes to refetch categories if needed
       try {
         localStorage.setItem('categories:updated', String(Date.now()));
-      } catch {
-        // ignore
-      }
-
-      // 4) Ensure active queries also refetch to stay in sync with server
+      } catch {}
       queryClient.invalidateQueries({ queryKey: ['categories', token] });
     },
   });
@@ -293,15 +299,35 @@ function ProductModal({
   };
 
   return (
-    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
-      <div className="bg-white rounded-lg shadow-lg w-full max-w-md">
-        <div className="flex items-center justify-between px-4 py-3 border-b border-[#ececec]">
+    <div className="fixed inset-0 z-50">
+      {/* Overlay */}
+      <motion.div
+        className="absolute inset-0 bg-black/40"
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        onClick={onClose}
+      />
+      {/* Drawer */}
+      <motion.aside
+        className="absolute right-0 top-0 h-screen w-full sm:w-[420px] md:w-[520px] bg-white shadow-2xl flex flex-col"
+        initial={{ x: '100%' }}
+        animate={{ x: 0 }}
+        exit={{ x: '100%' }}
+        transition={{ type: 'tween', duration: 0.25, ease: 'easeOut' }}
+        aria-modal="true"
+        role="dialog"
+      >
+        {/* Header (sticky) */}
+        <div className="flex items-center justify-between px-4 py-3 border-b border-[#ececec] sticky top-0 bg-white">
           <h3 className="text-base font-semibold">{title}</h3>
-          <button className="text-[#5b5b5d] hover:text-[#2e2e30]" onClick={onClose}>
+          <button className="text-[#5b5b5d] hover:text-[#2e2e30]" onClick={onClose} aria-label="Close">
             ✕
           </button>
         </div>
-        <form onSubmit={handleSubmit} className="p-4 space-y-3">
+
+        {/* Body (scrollable) */}
+        <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto p-4 space-y-3">
           <div>
             <label className="block text-sm font-medium mb-1">Name</label>
             <input
@@ -355,24 +381,29 @@ function ProductModal({
               {localError || (createCatMut.error as Error)?.message || 'Something went wrong.'}
             </div>
           )}
-
-          <div className="flex justify-end gap-2 pt-2">
-            <button
-              type="button"
-              className="px-4 py-2 rounded-md border border-[#cecece] text-[#2e2e30] hover:bg-[#f5f5f5]"
-              onClick={onClose}
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              className="px-4 py-2 rounded-md text-white bg-[#2e2e30] hover:opacity-90"
-            >
-              Save
-            </button>
-          </div>
         </form>
-      </div>
+
+        {/* Footer (sticky) */}
+        <div className="px-4 py-3 border-t border-[#ececec] sticky bottom-0 bg-white flex justify-end gap-2">
+          <button
+            type="button"
+            className="px-4 py-2 rounded-md border border-[#cecece] text-[#2e2e30] hover:bg-[#f5f5f5]"
+            onClick={onClose}
+          >
+            Cancel
+          </button>
+          <button
+            formAction="submit"
+            onClick={(e) => {
+              const form = (e.currentTarget.closest('aside') as HTMLElement)?.querySelector('form');
+              (form as HTMLFormElement)?.requestSubmit();
+            }}
+            className="px-4 py-2 rounded-md text-white bg-[#2e2e30] hover:opacity-90"
+          >
+            Save
+          </button>
+        </div>
+      </motion.aside>
     </div>
   );
 }

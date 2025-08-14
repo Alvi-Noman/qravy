@@ -88,11 +88,10 @@ export default function CategorySelect({
         <ChevronDownIcon className="h-5 w-5 text-[#6b6b70]" />
       </button>
 
-      {/* Dropdown panel (NO internal scroll; grows to fit content) */}
+      {/* Dropdown panel (grows to fit content; no internal scroll) */}
       {open && (
         <div className="absolute left-0 right-0 z-[100] mt-1">
           <div className="w-full rounded-md border border-[#ececec] bg-white shadow-lg overflow-visible">
-            {/* Options list (no max-height, no overflow) */}
             <div className="py-1">
               <OptionRow
                 selected={value === ''}
