@@ -6,7 +6,7 @@ type CategorySelectProps = {
   categories: string[];
   onChange: (value: string) => void;
   onCreateCategory: (name: string) => Promise<string>; // return created category name
-  placeholder?: string;
+  placeholder?: string; // purely visual; not selectable
   disabled?: boolean;
   label?: string;
 };
@@ -16,7 +16,7 @@ export default function CategorySelect({
   categories,
   onChange,
   onCreateCategory,
-  placeholder = 'Uncategorized',
+  placeholder = 'Select a Category',
   disabled,
   label,
 }: CategorySelectProps) {
@@ -93,14 +93,7 @@ export default function CategorySelect({
         <div className="absolute left-0 right-0 z-[100] mt-1">
           <div className="w-full rounded-md border border-[#ececec] bg-white shadow-lg overflow-visible">
             <div className="py-1">
-              <OptionRow
-                selected={value === ''}
-                label={placeholder}
-                onClick={() => {
-                  onChange('');
-                  setOpen(false);
-                }}
-              />
+              {/* Category options only (no 'Uncategorized' option) */}
               {categories.map((c) => (
                 <OptionRow
                   key={c}

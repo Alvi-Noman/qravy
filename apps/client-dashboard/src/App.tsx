@@ -1,16 +1,13 @@
-/**
- * Root app routes with auth guards.
- * - /dashboard requires verified AND onboarded users
- * - Onboarding wizard allowed only for not-yet-onboarded users
- */
 import { Routes, Route, useLocation, useNavigate } from 'react-router-dom';
 import { useEffect } from 'react';
 import { AuthProvider, useAuthContext } from './context/AuthContext';
 import DashboardLayout from './layout/DashboardLayout';
 import Dashboard from './pages/dashboard/index';
 import Orders from './pages/dashboard/orders';
-import Products from './pages/dashboard/products';
 import Categories from './pages/dashboard/categories';
+// New page
+import MenuItemsPage from './pages/dashboard/menu-items';
+
 import Login from './pages/login';
 import Signup from './pages/signup';
 import MagicLink from './pages/magic-link';
@@ -38,7 +35,6 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
   return token ? <>{children}</> : null;
 }
 
-/** Require verified + onboarded for dashboard access */
 function RequireVerifiedAndOnboarded({ children }: { children: React.ReactNode }) {
   const { token, user, loading } = useAuthContext();
   const navigate = useNavigate();
@@ -61,7 +57,6 @@ function RequireVerifiedAndOnboarded({ children }: { children: React.ReactNode }
   return token && user?.isVerified && user?.isOnboarded ? <>{children}</> : null;
 }
 
-/** Allow onboarding only for users who still need it */
 function RequireOnboarding({ children }: { children: React.ReactNode }) {
   const { user } = useAuthContext();
   const navigate = useNavigate();
@@ -89,8 +84,9 @@ function App() {
         >
           <Route index element={<Dashboard />} />
           <Route path="orders" element={<Orders />} />
-          <Route path="products" element={<Products />} />
+          <Route path="menu-items" element={<MenuItemsPage />} />
           <Route path="categories" element={<Categories />} />
+          {/* You can add assistance/online-store/offers/qr-code/reports pages later */}
         </Route>
 
         <Route path="/login" element={<Login />} />
