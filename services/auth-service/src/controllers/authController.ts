@@ -55,7 +55,7 @@ export const sendMagicLink = async (req: Request, res: Response, next: NextFunct
 
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
       logger.warn(`Invalid email address attempt: ${rawEmail} from IP ${ip}`);
-      return res.status(400).json({ message: 'Invalid email address.' });
+      return res.fail(400, 'Invalid email address.');
     }
 
     const collection = await getUsersCollection();
@@ -92,10 +92,10 @@ export const sendMagicLink = async (req: Request, res: Response, next: NextFunct
       logger.info(`Magic link email sent to ${email}`);
     } catch (err) {
       logger.error(`Error sending magic link email to ${email}: ${(err as Error).message}`);
-      return res.status(500).json({ message: 'Failed to send magic link email.' });
+      return res.fail(500, 'Failed to send magic link email.');
     }
 
-    res.status(200).json({ message: 'Magic link sent. Please check your email.' });
+    return res.ok({ message: 'Magic link sent. Please check your email.' });
   } catch (error) {
     logger.error(`sendMagicLink error: ${(error as Error).message}`);
     next(error);
@@ -110,7 +110,7 @@ export const verifyMagicLink = async (req: Request, res: Response, next: NextFun
 
     if (!token || typeof token !== 'string') {
       logger.warn(`Invalid magic link token received from IP ${ip}`);
-      return res.status(400).json({ message: 'Invalid or expired magic link.' });
+      return res.fail(400, 'Invalid or expired magic link.');
     }
 
     const collection = await getUsersCollection();
@@ -118,7 +118,7 @@ export const verifyMagicLink = async (req: Request, res: Response, next: NextFun
 
     if (!user || !user.magicLinkTokenExpires || user.magicLinkTokenExpires < new Date()) {
       logger.warn(`Attempt to use invalid or expired magic link from IP ${ip}`);
-      return res.status(400).json({ message: 'Invalid or expired magic link.' });
+      return res.fail(400, 'Invalid or expired magic link.');
     }
 
     await collection.updateOne(
@@ -162,23 +162,22 @@ export const verifyMagicLink = async (req: Request, res: Response, next: NextFun
 
     logger.info(`User verified magic link: ${userInfo(user)} from IP ${ip}`);
 
-    res
-      .cookie('refreshToken', refreshToken, {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        sameSite: 'strict',
-        maxAge: 30 * 24 * 60 * 60 * 1000,
-      })
-      .status(200)
-      .json({
-        token: accessToken,
-        user: {
-          id: (user._id as ObjectId).toString(),
-          email: user.email,
-          isVerified: true,
-          isOnboarded: user.isOnboarded,
-        },
-      });
+    res.cookie('refreshToken', refreshToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'strict',
+      maxAge: 30 * 24 * 60 * 60 * 1000,
+    });
+
+    return res.ok({
+      token: accessToken,
+      user: {
+        id: (user._id as ObjectId).toString(),
+        email: user.email,
+        isVerified: true,
+        isOnboarded: user.isOnboarded,
+      },
+    });
   } catch (error) {
     logger.error(`verifyMagicLink error: ${(error as Error).message}`);
     next(error);
@@ -195,7 +194,7 @@ export const completeOnboarding = async (req: Request, res: Response, next: Next
       { $set: { isOnboarded: true } }
     );
     logger.info(`User onboarding completed: ${userId}`);
-    res.json({ message: 'Onboarding complete' });
+    return res.ok({ message: 'Onboarding complete' });
   } catch (error) {
     logger.error(`completeOnboarding error: ${(error as Error).message}`);
     next(error);
@@ -209,26 +208,20 @@ export const refreshToken = async (req: Request, res: Response, next: NextFuncti
     const ip = req.ip || (req.connection as any).remoteAddress || 'unknown';
 
     if (!token) {
-      const error = new Error('No refresh token provided');
-      (error as any).status = 401;
-      return next(error);
+      return res.fail(401, 'No refresh token provided');
     }
 
     let payload: any;
     try {
       payload = verifyRefreshToken(token) as any;
     } catch {
-      const error = new Error('Invalid or expired refresh token');
-      (error as any).status = 401;
-      return next(error);
+      return res.fail(401, 'Invalid or expired refresh token');
     }
 
     const collection = await getUsersCollection();
     const user = await collection.findOne({ _id: new ObjectId(payload.id) });
     if (!user) {
-      const error = new Error('User not found');
-      (error as any).status = 401;
-      return next(error);
+      return res.fail(401, 'User not found');
     }
 
     let cleanedTokens = cleanupTokens(user.refreshTokens || []);
@@ -236,9 +229,7 @@ export const refreshToken = async (req: Request, res: Response, next: NextFuncti
     const providedTokenHash = hashToken(token);
     const existingTokenIndex = cleanedTokens.findIndex((t: any) => t.tokenHash === providedTokenHash);
     if (existingTokenIndex === -1) {
-      const error = new Error('Refresh token not recognized');
-      (error as any).status = 401;
-      return next(error);
+      return res.fail(401, 'Refresh token not recognized');
     }
 
     cleanedTokens.splice(existingTokenIndex, 1);
@@ -275,14 +266,14 @@ export const refreshToken = async (req: Request, res: Response, next: NextFuncti
       { expiresIn: '15m' }
     );
 
-    res
-      .cookie('refreshToken', newRefreshToken, {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        sameSite: 'strict',
-        maxAge: 30 * 24 * 60 * 60 * 1000,
-      })
-      .json({ token: newAccessToken });
+    res.cookie('refreshToken', newRefreshToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'strict',
+      maxAge: 30 * 24 * 60 * 60 * 1000,
+    });
+
+    return res.ok({ token: newAccessToken });
   } catch (error) {
     logger.error(`refreshToken error: ${(error as Error).message}`);
     next(error);
@@ -295,20 +286,23 @@ export const logout = async (req: Request, res: Response, next: NextFunction) =>
     const token = (req as any).cookies.refreshToken;
 
     if (!token) {
-      return res.clearCookie('refreshToken').status(200).json({ message: 'Logged out' });
+      res.clearCookie('refreshToken');
+      return res.ok({ message: 'Logged out' });
     }
 
     let payload: any;
     try {
       payload = verifyRefreshToken(token) as any;
     } catch {
-      return res.clearCookie('refreshToken').status(200).json({ message: 'Logged out' });
+      res.clearCookie('refreshToken');
+      return res.ok({ message: 'Logged out' });
     }
 
     const collection = await getUsersCollection();
     const user = await collection.findOne({ _id: new ObjectId(payload.id) });
     if (!user) {
-      return res.clearCookie('refreshToken').status(200).json({ message: 'Logged out' });
+      res.clearCookie('refreshToken');
+      return res.ok({ message: 'Logged out' });
     }
 
     let cleanedTokens = cleanupTokens(user.refreshTokens || []);
@@ -320,7 +314,8 @@ export const logout = async (req: Request, res: Response, next: NextFunction) =>
       { $set: { refreshTokens: cleanedTokens } }
     );
 
-    res.clearCookie('refreshToken').status(200).json({ message: 'Logged out' });
+    res.clearCookie('refreshToken');
+    return res.ok({ message: 'Logged out' });
   } catch (error) {
     logger.error(`logout error: ${(error as Error).message}`);
     next(error);
@@ -333,7 +328,8 @@ export const logoutAll = async (req: Request, res: Response, next: NextFunction)
     const userId = (req as any).user.id;
     const collection = await getUsersCollection();
     await collection.updateOne({ _id: new ObjectId(userId) }, { $set: { refreshTokens: [] } });
-    res.clearCookie('refreshToken').status(200).json({ message: 'Logged out from all sessions' });
+    res.clearCookie('refreshToken');
+    return res.ok({ message: 'Logged out from all sessions' });
   } catch (error) {
     logger.error(`logoutAll error: ${(error as Error).message}`);
     next(error);
@@ -346,16 +342,16 @@ export const revokeSession = async (req: Request, res: Response, next: NextFunct
     const userId = (req as any).user.id;
     const { tokenId } = req.body as { tokenId?: string };
 
-    if (!tokenId) return res.status(400).json({ message: 'tokenId is required' });
+    if (!tokenId) return res.fail(400, 'tokenId is required');
 
     const collection = await getUsersCollection();
     const user = await collection.findOne({ _id: new ObjectId(userId) });
-    if (!user) return res.status(404).json({ message: 'User not found' });
+    if (!user) return res.fail(404, 'User not found');
 
     const newTokens = (user.refreshTokens || []).filter((t: any) => t.tokenId !== tokenId);
     await collection.updateOne({ _id: user._id as ObjectId }, { $set: { refreshTokens: newTokens } });
 
-    res.status(200).json({ message: 'Session revoked' });
+    return res.ok({ message: 'Session revoked' });
   } catch (error) {
     logger.error(`revokeSession error: ${(error as Error).message}`);
     next(error);

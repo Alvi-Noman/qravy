@@ -4,18 +4,17 @@
 import type { ObjectId } from 'mongodb';
 import type { UserDoc } from '../models/User.js';
 import type { MenuItemDoc } from '../models/MenuItem.js';
-// ESM + NodeNext: must include .js extension in the import specifier.
-// Path from: services/auth-service/src/utils/mapper.ts -> root -> packages/shared/src/types/index.ts
-import type {
-  UserDTO,
-  MenuItemDTO,
-} from '../../../../packages/shared/src/types/index.js';
+import type { CategoryDoc } from '../models/Category.js';
+
+// ESM + NodeNext: include .js in the import specifier for backend.
+// Use v1 DTOs explicitly (v2 can be added later without breaking v1).
+import type { v1 } from '../../../../packages/shared/src/types/index.js';
 
 function toId(id?: ObjectId): string {
   return id ? id.toString() : '';
 }
 
-export function toUserDTO(user: UserDoc): UserDTO {
+export function toUserDTO(user: UserDoc): v1.UserDTO {
   return {
     id: toId(user._id),
     email: user.email,
@@ -24,13 +23,28 @@ export function toUserDTO(user: UserDoc): UserDTO {
   };
 }
 
-export function toMenuItemDTO(doc: MenuItemDoc): MenuItemDTO {
+export function toMenuItemDTO(doc: MenuItemDoc): v1.MenuItemDTO {
   return {
     id: toId(doc._id),
     name: doc.name,
     price: doc.price,
     description: doc.description,
     category: doc.category,
+    createdAt:
+      doc.createdAt instanceof Date
+        ? doc.createdAt.toISOString()
+        : new Date(doc.createdAt as any).toISOString(),
+    updatedAt:
+      doc.updatedAt instanceof Date
+        ? doc.updatedAt.toISOString()
+        : new Date(doc.updatedAt as any).toISOString(),
+  };
+}
+
+export function toCategoryDTO(doc: CategoryDoc): v1.CategoryDTO {
+  return {
+    id: toId(doc._id),
+    name: doc.name,
     createdAt:
       doc.createdAt instanceof Date
         ? doc.createdAt.toISOString()

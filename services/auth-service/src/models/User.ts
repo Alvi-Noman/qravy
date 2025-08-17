@@ -1,6 +1,3 @@
-/**
- * User document shape for MongoDB (TypeScript-only type).
- */
 import { ObjectId } from 'mongodb';
 
 export interface RefreshToken {
@@ -20,11 +17,9 @@ export interface UserDoc {
 
   refreshTokens?: RefreshToken[];
 
-  // Optional security fields
   failedLoginAttempts?: number;
   lockUntil?: Date | null;
 
-  // Magic link fields
   magicLinkToken?: string;
   magicLinkTokenExpires?: Date;
 }

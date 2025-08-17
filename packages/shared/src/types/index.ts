@@ -1,27 +1,5 @@
-/**
- * Shared public DTO types (frontend + backend).
- */
+export * as v1 from './v1.js';
+export * as v2 from './v2.js';
 
-export type UserDTO = {
-  id: string;
-  email: string;
-  isVerified?: boolean;
-  isOnboarded?: boolean;
-};
-
-export type NewMenuItemDTO = {
-  name: string;
-  price: number;
-  description?: string;
-  category?: string;
-};
-
-export type MenuItemDTO = {
-  id: string;
-  name: string;
-  price: number;
-  description?: string;
-  category?: string;
-  createdAt: string;
-  updatedAt: string;
-};
+// Back-compat named exports => v1 by default
+export type { UserDTO, MenuItemDTO, CategoryDTO } from './v1.js';

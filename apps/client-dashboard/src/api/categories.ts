@@ -2,30 +2,18 @@
  * Categories API (per-user)
  * - List, create, update, delete
  * - Explicit Authorization header via token
+ * - Uses shared DTOs for type safety
  */
 import api from './auth';
+import type { v1 } from '../../../../packages/shared/src/types';
 
-export type Category = {
-  id: string;
-  name: string;
-  createdAt: string;
-  updatedAt: string;
-};
-
-function mapCategory(d: any): Category {
-  return {
-    id: d.id ?? d._id?.toString?.() ?? String(d._id),
-    name: d.name,
-    createdAt: typeof d.createdAt === 'string' ? d.createdAt : new Date(d.createdAt).toISOString(),
-    updatedAt: typeof d.updatedAt === 'string' ? d.updatedAt : new Date(d.updatedAt).toISOString(),
-  };
-}
+export type Category = v1.CategoryDTO;
 
 export async function getCategories(token: string): Promise<Category[]> {
   const res = await api.get('/api/v1/auth/categories', {
     headers: { Authorization: `Bearer ${token}` },
   });
-  return (res.data.items as any[]).map(mapCategory);
+  return res.data.items as Category[];
 }
 
 export async function createCategory(name: string, token: string): Promise<Category> {
@@ -34,7 +22,7 @@ export async function createCategory(name: string, token: string): Promise<Categ
     { name },
     { headers: { Authorization: `Bearer ${token}` } }
   );
-  return mapCategory(res.data.item);
+  return res.data.item as Category;
 }
 
 export async function updateCategory(id: string, name: string, token: string): Promise<Category> {
@@ -43,7 +31,7 @@ export async function updateCategory(id: string, name: string, token: string): P
     { name },
     { headers: { Authorization: `Bearer ${token}` } }
   );
-  return mapCategory(res.data.item);
+  return res.data.item as Category;
 }
 
 export async function deleteCategory(id: string, token: string): Promise<void> {

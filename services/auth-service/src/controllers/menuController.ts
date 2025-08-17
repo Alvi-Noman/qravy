@@ -1,22 +1,14 @@
 /**
  * Menu controller
- * - List, create, update (POST), delete (POST) per-user menu items
+ * - List, create, update, delete per-user menu items (return DTOs)
  */
 import type { Request, Response, NextFunction } from 'express';
 import { ObjectId } from 'mongodb';
 import { client } from '../db.js';
 import logger from '../utils/logger.js';
-
-type MenuItemDoc = {
-  _id?: ObjectId;
-  userId: ObjectId;
-  name: string;
-  price: number;
-  description?: string;
-  category?: string;
-  createdAt: Date;
-  updatedAt: Date;
-};
+import type { MenuItemDoc } from '../models/MenuItem.js';
+import { toMenuItemDTO } from '../utils/mapper.js';
+import { auditLog } from '../utils/audit.js';
 
 function col() {
   return client.db('authDB').collection<MenuItemDoc>('menuItems');
@@ -26,13 +18,8 @@ function col() {
 export async function listMenuItems(req: Request, res: Response, next: NextFunction) {
   try {
     const userId = (req as any).user.id as string;
-    const docs = await col()
-      .find({ userId: new ObjectId(userId) })
-      .sort({ createdAt: -1 })
-      .toArray();
-
-    // Return raw docs; client maps _id -> id
-    res.json({ items: docs });
+    const docs = await col().find({ userId: new ObjectId(userId) }).sort({ createdAt: -1 }).toArray();
+    return res.ok({ items: docs.map(toMenuItemDTO) });
   } catch (err) {
     logger.error(`listMenuItems error: ${(err as Error).message}`);
     next(err);
@@ -61,7 +48,15 @@ export async function createMenuItem(req: Request, res: Response, next: NextFunc
     const result = await col().insertOne(doc);
     const created: MenuItemDoc = { ...doc, _id: result.insertedId };
 
-    res.status(201).json({ item: created });
+    await auditLog({
+      userId,
+      action: 'MENU_ITEM_CREATE',
+      after: toMenuItemDTO(created),
+      ip: req.ip || (req.connection as any).remoteAddress || 'unknown',
+      userAgent: req.headers['user-agent'] || 'unknown',
+    });
+
+    return res.ok({ item: toMenuItemDTO(created) }, 201);
   } catch (err) {
     logger.error(`createMenuItem error: ${(err as Error).message}`);
     next(err);
@@ -73,11 +68,14 @@ export async function updateMenuItem(req: Request, res: Response, next: NextFunc
   try {
     const userId = (req as any).user.id as string;
     const { id } = req.params;
-    if (!ObjectId.isValid(id)) return res.status(400).json({ message: 'Invalid id' });
+    if (!ObjectId.isValid(id)) return res.fail(400, 'Invalid id');
 
     const { name, price, description, category } = req.body as {
       name?: string; price?: number; description?: string; category?: string;
     };
+
+    const before = await col().findOne({ _id: new ObjectId(id), userId: new ObjectId(userId) });
+    if (!before) return res.fail(404, 'Item not found');
 
     const updates: Partial<Pick<MenuItemDoc, 'name' | 'price' | 'description' | 'category'>> = {};
     if (name !== undefined) updates.name = name;
@@ -85,17 +83,24 @@ export async function updateMenuItem(req: Request, res: Response, next: NextFunc
     if (description !== undefined) updates.description = description;
     if (category !== undefined) updates.category = category;
 
-    // Use 'returnDocument: "after"' for updated doc; normalize return shape
     const r: any = await col().findOneAndUpdate(
       { _id: new ObjectId(id), userId: new ObjectId(userId) },
       { $set: { ...updates, updatedAt: new Date() } },
       { returnDocument: 'after' as any }
     );
+    const doc = (r && 'value' in r ? r.value : r) ?? null;
+    if (!doc) return res.fail(404, 'Item not found');
 
-    const doc: MenuItemDoc | null = (r && 'value' in r ? r.value : r) ?? null;
-    if (!doc) return res.status(404).json({ message: 'Item not found' });
+    await auditLog({
+      userId,
+      action: 'MENU_ITEM_UPDATE',
+      before: toMenuItemDTO(before),
+      after: toMenuItemDTO(doc),
+      ip: req.ip || (req.connection as any).remoteAddress || 'unknown',
+      userAgent: req.headers['user-agent'] || 'unknown',
+    });
 
-    res.json({ item: doc });
+    return res.ok({ item: toMenuItemDTO(doc) });
   } catch (err) {
     logger.error(`updateMenuItem error: ${(err as Error).message}`);
     next(err);
@@ -107,12 +112,21 @@ export async function deleteMenuItem(req: Request, res: Response, next: NextFunc
   try {
     const userId = (req as any).user.id as string;
     const { id } = req.params;
-    if (!ObjectId.isValid(id)) return res.status(400).json({ message: 'Invalid id' });
+    if (!ObjectId.isValid(id)) return res.fail(400, 'Invalid id');
 
-    const result = await col().deleteOne({ _id: new ObjectId(id), userId: new ObjectId(userId) });
-    if (result.deletedCount === 0) return res.status(404).json({ message: 'Item not found' });
+    const r: any = await col().findOneAndDelete({ _id: new ObjectId(id), userId: new ObjectId(userId) });
+    const deleted = (r && 'value' in r ? r.value : r) ?? null;
+    if (!deleted) return res.fail(404, 'Item not found');
 
-    res.json({ deleted: true });
+    await auditLog({
+      userId,
+      action: 'MENU_ITEM_DELETE',
+      before: toMenuItemDTO(deleted),
+      ip: req.ip || (req.connection as any).remoteAddress || 'unknown',
+      userAgent: req.headers['user-agent'] || 'unknown',
+    });
+
+    return res.ok({ deleted: true });
   } catch (err) {
     logger.error(`deleteMenuItem error: ${(err as Error).message}`);
     next(err);

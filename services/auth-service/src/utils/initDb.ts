@@ -6,6 +6,7 @@ import logger from './logger.js';
  * - users: unique email, magicLinkToken idx, $jsonSchema validator
  * - menuItems: userId+createdAt idx, userId+category idx, $jsonSchema validator
  * - categories: unique (userId,name) idx, $jsonSchema validator
+ * - audits: userId+createdAt idx, $jsonSchema validator
  */
 
 function userJsonSchema() {
@@ -80,6 +81,27 @@ function categoryJsonSchema() {
   };
 }
 
+function auditJsonSchema() {
+  return {
+    $jsonSchema: {
+      bsonType: 'object',
+      required: ['userId', 'action', 'createdAt'],
+      additionalProperties: true,
+      properties: {
+        _id: { bsonType: 'objectId' },
+        userId: { bsonType: 'objectId' },
+        action: { bsonType: 'string' },
+        before: {},
+        after: {},
+        metadata: {},
+        ip: { bsonType: ['string', 'null'] },
+        userAgent: { bsonType: ['string', 'null'] },
+        createdAt: { bsonType: 'date' },
+      },
+    },
+  };
+}
+
 async function ensureValidator(client: MongoClient, collection: string, schema: object) {
   const db = client.db('authDB');
   try {
@@ -121,13 +143,19 @@ export async function ensureUserIndexes(client: MongoClient) {
   await menuItems.createIndex({ userId: 1, category: 1 });
   logger.info('Ensured compound index on menuItems.userId,category');
 
-  // Categories (unique per user)
+  // Categories
   const categories = db.collection('categories');
   await categories.createIndex({ userId: 1, name: 1 }, { unique: true });
   logger.info('Ensured unique compound index on categories.userId,name');
+
+  // Audits
+  const audits = db.collection('audits');
+  await audits.createIndex({ userId: 1, createdAt: -1 });
+  logger.info('Ensured index on audits.userId,createdAt');
 
   // Validators
   await ensureValidator(client, 'users', userJsonSchema());
   await ensureValidator(client, 'menuItems', menuItemJsonSchema());
   await ensureValidator(client, 'categories', categoryJsonSchema());
+  await ensureValidator(client, 'audits', auditJsonSchema());
 }

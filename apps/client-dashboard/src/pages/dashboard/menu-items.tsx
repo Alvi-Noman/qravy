@@ -6,7 +6,7 @@
  * - React Query-based data loading
  */
 import { useEffect, useState } from 'react';
-import { AnimatePresence, motion } from 'framer-motion';
+import { AnimatePresence } from 'framer-motion';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   createMenuItem,
@@ -18,11 +18,10 @@ import {
 } from '../../api/menu';
 import {
   getCategories,
-  createCategory as apiCreateCategory,
   type Category,
 } from '../../api/categories';
 import { useAuthContext } from '../../context/AuthContext';
-import CategorySelect from '../../components/CategorySelect';
+import ProductDrawer from '../../components/ProductDrawer';
 
 export default function MenuItemsPage() {
   const [openAdd, setOpenAdd] = useState(false);
@@ -210,204 +209,5 @@ function MenuList({
         </li>
       ))}
     </ul>
-  );
-}
-
-type ProductValues = {
-  name: string;
-  price: string;
-  description?: string;
-  category?: string;
-};
-
-function ProductDrawer({
-  title,
-  categories,
-  initial,
-  onClose,
-  onSubmit,
-}: {
-  title: string;
-  categories: string[];
-  initial: ProductValues;
-  onClose: () => void;
-  onSubmit: (values: { name: string; price: number; description?: string; category?: string }) => void;
-}) {
-  const [values, setValues] = useState<ProductValues>(initial);
-  const [localError, setLocalError] = useState<string | null>(null);
-
-  const { token } = useAuthContext();
-  const queryClient = useQueryClient();
-
-  const [localCats, setLocalCats] = useState<string[]>(categories);
-  useEffect(() => setLocalCats(categories), [categories]);
-
-  // ESC to close
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
-  }, [onClose]);
-
-  const createCatMut = useMutation({
-    mutationFn: (name: string) => apiCreateCategory(name, token as string),
-    onSuccess: (created) => {
-      setLocalCats((prev) => (prev.includes(created.name) ? prev : [...prev, created.name].sort()));
-      setValues((s) => ({ ...s, category: created.name }));
-      queryClient.setQueryData<Category[]>(
-        ['categories', token],
-        (prev) => {
-          const list = prev ?? [];
-          const exists = list.some((c) => c.name === created.name);
-          return exists ? list : [...list, created].sort((a, b) => a.name.localeCompare(b.name));
-        }
-      );
-      try {
-        localStorage.setItem('categories:updated', String(Date.now()));
-      } catch {}
-      queryClient.invalidateQueries({ queryKey: ['categories', token] });
-    },
-  });
-
-  const toNumber = (v: string) => Number(v);
-
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    setLocalError(null);
-
-    if (!values.name.trim()) {
-      setLocalError('Name is required.');
-      return;
-    }
-    const priceNum = toNumber(values.price);
-    if (!values.price || Number.isNaN(priceNum) || priceNum <= 0) {
-      setLocalError('Price must be a valid positive number.');
-      return;
-    }
-    if (!values.category) {
-      setLocalError('Please select a category.');
-      return;
-    }
-
-    onSubmit({
-      name: values.name.trim(),
-      price: priceNum,
-      description: values.description?.trim() || undefined,
-      category: values.category,
-    });
-  };
-
-  const isSaveDisabled = !values.category || createCatMut.isPending;
-
-  return (
-    <div className="fixed inset-0 z-50">
-      {/* Overlay */}
-      <motion.div
-        className="absolute inset-0 bg-black/40"
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        exit={{ opacity: 0 }}
-        onClick={onClose}
-      />
-      {/* Drawer */}
-      <motion.aside
-        className="absolute right-0 top-0 h-screen w-full sm:w-[420px] md:w-[520px] bg-white shadow-2xl flex flex-col"
-        initial={{ x: '100%' }}
-        animate={{ x: 0 }}
-        exit={{ x: '100%' }}
-        transition={{ type: 'tween', duration: 0.25, ease: 'easeOut' }}
-        aria-modal="true"
-        role="dialog"
-      >
-        {/* Header */}
-        <div className="flex items-center justify-between px-4 py-3 border-b border-[#ececec] sticky top-0 bg-white">
-          <h3 className="text-base font-semibold">{title}</h3>
-          <button className="text-[#5b5b5d] hover:text-[#2e2e30]" onClick={onClose} aria-label="Close">
-            ✕
-          </button>
-        </div>
-
-        {/* Body */}
-        <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto p-4 space-y-3">
-          <div>
-            <label className="block text-sm font-medium mb-1">Name</label>
-            <input
-              className="w-full border border-[#cecece] rounded-md px-3 py-2"
-              value={values.name}
-              onChange={(e) => setValues((s) => ({ ...s, name: e.target.value }))}
-              placeholder="e.g., Margherita Pizza"
-              required
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium mb-1">Price</label>
-            <input
-              className="w-full border border-[#cecece] rounded-md px-3 py-2"
-              value={values.price}
-              onChange={(e) => setValues((s) => ({ ...s, price: e.target.value }))}
-              placeholder="e.g., 8.99"
-              inputMode="decimal"
-              required
-            />
-          </div>
-
-          <div>
-            <CategorySelect
-              label="Category"
-              value={values.category || ''}
-              categories={localCats}
-              onChange={(val) => setValues((s) => ({ ...s, category: val }))}
-              onCreateCategory={async (name) => {
-                const created = await createCatMut.mutateAsync(name);
-                return created.name;
-              }}
-              placeholder="Select a Category"
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium mb-1">Description (optional)</label>
-            <textarea
-              className="w-full border border-[#cecece] rounded-md px-3 py-2"
-              rows={3}
-              value={values.description || ''}
-              onChange={(e) => setValues((s) => ({ ...s, description: e.target.value }))}
-              placeholder="Short description"
-            />
-          </div>
-
-          {(localError || createCatMut.isError) && (
-            <div className="text-red-600 text-sm">
-              {localError || (createCatMut.error as Error)?.message || 'Something went wrong.'}
-            </div>
-          )}
-        </form>
-
-        {/* Footer */}
-        <div className="px-4 py-3 border-t border-[#ececec] sticky bottom-0 bg-white flex justify-end gap-2">
-          <button
-            type="button"
-            className="px-4 py-2 rounded-md border border-[#cecece] text-[#2e2e30] hover:bg-[#f5f5f5]"
-            onClick={onClose}
-          >
-            Cancel
-          </button>
-          <button
-            formAction="submit"
-            onClick={(e) => {
-              const form = (e.currentTarget.closest('aside') as HTMLElement)?.querySelector('form');
-              (form as HTMLFormElement)?.requestSubmit();
-            }}
-            className={`px-4 py-2 rounded-md text-white ${isSaveDisabled ? 'bg-[#b0b0b5] cursor-not-allowed' : 'bg-[#2e2e30] hover:opacity-90'}`}
-            disabled={isSaveDisabled}
-          >
-            Save
-          </button>
-        </div>
-      </motion.aside>
-    </div>
   );
 }

@@ -5,8 +5,8 @@ type CategorySelectProps = {
   value: string | '';
   categories: string[];
   onChange: (value: string) => void;
-  onCreateCategory: (name: string) => Promise<string>; // return created category name
-  placeholder?: string; // purely visual; not selectable
+  onCreateCategory: (name: string) => Promise<string>;
+  placeholder?: string;
   disabled?: boolean;
   label?: string;
 };
@@ -25,10 +25,8 @@ export default function CategorySelect({
   const [newName, setNewName] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
   const rootRef = useRef<HTMLDivElement>(null);
 
-  // Outside click closes
   useEffect(() => {
     const onClick = (e: MouseEvent) => {
       if (!rootRef.current) return;
@@ -43,7 +41,6 @@ export default function CategorySelect({
     return () => document.removeEventListener('mousedown', onClick);
   }, []);
 
-  // Save new category
   const handleCreate = async () => {
     if (!newName.trim()) return;
     setSaving(true);
@@ -62,38 +59,29 @@ export default function CategorySelect({
   };
 
   const display = value || placeholder;
+  const isPlaceholder = !value;
 
   return (
     <div className="relative" ref={rootRef}>
-      {label && (
-        <label className="block text-sm font-medium mb-1">
-          {label}
-          {categories.length === 0 && (
-            <span className="ml-2 text-xs text-[#9b9ba1]">(no categories yet)</span>
-          )}
-        </label>
-      )}
+      {label && <label className="block text-sm font-medium text-[#2e2e30] mb-1">{label}</label>}
 
-      {/* Trigger (custom select button) */}
       <button
         type="button"
         disabled={disabled}
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
-        className={`w-full border border-[#cecece] rounded-md px-3 py-2 bg-white text-left flex items-center justify-between ${
-          disabled ? 'opacity-50 cursor-not-allowed' : 'hover:bg-[#f7f7f9]'
+        className={`w-full border border-[#dbdbdb] hover:border-[#111827] transition-colors rounded-md px-3 py-2 bg-[#fcfcfc] text-left flex items-center justify-between text-sm ${
+          disabled ? 'opacity-50 cursor-not-allowed' : 'hover:bg-[#f6f6f6]'
         }`}
       >
-        <span className={`truncate ${value ? 'text-[#2e2e30]' : 'text-[#9b9ba1]'}`}>{display}</span>
-        <ChevronDownIcon className="h-5 w-5 text-[#6b6b70]" />
+        <span className={`truncate ${isPlaceholder ? 'text-[#a9a9ab]' : 'text-[#2e2e30]'}`}>{display}</span>
+        <ChevronDownIcon className="h-5 w-5 text-[#6b7280]" />
       </button>
 
-      {/* Dropdown panel (grows to fit content; no internal scroll) */}
       {open && (
         <div className="absolute left-0 right-0 z-[100] mt-1">
-          <div className="w-full rounded-md border border-[#ececec] bg-white shadow-lg overflow-visible">
+          <div className="w-full rounded-md border border-[#dbdbdb] bg-[#fcfcfc] shadow-lg overflow-visible">
             <div className="py-1">
-              {/* Category options only (no 'Uncategorized' option) */}
               {categories.map((c) => (
                 <OptionRow
                   key={c}
@@ -105,28 +93,27 @@ export default function CategorySelect({
                   }}
                 />
               ))}
-
-              {/* Divider */}
-              <div className="my-1 h-px bg-[#f1f1f3]" />
-
-              {/* Add New Category inline (inside the dropdown) */}
+              {categories.length === 0 && (
+                <div className="px-3 py-2 text-sm text-[#a9a9ab] select-none cursor-default">No categories yet</div>
+              )}
+              <div className="my-1 h-px bg-[#dbdbdb]" />
               {!addMode ? (
                 <button
                   type="button"
-                  className="w-full flex items-center gap-2 px-3 py-2 text-sm text-[#4a56e2] hover:bg-[#f7f8ff]"
+                  className="w-full flex items-center gap-2 px-3 py-2 text-sm text-[#2e2e30] hover:bg-[#f3f4f6] transition-colors"
                   onClick={() => {
                     setAddMode(true);
                     setError(null);
                     setNewName('');
                   }}
                 >
-                  <PlusCircleIcon className="h-5 w-5" />
+                  <PlusCircleIcon className="h-5 w-5 text-[#2e2e30]" />
                   <span className="font-medium">Add New Category</span>
                 </button>
               ) : (
                 <div className="px-3 py-2 space-y-2">
                   <input
-                    className="w-full border border-[#e6e6e9] rounded-md px-3 py-2 bg-[#f7f7fb] placeholder-[#9b9ba1] text-sm"
+                    className="w-full border border-[#dbdbdb] hover:border-[#111827] focus:border-[#111827] transition-colors rounded-md px-3 py-2 bg-[#fcfcfc] placeholder-[#a9a9ab] text-sm focus:outline-none focus:ring-0 text-[#2e2e30]"
                     placeholder="Input Category Name"
                     value={newName}
                     onChange={(e) => setNewName(e.target.value)}
@@ -136,7 +123,7 @@ export default function CategorySelect({
                   <div className="flex justify-end gap-2">
                     <button
                       type="button"
-                      className="px-3 py-1.5 rounded-md border border-[#cecece] text-sm hover:bg-[#f5f5f5]"
+                      className="px-3 py-1.5 rounded-md border border-[#dbdbdb] bg-[#fcfcfc] hover:bg-[#f3f4f6] transition-colors text-sm text-[#2e2e30]"
                       onClick={() => {
                         setAddMode(false);
                         setNewName('');
@@ -149,9 +136,7 @@ export default function CategorySelect({
                     <button
                       type="button"
                       onClick={handleCreate}
-                      className={`px-4 py-1.5 rounded-md text-white text-sm ${
-                        saving ? 'bg-[#b0b0b5]' : 'bg-[#3b5bff] hover:opacity-90'
-                      }`}
+                      className={`px-4 py-1.5 rounded-md text-white text-sm ${saving || !newName.trim() ? 'bg-[#b0b0b5] cursor-not-allowed' : 'bg-[#111827] hover:opacity-90'}`}
                       disabled={saving || !newName.trim()}
                     >
                       {saving ? 'Saving…' : 'Save'}
@@ -167,21 +152,11 @@ export default function CategorySelect({
   );
 }
 
-function OptionRow({
-  selected,
-  label,
-  onClick,
-}: {
-  selected: boolean;
-  label: string;
-  onClick: () => void;
-}) {
+function OptionRow({ selected, label, onClick }: { selected: boolean; label: string; onClick: () => void }) {
   return (
     <button
       type="button"
-      className={`w-full text-left px-3 py-2 text-sm ${
-        selected ? 'bg-[#eef0ff] text-[#2e2e30]' : 'hover:bg-[#f7f7f9] text-[#2e2e30]'
-      }`}
+      className={`w-full text-left px-3 py-2 text-sm ${selected ? 'bg-[#eef0ff] text-[#2e2e30]' : 'hover:bg-[#f3f4f6] text-[#2e2e30]'}`}
       onClick={onClick}
     >
       {label}

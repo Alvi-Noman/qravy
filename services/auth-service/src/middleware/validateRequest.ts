@@ -1,6 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { ZodSchema, ZodIssue } from 'zod';
-import logger from '../utils/logger.js'; // Import your shared logger
+import logger from '../utils/logger.js';
 
 export function validateRequest(schema: ZodSchema<any>) {
   return (req: Request, res: Response, next: NextFunction) => {
@@ -10,11 +10,16 @@ export function validateRequest(schema: ZodSchema<any>) {
         path: issue.path.join('.'),
         message: issue.message,
       }));
-      // Log validation errors with request info for debugging
+      // Log validation errors with request info
       logger.warn(
         `[VALIDATION] ${req.method} ${req.originalUrl} - Validation failed: ${JSON.stringify(errors)}`
       );
-      return res.status(400).json({ message: 'Validation failed', errors });
+
+      // Use centralized formatter when available; preserve top-level "message"
+      if (typeof res.fail === 'function') {
+        return res.fail(400, 'Validation failed', errors);
+      }
+      return res.status(400).json({ success: false, message: 'Validation failed', errors });
     }
     next();
   };

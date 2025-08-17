@@ -31,6 +31,7 @@ import {
   categoryUpdateSchema,
 } from '../validation/schemas.js';
 import { ObjectId } from 'mongodb';
+import { toUserDTO } from '../utils/mapper.js';
 
 const router: Router = Router();
 
@@ -61,14 +62,13 @@ router.post('/categories/:id/delete', authenticateJWT, deleteCategory);
 router.post('/logout-all', authenticateJWT, logoutAll);
 router.post('/revoke-session', authenticateJWT, revokeSession);
 
-// List sessions (protected)
+// List sessions (protected) — now using res.ok
 router.get('/sessions', authenticateJWT, async (req: Request, res: Response) => {
   const userId = (req as any).user.id;
   const collection = await getUsersCollection();
   const user = await collection.findOne({ _id: new ObjectId(userId) });
   if (!user) return res.status(404).json({ message: 'User not found' });
-
-  res.json({
+  return res.ok({
     sessions: (user.refreshTokens || []).map((t: any) => ({
       tokenId: t.tokenId,
       createdAt: t.createdAt,
@@ -79,12 +79,12 @@ router.get('/sessions', authenticateJWT, async (req: Request, res: Response) => 
   });
 });
 
-// Me (protected)
+// Me (protected) — return DTO (sanitized) — now using res.ok
 router.get('/me', authenticateJWT, async (req: Request, res: Response) => {
   const collection = await getUsersCollection();
   const user = await collection.findOne({ _id: new ObjectId((req as any).user.id) });
   if (!user) return res.status(404).json({ message: 'User not found' });
-  res.json({ user });
+  return res.ok({ user: toUserDTO(user as any) });
 });
 
 export default router;

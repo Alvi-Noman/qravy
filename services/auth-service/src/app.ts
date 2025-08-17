@@ -14,6 +14,7 @@ import cookieParser from 'cookie-parser';
 import authRoutes from './routes/authRoutes.js';
 import logger from './utils/logger.js';
 import morgan from 'morgan';
+import { responseFormatter } from './middleware/response.js';
 
 const app: Application = express();
 
@@ -35,6 +36,9 @@ app.use(
     stream: { write: (message: string) => logger.http(message.trim()) },
   })
 );
+
+// Response helpers (res.ok / res.fail)
+app.use(responseFormatter);
 
 /**
  * Rate limiter for /api/v1/auth
