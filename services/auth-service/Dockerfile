@@ -1,17 +1,16 @@
 FROM node:20-alpine
 
 WORKDIR /app
+RUN corepack enable
 
-COPY . .
-
-RUN npm uninstall -g ts-node || true
-RUN npm install -g pnpm nodemon typescript ts-node@latest tsx
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml turbo.json ./
+COPY packages ./packages
+COPY services/auth-service/package.json ./services/auth-service/package.json
 
 RUN pnpm install --frozen-lockfile
 
-RUN pnpm turbo run build --filter=@muvance/auth-service...
+COPY services/auth-service ./services/auth-service
 
 WORKDIR /app/services/auth-service
-
 EXPOSE 3001
-CMD ["pnpm", "start"]
+CMD ["node", "dist/server.js"]

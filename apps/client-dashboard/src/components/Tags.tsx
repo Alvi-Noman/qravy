@@ -233,7 +233,7 @@ export default function Tags({
         <button
           type="button"
           onClick={() => setOpen(true)}
-          className="inline-flex items-center gap-2 rounded-md border border-[#dbdbdb] bg-[#fcfcfc] px-3 py-2 text-sm text-[#2e2e30] hover:border-[#111827] hover:bg-[#f3f4f6] transition-colors"
+          className="inline-flex items-center gap-2 rounded-md border border-[#dbdbdb] bg-[#fcfcfc] px-3 py-2 text-sm font-medium text-[#2e2e30] hover:border-[#111827] hover:bg-[#f3f4f6] transition-colors"
           aria-expanded={open}
         >
           <PlusCircleIcon className="h-5 w-5" />

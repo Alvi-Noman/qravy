@@ -56,6 +56,10 @@ export default function ProductDrawer({
   onClose: () => void;
   onSubmit: (values: { name: string; price: number; description?: string; category?: string }) => void;
 }) {
+  const API_BASE = import.meta.env.VITE_API_BASE || '';
+  const { token } = useAuthContext();
+  const queryClient = useQueryClient();
+
   const [values, setValues] = useState(() => ({
     name: initial.name,
     price: initial.price,
@@ -64,12 +68,9 @@ export default function ProductDrawer({
     compareAtPrice: initial.compareAtPrice || '',
     prepMinutes: initial.prepMinutes ?? 15,
     imageFile: null as File | null,
-    imagePreview: null as string | null,
+    imagePreview: initial.imagePreview || null as string | null,
   }));
   const [localError, setLocalError] = useState<string | null>(null);
-
-  const { token } = useAuthContext();
-  const queryClient = useQueryClient();
   const [localCats, setLocalCats] = useState<string[]>(categories);
 
   useEffect(() => setLocalCats(categories), [categories]);
@@ -106,7 +107,11 @@ export default function ProductDrawer({
 
   useEffect(() => {
     return () => {
-      if (values.imagePreview) URL.revokeObjectURL(values.imagePreview);
+      if (values.imagePreview?.startsWith('blob:')) {
+        try {
+          URL.revokeObjectURL(values.imagePreview);
+        } catch {}
+      }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -135,7 +140,7 @@ export default function ProductDrawer({
 
   const handlePick = (file: File, previewUrl: string) => {
     setValues((prev) => {
-      if (prev.imagePreview && prev.imagePreview !== previewUrl) {
+      if (prev.imagePreview && prev.imagePreview !== previewUrl && prev.imagePreview.startsWith('blob:')) {
         try {
           URL.revokeObjectURL(prev.imagePreview);
         } catch {}
@@ -146,7 +151,7 @@ export default function ProductDrawer({
 
   const handleClearImage = () => {
     setValues((prev) => {
-      if (prev.imagePreview) {
+      if (prev.imagePreview?.startsWith('blob:')) {
         try {
           URL.revokeObjectURL(prev.imagePreview);
         } catch {}
@@ -265,7 +270,19 @@ export default function ProductDrawer({
 
             <Field>
               <Label className="mb-2">Change Image</Label>
-              <ImageUploadZone preview={values.imagePreview || null} onPick={handlePick} onClear={handleClearImage} />
+              <ImageUploadZone
+                preview={values.imagePreview || null}
+                uploadUrl={`${API_BASE}/api/uploads/images`}
+                authToken={token || undefined}
+                onPick={handlePick}
+                onClear={handleClearImage}
+                onUploaded={(resp) => {
+                  setValues((prev) => ({
+                    ...prev,
+                    imagePreview: resp.cdn.medium,
+                  }));
+                }}
+              />
             </Field>
 
             <Variations helpText="Add options like Size, Spice Level, or Toppings" />
