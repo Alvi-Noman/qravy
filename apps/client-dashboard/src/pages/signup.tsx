@@ -92,33 +92,26 @@ function EmailEntry({ onBack }: { onBack: () => void }) {
   const [sent, setSent] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
 
-  const mutation = useMutation({
-    mutationFn: (email: string) => sendMagicLink(email),
+  const mutation = useMutation<void, Error, string>({
+    mutationFn: (value: string) => sendMagicLink(value),
     onSuccess: () => setSent(true),
   });
 
-  const isValidEmail = (email: string) =>
-    /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+  const isValidEmail = (value: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
 
-  const getErrorMessage = () => {
+  const getErrorMessage = (): string => {
     if (localError) return localError;
     if (!mutation.error) return '';
-    const err = mutation.error as any;
-    const msg =
-      err?.response?.data?.errors?.[0]?.message ||
-      err?.response?.data?.message ||
-      err?.data?.message ||
-      err?.message ||
-      (typeof err === 'string' ? err : '');
-
-    if (msg.includes('Invalid email address') || msg.includes('Validation failed'))
+    const msg = mutation.error.message || '';
+    if (msg.includes('Invalid email address') || msg.includes('Validation failed')) {
       return 'Please enter a valid email address.';
+    }
     if (msg.includes('429')) return 'Too many requests. Please wait and try again.';
     if (msg.includes('Network Error')) return 'Network error. Please check your connection.';
     return 'Something went wrong. Please try again.';
   };
 
-  const handleSend = (e: React.FormEvent) => {
+  const handleSend = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setLocalError(null);
 
@@ -138,7 +131,7 @@ function EmailEntry({ onBack }: { onBack: () => void }) {
       <div className="w-full flex flex-col items-center font-inter">
         <h2 className="text-xl font-medium mb-4 text-[#2e2e30]">Check your email</h2>
         <p className="mb-2 text-base font-normal text-center text-[#5b5b5d]">
-          We've sent you a temporary login link.<br />Please check your inbox at
+          We&apos;ve sent you a temporary login link.<br />Please check your inbox at
         </p>
         <p className="font-medium text-[#2e2e30] w-96 break-words text-center">{email}</p>
         <button
@@ -153,14 +146,14 @@ function EmailEntry({ onBack }: { onBack: () => void }) {
 
   return (
     <div className="w-full flex flex-col items-center font-inter">
-      <h2 className="text-xl font-medium mb-6 text-[#2e2e30]">What's your email address?</h2>
+      <h2 className="text-xl font-medium mb-6 text-[#2e2e30]">What&apos;s your email address?</h2>
       <form onSubmit={handleSend} noValidate className="w-full flex flex-col items-center">
         <input
           type="email"
           placeholder="Enter your email address..."
           className="p-3 w-96 border border-[#cecece] hover:border-[#b0b0b5] rounded-md mb-4 text-[#2e2e30] bg-transparent focus:outline-none text-base font-normal"
           value={email}
-          onChange={e => {
+          onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
             setEmail(e.target.value);
             setLocalError(null);
           }}

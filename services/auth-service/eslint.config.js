@@ -8,7 +8,8 @@ const __dirname = path.dirname(__filename);
 export default [
   ...sharedPreset,
   {
-    files: ['**/*.{ts,tsx,js,jsx}'],
+    files: ['**/*.ts', '**/*.tsx'],
+    ignores: ['dist/**'], // <-- ignore compiled files
     languageOptions: {
       parserOptions: {
         project: path.resolve(__dirname, './tsconfig.json'),

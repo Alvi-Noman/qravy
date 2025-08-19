@@ -4,8 +4,8 @@
  * - Refresh/logout/session management
  * - Complete onboarding
  */
-import { Request, Response, NextFunction } from 'express';
-import jwt from 'jsonwebtoken';
+import type { Request, Response, NextFunction } from 'express';
+import jwt, { type JwtPayload } from 'jsonwebtoken';
 import { Db, Collection, ObjectId } from 'mongodb';
 import { config } from 'dotenv';
 import { client } from '../db.js';
@@ -13,15 +13,26 @@ import { generateRefreshToken, verifyRefreshToken } from '../utils/token.js';
 import { sendMagicLinkEmail } from '../utils/email.js';
 import logger from '../utils/logger.js';
 import crypto from 'crypto';
-import type { UserDoc } from '../models/User.js';
+import type { UserDoc, RefreshToken } from '../models/User.js';
 
 config();
 
 let db: Db | null = null;
 
+type AccessClaims = { id: string; email: string } & JwtPayload;
+
+/** Narrow unknown into a payload with id and email */
+function isJwtPayloadWithIdEmail(payload: unknown): payload is AccessClaims {
+  if (!payload || typeof payload !== 'object') return false;
+  const obj = payload as Record<string, unknown>;
+  return typeof obj.id === 'string' && typeof obj.email === 'string';
+}
+
 /** Simple formatter for logs */
-function userInfo(user: any) {
-  return user ? `${user.email} (${user._id})` : 'unknown user';
+function userInfo(user: { email?: string; _id?: ObjectId } | null): string {
+  const id = user?._id ? user._id.toString() : 'unknown-id';
+  const email = user?.email ?? 'unknown-email';
+  return `${email} (${id})`;
 }
 
 /** Typed users collection helper */
@@ -33,29 +44,30 @@ export async function getUsersCollection(): Promise<Collection<UserDoc>> {
   return db.collection<UserDoc>('users');
 }
 
-function hashToken(token: string) {
+function hashToken(token: string): string {
   return crypto.createHash('sha256').update(token).digest('hex');
 }
 
-function cleanupTokens(tokens: any[]) {
+function cleanupTokens(tokens: RefreshToken[] | undefined): RefreshToken[] {
   const now = new Date();
-  return (tokens || []).filter((token) => token.expiresAt > now);
+  return (tokens ?? []).filter((t) => t.expiresAt > now);
 }
 
-function generateMagicLinkToken() {
+function generateMagicLinkToken(): string {
   return crypto.randomBytes(32).toString('hex');
 }
 
 /** POST /api/v1/auth/magic-link */
-export const sendMagicLink = async (req: Request, res: Response, next: NextFunction) => {
+export const sendMagicLink = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
     const { email: rawEmail } = req.body as { email: string };
     const email = rawEmail.toLowerCase();
-    const ip = req.ip || (req.connection as any).remoteAddress || 'unknown';
+    const ip = req.ip || req.socket.remoteAddress || 'unknown';
 
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
       logger.warn(`Invalid email address attempt: ${rawEmail} from IP ${ip}`);
-      return res.fail(400, 'Invalid email address.');
+      res.fail(400, 'Invalid email address.');
+      return;
     }
 
     const collection = await getUsersCollection();
@@ -91,26 +103,30 @@ export const sendMagicLink = async (req: Request, res: Response, next: NextFunct
       await sendMagicLinkEmail(email, magicLink);
       logger.info(`Magic link email sent to ${email}`);
     } catch (err) {
-      logger.error(`Error sending magic link email to ${email}: ${(err as Error).message}`);
-      return res.fail(500, 'Failed to send magic link email.');
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.error(`Error sending magic link email to ${email}: ${msg}`);
+      res.fail(500, 'Failed to send magic link email.');
+      return;
     }
 
-    return res.ok({ message: 'Magic link sent. Please check your email.' });
+    res.ok({ message: 'Magic link sent. Please check your email.' });
   } catch (error) {
-    logger.error(`sendMagicLink error: ${(error as Error).message}`);
+    const msg = error instanceof Error ? error.message : String(error);
+    logger.error(`sendMagicLink error: ${msg}`);
     next(error);
   }
 };
 
 /** GET /api/v1/auth/magic-link/verify */
-export const verifyMagicLink = async (req: Request, res: Response, next: NextFunction) => {
+export const verifyMagicLink = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
     const { token } = req.query;
-    const ip = req.ip || (req.connection as any).remoteAddress || 'unknown';
+    const ip = req.ip || req.socket.remoteAddress || 'unknown';
 
     if (!token || typeof token !== 'string') {
       logger.warn(`Invalid magic link token received from IP ${ip}`);
-      return res.fail(400, 'Invalid or expired magic link.');
+      res.fail(400, 'Invalid or expired magic link.');
+      return;
     }
 
     const collection = await getUsersCollection();
@@ -118,7 +134,8 @@ export const verifyMagicLink = async (req: Request, res: Response, next: NextFun
 
     if (!user || !user.magicLinkTokenExpires || user.magicLinkTokenExpires < new Date()) {
       logger.warn(`Attempt to use invalid or expired magic link from IP ${ip}`);
-      return res.fail(400, 'Invalid or expired magic link.');
+      res.fail(400, 'Invalid or expired magic link.');
+      return;
     }
 
     await collection.updateOne(
@@ -132,17 +149,18 @@ export const verifyMagicLink = async (req: Request, res: Response, next: NextFun
       { expiresIn: '15m' }
     );
 
-    const refreshToken = generateRefreshToken({
+    const refreshTokenValue = generateRefreshToken({
       id: (user._id as ObjectId).toString(),
       email: user.email,
     });
+
     const tokenId = crypto.randomUUID();
     const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
-    const tokenHash = hashToken(refreshToken);
+    const tokenHash = hashToken(refreshTokenValue);
 
-    const cleanedTokens = cleanupTokens(user.refreshTokens || []);
+    const cleanedTokens = cleanupTokens(user.refreshTokens);
 
-    const userAgent = req.headers['user-agent'] || 'unknown';
+    const userAgent = (req.headers['user-agent'] as string | undefined) || 'unknown';
 
     cleanedTokens.push({
       tokenId,
@@ -162,14 +180,14 @@ export const verifyMagicLink = async (req: Request, res: Response, next: NextFun
 
     logger.info(`User verified magic link: ${userInfo(user)} from IP ${ip}`);
 
-    res.cookie('refreshToken', refreshToken, {
+    res.cookie('refreshToken', refreshTokenValue, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       sameSite: 'strict',
       maxAge: 30 * 24 * 60 * 60 * 1000,
     });
 
-    return res.ok({
+    res.ok({
       token: accessToken,
       user: {
         id: (user._id as ObjectId).toString(),
@@ -179,59 +197,76 @@ export const verifyMagicLink = async (req: Request, res: Response, next: NextFun
       },
     });
   } catch (error) {
-    logger.error(`verifyMagicLink error: ${(error as Error).message}`);
+    const msg = error instanceof Error ? error.message : String(error);
+    logger.error(`verifyMagicLink error: ${msg}`);
     next(error);
   }
 };
 
 /** POST /api/v1/auth/onboarding/complete (JWT protected) */
-export const completeOnboarding = async (req: Request, res: Response, next: NextFunction) => {
+export const completeOnboarding = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
-    const userId = (req as any).user.id;
+    const userId = req.user?.id;
+    if (!userId) {
+      res.fail(401, 'Unauthorized');
+      return;
+    }
     const collection = await getUsersCollection();
     await collection.updateOne(
       { _id: new ObjectId(userId) },
       { $set: { isOnboarded: true } }
     );
     logger.info(`User onboarding completed: ${userId}`);
-    return res.ok({ message: 'Onboarding complete' });
+    res.ok({ message: 'Onboarding complete' });
   } catch (error) {
-    logger.error(`completeOnboarding error: ${(error as Error).message}`);
+    const msg = error instanceof Error ? error.message : String(error);
+    logger.error(`completeOnboarding error: ${msg}`);
     next(error);
   }
 };
 
 /** POST /api/v1/auth/refresh-token */
-export const refreshToken = async (req: Request, res: Response, next: NextFunction) => {
+export const refreshToken = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
-    const token = (req as any).cookies.refreshToken;
-    const ip = req.ip || (req.connection as any).remoteAddress || 'unknown';
+    const cookies = (req as unknown as { cookies?: Record<string, string> }).cookies;
+    const token = cookies?.refreshToken;
+    const ip = req.ip || req.socket.remoteAddress || 'unknown';
 
     if (!token) {
-      return res.fail(401, 'No refresh token provided');
+      res.fail(401, 'No refresh token provided');
+      return;
     }
 
-    let payload: any;
+    let payload: unknown;
     try {
-      payload = verifyRefreshToken(token) as any;
+      payload = verifyRefreshToken(token);
     } catch {
-      return res.fail(401, 'Invalid or expired refresh token');
+      res.fail(401, 'Invalid or expired refresh token');
+      return;
+    }
+
+    if (!isJwtPayloadWithIdEmail(payload)) {
+      res.fail(401, 'Invalid or expired refresh token');
+      return;
     }
 
     const collection = await getUsersCollection();
     const user = await collection.findOne({ _id: new ObjectId(payload.id) });
     if (!user) {
-      return res.fail(401, 'User not found');
+      res.fail(401, 'User not found');
+      return;
     }
 
-    let cleanedTokens = cleanupTokens(user.refreshTokens || []);
+    const cleanedTokens = cleanupTokens(user.refreshTokens);
 
     const providedTokenHash = hashToken(token);
-    const existingTokenIndex = cleanedTokens.findIndex((t: any) => t.tokenHash === providedTokenHash);
+    const existingTokenIndex = cleanedTokens.findIndex((t) => t.tokenHash === providedTokenHash);
     if (existingTokenIndex === -1) {
-      return res.fail(401, 'Refresh token not recognized');
+      res.fail(401, 'Refresh token not recognized');
+      return;
     }
 
+    // Remove the used token (rotate)
     cleanedTokens.splice(existingTokenIndex, 1);
 
     const newRefreshToken = generateRefreshToken({
@@ -242,7 +277,7 @@ export const refreshToken = async (req: Request, res: Response, next: NextFuncti
     const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
     const tokenHash = hashToken(newRefreshToken);
 
-    const userAgent = req.headers['user-agent'] || 'unknown';
+    const userAgent = (req.headers['user-agent'] as string | undefined) || 'unknown';
 
     cleanedTokens.push({
       tokenId,
@@ -273,41 +308,51 @@ export const refreshToken = async (req: Request, res: Response, next: NextFuncti
       maxAge: 30 * 24 * 60 * 60 * 1000,
     });
 
-    return res.ok({ token: newAccessToken });
+    res.ok({ token: newAccessToken });
   } catch (error) {
-    logger.error(`refreshToken error: ${(error as Error).message}`);
+    const msg = error instanceof Error ? error.message : String(error);
+    logger.error(`refreshToken error: ${msg}`);
     next(error);
   }
 };
 
 /** POST /api/v1/auth/logout */
-export const logout = async (req: Request, res: Response, next: NextFunction) => {
+export const logout = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
-    const token = (req as any).cookies.refreshToken;
+    const cookies = (req as unknown as { cookies?: Record<string, string> }).cookies;
+    const token = cookies?.refreshToken;
 
     if (!token) {
       res.clearCookie('refreshToken');
-      return res.ok({ message: 'Logged out' });
+      res.ok({ message: 'Logged out' });
+      return;
     }
 
-    let payload: any;
+    let payload: unknown;
     try {
-      payload = verifyRefreshToken(token) as any;
+      payload = verifyRefreshToken(token);
     } catch {
       res.clearCookie('refreshToken');
-      return res.ok({ message: 'Logged out' });
+      res.ok({ message: 'Logged out' });
+      return;
+    }
+
+    if (!isJwtPayloadWithIdEmail(payload)) {
+      res.clearCookie('refreshToken');
+      res.ok({ message: 'Logged out' });
+      return;
     }
 
     const collection = await getUsersCollection();
     const user = await collection.findOne({ _id: new ObjectId(payload.id) });
     if (!user) {
       res.clearCookie('refreshToken');
-      return res.ok({ message: 'Logged out' });
+      res.ok({ message: 'Logged out' });
+      return;
     }
 
-    let cleanedTokens = cleanupTokens(user.refreshTokens || []);
     const providedTokenHash = hashToken(token);
-    cleanedTokens = cleanedTokens.filter((t: any) => t.tokenHash !== providedTokenHash);
+    const cleanedTokens = (user.refreshTokens ?? []).filter((t) => t.tokenHash !== providedTokenHash);
 
     await collection.updateOne(
       { _id: user._id as ObjectId },
@@ -315,45 +360,62 @@ export const logout = async (req: Request, res: Response, next: NextFunction) =>
     );
 
     res.clearCookie('refreshToken');
-    return res.ok({ message: 'Logged out' });
+    res.ok({ message: 'Logged out' });
   } catch (error) {
-    logger.error(`logout error: ${(error as Error).message}`);
+    const msg = error instanceof Error ? error.message : String(error);
+    logger.error(`logout error: ${msg}`);
     next(error);
   }
 };
 
 /** POST /api/v1/auth/logout-all */
-export const logoutAll = async (req: Request, res: Response, next: NextFunction) => {
+export const logoutAll = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
-    const userId = (req as any).user.id;
+    const userId = req.user?.id;
+    if (!userId) {
+      res.fail(401, 'Unauthorized');
+      return;
+    }
     const collection = await getUsersCollection();
     await collection.updateOne({ _id: new ObjectId(userId) }, { $set: { refreshTokens: [] } });
     res.clearCookie('refreshToken');
-    return res.ok({ message: 'Logged out from all sessions' });
+    res.ok({ message: 'Logged out from all sessions' });
   } catch (error) {
-    logger.error(`logoutAll error: ${(error as Error).message}`);
+    const msg = error instanceof Error ? error.message : String(error);
+    logger.error(`logoutAll error: ${msg}`);
     next(error);
   }
 };
 
 /** POST /api/v1/auth/revoke-session */
-export const revokeSession = async (req: Request, res: Response, next: NextFunction) => {
+export const revokeSession = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
-    const userId = (req as any).user.id;
+    const userId = req.user?.id;
     const { tokenId } = req.body as { tokenId?: string };
 
-    if (!tokenId) return res.fail(400, 'tokenId is required');
+    if (!userId) {
+      res.fail(401, 'Unauthorized');
+      return;
+    }
+    if (!tokenId) {
+      res.fail(400, 'tokenId is required');
+      return;
+    }
 
     const collection = await getUsersCollection();
     const user = await collection.findOne({ _id: new ObjectId(userId) });
-    if (!user) return res.fail(404, 'User not found');
+    if (!user) {
+      res.fail(404, 'User not found');
+      return;
+    }
 
-    const newTokens = (user.refreshTokens || []).filter((t: any) => t.tokenId !== tokenId);
+    const newTokens = (user.refreshTokens ?? []).filter((t) => t.tokenId !== tokenId);
     await collection.updateOne({ _id: user._id as ObjectId }, { $set: { refreshTokens: newTokens } });
 
-    return res.ok({ message: 'Session revoked' });
+    res.ok({ message: 'Session revoked' });
   } catch (error) {
-    logger.error(`revokeSession error: ${(error as Error).message}`);
+    const msg = error instanceof Error ? error.message : String(error);
+    logger.error(`revokeSession error: ${msg}`);
     next(error);
   }
 };

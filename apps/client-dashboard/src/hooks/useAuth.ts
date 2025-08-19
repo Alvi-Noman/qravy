@@ -2,16 +2,24 @@ import { useAuthContext } from '../context/AuthContext';
 import { useNavigate } from 'react-router-dom';
 import { useState } from 'react';
 
+type User = { id: string; email: string; name: string; company: string };
+
+/**
+ * Custom hook for handling user authentication.
+ * Provides login, signup (no-op), and logout functions.
+ */
 export const useAuth = () => {
   const { login: setAuth, logout: clearAuth } = useAuthContext();
   const navigate = useNavigate();
   const [error, setError] = useState<Error | null>(null);
   const [isLoading, setIsLoading] = useState(false);
 
-  const login = async (
-    token: string,
-    user: { id: string; email: string; name: string; company: string }
-  ) => {
+  /**
+   * Log in a user by setting auth context and redirecting.
+   * @param token - Access token
+   * @param user - User object
+   */
+  const login = async (token: string, user: User): Promise<void> => {
     setIsLoading(true);
     setError(null);
     try {
@@ -24,11 +32,17 @@ export const useAuth = () => {
     }
   };
 
-  const signup = async (email: string) => {
-    // No-op for magic link flow
+  /**
+   * Signup no-op for magic link flow.
+   */
+  const signup = async (): Promise<void> => {
+    // intentionally empty
   };
 
-  const logout = () => {
+  /**
+   * Log out a user by clearing auth context.
+   */
+  const logout = (): void => {
     try {
       clearAuth();
     } catch (err) {

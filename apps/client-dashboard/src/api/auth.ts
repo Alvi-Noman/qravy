@@ -29,10 +29,6 @@ let refreshInFlight: Promise<void> | null = null;
 
 /**
  * Attach auth interceptors to axios instance.
- * @param {() => string | null} getToken
- * @param {() => Promise<void>} refreshAccessToken
- * @param {() => void} logout
- * @returns {void}
  */
 export function attachAuthInterceptor(
   getToken: () => string | null,
@@ -95,13 +91,11 @@ export function attachAuthInterceptor(
 
 /**
  * Extract a user-friendly error message.
- * @param {unknown} error
- * @returns {string}
  */
 function extractErrorMessage(error: unknown): string {
   if (axios.isAxiosError(error)) {
-    const msg = (error.response?.data as any)?.message || error.message || 'Request failed';
-    return msg;
+    const data = error.response?.data as { message?: string } | undefined;
+    return data?.message || error.message || 'Request failed';
   }
   if (error instanceof Error) return error.message;
   if (typeof error === 'string') return error;
@@ -110,8 +104,6 @@ function extractErrorMessage(error: unknown): string {
 
 /**
  * Send a magic login link to the user's email.
- * @param {string} email
- * @returns {Promise<void>}
  */
 export async function sendMagicLink(email: string): Promise<void> {
   try {
@@ -123,12 +115,11 @@ export async function sendMagicLink(email: string): Promise<void> {
 
 /**
  * Verify magic link and receive access token + user object.
- * @param {string} token
- * @returns {Promise<any>}
+ * Provide a generic to type the response shape at call sites.
  */
-export async function verifyMagicLink(token: string): Promise<any> {
+export async function verifyMagicLink<T = unknown>(token: string): Promise<T> {
   try {
-    const response = await api.get(`/api/v1/auth/magic-link/verify?token=${encodeURIComponent(token)}`);
+    const response = await api.get<T>(`/api/v1/auth/magic-link/verify?token=${encodeURIComponent(token)}`);
     return response.data;
   } catch (error) {
     throw new Error(extractErrorMessage(error));
@@ -136,14 +127,13 @@ export async function verifyMagicLink(token: string): Promise<any> {
 }
 
 /**
- * Get current user.
- * @param {string=} token
- * @returns {Promise<any>}
+ * Get current user (optionally with an explicit token).
+ * Provide a generic to type the response shape at call sites.
  */
-export async function getMe(token?: string): Promise<any> {
+export async function getMe<T = unknown>(token?: string): Promise<T> {
   try {
     const headers = token ? AxiosHeaders.from({ Authorization: `Bearer ${token}` }) : undefined;
-    const response = await api.get('/api/v1/auth/me', { headers });
+    const response = await api.get<T>('/api/v1/auth/me', { headers });
     return response.data;
   } catch (error) {
     throw new Error(extractErrorMessage(error));
@@ -153,29 +143,26 @@ export async function getMe(token?: string): Promise<any> {
 /**
  * Rotate refresh token and receive a new access token.
  * Uses a plain client to avoid interceptor recursion.
- * @returns {Promise<any>}
+ * Provide a generic to type the response shape at call sites.
  */
-export async function refreshToken(): Promise<any> {
+export async function refreshToken<T = unknown>(): Promise<T> {
   try {
-    const response = await plain.post(REFRESH_URL, null, {
-      headers: { 'Content-Type': undefined } // Avoid preflight
-    });
+    // No extra headers/body to avoid preflight
+    const response = await plain.post<T>(REFRESH_URL);
     return response.data;
   } catch (error) {
-    console.error('Refresh token error:', error);
     throw new Error(extractErrorMessage(error));
   }
 }
 
 /**
  * Mark onboarding as complete for the current user.
- * @param {string=} token
- * @returns {Promise<any>}
+ * Provide a generic to type the response shape at call sites.
  */
-export async function completeOnboarding(token?: string): Promise<any> {
+export async function completeOnboarding<T = unknown>(token?: string): Promise<T> {
   try {
     const headers = token ? AxiosHeaders.from({ Authorization: `Bearer ${token}` }) : undefined;
-    const response = await api.post('/api/v1/auth/onboarding/complete', null, { headers });
+    const response = await api.post<T>('/api/v1/auth/onboarding/complete', null, { headers });
     return response.data;
   } catch (error) {
     throw new Error(extractErrorMessage(error));

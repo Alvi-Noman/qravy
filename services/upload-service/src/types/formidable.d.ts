@@ -1,13 +1,15 @@
 declare module 'formidable' {
   import type { IncomingMessage } from 'http';
 
-  export type Fields = Record<string, any>;
+  export type Fields = Record<string, unknown>;
+
   export interface FileItem {
     filepath: string;
     originalFilename?: string;
     mimetype?: string;
     size?: number;
   }
+
   export type Files = Record<string, FileItem[]>;
 
   export interface FormidableOptions {

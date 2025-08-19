@@ -21,11 +21,14 @@ function menuItemsCol() {
 
 export async function listCategories(req: Request, res: Response, next: NextFunction) {
   try {
-    const userId = (req as any).user.id as string;
+    const userId = req.user?.id;
+    if (!userId) return res.fail(401, 'Unauthorized');
+
     const docs = await categoriesCol()
       .find({ userId: new ObjectId(userId) })
       .sort({ name: 1 })
       .toArray();
+
     return res.ok({ items: docs.map(toCategoryDTO) });
   } catch (err) {
     logger.error(`listCategories error: ${(err as Error).message}`);
@@ -35,7 +38,9 @@ export async function listCategories(req: Request, res: Response, next: NextFunc
 
 export async function createCategory(req: Request, res: Response, next: NextFunction) {
   try {
-    const userId = (req as any).user.id as string;
+    const userId = req.user?.id;
+    if (!userId) return res.fail(401, 'Unauthorized');
+
     const { name } = req.body as { name: string };
 
     const now = new Date();
@@ -53,13 +58,14 @@ export async function createCategory(req: Request, res: Response, next: NextFunc
       userId,
       action: 'CATEGORY_CREATE',
       after: toCategoryDTO(created),
-      ip: req.ip || (req.connection as any).remoteAddress || 'unknown',
+      ip: req.ip || 'unknown',
       userAgent: req.headers['user-agent'] || 'unknown',
     });
 
     return res.ok({ item: toCategoryDTO(created) }, 201);
-  } catch (err: any) {
-    if (err?.code === 11000) {
+  } catch (err) {
+    const code = (err as { code?: number })?.code;
+    if (code === 11000) {
       return res.fail(409, 'Category already exists.');
     }
     logger.error(`createCategory error: ${(err as Error).message}`);
@@ -69,7 +75,9 @@ export async function createCategory(req: Request, res: Response, next: NextFunc
 
 export async function updateCategory(req: Request, res: Response, next: NextFunction) {
   try {
-    const userId = (req as any).user.id as string;
+    const userId = req.user?.id;
+    if (!userId) return res.fail(401, 'Unauthorized');
+
     const { id } = req.params;
     const { name } = req.body as { name: string };
     if (!ObjectId.isValid(id)) return res.fail(400, 'Invalid id');
@@ -77,12 +85,13 @@ export async function updateCategory(req: Request, res: Response, next: NextFunc
     const before = await categoriesCol().findOne({ _id: new ObjectId(id), userId: new ObjectId(userId) });
     if (!before) return res.fail(404, 'Category not found');
 
-    const r: any = await categoriesCol().findOneAndUpdate(
+    // Return the updated document directly (driver overload without metadata)
+    const doc = await categoriesCol().findOneAndUpdate(
       { _id: new ObjectId(id), userId: new ObjectId(userId) },
       { $set: { name, updatedAt: new Date() } },
-      { returnDocument: 'after' as any }
+      { returnDocument: 'after' }
     );
-    const doc = (r && 'value' in r ? r.value : r) ?? null;
+
     if (!doc) return res.fail(404, 'Category not found');
 
     await auditLog({
@@ -90,13 +99,14 @@ export async function updateCategory(req: Request, res: Response, next: NextFunc
       action: 'CATEGORY_UPDATE',
       before: toCategoryDTO(before),
       after: toCategoryDTO(doc),
-      ip: req.ip || (req.connection as any).remoteAddress || 'unknown',
+      ip: req.ip || 'unknown',
       userAgent: req.headers['user-agent'] || 'unknown',
     });
 
     return res.ok({ item: toCategoryDTO(doc) });
-  } catch (err: any) {
-    if (err?.code === 11000) {
+  } catch (err) {
+    const code = (err as { code?: number })?.code;
+    if (code === 11000) {
       return res.fail(409, 'Category already exists.');
     }
     logger.error(`updateCategory error: ${(err as Error).message}`);
@@ -106,7 +116,9 @@ export async function updateCategory(req: Request, res: Response, next: NextFunc
 
 export async function deleteCategory(req: Request, res: Response, next: NextFunction) {
   try {
-    const userId = (req as any).user.id as string;
+    const userId = req.user?.id;
+    if (!userId) return res.fail(401, 'Unauthorized');
+
     const { id } = req.params;
     if (!ObjectId.isValid(id)) return res.fail(400, 'Invalid id');
 
@@ -125,12 +137,12 @@ export async function deleteCategory(req: Request, res: Response, next: NextFunc
       action: 'CATEGORY_DELETE',
       before: toCategoryDTO(cat),
       metadata: { deletedProducts: delItems.deletedCount || 0 },
-      ip: req.ip || (req.connection as any).remoteAddress || 'unknown',
+      ip: req.ip || 'unknown',
       userAgent: req.headers['user-agent'] || 'unknown',
     });
 
     logger.info(
-      `Category deleted: ${cat.name} for user ${userId}. Also deleted ${delItems.deletedCount} menu items.`
+      `Category deleted: ${cat.name} for user ${userId}. Also deleted ${delItems.deletedCount || 0} menu items.`
     );
 
     return res.ok({ deleted: true, deletedProducts: delItems.deletedCount || 0 });

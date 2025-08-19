@@ -1,26 +1,24 @@
 import type { Request, Response, NextFunction } from 'express';
 
-// Augment Express.Response with ok/fail helpers
+/* eslint-disable @typescript-eslint/no-namespace */
 declare global {
   namespace Express {
     interface Response {
-      ok: (data?: any, status?: number) => Response;
-      fail: (status: number, message: string, extra?: any) => Response;
+      ok: (data?: Record<string, unknown>, status?: number) => import('express').Response;
+      fail: (status: number, message: string, extra?: unknown) => import('express').Response;
     }
   }
 }
+/* eslint-enable @typescript-eslint/no-namespace */
 
-export function responseFormatter(_req: Request, res: Response, next: NextFunction) {
-  res.ok = (data: any = {}, status = 200) => {
-    // Keep original keys intact (e.g., { items }, { item }) and add success
+export function responseFormatter(_req: Request, res: Response, next: NextFunction): void {
+  res.ok = (data: Record<string, unknown> = {}, status = 200) => {
     return res.status(status).json({ success: true, ...data });
   };
 
-  res.fail = (status: number, message: string, extra?: any) => {
-    // Preserve top-level "message" for existing clients and add success=false
-    // Optional "error" details included for diagnostics (ignored by current FE)
-    const body: any = { success: false, message };
-    if (extra !== undefined) body.error = extra;
+  res.fail = (status: number, message: string, extra?: unknown) => {
+    const body: Record<string, unknown> = { success: false, message };
+    if (typeof extra !== 'undefined') body.error = extra;
     return res.status(status).json(body);
   };
 

@@ -9,6 +9,7 @@ export default [
   ...sharedPreset,
   {
     files: ['**/*.{ts,tsx,js,jsx}'],
+    ignores: ['dist/**'], // <--- ignore compiled files
     languageOptions: {
       parserOptions: {
         project: path.resolve(__dirname, './tsconfig.json'),

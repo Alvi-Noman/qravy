@@ -17,7 +17,9 @@ function col() {
 /** GET /api/v1/auth/menu-items (JWT required) */
 export async function listMenuItems(req: Request, res: Response, next: NextFunction) {
   try {
-    const userId = (req as any).user.id as string;
+    const userId = req.user?.id;
+    if (!userId) return res.fail(401, 'Unauthorized');
+
     const docs = await col().find({ userId: new ObjectId(userId) }).sort({ createdAt: -1 }).toArray();
     return res.ok({ items: docs.map(toMenuItemDTO) });
   } catch (err) {
@@ -29,7 +31,9 @@ export async function listMenuItems(req: Request, res: Response, next: NextFunct
 /** POST /api/v1/auth/menu-items (JWT required) */
 export async function createMenuItem(req: Request, res: Response, next: NextFunction) {
   try {
-    const userId = (req as any).user.id as string;
+    const userId = req.user?.id;
+    if (!userId) return res.fail(401, 'Unauthorized');
+
     const { name, price, description, category } = req.body as {
       name: string; price: number; description?: string; category?: string;
     };
@@ -52,7 +56,7 @@ export async function createMenuItem(req: Request, res: Response, next: NextFunc
       userId,
       action: 'MENU_ITEM_CREATE',
       after: toMenuItemDTO(created),
-      ip: req.ip || (req.connection as any).remoteAddress || 'unknown',
+      ip: req.ip || 'unknown',
       userAgent: req.headers['user-agent'] || 'unknown',
     });
 
@@ -66,7 +70,9 @@ export async function createMenuItem(req: Request, res: Response, next: NextFunc
 /** POST /api/v1/auth/menu-items/:id/update (JWT required) */
 export async function updateMenuItem(req: Request, res: Response, next: NextFunction) {
   try {
-    const userId = (req as any).user.id as string;
+    const userId = req.user?.id;
+    if (!userId) return res.fail(401, 'Unauthorized');
+
     const { id } = req.params;
     if (!ObjectId.isValid(id)) return res.fail(400, 'Invalid id');
 
@@ -83,12 +89,13 @@ export async function updateMenuItem(req: Request, res: Response, next: NextFunc
     if (description !== undefined) updates.description = description;
     if (category !== undefined) updates.category = category;
 
-    const r: any = await col().findOneAndUpdate(
+    // Return the updated document directly (driver overload without metadata)
+    const doc = await col().findOneAndUpdate(
       { _id: new ObjectId(id), userId: new ObjectId(userId) },
       { $set: { ...updates, updatedAt: new Date() } },
-      { returnDocument: 'after' as any }
+      { returnDocument: 'after' }
     );
-    const doc = (r && 'value' in r ? r.value : r) ?? null;
+
     if (!doc) return res.fail(404, 'Item not found');
 
     await auditLog({
@@ -96,7 +103,7 @@ export async function updateMenuItem(req: Request, res: Response, next: NextFunc
       action: 'MENU_ITEM_UPDATE',
       before: toMenuItemDTO(before),
       after: toMenuItemDTO(doc),
-      ip: req.ip || (req.connection as any).remoteAddress || 'unknown',
+      ip: req.ip || 'unknown',
       userAgent: req.headers['user-agent'] || 'unknown',
     });
 
@@ -110,19 +117,21 @@ export async function updateMenuItem(req: Request, res: Response, next: NextFunc
 /** POST /api/v1/auth/menu-items/:id/delete (JWT required) */
 export async function deleteMenuItem(req: Request, res: Response, next: NextFunction) {
   try {
-    const userId = (req as any).user.id as string;
+    const userId = req.user?.id;
+    if (!userId) return res.fail(401, 'Unauthorized');
+
     const { id } = req.params;
     if (!ObjectId.isValid(id)) return res.fail(400, 'Invalid id');
 
-    const r: any = await col().findOneAndDelete({ _id: new ObjectId(id), userId: new ObjectId(userId) });
-    const deleted = (r && 'value' in r ? r.value : r) ?? null;
+    // Return the deleted document directly (driver overload without metadata)
+    const deleted = await col().findOneAndDelete({ _id: new ObjectId(id), userId: new ObjectId(userId) });
     if (!deleted) return res.fail(404, 'Item not found');
 
     await auditLog({
       userId,
       action: 'MENU_ITEM_DELETE',
       before: toMenuItemDTO(deleted),
-      ip: req.ip || (req.connection as any).remoteAddress || 'unknown',
+      ip: req.ip || 'unknown',
       userAgent: req.headers['user-agent'] || 'unknown',
     });
 

@@ -9,6 +9,10 @@ type ErrorBoundaryState = {
   error?: Error;
 };
 
+/**
+ * ErrorBoundary component to catch runtime errors in its child component tree.
+ * Displays a fallback UI when an error occurs.
+ */
 export class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoundaryState> {
   constructor(props: ErrorBoundaryProps) {
     super(props);
@@ -19,9 +23,11 @@ export class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoun
     return { hasError: true, error };
   }
 
-  componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
-    // You can log the error to an error reporting service here
-    console.error('[ErrorBoundary] Uncaught error in component tree', error, errorInfo);
+  componentDidCatch(error: Error, errorInfo: React.ErrorInfo): void {
+    // Mark as used to satisfy @typescript-eslint/no-unused-vars
+    void error;
+    void errorInfo;
+    // Integrate your error reporting service here if needed
   }
 
   render() {
@@ -38,6 +44,7 @@ export class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoun
         </div>
       );
     }
+
     return this.props.children;
   }
 }

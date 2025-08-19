@@ -1,10 +1,7 @@
-/**
- * @file Upload API
- */
 import express from 'express';
 import cors from 'cors';
 import rateLimit from 'express-rate-limit';
-import formidable from 'formidable';
+import formidable, { Fields, Files } from 'formidable';
 import { readFile } from 'node:fs/promises';
 import crypto from 'node:crypto';
 import sharp from 'sharp';
@@ -14,7 +11,7 @@ import { S3Client, HeadObjectCommand, PutObjectCommand } from '@aws-sdk/client-s
 type CdnUrls = { original: string; thumbnail: string; medium: string; large: string };
 type UploadResponse = { ok: boolean; key: string; hash: string; mime: string; size: number; cdn: CdnUrls };
 
-const app: import('express').Express = express();
+const app: express.Express = express();
 
 app.use(
   cors({
@@ -74,8 +71,8 @@ app.post('/api/uploads/images', auth, async (req, res) => {
       allowEmptyFiles: false
     });
 
-    const [, files] = await form.parse(req);
-    const file = (files as any).file?.[0];
+    const [, files]: [Fields, Files] = await form.parse(req);
+    const file = files.file?.[0];
     if (!file) return res.status(400).json({ error: 'No file' });
 
     const source = await readFile(file.filepath);
@@ -130,14 +127,16 @@ app.post('/api/uploads/images', auth, async (req, res) => {
     };
 
     return res.json(payload);
-  } catch (err: any) {
-    if (err?.code === 'ETOOBIG') return res.status(413).json({ error: 'File too large (max 20MB)' });
+  } catch (err: unknown) {
+    // Safely check error type without using `any`
+    const e = err as { code?: string };
+    if (e.code === 'ETOOBIG') return res.status(413).json({ error: 'File too large (max 20MB)' });
     return res.status(500).json({ error: 'Upload failed' });
   }
 });
 
 app.get('/i/:key(*)', (req, res) => {
-  const { key } = req.params as any;
+  const { key } = req.params as { key: string };
   const { w, h, q, format, lossless } = req.query;
   const tr: string[] = [];
   if (w) tr.push(`w-${Number(w)}`);

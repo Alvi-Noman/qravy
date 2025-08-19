@@ -1,10 +1,17 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import sharedPreset from './packages/config/eslint-preset/index.js';
+import sharedPreset from '@muvance/config/eslint-preset';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+/**
+ * Root ESLint configuration.
+ * - Extends shared preset from packages/config/eslint-preset
+ * - Lints all TS/JS files in apps, packages, and services
+ * - Ignores compiled and config files
+ * - Sets parserOptions.project to all package tsconfigs for type-aware linting
+ */
 export default [
   ...sharedPreset,
   {

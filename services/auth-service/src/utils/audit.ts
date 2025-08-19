@@ -5,9 +5,9 @@ import logger from './logger.js';
 export type AuditEvent = {
   userId: string;
   action: string;
-  before?: any;
-  after?: any;
-  metadata?: Record<string, any>;
+  before?: unknown;
+  after?: unknown;
+  metadata?: Record<string, unknown>;
   ip?: string;
   userAgent?: string;
 };
@@ -21,6 +21,7 @@ export async function auditLog(event: AuditEvent): Promise<void> {
       createdAt: new Date(),
     });
   } catch (e) {
-    logger.warn(`Failed to write audit log: ${(e as Error).message}`);
+    const msg = e instanceof Error ? e.message : String(e);
+    logger.warn(`Failed to write audit log: ${msg}`);
   }
 }

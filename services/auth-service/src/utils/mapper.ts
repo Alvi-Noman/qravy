@@ -30,14 +30,8 @@ export function toMenuItemDTO(doc: MenuItemDoc): v1.MenuItemDTO {
     price: doc.price,
     description: doc.description,
     category: doc.category,
-    createdAt:
-      doc.createdAt instanceof Date
-        ? doc.createdAt.toISOString()
-        : new Date(doc.createdAt as any).toISOString(),
-    updatedAt:
-      doc.updatedAt instanceof Date
-        ? doc.updatedAt.toISOString()
-        : new Date(doc.updatedAt as any).toISOString(),
+    createdAt: doc.createdAt.toISOString(),
+    updatedAt: doc.updatedAt.toISOString(),
   };
 }
 
@@ -45,13 +39,7 @@ export function toCategoryDTO(doc: CategoryDoc): v1.CategoryDTO {
   return {
     id: toId(doc._id),
     name: doc.name,
-    createdAt:
-      doc.createdAt instanceof Date
-        ? doc.createdAt.toISOString()
-        : new Date(doc.createdAt as any).toISOString(),
-    updatedAt:
-      doc.updatedAt instanceof Date
-        ? doc.updatedAt.toISOString()
-        : new Date(doc.updatedAt as any).toISOString(),
+    createdAt: doc.createdAt.toISOString(),
+    updatedAt: doc.updatedAt.toISOString(),
   };
 }

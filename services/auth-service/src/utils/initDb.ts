@@ -102,7 +102,18 @@ function auditJsonSchema() {
   };
 }
 
-async function ensureValidator(client: MongoClient, collection: string, schema: object) {
+type MongoErrorLike = { code?: number; codeName?: string; message?: string };
+
+function isNamespaceNotFound(e: unknown): e is MongoErrorLike {
+  const obj = e as MongoErrorLike;
+  return obj && (obj.code === 26 || obj.codeName === 'NamespaceNotFound');
+}
+
+function errorMessage(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
+
+async function ensureValidator(client: MongoClient, collection: string, schema: object): Promise<void> {
   const db = client.db('authDB');
   try {
     await db.command({
@@ -112,8 +123,8 @@ async function ensureValidator(client: MongoClient, collection: string, schema: 
       validationAction: 'error',
     });
     logger.info(`Applied validator to ${collection} (collMod).`);
-  } catch (e: any) {
-    if (e?.code === 26 || e?.codeName === 'NamespaceNotFound') {
+  } catch (e) {
+    if (isNamespaceNotFound(e)) {
       await db.createCollection(collection, {
         validator: schema,
         validationLevel: 'moderate',
@@ -121,12 +132,12 @@ async function ensureValidator(client: MongoClient, collection: string, schema: 
       });
       logger.info(`Created collection ${collection} with validator.`);
     } else {
-      logger.warn(`Could not apply validator to ${collection}: ${e.message}`);
+      logger.warn(`Could not apply validator to ${collection}: ${errorMessage(e)}`);
     }
   }
 }
 
-export async function ensureUserIndexes(client: MongoClient) {
+export async function ensureUserIndexes(client: MongoClient): Promise<void> {
   const db = client.db('authDB');
 
   // Users
