@@ -9,8 +9,14 @@
   },
   "devDependencies": {
     "@muvance/config": "workspace:*",
+    "@types/react": "18",
+    "@types/react-dom": "18",
     "eslint": "^9.9.0",
     "typescript": "^5.4.5"
   },
-  "type": "module"
+  "type": "module",
+  "dependencies": {
+    "react": "18",
+    "react-dom": "18"
+  }
 }

@@ -1,6 +1,5 @@
 /**
  * Auth service app
- * - CORS (incl. PATCH/DELETE) + OPTIONS
  * - Rate limit (skips OPTIONS so preflights don't count)
  * - JSON, cookies, logging
  * - Routes + Dev 404 tracer
@@ -8,7 +7,6 @@
  */
 import { errorHandler } from './middleware/errorHandler.js';
 import express, { Application, Request, Response } from 'express';
-import cors from 'cors';
 import rateLimit from 'express-rate-limit';
 import cookieParser from 'cookie-parser';
 import authRoutes from './routes/authRoutes.js';
@@ -18,15 +16,9 @@ import { responseFormatter } from './middleware/response.js';
 
 const app: Application = express();
 
-app.use(
-  cors({
-    origin: process.env.CORS_ORIGIN || 'http://localhost:5173',
-    credentials: true,
-    methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'authorization'],
-  })
-);
-app.options('*', cors());
+// Removed CORS middleware since api-gateway handles it
+// app.use(cors({ ... }));
+// app.options('*', cors());
 
 app.use(express.json());
 app.use(cookieParser());

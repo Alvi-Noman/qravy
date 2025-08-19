@@ -1,32 +1,53 @@
 /**
  * API client and auth endpoints.
- * - Attaches JWT to requests
- * - Handles 401 with refresh flow
- * - Exposes auth endpoints for magic link, me, refresh, onboarding
+ * - Adds Authorization on requests
+ * - Single-flight refresh with a plain client (no interceptor recursion)
+ * - Retries the original request after refresh
  */
-import axios, { AxiosError, AxiosResponse, InternalAxiosRequestConfig } from 'axios';
+import axios, {
+  AxiosHeaders,
+  type AxiosError,
+  type AxiosInstance,
+  type AxiosResponse,
+  type InternalAxiosRequestConfig
+} from 'axios';
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080';
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string) || 'http://localhost:8080';
+const REFRESH_URL = '/api/v1/auth/refresh-token';
 
-const api = axios.create({
+const api: AxiosInstance = axios.create({
   baseURL: API_BASE_URL,
-  withCredentials: true,
+  withCredentials: true
 });
+
+const plain: AxiosInstance = axios.create({
+  baseURL: API_BASE_URL,
+  withCredentials: true
+});
+
+let refreshInFlight: Promise<void> | null = null;
 
 /**
  * Attach auth interceptors to axios instance.
- * - Adds Authorization header when token exists
- * - On 401, attempts token refresh once, else logs out
+ * @param {() => string | null} getToken
+ * @param {() => Promise<void>} refreshAccessToken
+ * @param {() => void} logout
+ * @returns {void}
  */
-export const attachAuthInterceptor = (
+export function attachAuthInterceptor(
   getToken: () => string | null,
-  refreshToken: () => Promise<void>,
+  refreshAccessToken: () => Promise<void>,
   logout: () => void
-) => {
+): void {
   api.interceptors.request.use((config: InternalAxiosRequestConfig) => {
     const token = getToken();
-    if (token && config.headers) {
-      config.headers.Authorization = `Bearer ${token}`;
+    if (token) {
+      if (config.headers instanceof AxiosHeaders) {
+        config.headers.set('Authorization', `Bearer ${token}`);
+      } else {
+        config.headers = AxiosHeaders.from(config.headers || {});
+        (config.headers as AxiosHeaders).set('Authorization', `Bearer ${token}`);
+      }
     }
     return config;
   });
@@ -34,32 +55,52 @@ export const attachAuthInterceptor = (
   api.interceptors.response.use(
     (response: AxiosResponse) => response,
     async (error: AxiosError) => {
-      const originalRequest = error.config as InternalAxiosRequestConfig & { _retry?: boolean };
-      if (error.response?.status === 401 && !originalRequest._retry) {
-        originalRequest._retry = true;
+      const original = error.config as (InternalAxiosRequestConfig & { _retry?: boolean }) | undefined;
+
+      if (!original) return Promise.reject(error);
+
+      const status = error.response?.status;
+      const isRefreshCall = Boolean(original.url && original.url.includes(REFRESH_URL));
+
+      if (status === 401 && !original._retry && !isRefreshCall) {
+        original._retry = true;
+
         try {
-          await refreshToken();
-          const token = getToken();
-          if (token && originalRequest.headers) {
-            originalRequest.headers.Authorization = `Bearer ${token}`;
-          }
-          return api(originalRequest);
+          if (!refreshInFlight) refreshInFlight = refreshAccessToken();
+          await refreshInFlight;
         } catch {
+          refreshInFlight = null;
           logout();
+          return Promise.reject(error);
         }
+        refreshInFlight = null;
+
+        const token = getToken();
+        if (token) {
+          if (original.headers instanceof AxiosHeaders) {
+            original.headers.set('Authorization', `Bearer ${token}`);
+          } else {
+            original.headers = AxiosHeaders.from(original.headers || {});
+            (original.headers as AxiosHeaders).set('Authorization', `Bearer ${token}`);
+          }
+        }
+
+        return api.request(original);
       }
+
       return Promise.reject(error);
     }
   );
-};
+}
 
-/** Extract a user-friendly error message from an unknown error */
+/**
+ * Extract a user-friendly error message.
+ * @param {unknown} error
+ * @returns {string}
+ */
 function extractErrorMessage(error: unknown): string {
   if (axios.isAxiosError(error)) {
-    const msg =
-      (error.response?.data as any)?.message ||
-      error.message ||
-      'Request failed';
+    const msg = (error.response?.data as any)?.message || error.message || 'Request failed';
     return msg;
   }
   if (error instanceof Error) return error.message;
@@ -67,8 +108,12 @@ function extractErrorMessage(error: unknown): string {
   return 'Request failed';
 }
 
-/** Send a magic login link to the user's email */
-export async function sendMagicLink(email: string) {
+/**
+ * Send a magic login link to the user's email.
+ * @param {string} email
+ * @returns {Promise<void>}
+ */
+export async function sendMagicLink(email: string): Promise<void> {
   try {
     await api.post('/api/v1/auth/magic-link', { email });
   } catch (error) {
@@ -76,8 +121,12 @@ export async function sendMagicLink(email: string) {
   }
 }
 
-/** Verify magic link and receive access token + user object */
-export async function verifyMagicLink(token: string) {
+/**
+ * Verify magic link and receive access token + user object.
+ * @param {string} token
+ * @returns {Promise<any>}
+ */
+export async function verifyMagicLink(token: string): Promise<any> {
   try {
     const response = await api.get(`/api/v1/auth/magic-link/verify?token=${encodeURIComponent(token)}`);
     return response.data;
@@ -86,22 +135,15 @@ export async function verifyMagicLink(token: string) {
   }
 }
 
-/** Get current user using a provided access token (or interceptor) */
-export async function getMe(token?: string) {
+/**
+ * Get current user.
+ * @param {string=} token
+ * @returns {Promise<any>}
+ */
+export async function getMe(token?: string): Promise<any> {
   try {
-    const response = await api.get('/api/v1/auth/me', {
-      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
-    });
-    return response.data;
-  } catch (error) {
-    throw new Error(extractErrorMessage(error));
-  }
-}
-
-/** Rotate refresh token and receive a new access token */
-export async function refreshToken() {
-  try {
-    const response = await api.post('/api/v1/auth/refresh-token');
+    const headers = token ? AxiosHeaders.from({ Authorization: `Bearer ${token}` }) : undefined;
+    const response = await api.get('/api/v1/auth/me', { headers });
     return response.data;
   } catch (error) {
     throw new Error(extractErrorMessage(error));
@@ -109,16 +151,31 @@ export async function refreshToken() {
 }
 
 /**
- * Mark onboarding as complete for the current user.
- * Note: we pass token explicitly to guarantee the Authorization header is present.
+ * Rotate refresh token and receive a new access token.
+ * Uses a plain client to avoid interceptor recursion.
+ * @returns {Promise<any>}
  */
-export async function completeOnboarding(token?: string) {
+export async function refreshToken(): Promise<any> {
   try {
-    const response = await api.post(
-      '/api/v1/auth/onboarding/complete',
-      null,
-      { headers: token ? { Authorization: `Bearer ${token}` } : undefined }
-    );
+    const response = await plain.post(REFRESH_URL, null, {
+      headers: { 'Content-Type': undefined } // Avoid preflight
+    });
+    return response.data;
+  } catch (error) {
+    console.error('Refresh token error:', error);
+    throw new Error(extractErrorMessage(error));
+  }
+}
+
+/**
+ * Mark onboarding as complete for the current user.
+ * @param {string=} token
+ * @returns {Promise<any>}
+ */
+export async function completeOnboarding(token?: string): Promise<any> {
+  try {
+    const headers = token ? AxiosHeaders.from({ Authorization: `Bearer ${token}` }) : undefined;
+    const response = await api.post('/api/v1/auth/onboarding/complete', null, { headers });
     return response.data;
   } catch (error) {
     throw new Error(extractErrorMessage(error));

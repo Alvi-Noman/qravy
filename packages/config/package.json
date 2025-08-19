@@ -16,6 +16,8 @@
     "prettier-preset"
   ],
   "devDependencies": {
+    "@types/react": "18",
+    "@types/react-dom": "18",
     "@typescript-eslint/eslint-plugin": "^7.0.0",
     "@typescript-eslint/parser": "^7.0.0",
     "eslint": "^9.9.0",
@@ -28,7 +30,9 @@
     "typescript": "^5.4.5"
   },
   "dependencies": {
-    "zod": "^4.0.14",
-    "dotenv": "^16.6.1"
+    "dotenv": "^16.6.1",
+    "react": "18",
+    "react-dom": "18",
+    "zod": "^4.0.14"
   }
 }

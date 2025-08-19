@@ -40,6 +40,13 @@ router.post('/magic-link', validateRequest(magicLinkSchema), sendMagicLink);
 router.get('/magic-link/verify', verifyMagicLink);
 
 // Tokens/logout
+router.options('/refresh-token', (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', process.env.CORS_ORIGIN || 'http://localhost:5173');
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  res.setHeader('Access-Control-Allow-Methods', 'POST,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.sendStatus(204);
+});
 router.post('/refresh-token', refreshToken);
 router.post('/logout', logout);
 

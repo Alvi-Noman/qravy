@@ -36,7 +36,14 @@ app.use(
     target: AUTH_TARGET,
     changeOrigin: true,
     cookieDomainRewrite: 'localhost',
-    xfwd: true
+    xfwd: true,
+    onProxyRes: (proxyRes, req, res) => {
+      // Explicitly set CORS headers to ensure they’re included
+      res.setHeader('Access-Control-Allow-Origin', process.env.CORS_ORIGIN || 'http://localhost:5173');
+      res.setHeader('Access-Control-Allow-Credentials', 'true');
+      res.setHeader('Access-Control-Allow-Methods', 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization,authorization');
+    }
   })
 );
 

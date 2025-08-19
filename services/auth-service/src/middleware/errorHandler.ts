@@ -14,6 +14,12 @@ export function errorHandler(
   // Log with request context
   logger.error(`[ERROR] ${req.method} ${req.originalUrl} - ${message}`);
 
+  // Set CORS headers for error responses
+  res.setHeader('Access-Control-Allow-Origin', process.env.CORS_ORIGIN || 'http://localhost:5173');
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization,authorization');
+
   // Prefer centralized formatter; keep top-level "message" for existing clients
   const body: any = {
     success: false,
