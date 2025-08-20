@@ -3,7 +3,9 @@ import { useQuery } from '@tanstack/react-query';
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string) || '';
 
-async function verifyEmail(token: string): Promise<void> {
+type VerifyResult = { ok: true };
+
+async function verifyEmail(token: string): Promise<VerifyResult> {
   const res = await fetch(
     `${API_BASE_URL}/api/v1/auth/verify-email?token=${encodeURIComponent(token)}`
   );
@@ -11,14 +13,15 @@ async function verifyEmail(token: string): Promise<void> {
     const data: { message?: string } = await res.json().catch(() => ({} as { message?: string }));
     throw new Error(data.message || 'Verification failed');
   }
-  // Success: nothing else needed for UI
+  // React Query v5 requires a non-undefined return value
+  return { ok: true };
 }
 
 export default function Verify() {
   const [searchParams] = useSearchParams();
   const token = searchParams.get('token') ?? '';
 
-  const { error, isPending, isSuccess, isError } = useQuery<void, Error>({
+  const { error, isPending, isSuccess, isError } = useQuery<VerifyResult, Error>({
     queryKey: ['verify-email', token],
     queryFn: () => verifyEmail(token),
     enabled: token.length > 0,
@@ -51,17 +54,25 @@ export default function Verify() {
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-100">
       <div className="bg-white p-8 rounded-lg shadow-lg w-full max-w-md text-center">
-        {status === 'pending' && <div className="text-xl font-bold" aria-live="polite">Verifying...</div>}
+        {status === 'pending' && (
+          <div className="text-xl font-bold" aria-live="polite">
+            Verifying...
+          </div>
+        )}
         {status === 'success' && (
           <div aria-live="polite">
             <div className="text-green-600 text-xl font-bold mb-4">{message}</div>
-            <Link to="/login" className="text-blue-500 hover:underline">Go to Login</Link>
+            <Link to="/login" className="text-blue-500 hover:underline">
+              Go to Login
+            </Link>
           </div>
         )}
         {status === 'error' && (
           <div aria-live="polite">
             <div className="text-red-600 text-xl font-bold mb-4">{message}</div>
-            <Link to="/signup" className="text-blue-500 hover:underline">Sign up again</Link>
+            <Link to="/signup" className="text-blue-500 hover:underline">
+              Sign up again
+            </Link>
           </div>
         )}
       </div>

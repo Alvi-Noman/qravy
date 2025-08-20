@@ -3,7 +3,7 @@
  * - Handles refresh flow on app start
  * - Exposes login/logout/refresh/reloadUser
  */
-import { createContext, useContext, useState, useEffect, useRef, ReactNode } from 'react';
+import { createContext, useContext, useState, useEffect, useRef, type ReactNode } from 'react';
 import { attachAuthInterceptor, getMe, refreshToken as apiRefreshToken } from '../api/auth';
 
 export interface AuthUser {
@@ -25,6 +25,16 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
+// Response shapes from the API
+type RefreshResponse = {
+  token?: string | null;
+  user?: AuthUser | null;
+};
+
+type MeResponse = {
+  user: AuthUser;
+};
+
 export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [token, setToken] = useState<string | null>(null);
@@ -32,17 +42,18 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
 
   const isRefreshing = useRef(false);
 
-  const refreshToken = async () => {
+  const refreshToken = async (): Promise<void> => {
     if (isRefreshing.current) return;
     isRefreshing.current = true;
     try {
-      const data = await apiRefreshToken();
-      setToken(data.token);
+      const data = await apiRefreshToken<RefreshResponse>();
+      setToken(data.token ?? null);
+
       if (data.user) {
         setUser(data.user);
       } else if (data.token) {
         try {
-          const me = await getMe(data.token);
+          const me = await getMe<MeResponse>(data.token);
           setUser(me.user);
         } catch {
           setUser(null);
@@ -59,26 +70,29 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     }
   };
 
-  const reloadUser = async () => {
+  const reloadUser = async (): Promise<void> => {
     if (!token) return;
     try {
-      const me = await getMe(token);
+      const me = await getMe<MeResponse>(token);
       setUser(me.user);
     } catch {
       // ignore
     }
   };
 
-  const login = (tok: string, usr: AuthUser) => {
+  const login = (tok: string, usr: AuthUser): void => {
     setToken(tok);
     setUser(usr);
     localStorage.setItem('login', Date.now().toString());
   };
 
-  const logout = async () => {
+  const logout = async (): Promise<void> => {
     setToken(null);
     setUser(null);
-    await fetch(`${import.meta.env.VITE_API_BASE_URL}/api/v1/auth/logout`, { method: 'POST', credentials: 'include' });
+    await fetch(`${import.meta.env.VITE_API_BASE_URL}/api/v1/auth/logout`, {
+      method: 'POST',
+      credentials: 'include',
+    });
     localStorage.setItem('logout', Date.now().toString());
   };
 
