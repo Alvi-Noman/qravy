@@ -1,19 +1,16 @@
-import { Routes, Route, useLocation, useNavigate } from 'react-router-dom';
+import { Routes, Route, useLocation, useNavigate, Navigate } from 'react-router-dom';
 import { useEffect } from 'react';
 import { AuthProvider, useAuthContext } from './context/AuthContext';
 import DashboardLayout from './layout/DashboardLayout';
 import Dashboard from './pages/dashboard/index';
 import Orders from './pages/dashboard/orders';
 import Categories from './pages/dashboard/categories';
-// New page
-import MenuItemsPage from './pages/dashboard/menu-items';
-
+import MenuItemsPage from './pages/menu-items'; // page is at src/pages/menu-items/index.tsx
 import Login from './pages/login';
 import Signup from './pages/signup';
 import MagicLink from './pages/magic-link';
 import HomeRedirect from './pages/HomeRedirect';
 import LoadingScreen from './components/LoadingScreen';
-
 import CreateRestaurant from './pages/create-restaurant/CreateRestaurant';
 import OnboardingWizard from './pages/restaurant/OnboardingWizard';
 
@@ -74,21 +71,26 @@ function App() {
   return (
     <AuthProvider>
       <Routes>
+        {/* All dashboard pages share the same layout + guard */}
         <Route
-          path="/dashboard"
           element={
             <RequireVerifiedAndOnboarded>
               <DashboardLayout />
             </RequireVerifiedAndOnboarded>
           }
         >
-          <Route index element={<Dashboard />} />
-          <Route path="orders" element={<Orders />} />
-          <Route path="menu-items" element={<MenuItemsPage />} />
-          <Route path="categories" element={<Categories />} />
-          {/* You can add assistance/online-store/offers/qr-code/reports pages later */}
+          <Route path="/dashboard" element={<Dashboard />} />
+          <Route path="/orders" element={<Orders />} />
+          <Route path="/menu-items" element={<MenuItemsPage />} />
+          <Route path="/categories" element={<Categories />} />
         </Route>
 
+        {/* Backward-compat redirects */}
+        <Route path="/dashboard/orders" element={<Navigate to="/orders" replace />} />
+        <Route path="/dashboard/menu-items" element={<Navigate to="/menu-items" replace />} />
+        <Route path="/dashboard/categories" element={<Navigate to="/categories" replace />} />
+
+        {/* Auth + onboarding */}
         <Route path="/login" element={<Login />} />
         <Route path="/signup" element={<Signup />} />
         <Route path="/magic-link" element={<MagicLink />} />
@@ -112,6 +114,7 @@ function App() {
           }
         />
 
+        {/* Root */}
         <Route path="/" element={<HomeRedirect />} />
       </Routes>
     </AuthProvider>
