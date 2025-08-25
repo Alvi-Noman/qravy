@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
   PencilSquareIcon,
@@ -20,12 +21,51 @@ export default function MenuItemsTable({
 }) {
   const [actionOpenId, setActionOpenId] = useState<string | null>(null);
 
+  // Keep a ref to the button that opened the menu so we can position the portal
+  const anchorRef = useRef<HTMLButtonElement | null>(null);
+  const [menuPos, setMenuPos] = useState<{ top: number; left: number } | null>(null);
+  const MENU_WIDTH = 160; // w-40
+
+  const activeItem = items.find((i) => i.id === actionOpenId) ?? null;
+
   // Close row actions menu on outside click
   useEffect(() => {
     if (!actionOpenId) return;
     const onClick = () => setActionOpenId(null);
     window.addEventListener('click', onClick);
     return () => window.removeEventListener('click', onClick);
+  }, [actionOpenId]);
+
+  // Recalculate menu position
+  const recalcMenuPos = () => {
+    if (!anchorRef.current) return;
+    const rect = anchorRef.current.getBoundingClientRect();
+    const margin = 8;
+    // Align right edge of menu to button’s right edge, clamp to viewport
+    let left = rect.right - MENU_WIDTH;
+    left = Math.max(margin, Math.min(left, window.innerWidth - MENU_WIDTH - margin));
+    const top = rect.bottom + margin;
+
+    setMenuPos({ top, left });
+  };
+
+  useLayoutEffect(() => {
+    if (actionOpenId) recalcMenuPos();
+    else setMenuPos(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [actionOpenId]);
+
+  useEffect(() => {
+    if (!actionOpenId) return;
+    const onScrollOrResize = () => recalcMenuPos();
+    window.addEventListener('resize', onScrollOrResize);
+    // capture=true so it catches scrolls on nested containers too
+    window.addEventListener('scroll', onScrollOrResize, true);
+    return () => {
+      window.removeEventListener('resize', onScrollOrResize);
+      window.removeEventListener('scroll', onScrollOrResize, true);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [actionOpenId]);
 
   return (
@@ -38,7 +78,9 @@ export default function MenuItemsTable({
               <th className="px-3 py-3 w-[20%]">Category</th>
               <th className="px-3 py-3 w-[15%]">Price</th>
               <th className="px-3 py-3 w-[10%]">Availability</th>
-              <th className="px-3 py-3 w-[10%] text-right"><span className="sr-only">Actions</span></th>
+              <th className="px-3 py-3 w-[10%] text-right">
+                <span className="sr-only">Actions</span>
+              </th>
             </tr>
           </thead>
           <tbody>
@@ -96,56 +138,24 @@ export default function MenuItemsTable({
                     <div className="relative inline-block text-left">
                       <button
                         type="button"
+                        ref={(el) => {
+                          // ref will be set when opening this row
+                        }}
                         onClick={(e) => {
                           e.stopPropagation();
-                          setActionOpenId((prev) => (prev === item.id ? null : item.id));
+                          if (actionOpenId === item.id) {
+                            setActionOpenId(null);
+                            anchorRef.current = null;
+                          } else {
+                            anchorRef.current = e.currentTarget;
+                            setActionOpenId(item.id);
+                          }
                         }}
                         className="rounded-md p-1.5 text-[#111827] hover:bg-[#f3f4f6]"
                       >
                         <EllipsisHorizontalIcon className="h-7 w-7" />
                       </button>
-
-                      <AnimatePresence>
-                        {actionOpenId === item.id && (
-                          <motion.div
-                            initial={{ opacity: 0, y: 6 }}
-                            animate={{ opacity: 1, y: 0 }}
-                            exit={{ opacity: 0, y: 6 }}
-                            transition={{ duration: 0.15, ease: 'easeOut' }}
-                            className="absolute right-0 z-50 mt-2 w-40 overflow-hidden rounded-lg border border-[#ececec] bg-white shadow-lg"
-                            onClick={(e) => e.stopPropagation()}
-                          >
-                            <ul className="py-1 text-sm">
-                              <li>
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setActionOpenId(null);
-                                    onEdit(item);
-                                  }}
-                                  className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-[#f5f5f5]"
-                                >
-                                  <PencilSquareIcon className="h-4 w-4 text-[#6b7280]" />
-                                  Edit
-                                </button>
-                              </li>
-                              <li>
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setActionOpenId(null);
-                                    onDelete(item.id);
-                                  }}
-                                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-red-600 hover:bg-[#fff0f0]"
-                                >
-                                  <TrashIcon className="h-4 w-4" />
-                                  Delete
-                                </button>
-                              </li>
-                            </ul>
-                          </motion.div>
-                        )}
-                      </AnimatePresence>
+                      {/* The menu is now portaled — nothing else to render here */}
                     </div>
                   </td>
                 </tr>
@@ -162,6 +172,54 @@ export default function MenuItemsTable({
           </tbody>
         </table>
       </div>
+
+      {/* Portal for the action menu */}
+      {typeof window !== 'undefined' &&
+        createPortal(
+          <AnimatePresence>
+            {actionOpenId && activeItem && menuPos ? (
+              <motion.div
+                initial={{ opacity: 0, y: 6 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: 6 }}
+                transition={{ duration: 0.15, ease: 'easeOut' }}
+                style={{ position: 'fixed', top: menuPos.top, left: menuPos.left }}
+                className="z-[1000] w-40 overflow-hidden rounded-lg border border-[#ececec] bg-white shadow-lg"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <ul className="py-1 text-sm">
+                  <li>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setActionOpenId(null);
+                        onEdit(activeItem);
+                      }}
+                      className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-[#f5f5f5]"
+                    >
+                      <PencilSquareIcon className="h-4 w-4 text-[#6b7280]" />
+                      Edit
+                    </button>
+                  </li>
+                  <li>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setActionOpenId(null);
+                        onDelete(activeItem.id);
+                      }}
+                      className="flex w-full items-center gap-2 px-3 py-2 text-left text-red-600 hover:bg-[#fff0f0]"
+                    >
+                      <TrashIcon className="h-4 w-4" />
+                      Delete
+                    </button>
+                  </li>
+                </ul>
+              </motion.div>
+            ) : null}
+          </AnimatePresence>,
+          document.body
+        )}
     </div>
   );
 }

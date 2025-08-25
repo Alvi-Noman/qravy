@@ -1,15 +1,14 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useLayoutEffect } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
   ArrowsUpDownIcon,
-  TagIcon,
-  PowerIcon,
   MagnifyingGlassIcon,
   CheckIcon,
   XMarkIcon,
+  Squares2X2Icon, // All Items icon (4-box)
+  TagIcon,        // Categories icon (same as sidebar)
 } from '@heroicons/react/24/outline';
 
-/** Filter model (local to toolbar; matches page shape). */
 type Filters = {
   status: Set<'active' | 'hidden'>;
   channels: Set<'dine-in' | 'online'>;
@@ -35,26 +34,25 @@ export default function MenuItemsToolbar({
   sortBy: 'name-asc' | 'created-desc' | 'most-used';
   setSortBy: (v: 'name-asc' | 'created-desc' | 'most-used') => void;
 }) {
-  const [statusOpen, setStatusOpen] = useState(false);
+  const [availOpen, setAvailOpen] = useState(false);
   const [catOpen, setCatOpen] = useState(false);
   const [sortOpen, setSortOpen] = useState(false);
 
-  const statusRef = useRef<HTMLDivElement>(null);
+  const availRef = useRef<HTMLDivElement>(null);
   const catRef = useRef<HTMLDivElement>(null);
   const sortRef = useRef<HTMLDivElement>(null);
 
-  // Outside-click + Esc closes popovers
   useEffect(() => {
-    if (!(statusOpen || catOpen || sortOpen)) return;
+    if (!(availOpen || catOpen || sortOpen)) return;
     const onDocClick = (e: MouseEvent) => {
       const t = e.target as Node;
-      if (statusOpen && statusRef.current && !statusRef.current.contains(t)) setStatusOpen(false);
+      if (availOpen && availRef.current && !availRef.current.contains(t)) setAvailOpen(false);
       if (catOpen && catRef.current && !catRef.current.contains(t)) setCatOpen(false);
       if (sortOpen && sortRef.current && !sortRef.current.contains(t)) setSortOpen(false);
     };
     const onEsc = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        setStatusOpen(false);
+        setAvailOpen(false);
         setCatOpen(false);
         setSortOpen(false);
       }
@@ -65,10 +63,11 @@ export default function MenuItemsToolbar({
       document.removeEventListener('mousedown', onDocClick);
       document.removeEventListener('keydown', onEsc);
     };
-  }, [statusOpen, catOpen, sortOpen]);
+  }, [availOpen, catOpen, sortOpen]);
 
-  const appliedStatus = filters.status.size;
-  const appliedCats = filters.categories.size;
+  // CHANNELS — sliding capsule + black outline when not "All channels"
+  const isAllChannels = filters.channels.size === 0;
+  const selectedChannelIdx = isAllChannels ? 0 : filters.channels.has('dine-in') ? 1 : 2;
 
   const setChannel = (tab: typeof CHANNEL_TABS[number]) => {
     if (tab === 'All channels') setFilters({ ...filters, channels: new Set() });
@@ -76,23 +75,71 @@ export default function MenuItemsToolbar({
     else setFilters({ ...filters, channels: new Set(['online']) });
   };
 
+  const channelCapsuleRef = useRef<HTMLDivElement>(null);
+  const channelTabRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const [channelIndicator, setChannelIndicator] = useState({ left: 0, width: 0 });
+  const recalcChannelIndicator = () => {
+    const btn = channelTabRefs.current[selectedChannelIdx];
+    const cap = channelCapsuleRef.current;
+    if (!btn || !cap) return;
+    setChannelIndicator({ left: btn.offsetLeft, width: btn.offsetWidth });
+  };
+  useLayoutEffect(() => {
+    recalcChannelIndicator();
+  }, []);
+  useLayoutEffect(() => {
+    recalcChannelIndicator();
+  }, [selectedChannelIdx]);
+  useEffect(() => {
+    const onResize = () => recalcChannelIndicator();
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+
+  // Availability label (icon always the 4-box)
+  const isAllItems = filters.status.size === 0;
+  const availabilityLabel = isAllItems
+    ? 'All Items'
+    : filters.status.has('active')
+    ? 'Available Items'
+    : 'Unavailable Items';
+
+  // Category label (single-select)
+  const isAllCategories = filters.categories.size === 0;
+  const categoryButtonLabel = isAllCategories
+    ? 'All Categories'
+    : Array.from(filters.categories)[0] || 'All Categories';
+
   return (
     <div className="flex w-full flex-col gap-3 md:flex-row md:items-center md:justify-between">
       <div className="flex flex-1 flex-wrap items-center gap-2">
-        {/* Channel capsule */}
-        <div className="flex items-center gap-1 rounded-md border border-slate-200 bg-slate-100 p-1">
-          {CHANNEL_TABS.map((t) => {
-            const selected =
-              (t === 'All channels' && filters.channels.size === 0) ||
-              (t === 'Dine-In' && filters.channels.has('dine-in') && filters.channels.size === 1) ||
-              (t === 'Online' && filters.channels.has('online') && filters.channels.size === 1);
+        {/* Channels capsule (black outline when narrowed) */}
+        <div
+          ref={channelCapsuleRef}
+          role="tablist"
+          aria-label="Channels"
+          className={`relative flex items-center gap-1 rounded-md p-1 bg-slate-100 border ${
+            isAllChannels ? 'border-slate-200' : 'border-black'
+          }`}
+        >
+          <motion.span
+            initial={false}
+            className="absolute top-1 bottom-1 rounded-md bg-white shadow-sm ring-1 ring-slate-200"
+            animate={{ left: channelIndicator.left, width: channelIndicator.width }}
+            transition={{ type: 'spring', stiffness: 420, damping: 32 }}
+          />
+          {CHANNEL_TABS.map((t, i) => {
+            const selected = i === selectedChannelIdx;
             return (
               <button
                 key={t}
+                role="tab"
+                aria-selected={selected}
+                ref={(el) => (channelTabRefs.current[i] = el)}
                 type="button"
                 onClick={() => setChannel(t)}
-                className={`rounded-md px-3 py-1.5 text-[13px] font-medium ${
-                  selected ? 'bg-white text-slate-900 shadow-sm ring-1 ring-slate-200' : 'text-slate-600 hover:text-slate-800'
+                className={`relative z-10 rounded-md px-3 py-1.5 text-[13px] font-medium transition-colors ${
+                  selected ? 'text-slate-900' : 'text-slate-600 hover:text-slate-800'
                 }`}
               >
                 {t}
@@ -101,81 +148,78 @@ export default function MenuItemsToolbar({
           })}
         </div>
 
-        {/* Availability filter */}
-        <div className="relative" ref={statusRef}>
+        {/* Horizontal dash separator */}
+        <span aria-hidden="true" className="px-1 select-none text-slate-400">—</span>
+
+        {/* Availability selector (match sidebar icon size/spacing; black outline when not All Items) */}
+        <div className="relative" ref={availRef}>
           <button
             type="button"
-            aria-expanded={statusOpen}
-            onClick={() => setStatusOpen((v) => !v)}
-            className="inline-flex items-center gap-2 rounded-md border border-[#dbdbdb] bg-[#fcfcfc] px-3 py-2 text-sm text-[#2e2e30] hover:bg-[#f5f5f5]"
+            aria-expanded={availOpen}
+            onClick={() => setAvailOpen((v) => !v)}
+            className={`inline-flex items-center gap-3 rounded-md border px-3 py-2.5 text-left text-[14px] text-slate-700 transition-colors hover:bg-[#f6f6f6] ${
+              isAllItems ? 'border-[#dbdbdb] bg-[#fcfcfc]' : 'border-black bg-[#fcfcfc]'
+            }`}
           >
-            <PowerIcon className="h-4 w-4 text-[#6b7280]" />
-            Availability
-            {appliedStatus ? (
-              <span className="ml-1 rounded-full bg-[#111827] px-1.5 py-0.5 text-xs text-white">{appliedStatus}</span>
-            ) : null}
+            <Squares2X2Icon className="h-5 w-5 text-slate-600" />
+            <span className="truncate font-medium text-slate-900">{availabilityLabel}</span>
           </button>
           <AnimatePresence>
-            {statusOpen && (
+            {availOpen && (
               <motion.div
                 initial={{ opacity: 0, y: 8 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: 8 }}
                 transition={{ duration: 0.15, ease: 'easeOut' }}
-                className="absolute right-0 z-50 mt-2 w-56 overflow-hidden rounded-lg border border-[#ececec] bg-white shadow-lg"
+                className="absolute left-0 z-50 mt-2 w-64 overflow-hidden rounded-lg border border-[#ececec] bg-white shadow-lg"
               >
                 <ul className="py-1 text-sm">
                   {[
-                    { k: 'all', l: 'All' },
-                    { k: 'active', l: 'Available' },
-                    { k: 'hidden', l: 'Unavailable' },
-                  ].map((o) => (
-                    <li key={o.k}>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          if (o.k === 'all') setFilters({ ...filters, status: new Set() });
-                          else setFilters({ ...filters, status: new Set([o.k as 'active' | 'hidden']) });
-                          setStatusOpen(false);
-                        }}
-                        className={`w-full px-3 py-2 text-left hover:bg-[#f5f5f5] ${
-                          (o.k === 'all' && filters.status.size === 0) ||
-                          (o.k !== 'all' && filters.status.has(o.k as any))
-                            ? 'bg-[#f1f2f4] text-[#111827]'
-                            : 'text-[#2e2e30]'
-                        }`}
-                      >
-                        <span className="inline-flex items-center gap-2">
-                          {((o.k === 'all' && filters.status.size === 0) ||
-                            (o.k !== 'all' && filters.status.has(o.k as any))) ? (
-                            <CheckIcon className="h-4 w-4" />
-                          ) : (
-                            <span className="h-4 w-4" />
-                          )}
-                          {o.l}
-                        </span>
-                      </button>
-                    </li>
-                  ))}
+                    { key: 'all', label: 'All Items' },
+                    { key: 'active', label: 'Available Items' },
+                    { key: 'hidden', label: 'Unavailable Items' },
+                  ].map((opt) => {
+                    const selected =
+                      (opt.key === 'all' && filters.status.size === 0) ||
+                      (opt.key !== 'all' && filters.status.has(opt.key as 'active' | 'hidden'));
+                    return (
+                      <li key={opt.key}>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (opt.key === 'all') setFilters({ ...filters, status: new Set() });
+                            if (opt.key === 'active') setFilters({ ...filters, status: new Set(['active']) });
+                            if (opt.key === 'hidden') setFilters({ ...filters, status: new Set(['hidden']) });
+                            setAvailOpen(false);
+                          }}
+                          className={`flex w-full items-center justify-between px-3 py-2 hover:bg-[#f5f5f5] ${
+                            selected ? 'bg-[#f1f2f4] text-[#111827]' : 'text-[#2e2e30]'
+                          }`}
+                        >
+                          <span>{opt.label}</span>
+                          {selected ? <span className="text-[11px] text-slate-500">Selected</span> : null}
+                        </button>
+                      </li>
+                    );
+                  })}
                 </ul>
               </motion.div>
             )}
           </AnimatePresence>
         </div>
 
-        {/* Category filter (card list with All at top) */}
+        {/* Category selector (use TagIcon; same size/spacing; black outline when not All Categories) */}
         <div className="relative" ref={catRef}>
           <button
             type="button"
             aria-expanded={catOpen}
             onClick={() => setCatOpen((v) => !v)}
-            className="inline-flex items-center gap-2 rounded-md border border-[#dbdbdb] bg-[#fcfcfc] px-3 py-2 text-sm text-[#2e2e30] hover:bg-[#f5f5f5]"
+            className={`inline-flex items-center gap-3 rounded-md border px-3 py-2.5 text-left text-[14px] text-slate-700 transition-colors hover:bg-[#f6f6f6] ${
+              isAllCategories ? 'border-[#dbdbdb] bg-[#fcfcfc]' : 'border-black bg-[#fcfcfc]'
+            }`}
           >
-            <TagIcon className="h-4 w-4 text-[#6b7280]" />
-            All
-            {appliedCats ? (
-              <span className="ml-1 rounded-full bg-[#111827] px-1.5 py-0.5 text-xs text-white">{appliedCats}</span>
-            ) : null}
+            <TagIcon className="h-5 w-5 text-slate-600" />
+            <span className="truncate font-medium text-slate-900">{categoryButtonLabel}</span>
           </button>
           <AnimatePresence>
             {catOpen && (
@@ -184,7 +228,7 @@ export default function MenuItemsToolbar({
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: 8 }}
                 transition={{ duration: 0.15, ease: 'easeOut' }}
-                className="absolute right-0 z-50 mt-2 w-80 overflow-hidden rounded-lg border border-[#ececec] bg-white shadow-lg"
+                className="absolute left-0 z-50 mt-2 w-80 overflow-hidden rounded-lg border border-[#ececec] bg-white shadow-lg"
               >
                 <ul className="max-h-72 overflow-y-auto py-1 text-sm">
                   <li key="__all">
@@ -195,25 +239,22 @@ export default function MenuItemsToolbar({
                         setCatOpen(false);
                       }}
                       className={`flex w-full items-center justify-between px-3 py-2 hover:bg-[#f5f5f5] ${
-                        filters.categories.size === 0 ? 'bg-[#f1f2f4] text-[#111827]' : 'text-[#2e2e30]'
+                        isAllCategories ? 'bg-[#f1f2f4] text-[#111827]' : 'text-[#2e2e30]'
                       }`}
                     >
-                      <span>All</span>
-                      {filters.categories.size === 0 ? <span className="text-[11px] text-slate-500">Selected</span> : null}
+                      <span>All Categories</span>
+                      {isAllCategories ? <span className="text-[11px] text-slate-500">Selected</span> : null}
                     </button>
                   </li>
 
                   {categories.map((c) => {
-                    const active = filters.categories.has(c);
+                    const active = filters.categories.size === 1 && filters.categories.has(c);
                     return (
                       <li key={c}>
                         <button
                           type="button"
                           onClick={() => {
-                            const next = new Set(filters.categories);
-                            if (next.has(c)) next.delete(c);
-                            else next.add(c);
-                            setFilters({ ...filters, categories: next });
+                            setFilters({ ...filters, categories: new Set([c]) });
                             setCatOpen(false);
                           }}
                           className={`flex w-full items-center justify-between px-3 py-2 hover:bg-[#f5f5f5] ${
@@ -227,7 +268,9 @@ export default function MenuItemsToolbar({
                     );
                   })}
 
-                  {categories.length === 0 && <li className="px-3 py-6 text-center text-[#6b7280]">No categories</li>}
+                  {categories.length === 0 && (
+                    <li className="px-3 py-6 text-center text-[#6b7280]">No categories</li>
+                  )}
                 </ul>
               </motion.div>
             )}
@@ -237,9 +280,8 @@ export default function MenuItemsToolbar({
 
       {/* Right side: search and sort */}
       <div className="flex items-center gap-2">
-        <div className="ml-auto flex min-w-[260px] max-w-[520px] flex-1 items-center">
-          {/* Search */}
-          <div className="flex min-w-[260px] flex-1 items-center rounded-md border border-[#dbdbdb] bg-[#fcfcfc] px-3 py-2 focus-within:border-[#111827]">
+        <div className="ml-auto flex min-w-[320px] max-w-[680px] flex-1 items-center">
+          <div className="flex min-w-[320px] flex-1 items-center rounded-md border border-[#dbdbdb] bg-[#fcfcfc] px-3 py-2 focus-within:border-[#111827]">
             <MagnifyingGlassIcon className="mr-2 h-4 w-4 text-slate-500" />
             <input
               value={q}
@@ -254,7 +296,6 @@ export default function MenuItemsToolbar({
             ) : null}
           </div>
 
-          {/* Sort */}
           <div className="relative ml-2" ref={sortRef}>
             <button
               type="button"

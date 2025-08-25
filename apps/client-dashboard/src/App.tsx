@@ -5,7 +5,7 @@ import DashboardLayout from './layout/DashboardLayout';
 import Dashboard from './pages/dashboard/index';
 import Orders from './pages/dashboard/orders';
 import Categories from './pages/dashboard/categories';
-import MenuItemsPage from './pages/menu-items'; // page is at src/pages/menu-items/index.tsx
+import MenuItemsPage from './pages/menu-items';
 import Login from './pages/login';
 import Signup from './pages/signup';
 import MagicLink from './pages/magic-link';
@@ -71,7 +71,17 @@ function App() {
   return (
     <AuthProvider>
       <Routes>
-        {/* All dashboard pages share the same layout + guard */}
+        <Route
+          path="/dashboard"
+          element={
+            <RequireVerifiedAndOnboarded>
+              <DashboardLayout />
+            </RequireVerifiedAndOnboarded>
+          }
+        >
+          <Route index element={<Dashboard />} />
+        </Route>
+
         <Route
           element={
             <RequireVerifiedAndOnboarded>
@@ -79,18 +89,15 @@ function App() {
             </RequireVerifiedAndOnboarded>
           }
         >
-          <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/orders" element={<Orders />} />
           <Route path="/menu-items" element={<MenuItemsPage />} />
           <Route path="/categories" element={<Categories />} />
         </Route>
 
-        {/* Backward-compat redirects */}
         <Route path="/dashboard/orders" element={<Navigate to="/orders" replace />} />
         <Route path="/dashboard/menu-items" element={<Navigate to="/menu-items" replace />} />
         <Route path="/dashboard/categories" element={<Navigate to="/categories" replace />} />
 
-        {/* Auth + onboarding */}
         <Route path="/login" element={<Login />} />
         <Route path="/signup" element={<Signup />} />
         <Route path="/magic-link" element={<MagicLink />} />
@@ -114,7 +121,6 @@ function App() {
           }
         />
 
-        {/* Root */}
         <Route path="/" element={<HomeRedirect />} />
       </Routes>
     </AuthProvider>
