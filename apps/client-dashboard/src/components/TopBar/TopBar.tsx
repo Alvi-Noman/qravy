@@ -1,9 +1,8 @@
-// components/TopBar.tsx
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { BellIcon, SparklesIcon } from '@heroicons/react/24/outline';
-import TopbarSearch from './TopbarSearch';
-import TopbarProfileMenu from './TopbarProfileMenu';
+import TopbarSearch from './TopbarSearch.js';
+import TopbarProfileMenu from './TopbarProfileMenu.js';
 
 type NotificationItem = { id: string; title: string; desc: string; time: string; seen: boolean };
 
@@ -16,17 +15,23 @@ const DUMMY_NOTIFICATIONS: NotificationItem[] = [
 ];
 
 export default function TopBar({ onAIClick }: { onAIClick?: () => void }): JSX.Element {
+  // Digital Menu status
   const [isLive, setIsLive] = useState(true);
 
+  // Notifications
   const [notifOpen, setNotifOpen] = useState(false);
   const [notifFilter, setNotifFilter] = useState<'all' | 'seen' | 'unseen'>('all');
   const notifRef = useRef<HTMLDivElement>(null);
 
   const filteredNotifications = useMemo(
-    () => DUMMY_NOTIFICATIONS.filter((n) => (notifFilter === 'all' ? true : notifFilter === 'seen' ? n.seen : !n.seen)),
+    () =>
+      DUMMY_NOTIFICATIONS.filter((n) =>
+        notifFilter === 'all' ? true : notifFilter === 'seen' ? n.seen : !n.seen
+      ),
     [notifFilter]
   );
 
+  // Close notifications on outside click / ESC
   useEffect(() => {
     if (!notifOpen) return;
     const onDocClick = (e: MouseEvent) => {
@@ -43,11 +48,17 @@ export default function TopBar({ onAIClick }: { onAIClick?: () => void }): JSX.E
   }, [notifOpen]);
 
   return (
-    <div className="sticky top-0 z-[70] isolate border-b border-[#ececec] bg-[#fcfcfc]/95 backdrop-blur">
+    <div className="sticky top-0 z-20 border-b border-[#ececec] bg-[#fcfcfc]/95 backdrop-blur">
       <div className="flex items-center gap-3 px-4 py-2">
-        <DigitalMenuStatus isLive={isLive} onChange={(n) => setIsLive(n)} scopeLabel="Main Branch" viewMenuHref="/menu" />
+        {/* Left: Digital Menu status pill */}
+        <DigitalMenuStatus
+          isLive={isLive}
+          onChange={(next) => setIsLive(next)}
+          scopeLabel="Main Branch"
+          viewMenuHref="/menu"
+        />
 
-        {/* Wider search */}
+        {/* Right: wider search, AI, notifications, profile */}
         <TopbarSearch className="ml-auto mr-2 w-[28rem] md:w-[40rem]" />
 
         {/* AI Assistant */}
@@ -62,77 +73,14 @@ export default function TopBar({ onAIClick }: { onAIClick?: () => void }): JSX.E
         </button>
 
         {/* Notifications with green dot */}
-        <div className="relative ml-0 shrink-0" ref={notifRef}>
-          <button
-            type="button"
-            aria-label="Notifications"
-            aria-expanded={notifOpen}
-            onClick={() => setNotifOpen(!notifOpen)}
-            className="relative rounded-md p-2 text-slate-700 hover:bg-[#f6f6f6]"
-          >
-            <BellIcon className="h-5 w-5 text-slate-600" />
-            {filteredNotifications.some((n) => !n.seen) && <span className="absolute right-2 top-2 h-2 w-2 rounded-full bg-emerald-500" />}
-          </button>
-
-          <AnimatePresence>
-            {notifOpen && (
-              <motion.div
-                initial={{ opacity: 0, y: 8 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: 8 }}
-                transition={{ duration: 0.15, ease: 'easeOut' }}
-                className="absolute right-0 top-full z-[80] mt-2 w-80 overflow-hidden rounded-lg border border-[#ececec] bg-white shadow-lg"
-              >
-                <div className="p-2">
-                  <div className="relative grid h-8 grid-cols-3 overflow-hidden rounded-full border border-[#e5e5e5] bg-[#f5f5f5] p-1">
-                    {(['all', 'seen', 'unseen'] as const).map((f) => (
-                      <button
-                        key={f}
-                        type="button"
-                        role="tab"
-                        aria-selected={notifFilter === f}
-                        onClick={() => setNotifFilter(f)}
-                        className={`relative z-10 rounded-full text-[12px] font-medium ${
-                          notifFilter === f ? 'text-slate-900' : 'text-slate-600 hover:text-slate-800'
-                        }`}
-                        style={{ width: '33.333%' }}
-                      >
-                        {f === 'all' ? 'All' : f === 'seen' ? 'Seen' : 'Unseen'}
-                      </button>
-                    ))}
-                    <div
-                      className="pointer-events-none absolute left-1 top-1 bottom-1 w-[calc((100%-0.5rem)/3)] rounded-full bg-white shadow-sm ring-1 ring-slate-200 transition-transform duration-200"
-                      style={{ transform: `translateX(${['all', 'seen', 'unseen'].indexOf(notifFilter) * 100}%)` }}
-                    />
-                  </div>
-                </div>
-
-                <ul className="max-h-80 divide-y divide-slate-100 overflow-y-auto">
-                  {filteredNotifications.length ? (
-                    filteredNotifications.map((n) => (
-                      <li key={n.id} className="px-3 py-2 hover:bg-[#f6f6f6]">
-                        <div className="flex items-start justify-between">
-                          <div className="min-w-0">
-                            <div className={`text-[13px] ${n.seen ? 'text-slate-800' : 'font-semibold text-slate-900'}`}>{n.title}</div>
-                            <div className="truncate text-[12px] text-slate-600">{n.desc}</div>
-                          </div>
-                          <div className="ml-2 shrink-0 text-[11px] text-slate-400">{n.time}</div>
-                        </div>
-                        {!n.seen ? (
-                          <span className="mt-1 inline-flex items-center rounded-full bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700">
-                            New
-                          </span>
-                        ) : null}
-                      </li>
-                    ))
-                  ) : (
-                    <li className="px-3 py-6 text-center text-[13px] text-slate-500">No notifications</li>
-                  )}
-                </ul>
-              </motion.div>
-            )}
-          </AnimatePresence>
-        </div>
+        <TopbarNotifications
+          items={filteredNotifications}
+          notifOpen={notifOpen}
+          setNotifOpen={setNotifOpen}
+          notifFilter={notifFilter}
+          setNotifFilter={setNotifFilter}
+          notifRef={notifRef}
+        />
 
         <div className="ml-2 shrink-0">
           <TopbarProfileMenu />
@@ -142,6 +90,7 @@ export default function TopBar({ onAIClick }: { onAIClick?: () => void }): JSX.E
   );
 }
 
+/* Digital Menu status (read-only pill + popover to change with confirmation) */
 function DigitalMenuStatus({
   isLive: isLiveProp,
   onChange,
@@ -184,7 +133,7 @@ function DigitalMenuStatus({
     setBusy(true);
     setError(null);
     try {
-      await onChange?.(next);
+      onChange?.(next);
       setIsLive(next);
       setOpen(false);
       setPhase('idle');
@@ -196,7 +145,7 @@ function DigitalMenuStatus({
   };
 
   return (
-    <div className="relative z-50" ref={ref}>
+    <div className="relative" ref={ref}>
       <button
         type="button"
         aria-haspopup="dialog"
@@ -222,16 +171,23 @@ function DigitalMenuStatus({
             transition={{ duration: 0.15, ease: 'easeOut' }}
             role="dialog"
             aria-label="Digital menu status"
-            className="absolute left-0 top-full z-[80] mt-2 w-80 overflow-hidden rounded-lg border border-[#ececec] bg-white shadow-lg"
+            className="absolute left-0 top-full z-40 mt-2 w-80 overflow-hidden rounded-lg border border-[#ececec] bg-white shadow-lg"
           >
             <div className="p-3">
               <div className="flex items-start justify-between">
                 <div>
                   <div className="text-[13px] font-medium text-slate-900">Online visibility</div>
-                  <div className="mt-0.5 text-[12px] text-slate-500">{scopeLabel ? <span>Scope: {scopeLabel}</span> : <span>Global</span>}</div>
+                  <div className="mt-0.5 text-[12px] text-slate-500">
+                    {scopeLabel ? <span>Scope: {scopeLabel}</span> : <span>Global</span>}
+                  </div>
                 </div>
                 {viewMenuHref ? (
-                  <a href={viewMenuHref} className="rounded-md px-2 py-1 text-[12px] text-slate-700 hover:underline">
+                  <a
+                    href={viewMenuHref}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="rounded-md px-2 py-1 text-[12px] text-slate-700 hover:underline"
+                  >
                     View menu
                   </a>
                 ) : null}
@@ -243,7 +199,9 @@ function DigitalMenuStatus({
                     <span>{isLive ? 'Live' : 'Offline'}</span>
                     <StatusHalo color={isLive ? 'green' : 'red'} />
                   </div>
-                  <div className="text-[12px] text-slate-500">{isLive ? 'Visible to customers' : 'Hidden from customers'}</div>
+                  <div className="text-[12px] text-slate-500">
+                    {isLive ? 'Visible to customers' : 'Hidden from customers'}
+                  </div>
                 </div>
 
                 {isLive ? (
@@ -276,9 +234,15 @@ function DigitalMenuStatus({
                     className="mt-3 rounded-md border border-red-200 bg-red-50 p-3"
                   >
                     <div className="text-[13px] font-medium text-red-900">Take menu offline?</div>
-                    <p className="mt-1 text-[12px] text-red-800">Customers won’t be able to view your menu until you turn it back on.</p>
+                    <p className="mt-1 text-[12px] text-red-800">
+                      Customers won’t be able to view your menu until you turn it back on.
+                    </p>
                     <div className="mt-2 flex items-center justify-end gap-2">
-                      <button type="button" onClick={() => setPhase('idle')} className="rounded-md px-2.5 py-1.5 text-[12px] text-red-900 hover:bg-[#f6f6f6]">
+                      <button
+                        type="button"
+                        onClick={() => setPhase('idle')}
+                        className="rounded-md px-2.5 py-1.5 text-[12px] text-red-900 hover:bg-[#f6f6f6]"
+                      >
                         Cancel
                       </button>
                       <button
@@ -296,7 +260,11 @@ function DigitalMenuStatus({
 
               {error && <div className="mt-2 text-[12px] text-red-600">{error}</div>}
               <div className="mt-2 flex justify-end">
-                <button type="button" onClick={() => setOpen(false)} className="rounded-md px-2 py-1.5 text-[12px] text-slate-700 hover:bg-[#f6f6f6]">
+                <button
+                  type="button"
+                  onClick={() => setOpen(false)}
+                  className="rounded-md px-2 py-1.5 text-[12px] text-slate-700 hover:bg-[#f6f6f6]"
+                >
                   Close
                 </button>
               </div>
@@ -308,6 +276,7 @@ function DigitalMenuStatus({
   );
 }
 
+/* Halo dot after label (green/red) */
 function StatusHalo({ color = 'green' as 'green' | 'red' }) {
   const outer = color === 'green' ? 'bg-emerald-400/25' : 'bg-red-400/25';
   const inner = color === 'green' ? 'bg-emerald-500' : 'bg-red-500';
@@ -316,5 +285,102 @@ function StatusHalo({ color = 'green' as 'green' | 'red' }) {
       <span className={`absolute h-4 w-4 rounded-full ${outer}`} />
       <span className={`relative h-2.5 w-2.5 rounded-full ${inner}`} />
     </span>
+  );
+}
+
+/* Notifications (button + popover) with green badge */
+function TopbarNotifications({
+  notifOpen,
+  setNotifOpen,
+  notifFilter,
+  setNotifFilter,
+  notifRef,
+  items,
+}: {
+  notifOpen: boolean;
+  setNotifOpen: (v: boolean) => void;
+  notifFilter: 'all' | 'seen' | 'unseen';
+  setNotifFilter: (f: 'all' | 'seen' | 'unseen') => void;
+  notifRef: React.RefObject<HTMLDivElement>;
+  items: NotificationItem[];
+}) {
+  return (
+    <div className="relative ml-0 shrink-0" ref={notifRef}>
+      <button
+        type="button"
+        aria-label="Notifications"
+        aria-expanded={notifOpen}
+        onClick={() => setNotifOpen(!notifOpen)}
+        className="relative rounded-md p-2 text-slate-700 hover:bg-[#f6f6f6]"
+      >
+        <BellIcon className="h-5 w-5 text-slate-600" />
+        {items.some((n) => !n.seen) && (
+          <span className="absolute right-2 top-2 h-2 w-2 rounded-full bg-emerald-500" />
+        )}
+      </button>
+
+      <AnimatePresence>
+        {notifOpen && (
+          <motion.div
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 8 }}
+            transition={{ duration: 0.15, ease: 'easeOut' }}
+            className="absolute right-0 top-full z-40 mt-2 w-80 overflow-hidden rounded-lg border border-[#ececec] bg-white shadow-lg"
+          >
+            <div className="p-2">
+              <div className="relative grid h-8 grid-cols-3 overflow-hidden rounded-full border border-[#e5e5e5] bg-[#f5f5f5] p-1">
+                {(['all', 'seen', 'unseen'] as const).map((f) => (
+                  <button
+                    key={f}
+                    type="button"
+                    role="tab"
+                    aria-selected={notifFilter === f}
+                    onClick={() => setNotifFilter(f)}
+                    className={`relative z-10 rounded-full text-[12px] font-medium ${
+                      notifFilter === f ? 'text-slate-900' : 'text-slate-600 hover:text-slate-800'
+                    }`}
+                    style={{ width: '33.333%' }}
+                  >
+                    {f === 'all' ? 'All' : f === 'seen' ? 'Seen' : 'Unseen'}
+                  </button>
+                ))}
+                <div
+                  className="pointer-events-none absolute left-1 top-1 bottom-1 w-[calc((100%-0.5rem)/3)] rounded-full bg-white shadow-sm ring-1 ring-slate-200 transition-transform duration-200"
+                  style={{
+                    transform: `translateX(${['all', 'seen', 'unseen'].indexOf(notifFilter) * 100}%)`,
+                  }}
+                />
+              </div>
+            </div>
+
+            <ul className="max-h-80 divide-y divide-slate-100 overflow-y-auto">
+              {items.length ? (
+                items.map((n) => (
+                  <li key={n.id} className="px-3 py-2 hover:bg-[#f6f6f6]">
+                    <div className="flex items-start justify-between">
+                      <div className="min-w-0">
+                        <div className={`text-[13px] ${n.seen ? 'text-slate-800' : 'font-semibold text-slate-900'}`}>
+                          {n.title}
+                        </div>
+                        <div className="truncate text-[12px] text-slate-600">{n.desc}</div>
+                      </div>
+                      <div className="ml-2 shrink-0 text-[11px] text-slate-400">{n.time}</div>
+                    </div>
+                    {!n.seen ? (
+                      <span className="mt-1 inline-flex items-center rounded-full bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700">
+                        New
+                      </span>
+                    ) : null}
+                  </li>
+                ))
+              ) : (
+                <li className="px-3 py-6 text-center text-[13px] text-slate-500">No notifications</li>
+              )}
+            </ul>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
   );
 }

@@ -7,9 +7,9 @@ import {
 } from 'react';
 import { motion } from 'framer-motion';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { useAuthContext } from '../context/AuthContext';
+import { useAuthContext } from '../../context/AuthContext';
 import CategorySelect from './CategorySelect';
-import { createCategory as apiCreateCategory, type Category } from '../api/categories';
+import { createCategory as apiCreateCategory, type Category } from '../../api/categories';
 import { QuestionMarkCircleIcon } from '@heroicons/react/24/outline';
 import Variations from './Variations';
 import Counter from './Counter';

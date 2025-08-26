@@ -1,6 +1,6 @@
 import { useState } from 'react';
-import Sidebar from '../components/Sidebar';
-import TopBar from '../components/TopBar';
+import Sidebar from '../components/SideBar/Sidebar';
+import TopBar from '../components/TopBar/TopBar';
 import AIAssistantPanel from '../components/AIAssistantPanel';
 import { Outlet } from 'react-router-dom';
 import { ScopeProvider } from '../context/ScopeContext';

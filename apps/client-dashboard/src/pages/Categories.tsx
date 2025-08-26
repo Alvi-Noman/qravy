@@ -4,7 +4,7 @@
  * - Broadcasts updates so dashboard and other tabs refresh
  */
 import { useEffect, useState } from 'react';
-import { useAuthContext } from '../../context/AuthContext';
+import { useAuthContext } from '../context/AuthContext';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   createCategory,
@@ -12,7 +12,7 @@ import {
   updateCategory,
   deleteCategory,
   type Category,
-} from '../../api/categories';
+} from '../api/categories';
 
 export default function CategoriesPage() {
   const { token } = useAuthContext();

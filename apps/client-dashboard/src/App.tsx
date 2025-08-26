@@ -2,16 +2,16 @@ import { Routes, Route, useLocation, useNavigate, Navigate } from 'react-router-
 import { useEffect } from 'react';
 import { AuthProvider, useAuthContext } from './context/AuthContext';
 import DashboardLayout from './layout/DashboardLayout';
-import Dashboard from './pages/dashboard/index';
-import Orders from './pages/dashboard/orders';
-import Categories from './pages/dashboard/categories';
-import MenuItemsPage from './pages/menu-items';
+import Dashboard from './pages/Dashboard';
+import Orders from './pages/orders';
+import Categories from './pages/Categories';
+import MenuItemsPage from './pages/MenuItems';
 import Login from './pages/login';
 import Signup from './pages/signup';
 import MagicLink from './pages/magic-link';
 import HomeRedirect from './pages/HomeRedirect';
 import LoadingScreen from './components/LoadingScreen';
-import CreateRestaurant from './pages/create-restaurant/CreateRestaurant';
+import CreateRestaurant from './pages/CreateRestaurant/CreateRestaurant';
 import OnboardingWizard from './pages/restaurant/OnboardingWizard';
 
 function RequireAuth({ children }: { children: React.ReactNode }) {

@@ -7,7 +7,7 @@ import {
   ArrowPathIcon,
 } from '@heroicons/react/24/outline';
 import { motion, AnimatePresence } from 'framer-motion';
-import { useScope } from '../context/ScopeContext';
+import { useScope } from '../../context/ScopeContext';
 
 /** Supported scopes for quick filters in the search popover. */
 type SearchScope = 'products' | 'orders' | 'customers' | 'settings';

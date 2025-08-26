@@ -1,3 +1,8 @@
+/**
+ * MenuItems.tsx — Menu Items page with corrected imports and onSubmit typing.
+ * @module MenuItemsPage
+ */
+
 import { useEffect, useMemo, useState } from 'react';
 import { AnimatePresence } from 'framer-motion';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
@@ -8,18 +13,37 @@ import {
   deleteMenuItem,
   type MenuItem as TMenuItem,
   type NewMenuItem,
-} from '../../api/menu';
-import { getCategories, type Category } from '../../api/categories';
-import { useAuthContext } from '../../context/AuthContext';
-import ProductDrawer from '../../components/ProductDrawer';
-import MenuItemsToolbar from '../../components/menu-items/MenuItemsToolbar';
-import MenuItemsTable from '../../components/menu-items/MenuItemsTable';
+} from '../api/menu';
+import { getCategories, type Category } from '../api/categories';
+import { useAuthContext } from '../context/AuthContext';
+import ProductDrawer from '../components/AddProductDrawer/ProductDrawer';
+import MenuItemsToolbar from '../components/MenuItems/MenuItemsToolbar';
+import MenuItemsTable from '../components/MenuItems/MenuItemsTable';
 
-/** Filter model kept at page-level. */
+/**
+ * @typedef Filters
+ * @property {Set<'active'|'hidden'>} status
+ * @property {Set<'dine-in'|'online'>} channels
+ * @property {Set<string>} categories
+ */
 type Filters = {
   status: Set<'active' | 'hidden'>;
   channels: Set<'dine-in' | 'online'>;
   categories: Set<string>;
+};
+
+/**
+ * @typedef DrawerSubmitValues
+ * @property {string} name
+ * @property {number} price
+ * @property {string=} category
+ * @property {string=} description
+ */
+type DrawerSubmitValues = {
+  name: string;
+  price: number;
+  category?: string;
+  description?: string;
 };
 
 export default function MenuItemsPage(): JSX.Element {
@@ -29,7 +53,7 @@ export default function MenuItemsPage(): JSX.Element {
   const queryClient = useQueryClient();
   const { token } = useAuthContext();
 
-  const itemsQuery = useQuery({
+  const itemsQuery = useQuery<TMenuItem[]>({
     queryKey: ['menu-items', token],
     queryFn: () => getMenuItems(token as string),
     enabled: !!token,
@@ -37,7 +61,7 @@ export default function MenuItemsPage(): JSX.Element {
     refetchOnWindowFocus: false,
   });
 
-  const categoriesQuery = useQuery({
+  const categoriesQuery = useQuery<Category[]>({
     queryKey: ['categories', token],
     queryFn: () => getCategories(token as string),
     enabled: !!token,
@@ -47,7 +71,6 @@ export default function MenuItemsPage(): JSX.Element {
 
   const categories = (categoriesQuery.data || []).map((c: Category) => c.name);
 
-  // Cross-tab refresh on storage broadcast.
   useEffect(() => {
     const onStorage = (e: StorageEvent) => {
       if (e.key === 'menu:updated') {
@@ -74,7 +97,6 @@ export default function MenuItemsPage(): JSX.Element {
     },
   });
 
-  // Availability toggle (optimistic, typed mutation context)
   const availabilityMut = useMutation<
     TMenuItem,
     Error,
@@ -84,7 +106,7 @@ export default function MenuItemsPage(): JSX.Element {
     mutationFn: ({ id, active }) =>
       updateMenuItem(
         id,
-        { ...(active ? { hidden: false, status: 'active' } : { hidden: true, status: 'hidden' }) } as any,
+        { ...(active ? { hidden: false, status: 'active' } : { hidden: true, status: 'hidden' }) } as Partial<NewMenuItem>,
         token as string
       ),
     onMutate: async ({ id, active }) => {
@@ -92,7 +114,7 @@ export default function MenuItemsPage(): JSX.Element {
       const snapshot = queryClient.getQueryData<TMenuItem[]>(['menu-items', token]) || [];
       queryClient.setQueryData<TMenuItem[]>(['menu-items', token], (prev) =>
         (prev || []).map((it) =>
-          it.id === id ? ({ ...it, hidden: !active, status: active ? 'active' : 'hidden' } as any) : it
+          it.id === id ? ({ ...it, hidden: !active, status: active ? 'active' : 'hidden' } as TMenuItem) : it
         )
       );
       return { snapshot };
@@ -120,12 +142,11 @@ export default function MenuItemsPage(): JSX.Element {
     categories: new Set(),
   });
 
-  // Derived rows after filters + search + sort
-  const viewItems = useMemo(() => {
+  const viewItems = useMemo<TMenuItem[]>(() => {
     const list: TMenuItem[] = itemsQuery.data || [];
     const qnorm = q.trim().toLowerCase();
     let filtered = list.filter((it) => {
-      const itAny = it as any;
+      const itAny = it as unknown as Record<string, any>;
       const matchesQ =
         !qnorm ||
         it.name.toLowerCase().includes(qnorm) ||
@@ -154,14 +175,22 @@ export default function MenuItemsPage(): JSX.Element {
     if (sortBy === 'created-desc')
       filtered = filtered
         .slice()
-        .sort((a, b) => new Date((b as any).createdAt || 0).getTime() - new Date((a as any).createdAt || 0).getTime());
+        .sort(
+          (a, b) =>
+            new Date((b as unknown as Record<string, any>).createdAt || 0).getTime() -
+            new Date((a as unknown as Record<string, any>).createdAt || 0).getTime()
+        );
     if (sortBy === 'most-used')
       filtered = filtered
         .slice()
         .sort(
           (a, b) =>
-            ((b as any).usageCount || (b as any).ordersCount || 0) -
-            ((a as any).usageCount || (a as any).ordersCount || 0)
+            ((b as unknown as Record<string, any>).usageCount ||
+              (b as unknown as Record<string, any>).ordersCount ||
+              0) -
+            ((a as unknown as Record<string, any>).usageCount ||
+              (a as unknown as Record<string, any>).ordersCount ||
+              0)
         );
 
     return filtered;
@@ -198,9 +227,9 @@ export default function MenuItemsPage(): JSX.Element {
 
                 <MenuItemsTable
                   items={viewItems}
-                  onToggleAvailability={(id, active) => availabilityMut.mutate({ id, active })}
-                  onEdit={(item) => setOpenEdit(item)}
-                  onDelete={(id) => {
+                  onToggleAvailability={(id: string, active: boolean) => availabilityMut.mutate({ id, active })}
+                  onEdit={(item: TMenuItem) => setOpenEdit(item)}
+                  onDelete={(id: string) => {
                     if (confirm('Delete this item?')) deleteMut.mutate({ id });
                   }}
                 />
@@ -218,7 +247,14 @@ export default function MenuItemsPage(): JSX.Element {
             categories={categories}
             initial={{ name: '', price: '', category: '', description: '' }}
             onClose={() => setOpenAdd(false)}
-            onSubmit={(values) => createMut.mutate(values)}
+            onSubmit={(values: DrawerSubmitValues) =>
+              createMut.mutate({
+                name: values.name,
+                price: values.price,
+                category: values.category,
+                description: values.description,
+              })
+            }
           />
         )}
         {openEdit && (
@@ -233,12 +269,12 @@ export default function MenuItemsPage(): JSX.Element {
               description: openEdit.description || '',
             }}
             onClose={() => setOpenEdit(null)}
-            onSubmit={(values) =>
+            onSubmit={(values: DrawerSubmitValues) =>
               updateMut.mutate({
                 id: openEdit.id,
                 payload: {
                   name: values.name,
-                  price: Number(values.price),
+                  price: values.price,
                   category: values.category || undefined,
                   description: values.description || undefined,
                 },
@@ -251,8 +287,10 @@ export default function MenuItemsPage(): JSX.Element {
   );
 }
 
-/** Empty state. */
-function EmptyState({ onAdd }: { onAdd: () => void }) {
+/**
+ * @param {{ onAdd: () => void }} props
+ */
+function EmptyState({ onAdd }: { onAdd: () => void }): JSX.Element {
   return (
     <div className="flex h-full items-center justify-center">
       <div className="text-center">
