@@ -1,44 +1,19 @@
-/**
- * MenuItems.tsx — Menu Items page with corrected imports and onSubmit typing.
- * @module MenuItemsPage
- */
+import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
+import { useMenuItems } from '../components/MenuItems/useMenuItems';
+import MenuToolbar, { type SortBy } from '../components/MenuItems/MenuToolbar';
+import MenuToolbarSkeleton from '../components/MenuItems/MenuToolbarSkeleton';
+import MenuTableSkeleton from '../components/MenuItems/MenuTableSkeleton';
+import BulkActionsBar from '../components/MenuItems/BulkActionsBar';
+import type { MenuItem as TMenuItem } from '../api/menu';
 
-import { useEffect, useMemo, useState } from 'react';
-import { AnimatePresence } from 'framer-motion';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import {
-  createMenuItem,
-  getMenuItems,
-  updateMenuItem,
-  deleteMenuItem,
-  type MenuItem as TMenuItem,
-  type NewMenuItem,
-} from '../api/menu';
-import { getCategories, type Category } from '../api/categories';
-import { useAuthContext } from '../context/AuthContext';
-import ProductDrawer from '../components/AddProductDrawer/ProductDrawer';
-import MenuItemsToolbar from '../components/MenuItems/MenuItemsToolbar';
-import MenuItemsTable from '../components/MenuItems/MenuItemsTable';
+const MenuTable = lazy(() => import('../components/MenuItems/MenuTable'));
+const BulkChangeCategoryDialog = lazy(() => import('../components/MenuItems/BulkChangeCategoryDialog'));
+const ConfirmDeleteItemsDialog = lazy(() => import('../components/MenuItems/ConfirmDeleteItemsDialog'));
+const ProductDrawer = lazy(() => import('../components/AddProductDrawer/ProductDrawer'));
 
-/**
- * @typedef Filters
- * @property {Set<'active'|'hidden'>} status
- * @property {Set<'dine-in'|'online'>} channels
- * @property {Set<string>} categories
- */
-type Filters = {
-  status: Set<'active' | 'hidden'>;
-  channels: Set<'dine-in' | 'online'>;
-  categories: Set<string>;
-};
+type Status = 'active' | 'hidden';
+type Channel = 'dine-in' | 'online';
 
-/**
- * @typedef DrawerSubmitValues
- * @property {string} name
- * @property {number} price
- * @property {string=} category
- * @property {string=} description
- */
 type DrawerSubmitValues = {
   name: string;
   price: number;
@@ -47,258 +22,263 @@ type DrawerSubmitValues = {
 };
 
 export default function MenuItemsPage(): JSX.Element {
-  const [openAdd, setOpenAdd] = useState(false);
-  const [openEdit, setOpenEdit] = useState<null | TMenuItem>(null);
+  const {
+    itemsQuery,
+    categoriesQuery,
+    items,
+    categoryNames,
+    createMut,
+    updateMut,
+    deleteMut,
+    duplicateMut,
+    availabilityMut,
+    bulkAvailabilityMut,
+    bulkCategoryMut,
+  } = useMenuItems();
 
-  const queryClient = useQueryClient();
-  const { token } = useAuthContext();
-
-  const itemsQuery = useQuery<TMenuItem[]>({
-    queryKey: ['menu-items', token],
-    queryFn: () => getMenuItems(token as string),
-    enabled: !!token,
-    retry: false,
-    refetchOnWindowFocus: false,
-  });
-
-  const categoriesQuery = useQuery<Category[]>({
-    queryKey: ['categories', token],
-    queryFn: () => getCategories(token as string),
-    enabled: !!token,
-    retry: false,
-    refetchOnWindowFocus: false,
-  });
-
-  const categories = (categoriesQuery.data || []).map((c: Category) => c.name);
-
+  // Cross-tab sync
   useEffect(() => {
-    const onStorage = (e: StorageEvent) => {
-      if (e.key === 'menu:updated') {
-        queryClient.invalidateQueries({ queryKey: ['menu-items', token] });
-      }
-    };
+    const onStorage = (e: StorageEvent) => e.key === 'menu:updated' && itemsQuery.refetch();
     window.addEventListener('storage', onStorage);
     return () => window.removeEventListener('storage', onStorage);
-  }, [queryClient, token]);
+  }, [itemsQuery]);
 
-  const createMut = useMutation<TMenuItem, Error, NewMenuItem>({
-    mutationFn: (payload) => createMenuItem(payload, token as string),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['menu-items', token] });
-      setOpenAdd(false);
-    },
-  });
-
-  const updateMut = useMutation<TMenuItem, Error, { id: string; payload: Partial<NewMenuItem> }>({
-    mutationFn: ({ id, payload }) => updateMenuItem(id, payload, token as string),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['menu-items', token] });
-      setOpenEdit(null);
-    },
-  });
-
-  const availabilityMut = useMutation<
-    TMenuItem,
-    Error,
-    { id: string; active: boolean },
-    { snapshot: TMenuItem[] }
-  >({
-    mutationFn: ({ id, active }) =>
-      updateMenuItem(
-        id,
-        { ...(active ? { hidden: false, status: 'active' } : { hidden: true, status: 'hidden' }) } as Partial<NewMenuItem>,
-        token as string
-      ),
-    onMutate: async ({ id, active }) => {
-      await queryClient.cancelQueries({ queryKey: ['menu-items', token] });
-      const snapshot = queryClient.getQueryData<TMenuItem[]>(['menu-items', token]) || [];
-      queryClient.setQueryData<TMenuItem[]>(['menu-items', token], (prev) =>
-        (prev || []).map((it) =>
-          it.id === id ? ({ ...it, hidden: !active, status: active ? 'active' : 'hidden' } as TMenuItem) : it
-        )
-      );
-      return { snapshot };
-    },
-    onError: (_err, _vars, ctx) => {
-      if (ctx?.snapshot) queryClient.setQueryData(['menu-items', token], ctx.snapshot);
-    },
-    onSettled: () => {
-      queryClient.invalidateQueries({ queryKey: ['menu-items', token] });
-    },
-  });
-
-  const deleteMut = useMutation<void, Error, { id: string }>({
-    mutationFn: ({ id }) => deleteMenuItem(id, token as string),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['menu-items', token] });
-    },
-  });
-
+  // Filters
   const [q, setQ] = useState('');
-  const [sortBy, setSortBy] = useState<'name-asc' | 'created-desc' | 'most-used'>('name-asc');
-  const [filters, setFilters] = useState<Filters>({
-    status: new Set(),
-    channels: new Set(),
-    categories: new Set(),
-  });
+  const [status, setStatus] = useState<Set<Status>>(new Set());
+  const [channels, setChannels] = useState<Set<Channel>>(new Set());
+  const [selectedCategory, setSelectedCategory] = useState<string>('');
+  const [sortBy, setSortBy] = useState<SortBy>('name-asc');
 
-  const viewItems = useMemo<TMenuItem[]>(() => {
-    const list: TMenuItem[] = itemsQuery.data || [];
+  // Selection
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+
+  // Drawers/dialogs
+  const [openAdd, setOpenAdd] = useState(false);
+  const [openEdit, setOpenEdit] = useState<TMenuItem | null>(null);
+  const [openBulkCategory, setOpenBulkCategory] = useState(false);
+  const [openDeleteMany, setOpenDeleteMany] = useState(false);
+
+  const viewItems = useMemo(() => {
     const qnorm = q.trim().toLowerCase();
-    let filtered = list.filter((it) => {
-      const itAny = it as unknown as Record<string, any>;
+    let list = items.filter((it) => {
+      const itAny = it as any;
       const matchesQ =
         !qnorm ||
         it.name.toLowerCase().includes(qnorm) ||
         (it.description || '').toLowerCase().includes(qnorm) ||
         (it.category || '').toLowerCase().includes(qnorm);
 
+      const matchesCategory = !selectedCategory || it.category === selectedCategory;
+
       const matchesChannels =
-        filters.channels.size === 0 ||
-        Array.from(filters.channels).every((ch) => {
+        channels.size === 0 ||
+        Array.from(channels).every((ch) => {
           if (ch === 'dine-in') return itAny.visibility?.dineIn !== false;
           if (ch === 'online') return itAny.visibility?.online !== false;
           return true;
         });
 
-      const matchesStatus =
-        filters.status.size === 0 ||
-        filters.status.has((itAny.hidden || itAny.status === 'hidden') ? 'hidden' : 'active');
+      const isHidden = itAny.hidden || itAny.status === 'hidden';
+      const matchesStatus = status.size === 0 || status.has(isHidden ? 'hidden' : 'active');
 
-      const matchesCategory =
-        filters.categories.size === 0 || (it.category && filters.categories.has(it.category));
-
-      return matchesQ && matchesChannels && matchesStatus && matchesCategory;
+      return matchesQ && matchesCategory && matchesChannels && matchesStatus;
     });
 
-    if (sortBy === 'name-asc') filtered = filtered.slice().sort((a, b) => a.name.localeCompare(b.name));
+    if (sortBy === 'name-asc') list = list.slice().sort((a, b) => a.name.localeCompare(b.name));
     if (sortBy === 'created-desc')
-      filtered = filtered
+      list = list
         .slice()
         .sort(
-          (a, b) =>
-            new Date((b as unknown as Record<string, any>).createdAt || 0).getTime() -
-            new Date((a as unknown as Record<string, any>).createdAt || 0).getTime()
+          (a: any, b: any) =>
+            new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime()
         );
     if (sortBy === 'most-used')
-      filtered = filtered
+      list = list
         .slice()
         .sort(
-          (a, b) =>
-            ((b as unknown as Record<string, any>).usageCount ||
-              (b as unknown as Record<string, any>).ordersCount ||
-              0) -
-            ((a as unknown as Record<string, any>).usageCount ||
-              (a as unknown as Record<string, any>).ordersCount ||
-              0)
+          (a: any, b: any) => (b.usageCount || b.ordersCount || 0) - (a.usageCount || a.ordersCount || 0)
         );
+    return list;
+  }, [items, q, status, channels, selectedCategory, sortBy]);
 
-    return filtered;
-  }, [itemsQuery.data, q, filters, sortBy]);
+  const toggleSelect = (id: string) =>
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+
+  const toggleSelectAll = () => {
+    if (!viewItems.length) return;
+    const all = viewItems.every((it) => selectedIds.has(it.id));
+    setSelectedIds(all ? new Set() : new Set(viewItems.map((it) => it.id)));
+  };
+
+  const clearSelection = () => setSelectedIds(new Set());
+
+  const loading = itemsQuery.isLoading || categoriesQuery.isLoading;
 
   return (
     <div className="flex h-full flex-col">
+      {/* Header */}
       <div className="flex items-center justify-between border-b border-[#ececec] px-6 py-4">
         <h2 className="text-lg font-semibold text-[#2e2e30]">Menu Items</h2>
-        <button className="rounded-md bg-[#2e2e30] px-4 py-2 text-white hover:opacity-90" onClick={() => setOpenAdd(true)}>
+        <button
+          className="rounded-md bg-[#2e2e30] px-4 py-2 text-white hover:opacity-90"
+          onClick={() => setOpenAdd(true)}
+        >
           Add Product
         </button>
       </div>
 
-      <div className="flex-1 p-6 text-[#2e2e30]">
-        {itemsQuery.isLoading && <div className="text-[#5b5b5d]">Loading menu…</div>}
-        {itemsQuery.isError && <div className="text-red-600">Failed to load menu.</div>}
-
-        {!itemsQuery.isLoading && !itemsQuery.isError && (
+      <div className="flex-1 p-6 text-[#2e2e30] text-sm">
+        {loading ? (
           <>
-            {(!itemsQuery.data || itemsQuery.data.length === 0) ? (
-              <EmptyState onAdd={() => setOpenAdd(true)} />
-            ) : (
-              <div className="space-y-4">
-                <MenuItemsToolbar
-                  q={q}
-                  setQ={setQ}
-                  filters={filters}
-                  setFilters={setFilters}
-                  categories={categories}
-                  sortBy={sortBy}
-                  setSortBy={setSortBy}
-                />
+            <MenuToolbarSkeleton />
+            <div className="mt-4">
+              <MenuTableSkeleton rows={6} />
+            </div>
+          </>
+        ) : itemsQuery.isError ? (
+          <div className="text-red-600">Failed to load menu.</div>
+        ) : (
+          <>
+            <MenuToolbar
+              q={q}
+              setQ={setQ}
+              status={status}
+              setStatus={setStatus}
+              channels={channels}
+              setChannels={setChannels}
+              categories={categoryNames}
+              selectedCategory={selectedCategory}
+              setSelectedCategory={setSelectedCategory}
+              sortBy={sortBy}
+              setSortBy={setSortBy}
+            />
 
-                <MenuItemsTable
+            <div className="mt-4 space-y-4">
+              <Suspense fallback={<MenuTableSkeleton rows={6} />}>
+                <MenuTable
                   items={viewItems}
-                  onToggleAvailability={(id: string, active: boolean) => availabilityMut.mutate({ id, active })}
-                  onEdit={(item: TMenuItem) => setOpenEdit(item)}
-                  onDelete={(id: string) => {
+                  selectedIds={selectedIds}
+                  onToggleSelect={toggleSelect}
+                  onToggleSelectAll={toggleSelectAll}
+                  onToggleAvailability={(id, active) => availabilityMut.mutate({ id, active })}
+                  onEdit={(item) => setOpenEdit(item)}
+                  onDuplicate={(id) => duplicateMut.mutate(id)}
+                  onDelete={(id) => {
                     if (confirm('Delete this item?')) deleteMut.mutate({ id });
                   }}
                 />
-              </div>
-            )}
+              </Suspense>
+            </div>
+
+            <BulkActionsBar
+              count={selectedIds.size}
+              onSetAvailable={() => {
+                const ids = Array.from(selectedIds);
+                if (ids.length) bulkAvailabilityMut.mutate({ ids, active: true });
+              }}
+              onSetUnavailable={() => {
+                const ids = Array.from(selectedIds);
+                if (ids.length) bulkAvailabilityMut.mutate({ ids, active: false });
+              }}
+              onAssignCategory={() => setOpenBulkCategory(true)}
+              onDelete={() => setOpenDeleteMany(true)}
+              onClear={clearSelection}
+            />
+
+            {/* Drawers/Dialogs */}
+            <Suspense fallback={null}>
+              {openAdd && (
+                <ProductDrawer
+                  key="add"
+                  title="Add Product"
+                  categories={categoryNames}
+                  initial={{ name: '', price: '', category: '', description: '' }}
+                  onClose={() => setOpenAdd(false)}
+                  onSubmit={(values: DrawerSubmitValues) =>
+                    createMut.mutate(
+                      {
+                        name: values.name,
+                        price: values.price,
+                        category: values.category,
+                        description: values.description,
+                      } as any,
+                      { onSuccess: () => setOpenAdd(false) }
+                    )
+                  }
+                />
+              )}
+
+              {openEdit && (
+                <ProductDrawer
+                  key="edit"
+                  title="Edit Product"
+                  categories={categoryNames}
+                  initial={{
+                    name: openEdit.name,
+                    price: String((openEdit as any).price ?? ''),
+                    category: openEdit.category || '',
+                    description: openEdit.description || '',
+                  }}
+                  onClose={() => setOpenEdit(null)}
+                  onSubmit={(values: DrawerSubmitValues) => {
+                    if (!openEdit) return;
+                    updateMut.mutate(
+                      {
+                        id: (openEdit as any).id,
+                        payload: {
+                          name: values.name,
+                          price: values.price,
+                          category: values.category || undefined,
+                          description: values.description || undefined,
+                        },
+                      },
+                      { onSuccess: () => setOpenEdit(null) }
+                    );
+                  }}
+                />
+              )}
+
+              <BulkChangeCategoryDialog
+                open={openBulkCategory}
+                categories={categoryNames}
+                onClose={() => setOpenBulkCategory(false)}
+                onConfirm={(category) => {
+                  const ids = Array.from(selectedIds);
+                  if (!ids.length) return setOpenBulkCategory(false);
+                  bulkCategoryMut.mutate(
+                    { ids, category },
+                    {
+                      onSuccess: () => {
+                        setOpenBulkCategory(false);
+                        clearSelection();
+                      },
+                    }
+                  );
+                }}
+                isSubmitting={bulkCategoryMut.isPending}
+              />
+
+              <ConfirmDeleteItemsDialog
+                open={openDeleteMany}
+                count={selectedIds.size}
+                onClose={() => setOpenDeleteMany(false)}
+                onConfirm={() => {
+                  const ids = Array.from(selectedIds);
+                  Promise.allSettled(ids.map((id) => deleteMut.mutateAsync({ id }))).finally(() => {
+                    clearSelection();
+                    setOpenDeleteMany(false);
+                  });
+                }}
+                isSubmitting={deleteMut.isPending}
+              />
+            </Suspense>
           </>
         )}
-      </div>
-
-      <AnimatePresence>
-        {openAdd && (
-          <ProductDrawer
-            key="add"
-            title="Add Product"
-            categories={categories}
-            initial={{ name: '', price: '', category: '', description: '' }}
-            onClose={() => setOpenAdd(false)}
-            onSubmit={(values: DrawerSubmitValues) =>
-              createMut.mutate({
-                name: values.name,
-                price: values.price,
-                category: values.category,
-                description: values.description,
-              })
-            }
-          />
-        )}
-        {openEdit && (
-          <ProductDrawer
-            key="edit"
-            title="Edit Product"
-            categories={categories}
-            initial={{
-              name: openEdit.name,
-              price: String(openEdit.price),
-              category: openEdit.category || '',
-              description: openEdit.description || '',
-            }}
-            onClose={() => setOpenEdit(null)}
-            onSubmit={(values: DrawerSubmitValues) =>
-              updateMut.mutate({
-                id: openEdit.id,
-                payload: {
-                  name: values.name,
-                  price: values.price,
-                  category: values.category || undefined,
-                  description: values.description || undefined,
-                },
-              })
-            }
-          />
-        )}
-      </AnimatePresence>
-    </div>
-  );
-}
-
-/**
- * @param {{ onAdd: () => void }} props
- */
-function EmptyState({ onAdd }: { onAdd: () => void }): JSX.Element {
-  return (
-    <div className="flex h-full items-center justify-center">
-      <div className="text-center">
-        <div className="mb-2 text-xl font-medium">No products yet</div>
-        <p className="mb-4 text-[#5b5b5d]">Create your first menu item to get started.</p>
-        <button className="rounded-md bg-[#2e2e30] px-4 py-2 text-white hover:opacity-90" onClick={onAdd}>
-          Add Product
-        </button>
       </div>
     </div>
   );

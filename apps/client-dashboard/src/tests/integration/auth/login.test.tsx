@@ -6,7 +6,7 @@ import { http, HttpResponse, delay } from 'msw';
 import { server } from '../../../tests/msw/server';
 import { describe, it, expect } from 'vitest';
 
-import Login from '../../../pages/login';
+import Login from '../../../pages/Login';
 import { AuthProvider } from '../../../context/AuthContext';
 
 function renderLogin(initialRoute = '/login') {

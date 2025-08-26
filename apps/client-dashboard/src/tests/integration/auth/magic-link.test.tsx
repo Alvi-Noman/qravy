@@ -6,7 +6,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { http, HttpResponse } from 'msw';
 import { server } from '../../msw/server';
 
-import MagicLink from '../../../pages/magic-link';
+import MagicLink from '../../../pages/MagicLink';
 import { AuthProvider } from '../../../context/AuthContext';
 
 function renderPage(initialPath = '/magic-link?token=ok') {
