@@ -56,7 +56,7 @@ export default function ProductDrawer({
   onClose: () => void;
   onSubmit: (values: { name: string; price: number; description?: string; category?: string }) => void;
 }) {
-  const API_BASE = import.meta.env.VITE_API_BASE || '';
+  const API_BASE = import.meta.env.VITE_API_BASE_URL || '';
   const { token } = useAuthContext();
   const queryClient = useQueryClient();
 
