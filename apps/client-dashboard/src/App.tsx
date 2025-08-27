@@ -17,6 +17,9 @@ const HomeRedirect = lazy(() => import('./pages/HomeRedirect'));
 const CreateRestaurant = lazy(() => import('./pages/CreateRestaurant'));
 const OnboardingWizard = lazy(() => import('./pages/restaurant/OnboardingWizard'));
 
+// NEW: Manage Categories page
+const ManageCategories = lazy(() => import('./pages/ManageCategories'));
+
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const { token, loading } = useAuthContext();
   const navigate = useNavigate();
@@ -92,12 +95,15 @@ function App() {
             <Route path="/orders" element={<Orders />} />
             <Route path="/menu-items" element={<MenuItemsPage />} />
             <Route path="/categories" element={<Categories />} />
+            {/* NEW: manage categories route */}
+            <Route path="/categories/manage" element={<ManageCategories />} />
           </Route>
 
           {/* Legacy redirects */}
           <Route path="/dashboard/orders" element={<Navigate to="/orders" replace />} />
           <Route path="/dashboard/menu-items" element={<Navigate to="/menu-items" replace />} />
           <Route path="/dashboard/categories" element={<Navigate to="/categories" replace />} />
+          <Route path="/dashboard/categories/manage" element={<Navigate to="/categories/manage" replace />} />
 
           <Route path="/login" element={<Login />} />
           <Route path="/signup" element={<Signup />} />

@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { Link } from 'react-router-dom';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
   PencilSquareIcon,
@@ -67,6 +68,8 @@ export default function CategoryRow({
     };
   }, [menuOpen]);
 
+  const manageHref = `/categories/manage?c=${encodeURIComponent(category.name)}`;
+
   return (
     <tr className="border-t border-[#f2f2f2] hover:bg-[#fafafa]">
       <td className="px-3 py-3 align-middle">
@@ -80,10 +83,20 @@ export default function CategoryRow({
       </td>
 
       <td className="px-3 py-3 align-middle">
-        <div className="font-medium text-[#111827]">{category.name}</div>
-        <div className="text-xs text-[#9b9ba1]">
-          Added {new Date(category.createdAt).toLocaleDateString()}
-        </div>
+        {/* Clickable category name -> Manage Categories with this category preselected */}
+        <Link
+          to={manageHref}
+          state={{ selectedCategory: category.name }}
+          className="group block max-w-full"
+          title={`Manage ${category.name}`}
+        >
+          <div className="truncate font-medium text-[#111827] group-hover:underline">
+            {category.name}
+          </div>
+          <div className="text-xs text-[#9b9ba1]">
+            Added {new Date(category.createdAt).toLocaleDateString()}
+          </div>
+        </Link>
       </td>
 
       <td className="px-3 py-3 align-middle">
@@ -96,7 +109,6 @@ export default function CategoryRow({
         )}
       </td>
 
-      {/* Availability like Menu Items */}
       <td className="px-3 py-3 align-middle">
         <button
           type="button"

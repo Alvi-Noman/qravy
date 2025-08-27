@@ -1,4 +1,5 @@
 import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 import type { Category } from '../api/categories';
 import { useCategories } from '../components/Categories/useCategories';
 import { BulkActionsBar } from '../components/Categories';
@@ -85,8 +86,10 @@ export default function CategoriesPage() {
     }
 
     if (sortBy === 'name-asc') list.sort((a, b) => a.name.localeCompare(b.name));
-    if (sortBy === 'created-desc') list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-    if (sortBy === 'most-used') list.sort((a, b) => (usageMap.get(b.name) ?? 0) - (usageMap.get(a.name) ?? 0));
+    if (sortBy === 'created-desc')
+      list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    if (sortBy === 'most-used')
+      list.sort((a, b) => (usageMap.get(b.name) ?? 0) - (usageMap.get(a.name) ?? 0));
 
     return list;
   }, [categories, items, q, channels, sortBy, usageMap]);
@@ -111,15 +114,23 @@ export default function CategoriesPage() {
       {/* Header */}
       <div className="flex items-center justify-between border-b border-[#ececec] px-6 py-4">
         <h2 className="text-lg font-semibold text-[#2e2e30]">Categories</h2>
-        <button
-          className="rounded-md bg-[#2e2e30] px-4 py-2 text-white hover:opacity-90"
-          onClick={() => {
-            setEditing(null);
-            setOpenForm(true);
-          }}
-        >
-          Add Category
-        </button>
+        <div className="flex items-center gap-2">
+          <Link
+            to="/categories/manage"
+            className="rounded-md border border-[#cecece] px-4 py-2 text-sm text-[#2e2e30] hover:bg-[#f5f5f5]"
+          >
+            Manage Category
+          </Link>
+          <button
+            className="rounded-md bg-[#2e2e30] px-4 py-2 text-sm text-white hover:opacity-90"
+            onClick={() => {
+              setEditing(null);
+              setOpenForm(true);
+            }}
+          >
+            Add Category
+          </button>
+        </div>
       </div>
 
       {/* Content */}
@@ -174,13 +185,12 @@ export default function CategoriesPage() {
               onClear={() => setSelectedIds(new Set())}
               onMerge={() => setOpenMerge(true)}
               onDelete={() => {
-                if (selectedIds.size === 1) {
-                  const single = categories.find((c) => c.id === Array.from(selectedIds)[0]) || null;
-                  setDeleteTarget(single);
-                  setOpenDelete(true);
-                } else if (selectedIds.size > 1) {
-                  setOpenMerge(true);
-                }
+                // Always open Delete/Reassign (even if multiple selected, use the first one)
+                const firstId = Array.from(selectedIds)[0];
+                const target = categories.find((c) => c.id === firstId) || null;
+                if (!target) return;
+                setDeleteTarget(target);
+                setOpenDelete(true);
               }}
             />
 
