@@ -1,3 +1,18 @@
+/**
+ * Upload Service
+ *
+ * Stores a single normalized original image in Cloudflare R2 and returns
+ * ImageKit CDN URLs (using named transforms). Auth via shared Bearer token.
+ *
+ * Env:
+ * - PORT
+ * - CORS_ORIGIN (comma-separated)
+ * - R2_ENDPOINT, R2_BUCKET, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY
+ * - IMAGEKIT_URL_ENDPOINT
+ * - UPLOAD_TOKEN
+ * - R2_PREFIX (default "images")
+ * - IK_T_THUMB, IK_T_MD, IK_T_LG, IK_T_ORIGINAL
+ */
 import express from 'express';
 import cors from 'cors';
 import rateLimit from 'express-rate-limit';
@@ -29,7 +44,6 @@ const limiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false
 });
-
 app.use('/api/', limiter);
 
 const s3 = new S3Client({
@@ -43,7 +57,15 @@ const s3 = new S3Client({
 
 const BUCKET = process.env.R2_BUCKET || '';
 const IMAGEKIT = String(process.env.IMAGEKIT_URL_ENDPOINT || '').replace(/\/+$/, '');
+const PREFIX = (process.env.R2_PREFIX || 'images').replace(/^\/+|\/+$/g, '');
+const T_THUMB = process.env.IK_T_THUMB || 'n-thumb';
+const T_MD = process.env.IK_T_MD || 'n-md';
+const T_LG = process.env.IK_T_LG || 'n-lg';
+const T_ORIG = (process.env.IK_T_ORIGINAL || 'f-auto,q-90').trim();
 
+/**
+ * Auth middleware. Expects Authorization: Bearer <UPLOAD_TOKEN>.
+ */
 function auth(req: express.Request, res: express.Response, next: express.NextFunction) {
   const header = req.headers.authorization || '';
   const token = header.startsWith('Bearer ') ? header.slice(7) : '';
@@ -61,8 +83,27 @@ const EXT_MAP = new Map([
   ['avif', 'avif']
 ]);
 
+/**
+ * Produce ASCII-only metadata value for HTTP headers.
+ * - ascii: best-effort readable filename for x-amz-meta-filename
+ * - b64: lossless UTF-8 base64 if you need to recover original name later
+ */
+function toSafeFilenameMeta(original: string) {
+  const ascii = original.normalize('NFKD').replace(/[^\x20-\x7E]+/g, '').slice(0, 180) || 'file';
+  const b64 = Buffer.from(original, 'utf8').toString('base64').slice(0, 1024);
+  return { ascii, b64 };
+}
+
+/**
+ * Health probe.
+ */
 app.get('/health', (_req, res) => res.json({ ok: true }));
 
+/**
+ * POST /api/uploads/images
+ * Body: multipart/form-data with "file"
+ * Returns: UploadResponse with ImageKit CDN URLs.
+ */
 app.post('/api/uploads/images', auth, async (req, res) => {
   try {
     const form = formidable({
@@ -88,7 +129,7 @@ app.post('/api/uploads/images', auth, async (req, res) => {
 
     const hash = crypto.createHash('sha256').update(processed).digest('hex');
     const ext = EXT_MAP.get(ft.ext) || 'bin';
-    const key = `images/${hash}.${ext}`;
+    const key = PREFIX ? `${PREFIX}/${hash}.${ext}` : `${hash}.${ext}`;
 
     let exists = false;
     try {
@@ -97,18 +138,30 @@ app.post('/api/uploads/images', auth, async (req, res) => {
     } catch {}
 
     if (!exists) {
-      await s3.send(
-        new PutObjectCommand({
-          Bucket: BUCKET,
-          Key: key,
-          Body: processed,
-          ContentType: ft.mime,
-          Metadata: {
-            sha256: hash,
-            filename: String(file.originalFilename || '').slice(0, 200)
-          }
-        })
-      );
+      const origName = String(file.originalFilename || '');
+      const { ascii: metaName, b64: metaNameB64 } = toSafeFilenameMeta(origName);
+
+      try {
+        await s3.send(
+          new PutObjectCommand({
+            Bucket: BUCKET,
+            Key: key,
+            Body: processed,
+            ContentType: ft.mime,
+            Metadata: {
+              sha256: hash,
+              filename: metaName,
+              filename_b64: metaNameB64
+            }
+          })
+        );
+      } catch (err) {
+        const msg = String((err as any)?.message || '');
+        if (/invalid character in header content/i.test(msg)) {
+          return res.status(400).json({ error: 'Invalid filename metadata' });
+        }
+        throw err;
+      }
     }
 
     const base = `${IMAGEKIT}/${key}`;
@@ -119,29 +172,34 @@ app.post('/api/uploads/images', auth, async (req, res) => {
       mime: ft.mime,
       size: processed.length,
       cdn: {
-        original: `${base}?tr=f-auto,q-90`,
-        thumbnail: `${base}?tr=w-200,h-200,fo-auto,f-auto,q-80`,
-        medium: `${base}?tr=w-800,h-800,fo-auto,f-auto,q-85`,
-        large: `${base}?tr=w-1600,h-1600,fo-auto,f-auto,q-85`
+        original: `${base}${T_ORIG ? `?tr=${T_ORIG}` : ''}`,
+        thumbnail: `${base}?tr=${T_THUMB}`,
+        medium: `${base}?tr=${T_MD}`,
+        large: `${base}?tr=${T_LG}`
       }
     };
 
     return res.json(payload);
   } catch (err: unknown) {
-    // Safely check error type without using `any`
     const e = err as { code?: string };
     if (e.code === 'ETOOBIG') return res.status(413).json({ error: 'File too large (max 20MB)' });
     return res.status(500).json({ error: 'Upload failed' });
   }
 });
 
+/**
+ * GET /i/:key(*) — redirect to ImageKit with URL-driven transforms.
+ * Query: w,h,q,format=auto|webp|avif,lossless=true,dpr,blur
+ */
 app.get('/i/:key(*)', (req, res) => {
   const { key } = req.params as { key: string };
-  const { w, h, q, format, lossless } = req.query;
+  const { w, h, q, format, lossless, dpr, blur } = req.query;
   const tr: string[] = [];
   if (w) tr.push(`w-${Number(w)}`);
   if (h) tr.push(`h-${Number(h)}`);
   if (q) tr.push(`q-${Number(q)}`);
+  if (dpr) tr.push(`dpr-${Number(dpr)}`);
+  if (blur) tr.push(`bl-${Number(blur)}`);
   if (String(format) === 'auto') tr.push('f-auto');
   if (String(format) === 'webp') tr.push('f-webp');
   if (String(format) === 'avif') tr.push('f-avif');
