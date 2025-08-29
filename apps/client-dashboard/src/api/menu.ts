@@ -1,17 +1,27 @@
 /**
  * Menu API (per-user)
- * - List, create, update (POST), delete (POST) products
- * - Accept a token to guarantee Authorization header
- * - Uses shared DTOs for type safety
+ * Sends full product payload including media, variations, and tags
  */
 import api from './auth';
 import type { v1 } from '../../../../packages/shared/src/types';
 
+export type VariationInput = {
+  name: string;
+  price?: number;
+  imageUrl?: string;
+};
+
 export type NewMenuItem = {
   name: string;
   price: number;
+  compareAtPrice?: number;
   description?: string;
   category?: string;
+  categoryId?: string;
+  media?: string[];
+  variations?: VariationInput[];
+  tags?: string[];
+  restaurantId?: string;
 };
 
 export type MenuItem = v1.MenuItemDTO;

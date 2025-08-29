@@ -1,3 +1,7 @@
+/**
+ * Product Drawer
+ * Always collects and sends price (required) and compareAtPrice (optional)
+ */
 import {
   useEffect,
   useState,
@@ -12,9 +16,10 @@ import CategorySelect from './CategorySelect';
 import { createCategory as apiCreateCategory, type Category } from '../../api/categories';
 import { QuestionMarkCircleIcon } from '@heroicons/react/24/outline';
 import Variations from './Variations';
-import Counter from './Counter';
 import ImageUploadZone from './ImageUploadZone';
 import Tags from './Tags';
+
+type UiVariation = { label: string; price?: string; imagePreview?: string | null };
 
 export default function ProductDrawer({
   title,
@@ -32,26 +37,29 @@ export default function ProductDrawer({
     description?: string;
     category?: string;
     prepMinutes?: number;
-    imagePreview?: string | null;
-    imagePreview2?: string | null;
-    imagePreviews?: (string | null)[]; // optional array form; if present, it will be used
+    imagePreviews?: (string | null)[];
+    tags?: string[];
+    variations?: UiVariation[];
   };
   onClose: () => void;
-  onSubmit: (values: { name: string; price: number; description?: string; category?: string }) => void;
+  onSubmit: (values: {
+    name: string;
+    price: number;
+    compareAtPrice?: number;
+    description?: string;
+    category?: string;
+    media?: string[];
+    variations?: { name: string; price?: number; imageUrl?: string }[];
+    tags?: string[];
+  }) => void;
 }) {
   const API_BASE = import.meta.env.VITE_API_BASE_URL || '';
   const { token } = useAuthContext();
   const queryClient = useQueryClient();
 
-  // Build initial previews array (max 5)
   const initPreviews = (() => {
-    if (Array.isArray(initial.imagePreviews) && initial.imagePreviews.length) {
-      return initial.imagePreviews.slice(0, 5);
-    }
-    const list: (string | null)[] = [];
-    if (typeof initial.imagePreview !== 'undefined') list.push(initial.imagePreview || null);
-    if (typeof initial.imagePreview2 !== 'undefined' && initial.imagePreview2 !== null) list.push(initial.imagePreview2);
-    return list.length ? list.slice(0, 5) : [null];
+    const list = Array.isArray(initial.imagePreviews) ? initial.imagePreviews.slice(0, 5) : [];
+    return list.length ? list : [null];
   })();
 
   const [values, setValues] = useState(() => ({
@@ -64,6 +72,12 @@ export default function ProductDrawer({
     imageFiles: [] as (File | null)[],
     imagePreviews: initPreviews as (string | null)[],
   }));
+
+  const [remoteUrls, setRemoteUrls] = useState<string[]>(
+    (initial.imagePreviews || []).map((u) => (u && !u.startsWith('blob:') ? u : '')).slice(0, 5)
+  );
+  const [tags, setTags] = useState<string[]>(initial.tags || []);
+  const [uiVariations, setUiVariations] = useState<UiVariation[]>(initial.variations || []);
 
   const [localError, setLocalError] = useState<string | null>(null);
   const [localCats, setLocalCats] = useState<string[]>(categories);
@@ -83,24 +97,13 @@ export default function ProductDrawer({
     onSuccess: (created) => {
       setLocalCats((prev) => (prev.includes(created.name) ? prev : [...prev, created.name].sort()));
       setValues((prev) => ({ ...prev, category: created.name }));
-
-      queryClient.setQueryData<Category[]>(
-        ['categories', token],
-        (prev) => {
-          const list = prev ?? [];
-          const exists = list.some((c) => c.name === created.name);
-          return exists ? list : [...list, created].sort((a, b) => a.name.localeCompare(b.name));
-        }
-      );
-
+      queryClient.invalidateQueries({ queryKey: ['categories', token] });
       try {
         localStorage.setItem('categories:updated', String(Date.now()));
       } catch {}
-      queryClient.invalidateQueries({ queryKey: ['categories', token] });
     },
   });
 
-  // Cleanup blob URLs on unmount
   useEffect(() => {
     return () => {
       try {
@@ -114,8 +117,13 @@ export default function ProductDrawer({
 
   const toNumber = (v: string) => Number(v);
   const priceNum = toNumber(values.price);
+  const compareAtNum = values.compareAtPrice ? Number(values.compareAtPrice) : undefined;
+
   const isFormValid =
-    values.name.trim().length > 0 && !Number.isNaN(priceNum) && priceNum > 0 && !!values.category;
+    values.name.trim().length > 0 &&
+    !Number.isNaN(priceNum) &&
+    priceNum > 0 &&
+    (compareAtNum === undefined || (!Number.isNaN(compareAtNum) && compareAtNum >= priceNum));
 
   const handleSubmit: React.FormEventHandler<HTMLFormElement> = (e) => {
     e.preventDefault();
@@ -124,35 +132,53 @@ export default function ProductDrawer({
       if (!values.name.trim()) return setLocalError('Name is required.');
       if (Number.isNaN(priceNum) || priceNum <= 0)
         return setLocalError('Price must be a valid positive number.');
-      if (!values.category) return setLocalError('Please select a category.');
+      if (compareAtNum !== undefined && (Number.isNaN(compareAtNum) || compareAtNum < priceNum))
+        return setLocalError('Compare-at price must be ≥ price.');
     }
+
+    const media: string[] = [];
+    const maxLen = Math.max(values.imagePreviews.length, remoteUrls.length);
+    for (let i = 0; i < maxLen; i++) {
+      const u = remoteUrls[i] || values.imagePreviews[i] || '';
+      if (u && !u.startsWith('blob:')) media.push(u);
+    }
+
+    const variations =
+      uiVariations
+        .filter((v) => v.label.trim() !== '')
+        .map((v) => {
+          const p = v.price ? Number(v.price) : undefined;
+          return {
+            name: v.label.trim(),
+            price: p !== undefined && !Number.isNaN(p) ? p : undefined,
+            imageUrl: undefined,
+          };
+        }) || [];
+
     onSubmit({
       name: values.name.trim(),
       price: priceNum,
+      compareAtPrice: compareAtNum,
       description: values.description?.trim() || undefined,
-      category: values.category,
+      category: values.category || undefined,
+      media: media.length ? media : undefined,
+      variations: variations.length ? variations : undefined,
+      tags: tags.length ? tags : undefined,
     });
   };
 
-  // Helpers for gallery
   const handlePickAt = (index: number, file: File, previewUrl: string) => {
     setValues((prev) => {
       const nextFiles = prev.imageFiles.slice();
       const nextPreviews = prev.imagePreviews.slice();
-
-      // Revoke old blob if present
       const prevUrl = nextPreviews[index];
       if (prevUrl && prevUrl !== previewUrl && prevUrl.startsWith('blob:')) {
         try { URL.revokeObjectURL(prevUrl); } catch {}
       }
-
-      // Expand arrays if needed
       while (nextFiles.length <= index) nextFiles.push(null);
       while (nextPreviews.length <= index) nextPreviews.push(null);
-
       nextFiles[index] = file;
       nextPreviews[index] = previewUrl;
-
       return { ...prev, imageFiles: nextFiles, imagePreviews: nextPreviews };
     });
   };
@@ -163,6 +189,12 @@ export default function ProductDrawer({
       while (next.length <= index) next.push(null);
       next[index] = url;
       return { ...prev, imagePreviews: next };
+    });
+    setRemoteUrls((prev) => {
+      const next = prev.slice();
+      while (next.length <= index) next.push('');
+      next[index] = url;
+      return next;
     });
   };
 
@@ -178,33 +210,26 @@ export default function ProductDrawer({
       if (index < nextFiles.length) nextFiles.splice(index, 1);
       return { ...prev, imageFiles: nextFiles, imagePreviews: nextPreviews.length ? nextPreviews : [null] };
     });
+    setRemoteUrls((prev) => {
+      const next = prev.slice();
+      next.splice(index, 1);
+      return next;
+    });
   };
 
   const isSaveDisabled = !isFormValid || createCatMut.isPending;
 
   return (
     <div className="fixed inset-0 z-50">
-      <motion.div
-        className="absolute inset-0 bg-black/40"
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        exit={{ opacity: 0 }}
-        onClick={onClose}
-      />
+      <motion.div className="absolute inset-0 bg-black/40" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={onClose} />
       <motion.aside
-          className="absolute right-0 top-0 h-screen w-full sm:w-[460px] md:w-[520px] bg-[#f5f5f5] border-l border-[#dbdbdb] shadow-2xl flex flex-col overflow-x-hidden"
-          initial={{ x: '100%' }}
-          animate={{ x: 0 }}
-          exit={{ x: '100%' }}
-          transition={{ type: 'tween', duration: 0.25, ease: 'easeOut' }}
-          aria-modal="true"
-          role="dialog"
-        >
+        className="absolute right-0 top-0 h-screen w-full sm:w-[460px] md:w-[520px] bg-[#f5f5f5] border-l border-[#dbdbdb] shadow-2xl flex flex-col overflow-x-hidden"
+        initial={{ x: '100%' }} animate={{ x: 0 }} exit={{ x: '100%' }}
+        transition={{ type: 'tween', duration: 0.25, ease: 'easeOut' }} aria-modal="true" role="dialog"
+      >
         <div className="flex items-center justify-between px-5 py-4 border-b border-[#dbdbdb] sticky top-0 bg-[#fcfcfc]">
           <h3 className="text-lg font-semibold text-[#2e2e30]">{title}</h3>
-          <button className="text-[#6b7280] hover:text-[#374151]" onClick={onClose} aria-label="Close">
-            ✕
-          </button>
+          <button className="text-[#6b7280] hover:text-[#374151]" onClick={onClose} aria-label="Close">✕</button>
         </div>
 
         <form id="product-form" onSubmit={handleSubmit} className="flex-1 overflow-y-auto p-5 bg-[#fcfcfc]">
@@ -213,10 +238,7 @@ export default function ProductDrawer({
               <Label>Item Name</Label>
               <Input
                 value={values.name}
-                onChange={(e) => {
-                  const v = (e.currentTarget as HTMLInputElement).value;
-                  setValues((prev) => ({ ...prev, name: v }));
-                }}
+                onChange={(e) => setValues((prev) => ({ ...prev, name: (e.target as HTMLInputElement).value }))}
                 placeholder="e.g., Chicken Biryani"
                 required
               />
@@ -225,24 +247,11 @@ export default function ProductDrawer({
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <Field>
                 <LabelRow text="Price" />
-                <CurrencyInput
-                  value={values.price}
-                  onChange={(v: string) => setValues((prev) => ({ ...prev, price: v }))}
-                  placeholder="0.00"
-                />
+                <CurrencyInput value={values.price} onChange={(v) => setValues((p) => ({ ...p, price: v }))} placeholder="0.00" />
               </Field>
-
               <Field>
-                <LabelRow
-                  text="Compare-at Price"
-                  help={'To display a markdown, enter a value higher than your price.\nOften shown with a strikethrough.'}
-                  placement="left"
-                />
-                <CurrencyInput
-                  value={values.compareAtPrice || ''}
-                  onChange={(v: string) => setValues((prev) => ({ ...prev, compareAtPrice: v }))}
-                  placeholder="0.00"
-                />
+                <LabelRow text="Compare-at Price" help={'Enter a value higher than your price to show a markdown.'} placement="left" />
+                <CurrencyInput value={values.compareAtPrice || ''} onChange={(v) => setValues((p) => ({ ...p, compareAtPrice: v }))} placeholder="0.00" />
               </Field>
             </div>
 
@@ -252,10 +261,7 @@ export default function ProductDrawer({
                 value={values.category || ''}
                 categories={localCats}
                 onChange={(val: string) => setValues((prev) => ({ ...prev, category: val }))}
-                onCreateCategory={async (name: string) => {
-                  const created = await createCatMut.mutateAsync(name);
-                  return created.name;
-                }}
+                onCreateCategory={async (name: string) => (await createCatMut.mutateAsync(name)).name}
                 placeholder="Select a Category"
               />
             </Field>
@@ -265,15 +271,11 @@ export default function ProductDrawer({
               <Textarea
                 rows={3}
                 value={values.description || ''}
-                onChange={(e) => {
-                  const v = (e.currentTarget as HTMLTextAreaElement).value;
-                  setValues((prev) => ({ ...prev, description: v }));
-                }}
-                placeholder="Describe the dish: key ingredients, flavor profile, spice level, portion size, and any allergens."
+                onChange={(e) => setValues((p) => ({ ...p, description: (e.target as HTMLTextAreaElement).value }))}
+                placeholder="Describe the dish (optional)."
               />
             </Field>
 
-            {/* Media */}
             <Field>
               <Label className="mb-2">Media</Label>
               <ImageUploadZone
@@ -281,16 +283,16 @@ export default function ProductDrawer({
                 maxCount={5}
                 uploadUrl={`${API_BASE}/api/uploads/images`}
                 authToken={token || undefined}
-                onPick={(i, file, url) => handlePickAt(i, file, url)}
+                onPick={(i, f, url) => handlePickAt(i, f, url)}
                 onUploaded={(i, resp) => handleUploadedAt(i, resp.cdn.medium)}
                 onClear={(i) => handleClearAt(i)}
               />
             </Field>
 
-            <Variations helpText="Add options like Size, Spice Level, or Toppings" />
+            <Variations value={uiVariations} onChange={setUiVariations} />
 
             <Field>
-              <Tags />
+              <Tags value={tags} onChange={setTags} />
             </Field>
 
             {(localError || createCatMut.isError) && (
@@ -302,55 +304,19 @@ export default function ProductDrawer({
         </form>
 
         <div className="px-5 py-4 border-t border-[#dbdbdb] sticky bottom-0 bg-[#fcfcfc] flex justify-end gap-3">
-          <button
-            type="button"
-            className="px-4 py-2 rounded-md border border-[#dbdbdb] hover:border-[#111827] transition-colors text-sm text-[#2e2e30] bg-[#fcfcfc] hover:bg-[#f3f4f6]"
-            onClick={onClose}
-          >
-            Cancel
-          </button>
-          <button
-            type="submit"
-            form="product-form"
-            className={`px-4 py-2 rounded-md text-sm text-white ${
-              isSaveDisabled ? 'bg-[#b0b0b5] cursor-not-allowed' : 'bg-[#111827] hover:opacity-90'
-            }`}
-            disabled={isSaveDisabled}
-          >
-            Save Changes
-          </button>
+          <button type="button" className="px-4 py-2 rounded-md border border-[#dbdbdb] hover:border-[#111827] transition-colors text-sm text-[#2e2e30] bg-[#fcfcfc] hover:bg-[#f3f4f6]" onClick={onClose}>Cancel</button>
+          <button type="submit" form="product-form" className={`px-4 py-2 rounded-md text-sm text-white ${isSaveDisabled ? 'bg-[#b0b0b5] cursor-not-allowed' : 'bg-[#111827] hover:opacity-90'}`} disabled={isSaveDisabled}>Save Changes</button>
         </div>
       </motion.aside>
     </div>
   );
 }
 
-/**
- * @param {{ children: ReactNode }} props
- */
-function Field({ children }: { children: ReactNode }) {
-  return <div className="text-[#2e2e30]">{children}</div>;
-}
-
-/**
- * @param {{ children: ReactNode; className?: string }} props
- */
+function Field({ children }: { children: ReactNode }) { return <div className="text-[#2e2e30]">{children}</div>; }
 function Label({ children, className = '' }: { children: ReactNode; className?: string }) {
   return <label className={`block text-sm font-medium text-[#2e2e30] mb-1 ${className}`}>{children}</label>;
 }
-
-/**
- * @param {{ text: string; help?: string; placement?: 'bottom'|'left'|'right' }} props
- */
-function LabelRow({
-  text,
-  help,
-  placement = 'bottom',
-}: {
-  text: string;
-  help?: string;
-  placement?: 'bottom' | 'left' | 'right';
-}) {
+function LabelRow({ text, help, placement = 'bottom' }: { text: string; help?: string; placement?: 'bottom' | 'left' | 'right' }) {
   return (
     <div className="flex items-center gap-1.5 mb-1 h-5">
       <span className="text-sm font-medium text-[#2e2e30] leading-none">{text}</span>
@@ -363,77 +329,23 @@ function LabelRow({
     </div>
   );
 }
-
-/**
- * @param {{ label: string; placement?: 'bottom'|'left'|'right' }} props
- */
-function HoverCard({
-  label,
-  placement = 'bottom',
-}: {
-  label: string;
-  placement?: 'bottom' | 'left' | 'right';
-}) {
-  const pos =
-    placement === 'left'
-      ? 'right-full mr-2 top-1/2 -translate-y-1/2'
-      : placement === 'right'
-      ? 'left-full ml-2 top-1/2 -translate-y-1/2'
-      : 'left-0 top-full mt-1';
-  return (
-    <span
-      role="tooltip"
-      className={`pointer-events-none absolute ${pos} z-50 w-80 max-w-[22rem] rounded-md border border-[#dbdbdb] bg-[#fcfcfc] text-[#2e2e30] text-xs px-3 py-2 shadow-md opacity-0 translate-y-0 group-hover:opacity-100 group-hover:translate-y-[2px] transition duration-150 ease-out`}
-    >
-      {label}
-    </span>
-  );
+function HoverCard({ label, placement = 'bottom' }: { label: string; placement?: 'bottom' | 'left' | 'right' }) {
+  const pos = placement === 'left' ? 'right-full mr-2 top-1/2 -translate-y-1/2' : placement === 'right' ? 'left-full ml-2 top-1/2 -translate-y-1/2' : 'left-0 top-full mt-1';
+  return <span role="tooltip" className={`pointer-events-none absolute ${pos} z-50 w-80 max-w-[22rem] rounded-md border border-[#dbdbdb] bg-[#fcfcfc] text-[#2e2e30] text-xs px-3 py-2 shadow-md opacity-0 translate-y-0 group-hover:opacity-100 group-hover:translate-y-[2px] transition duration-150 ease-out`}>{label}</span>;
 }
-
 function Input(props: InputHTMLAttributes<HTMLInputElement>) {
   const { className, ...rest } = props;
-  return (
-    <input
-      {...rest}
-      className={`w-full border border-[#dbdbdb] hover:border-[#111827] focus:border-[#111827] transition-colors rounded-md px-3 py-2 bg-[#fcfcfc] text-sm placeholder-[#a9a9ab] focus:outline-none focus:ring-0 text-[#2e2e30] ${className || ''}`}
-    />
-  );
+  return <input {...rest} className={`w-full border border-[#dbdbdb] hover:border-[#111827] focus:border-[#111827] transition-colors rounded-md px-3 py-2 bg-[#fcfcfc] text-sm placeholder-[#a9a9ab] focus:outline-none focus:ring-0 text-[#2e2e30] ${className || ''}`} />;
 }
-
 function Textarea(props: TextareaHTMLAttributes<HTMLTextAreaElement>) {
   const { className, ...rest } = props;
-  return (
-    <textarea
-      {...rest}
-      className={`w-full border border-[#dbdbdb] hover:border-[#111827] focus:border-[#111827] transition-colors rounded-md px-3 py-2 bg-[#fcfcfc] text-sm placeholder-[#a9a9ab] focus:outline-none focus:ring-0 text-[#2e2e30] ${className || ''}`}
-    />
-  );
+  return <textarea {...rest} className={`w-full border border-[#dbdbdb] hover:border-[#111827] focus:border-[#111827] transition-colors rounded-md px-3 py-2 bg-[#fcfcfc] text-sm placeholder-[#a9a9ab] focus:outline-none focus:ring-0 text-[#2e2e30] ${className || ''}`} />;
 }
-
-/**
- * @param {{ value: string; onChange: (val: string) => void; placeholder?: string }} props
- */
-function CurrencyInput({
-  value,
-  onChange,
-  placeholder = '0.00',
-}: {
-  value: string;
-  onChange: (val: string) => void;
-  placeholder?: string;
-}) {
+function CurrencyInput({ value, onChange, placeholder = '0.00' }: { value: string; onChange: (val: string) => void; placeholder?: string }) {
   return (
     <div className="flex items-stretch">
-      <span className="px-2 py-2 border border-[#dbdbdb] border-r-0 rounded-l-md bg-[#fcfcfc] text-sm text-[#6b7280] select-none">
-        ৳
-      </span>
-      <input
-        className="w-full border border-[#dbdbdb] border-l-[#dbdbdb] hover:border-[#111827] hover:border-l-[#111827] focus:border-[#111827] focus:border-l-[#111827] transition-colors rounded-r-md px-3 py-2 text-sm placeholder-[#a9a9ab] focus:outline-none focus:ring-0 bg-[#fcfcfc] text-[#2e2e30]"
-        placeholder={placeholder}
-        value={value}
-        onChange={(e) => onChange(e.currentTarget.value)}
-        inputMode="decimal"
-      />
+      <span className="px-2 py-2 border border-[#dbdbdb] border-r-0 rounded-l-md bg-[#fcfcfc] text-sm text-[#6b7280] select-none">৳</span>
+      <input className="w-full border border-[#dbdbdb] border-l-[#dbdbdb] hover:border-[#111827] hover:border-l-[#111827] focus:border-[#111827] focus:border-l-[#111827] transition-colors rounded-r-md px-3 py-2 text-sm placeholder-[#a9a9ab] focus:outline-none focus:ring-0 bg-[#fcfcfc] text-[#2e2e30]" placeholder={placeholder} value={value} onChange={(e) => onChange((e.target as HTMLInputElement).value)} inputMode="decimal" />
     </div>
   );
 }

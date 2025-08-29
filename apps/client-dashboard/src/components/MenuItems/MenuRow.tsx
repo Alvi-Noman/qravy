@@ -81,12 +81,9 @@ export default function MenuRow({
 
       <td className="px-3 py-4 align-middle">
         <div className="flex items-center gap-3">
-          <Avatar name={item.name} imageUrl={itAny.imageUrl} />
+          <Avatar name={item.name} imageUrl={(itAny.media?.[0] as string) || itAny.imageUrl} />
           <div className="min-w-0">
             <div className="truncate font-medium text-[#111827]">{item.name}</div>
-            {item.description ? (
-              <div className="truncate text-xs text-[#6b7280]">{item.description}</div>
-            ) : null}
           </div>
         </div>
       </td>
@@ -101,8 +98,13 @@ export default function MenuRow({
         )}
       </td>
 
-      <td className="px-3 py-4 align-middle font-medium text-[#111827]">
-        ${Number(itAny.price ?? 0).toFixed(2)}
+      <td className="px-3 py-4 align-middle">
+        <div className="flex items-center gap-2">
+          <span className="font-medium text-[#111827]">৳{Number((itAny.price ?? 0)).toFixed(2)}</span>
+          {itAny.compareAtPrice != null && Number(itAny.compareAtPrice) > Number(itAny.price ?? 0) && (
+            <span className="text-xs text-[#6b7280] line-through">৳{Number(itAny.compareAtPrice).toFixed(2)}</span>
+          )}
+        </div>
       </td>
 
       <td className="px-3 py-4 align-middle">
@@ -111,15 +113,9 @@ export default function MenuRow({
           role="switch"
           aria-checked={active}
           onClick={() => onToggleAvailability(item.id, !active)}
-          className={`relative inline-flex h-6 w-11 items-center rounded-full transition ${
-            active ? 'bg-slate-400' : 'bg-slate-300'
-          }`}
+          className={`relative inline-flex h-6 w-11 items-center rounded-full transition ${active ? 'bg-slate-400' : 'bg-slate-300'}`}
         >
-          <span
-            className={`inline-block h-4 w-4 transform rounded-full bg-white transition ${
-              active ? 'translate-x-6' : 'translate-x-1'
-            }`}
-          />
+          <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition ${active ? 'translate-x-6' : 'translate-x-1'}`} />
         </button>
       </td>
 
@@ -151,40 +147,19 @@ export default function MenuRow({
                 >
                   <ul className="py-1 text-sm">
                     <li>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setOpen(false);
-                          onEdit(item);
-                        }}
-                        className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-[#f5f5f5]"
-                      >
+                      <button type="button" onClick={() => { setOpen(false); onEdit(item); }} className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-[#f5f5f5]">
                         <PencilSquareIcon className="h-4 w-4 text-[#6b7280]" />
                         Edit
                       </button>
                     </li>
                     <li>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setOpen(false);
-                          onDuplicate(item.id);
-                        }}
-                        className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-[#f5f5f5]"
-                      >
+                      <button type="button" onClick={() => { setOpen(false); onDuplicate(item.id); }} className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-[#f5f5f5]">
                         <DocumentDuplicateIcon className="h-4 w-4 text-[#6b7280]" />
                         Duplicate
                       </button>
                     </li>
                     <li>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setOpen(false);
-                          onDelete(item.id);
-                        }}
-                        className="flex w-full items-center gap-2 px-3 py-2 text-left text-red-600 hover:bg-[#fff0f0]"
-                      >
+                      <button type="button" onClick={() => { setOpen(false); onDelete(item.id); }} className="flex w-full items-center gap-2 px-3 py-2 text-left text-red-600 hover:bg-[#fff0f0]">
                         <TrashIcon className="h-4 w-4" />
                         Delete
                       </button>
@@ -203,13 +178,7 @@ export default function MenuRow({
 function Avatar({ name, imageUrl }: { name: string; imageUrl?: string }) {
   const letter = name?.trim()?.[0]?.toUpperCase() || '•';
   if (imageUrl)
-    return (
-      <img
-        src={imageUrl}
-        alt=""
-        className="h-10 w-10 rounded-md object-cover ring-1 ring-[#ececec]"
-      />
-    );
+    return <img src={imageUrl} alt="" className="h-10 w-10 rounded-md object-cover ring-1 ring-[#ececec]" />;
   return (
     <div className="flex h-10 w-10 items-center justify-center rounded-md bg-gradient-to-br from-[#eef2ff] to-[#fdf2f8] text-sm font-semibold text-[#374151] ring-1 ring-[#ececec]">
       {letter}

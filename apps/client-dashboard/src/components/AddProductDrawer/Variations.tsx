@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   PlusCircleIcon,
   XMarkIcon,
@@ -33,16 +33,31 @@ export type VariantValue = {
 };
 export type VariationGroup = { id: string; values: VariantValue[]; editing: boolean };
 
+type VariationsValue = { label: string; price?: string; imagePreview?: string | null };
+
 export default function Variations({
   helpText = 'Add options like Size, Spice Level, or Toppings',
+  value,
+  onChange,
 }: {
   helpText?: string;
+  value?: VariationsValue[];
+  onChange?: (rows: VariationsValue[]) => void;
 }) {
   const [group, setGroup] = useState<VariationGroup | null>(null);
 
-  const addGroup = () => {
-    if (!group) setGroup({ id: cryptoId(), editing: true, values: [{ id: cryptoId(), label: '' }] });
-  };
+  useEffect(() => {
+    if (group || !value || value.length === 0) return;
+    const values: VariantValue[] = value.map((v) => ({
+      id: cryptoId(),
+      label: v.label,
+      price: v.price,
+      imagePreview: v.imagePreview ?? null,
+      imageFile: null,
+    }));
+    setGroup({ id: cryptoId(), editing: false, values: normalizeInputs(values) });
+  }, [value, group]);
+
   const updateValues = (next: VariantValue[]) =>
     setGroup((g) => (g ? { ...g, values: normalizeInputs(next) } : g));
 
@@ -73,8 +88,20 @@ export default function Variations({
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
   );
 
-  const typed = (group?.values || []).filter((v) => v.label.trim() !== '');
-  const typedCount = typed.length;
+  const typed = useMemo(
+    () => (group?.values || []).filter((v) => v.label.trim() !== ''),
+    [group?.values]
+  );
+
+  useEffect(() => {
+    if (!onChange) return;
+    const payload: VariationsValue[] = typed.map((r) => ({
+      label: r.label,
+      price: r.price,
+      imagePreview: r.imagePreview ?? null,
+    }));
+    onChange(payload);
+  }, [typed, onChange]);
 
   const onDragEnd = (e: DragEndEvent) => {
     if (!group) return;
@@ -88,10 +115,7 @@ export default function Variations({
     if (from < 0) return;
 
     let to = typedIds.indexOf(String(over.id));
-    if (to < 0) {
-      // If dropping over the blank row, move to the end of the typed list
-      to = typedIds.length - 1;
-    }
+    if (to < 0) to = typedIds.length - 1;
 
     const nextTypedIds = arrayMove(typedIds, from, to);
     const nextTyped = nextTypedIds.map((id) => values.find((v) => v.id === id)!);
@@ -115,7 +139,7 @@ export default function Variations({
       {!group ? (
         <button
           type="button"
-          onClick={addGroup}
+          onClick={() => setGroup({ id: cryptoId(), editing: true, values: [{ id: cryptoId(), label: '' }] })}
           className="inline-flex items-center gap-2 text-sm font-medium text-[#2e2e30] border border-[#dbdbdb] bg-[#fcfcfc] hover:bg-[#f6f6f6] transition-colors px-3 py-2 rounded-md"
         >
           <PlusCircleIcon className="h-5 w-5 text-[#2e2e30]" />
@@ -127,11 +151,7 @@ export default function Variations({
             <div className="rounded-md border border-[#dbdbdb] bg-[#fcfcfc]">
               <div className="p-3 space-y-2">
                 <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
-                  {/* Include ALL rows (typed + blank) in the SortableContext to avoid remounts */}
-                  <SortableContext
-                    items={group.values.map((v) => v.id)}
-                    strategy={verticalListSortingStrategy}
-                  >
+                  <SortableContext items={group.values.map((v) => v.id)} strategy={verticalListSortingStrategy}>
                     {group.values.map((v, idx) => {
                       const isBlank = v.label.trim() === '';
                       const canRemove = !(group.values.length === 1 && isBlank);
@@ -160,12 +180,12 @@ export default function Variations({
                   </button>
                   <button
                     type="button"
-                    disabled={typedCount === 0}
+                    disabled={rows.length === 0}
                     onClick={() =>
                       setGroup((g) => (g ? { ...g, editing: false, values: tidyValues(g.values) } : g))
                     }
                     className={`px-4 py-1.5 rounded-md text-sm text-white ${
-                      typedCount === 0 ? 'bg-[#b0b0b5] cursor-not-allowed' : 'bg-[#111827] hover:opacity-90'
+                      rows.length === 0 ? 'bg-[#b0b0b5] cursor-not-allowed' : 'bg-[#111827] hover:opacity-90'
                     }`}
                   >
                     Done
@@ -173,11 +193,10 @@ export default function Variations({
                 </div>
               </div>
 
-              {typedCount > 0 && (
+              {rows.length > 0 && (
                 <VariantTable
                   rows={rows}
                   onChange={(idx, patch) => {
-                    // idx is among typed; map back to full index
                     const id = rows[idx].id;
                     const fullIndex = group.values.findIndex((v) => v.id === id);
                     if (fullIndex >= 0) setValue(fullIndex, patch);
@@ -262,13 +281,10 @@ function OptionRow({
 
   return (
     <div ref={setNodeRef} style={style} className="flex items-center gap-2 min-w-0">
-      {/* 6-dot drag handle */}
       <button
         type="button"
         className={`shrink-0 p-1.5 rounded-md ${
-          disabled
-            ? 'text-[#2e2e30] opacity-40 cursor-not-allowed'
-            : 'text-[#2e2e30] cursor-grab active:cursor-grabbing'
+          disabled ? 'text-[#2e2e30] opacity-40 cursor-not-allowed' : 'text-[#2e2e30] cursor-grab active:cursor-grabbing'
         }`}
         aria-label={disabled ? 'Drag disabled' : 'Reorder option'}
         title={disabled ? '' : 'Drag to reorder'}
@@ -281,7 +297,7 @@ function OptionRow({
         className="flex-1 border border-[#dbdbdb] hover:border-[#111827] focus:border-[#111827] transition-colors rounded-md px-3 py-2 bg-[#fcfcfc] text-sm text-[#2e2e30] placeholder-[#a9a9ab] focus:outline-none focus:ring-0"
         placeholder={`Option ${index + 1}`}
         value={item.label}
-        onChange={(e) => onLabelChange(e.target.value)}
+        onChange={(e) => onLabelChange((e.target as HTMLInputElement).value)}
       />
 
       {canRemove && (
@@ -311,7 +327,6 @@ function VariantTable({
   return (
     <div className="border-t border-[#dbdbdb] rounded-b-md overflow-x-auto">
       <div className="min-w-[480px]">
-        {/* Header row: changed to bg #f6f6f6 and kept bottom border */}
         <div className="grid grid-cols-[56px_1fr_180px] items-center px-3 py-2 bg-[#f6f6f6] border-b border-[#dbdbdb]">
           <div className="col-span-2 text-sm font-semibold text-[#2e2e30]">Variations</div>
           <div className="text-sm font-semibold text-[#2e2e30]">Price</div>
@@ -342,7 +357,7 @@ function CurrencyCell({ value, onChange }: { value: string; onChange: (v: string
         className="w-full border border-[#dbdbdb] border-l-[#dbdbdb] hover:border-[#111827] hover:border-l-[#111827] focus:border-[#111827] focus:border-l-[#111827] transition-colors rounded-r-md px-3 py-2 text-sm placeholder-[#a9a9ab] focus:outline-none focus:ring-0 bg-[#fcfcfc] text-[#2e2e30]"
         placeholder="0.00"
         value={value}
-        onChange={(e) => onChange(e.target.value)}
+        onChange={(e) => onChange((e.target as HTMLInputElement).value)}
         inputMode="decimal"
       />
     </div>
@@ -380,7 +395,7 @@ function TinyImageBox({
         accept="image/*"
         className="hidden"
         onChange={(e) => {
-          const file = e.target.files?.[0];
+          const file = (e.target as HTMLInputElement).files?.[0];
           if (!file) return;
           const url = URL.createObjectURL(file);
           onPick(file, url);
@@ -414,7 +429,6 @@ function HoverCard({
 }
 
 function SixDotHandleIcon({ className = '' }: { className?: string }) {
-  // 2 columns x 3 rows of dots; uses currentColor so parent can control color
   return (
     <svg viewBox="0 0 14 14" className={className} aria-hidden="true">
       <circle cx="4" cy="3" r="1.2" fill="currentColor" />

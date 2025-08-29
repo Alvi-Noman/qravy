@@ -4,7 +4,7 @@ import MenuToolbar, { type SortBy } from '../components/MenuItems/MenuToolbar';
 import MenuToolbarSkeleton from '../components/MenuItems/MenuToolbarSkeleton';
 import MenuTableSkeleton from '../components/MenuItems/MenuTableSkeleton';
 import BulkActionsBar from '../components/MenuItems/BulkActionsBar';
-import type { MenuItem as TMenuItem } from '../api/menu';
+import type { MenuItem as TMenuItem, NewMenuItem } from '../api/menu';
 
 const MenuTable = lazy(() => import('../components/MenuItems/MenuTable'));
 const BulkChangeCategoryDialog = lazy(() => import('../components/MenuItems/BulkChangeCategoryDialog'));
@@ -17,8 +17,12 @@ type Channel = 'dine-in' | 'online';
 type DrawerSubmitValues = {
   name: string;
   price: number;
+  compareAtPrice?: number;
   category?: string;
   description?: string;
+  media?: string[];
+  variations?: { name: string; price?: number; imageUrl?: string }[];
+  tags?: string[];
 };
 
 export default function MenuItemsPage(): JSX.Element {
@@ -36,24 +40,22 @@ export default function MenuItemsPage(): JSX.Element {
     bulkCategoryMut,
   } = useMenuItems();
 
-  // Cross-tab sync
   useEffect(() => {
-    const onStorage = (e: StorageEvent) => e.key === 'menu:updated' && itemsQuery.refetch();
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === 'menu:updated') itemsQuery.refetch();
+    };
     window.addEventListener('storage', onStorage);
     return () => window.removeEventListener('storage', onStorage);
   }, [itemsQuery]);
 
-  // Filters
   const [q, setQ] = useState('');
   const [status, setStatus] = useState<Set<Status>>(new Set());
   const [channels, setChannels] = useState<Set<Channel>>(new Set());
   const [selectedCategory, setSelectedCategory] = useState<string>('');
   const [sortBy, setSortBy] = useState<SortBy>('name-asc');
 
-  // Selection
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
-  // Drawers/dialogs
   const [openAdd, setOpenAdd] = useState(false);
   const [openEdit, setOpenEdit] = useState<TMenuItem | null>(null);
   const [openBulkCategory, setOpenBulkCategory] = useState(false);
@@ -86,26 +88,30 @@ export default function MenuItemsPage(): JSX.Element {
     });
 
     if (sortBy === 'name-asc') list = list.slice().sort((a, b) => a.name.localeCompare(b.name));
-    if (sortBy === 'created-desc')
+    if (sortBy === 'created-desc') {
       list = list
         .slice()
         .sort(
           (a: any, b: any) =>
             new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime()
         );
-    if (sortBy === 'most-used')
+    }
+    if (sortBy === 'most-used') {
       list = list
         .slice()
         .sort(
-          (a: any, b: any) => (b.usageCount || b.ordersCount || 0) - (a.usageCount || a.ordersCount || 0)
+          (a: any, b: any) =>
+            (b.usageCount || b.ordersCount || 0) - (a.usageCount || a.ordersCount || 0)
         );
+    }
     return list;
   }, [items, q, status, channels, selectedCategory, sortBy]);
 
   const toggleSelect = (id: string) =>
     setSelectedIds((prev) => {
       const next = new Set(prev);
-      next.has(id) ? next.delete(id) : next.add(id);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
       return next;
     });
 
@@ -121,7 +127,6 @@ export default function MenuItemsPage(): JSX.Element {
 
   return (
     <div className="flex h-full flex-col">
-      {/* Header */}
       <div className="flex items-center justify-between border-b border-[#ececec] px-6 py-4">
         <h2 className="text-lg font-semibold text-[#2e2e30]">Menu Items</h2>
         <button
@@ -190,26 +195,35 @@ export default function MenuItemsPage(): JSX.Element {
               onClear={clearSelection}
             />
 
-            {/* Drawers/Dialogs */}
             <Suspense fallback={null}>
               {openAdd && (
                 <ProductDrawer
                   key="add"
                   title="Add Product"
                   categories={categoryNames}
-                  initial={{ name: '', price: '', category: '', description: '' }}
+                  initial={{
+                    name: '',
+                    price: '',
+                    category: '',
+                    description: '',
+                    imagePreviews: [],
+                    tags: [],
+                    variations: [],
+                  }}
                   onClose={() => setOpenAdd(false)}
-                  onSubmit={(values: DrawerSubmitValues) =>
-                    createMut.mutate(
-                      {
-                        name: values.name,
-                        price: values.price,
-                        category: values.category,
-                        description: values.description,
-                      } as any,
-                      { onSuccess: () => setOpenAdd(false) }
-                    )
-                  }
+                  onSubmit={(values: DrawerSubmitValues) => {
+                    const payload: NewMenuItem = {
+                      name: values.name,
+                      price: values.price,
+                      category: values.category || undefined,
+                      description: values.description || undefined,
+                      compareAtPrice: values.compareAtPrice,
+                      media: values.media,
+                      variations: values.variations,
+                      tags: values.tags,
+                    };
+                    createMut.mutate(payload, { onSuccess: () => setOpenAdd(false) });
+                  }}
                 />
               )}
 
@@ -221,22 +235,36 @@ export default function MenuItemsPage(): JSX.Element {
                   initial={{
                     name: openEdit.name,
                     price: String((openEdit as any).price ?? ''),
+                    compareAtPrice:
+                      (openEdit as any).compareAtPrice != null
+                        ? String((openEdit as any).compareAtPrice)
+                        : '',
                     category: openEdit.category || '',
-                    description: openEdit.description || '',
+                    description: (openEdit as any).description || '',
+                    imagePreviews: (openEdit as any).media || [],
+                    tags: (openEdit as any).tags || [],
+                    variations:
+                      ((openEdit as any).variations || []).map((v: any) => ({
+                        label: v.name,
+                        price: v.price != null ? String(v.price) : '',
+                        imagePreview: v.imageUrl || null,
+                      })) || [],
                   }}
                   onClose={() => setOpenEdit(null)}
                   onSubmit={(values: DrawerSubmitValues) => {
                     if (!openEdit) return;
+                    const payload: Partial<NewMenuItem> = {
+                      name: values.name,
+                      price: values.price,
+                      compareAtPrice: values.compareAtPrice,
+                      category: values.category || undefined,
+                      description: values.description || undefined,
+                      media: values.media,
+                      variations: values.variations,
+                      tags: values.tags,
+                    };
                     updateMut.mutate(
-                      {
-                        id: (openEdit as any).id,
-                        payload: {
-                          name: values.name,
-                          price: values.price,
-                          category: values.category || undefined,
-                          description: values.description || undefined,
-                        },
-                      },
+                      { id: (openEdit as any).id, payload },
                       { onSuccess: () => setOpenEdit(null) }
                     );
                   }}
@@ -249,7 +277,10 @@ export default function MenuItemsPage(): JSX.Element {
                 onClose={() => setOpenBulkCategory(false)}
                 onConfirm={(category) => {
                   const ids = Array.from(selectedIds);
-                  if (!ids.length) return setOpenBulkCategory(false);
+                  if (!ids.length) {
+                    setOpenBulkCategory(false);
+                    return;
+                  }
                   bulkCategoryMut.mutate(
                     { ids, category },
                     {

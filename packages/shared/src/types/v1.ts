@@ -1,23 +1,39 @@
-export type UserDTO = {
+/** Public user shape */
+export interface UserDTO {
   id: string;
   email: string;
-  isVerified?: boolean;
-  isOnboarded?: boolean;
-};
+  isVerified: boolean;
+  isOnboarded: boolean;
+}
 
-export type MenuItemDTO = {
+/** Public variation shape */
+export interface VariationDTO {
+  name: string;
+  price?: number;
+  imageUrl?: string;
+}
+
+/** Public menu item shape */
+export interface MenuItemDTO {
   id: string;
   name: string;
   price: number;
+  compareAtPrice?: number;
   description?: string;
   category?: string;
-  createdAt: string; // ISO
-  updatedAt: string; // ISO
-};
+  categoryId?: string;
+  media: string[];
+  variations: VariationDTO[];
+  tags: string[];
+  restaurantId?: string;
+  createdAt: string;
+  updatedAt: string;
+}
 
-export type CategoryDTO = {
+/** Public category shape */
+export interface CategoryDTO {
   id: string;
   name: string;
-  createdAt: string; // ISO
-  updatedAt: string; // ISO
-};
+  createdAt: string;
+  updatedAt: string;
+}

@@ -2,18 +2,8 @@ import { useEffect, useState, type ChangeEvent, type KeyboardEvent } from 'react
 import { QuestionMarkCircleIcon, PlusCircleIcon, TagIcon, XMarkIcon } from '@heroicons/react/24/outline';
 
 /**
- * @typedef {Object} TagsProps
- * @property {string[]} [value]
- * @property {(next: string[]) => void} [onChange]
- * @property {string} [helpText]
- * @property {string} [label]
- * @property {string} [buttonLabel]
- */
-
-/**
- * Self-contained Tags block with collapsible panel, input field, selected chips, and grouped recommended tags.
- * Works controlled (value/onChange) or uncontrolled.
- * @param {TagsProps} props
+ * Self-contained Tags block with collapsible panel and a collapsed summary that
+ * always shows currently selected tags inside the drawer.
  */
 export default function Tags({
   value,
@@ -34,85 +24,30 @@ export default function Tags({
     {
       title: '🍽️ Food Type & Ingredients',
       items: [
-        'Vegetarian',
-        'Vegan',
-        'Non-Veg',
-        'Halal',
-        'Kosher',
-        'Gluten-free',
-        'Dairy-free',
-        'Nut-free',
-        'Egg-free',
-        'Sugar-free',
-        'Low-carb',
-        'High-protein',
-        'Organic',
-        'Farm-to-table',
-        'Seasonal',
-        'Locally sourced',
-        'Chef’s special',
-        'Signature dish',
-        'Bestseller',
+        'Vegetarian', 'Vegan', 'Non-Veg', 'Halal', 'Kosher', 'Gluten-free', 'Dairy-free', 'Nut-free',
+        'Egg-free', 'Sugar-free', 'Low-carb', 'High-protein', 'Organic', 'Farm-to-table', 'Seasonal',
+        'Locally sourced', 'Chef’s special', 'Signature dish', 'Bestseller',
       ],
     },
     {
       title: '🌶️ Taste & Texture',
       items: [
-        'Spicy',
-        'Mild',
-        'Tangy',
-        'Sweet',
-        'Sour',
-        'Bitter',
-        'Savory/Umami',
-        'Smoky',
-        'Creamy',
-        'Crispy',
-        'Crunchy',
-        'Juicy',
-        'Tender',
-        'Soft',
-        'Chewy',
-        'Grilled',
-        'Fried',
-        'Baked',
-        'Steamed',
-        'Roasted',
-        'Raw',
+        'Spicy', 'Mild', 'Tangy', 'Sweet', 'Sour', 'Bitter', 'Savory/Umami', 'Smoky', 'Creamy', 'Crispy',
+        'Crunchy', 'Juicy', 'Tender', 'Soft', 'Chewy', 'Grilled', 'Fried', 'Baked', 'Steamed', 'Roasted', 'Raw',
       ],
     },
     {
       title: '🕒 Occasion & Mood',
       items: [
-        'Romantic',
-        'For Date Night',
-        'Anniversary Special',
-        'Family-friendly',
-        'Kids-friendly',
-        'Party Dish',
-        'Quick Bite',
-        'Comfort Food',
-        'Street Style',
-        'Luxury',
-        'Budget-friendly',
-        'Healthy Choice',
-        'Indulgent',
-        'Instagrammable',
-        'Trendy',
+        'Romantic', 'For Date Night', 'Anniversary Special', 'Family-friendly', 'Kids-friendly', 'Party Dish',
+        'Quick Bite', 'Comfort Food', 'Street Style', 'Luxury', 'Budget-friendly', 'Healthy Choice', 'Indulgent',
+        'Instagrammable', 'Trendy',
       ],
     },
     {
       title: '🗓️ Time-based Tags',
       items: [
-        'Breakfast',
-        'Brunch',
-        'Lunch',
-        'Dinner',
-        'Late Night',
-        'Snack',
-        'Dessert',
-        'Tea-time',
-        'Coffee-time',
+        'Breakfast', 'Brunch', 'Lunch', 'Dinner', 'Late Night', 'Snack', 'Dessert', 'Tea-time', 'Coffee-time',
         'Seasonal (Winter Special, Summer Special, etc.)',
         'Festival Special (Christmas, Eid, Diwali, New Year, etc.)',
       ],
@@ -120,48 +55,21 @@ export default function Tags({
     {
       title: '🌍 Cuisine & Origin',
       items: [
-        'Italian',
-        'Chinese',
-        'Indian',
-        'Thai',
-        'Japanese',
-        'Mexican',
-        'Mediterranean',
-        'Middle Eastern',
-        'American',
-        'French',
-        'Fusion',
-        'Traditional',
-        'Street Food',
-        'Homemade Style',
+        'Italian', 'Chinese', 'Indian', 'Thai', 'Japanese', 'Mexican', 'Mediterranean', 'Middle Eastern',
+        'American', 'French', 'Fusion', 'Traditional', 'Street Food', 'Homemade Style',
         'Regional Special (e.g., Bengali, Punjabi, Tex-Mex)',
       ],
     },
     {
       title: '🎉 Special Features',
       items: [
-        'Limited Edition',
-        'New Arrival',
-        'Chef Recommended',
-        'Must Try',
-        'Bestseller',
-        'Combo Meal',
-        'Meal Deal',
-        'Sharing Platter',
-        'Value for Money',
+        'Limited Edition', 'New Arrival', 'Chef Recommended', 'Must Try', 'Bestseller', 'Combo Meal',
+        'Meal Deal', 'Sharing Platter', 'Value for Money',
       ],
     },
     {
       title: '🌦️ Weather / Season Vibe',
-      items: [
-        'Summer Coolers',
-        'Winter Warmers',
-        'Rainy Day Special',
-        'Refreshing',
-        'Hot & Hearty',
-        'Light & Fresh',
-        'Cozy',
-      ],
+      items: ['Summer Coolers', 'Winter Warmers', 'Rainy Day Special', 'Refreshing', 'Hot & Hearty', 'Light & Fresh', 'Cozy'],
     },
   ];
 
@@ -229,18 +137,44 @@ export default function Tags({
         )}
       </div>
 
+      {/* Collapsed summary (always visible) */}
       {!open && (
-        <button
-          type="button"
-          onClick={() => setOpen(true)}
-          className="inline-flex items-center gap-2 rounded-md border border-[#dbdbdb] bg-[#fcfcfc] px-3 py-2 text-sm font-medium text-[#2e2e30] hover:border-[#111827] hover:bg-[#f3f4f6] transition-colors"
-          aria-expanded={open}
-        >
-          <PlusCircleIcon className="h-5 w-5" />
-          {buttonLabel}
-        </button>
+        <div className="flex flex-col gap-2">
+          {current.length > 0 && (
+            <div className="flex flex-wrap gap-2">
+              {current.map((tag) => (
+                <span
+                  key={tag}
+                  className="inline-flex items-center gap-1 rounded-full border border-[#dbdbdb] bg-white px-3 py-1.5 text-xs text-[#2e2e30]"
+                >
+                  {tag}
+                  <button
+                    type="button"
+                    onClick={() => remove(tag)}
+                    className="text-[#6b7280] hover:text-[#374151]"
+                    aria-label={`Remove ${tag}`}
+                  >
+                    <XMarkIcon className="h-3.5 w-3.5" />
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
+          <div>
+            <button
+              type="button"
+              onClick={() => setOpen(true)}
+              className="inline-flex items-center gap-2 rounded-md border border-[#dbdbdb] bg-[#fcfcfc] px-3 py-2 text-sm font-medium text-[#2e2e30] hover:border-[#111827] hover:bg-[#f3f4f6] transition-colors"
+              aria-expanded={open}
+            >
+              <PlusCircleIcon className="h-5 w-5" />
+              {current.length > 0 ? `${buttonLabel} (${current.length})` : buttonLabel}
+            </button>
+          </div>
+        </div>
       )}
 
+      {/* Expanded editor */}
       {open && (
         <div className="mt-2 rounded-md border border-[#dbdbdb] bg-[#fcfcfc] p-3 sm:p-4">
           <div className="relative">
