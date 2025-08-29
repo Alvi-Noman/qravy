@@ -16,24 +16,6 @@ import Counter from './Counter';
 import ImageUploadZone from './ImageUploadZone';
 import Tags from './Tags';
 
-/**
- * @param {{
- *  title: string;
- *  categories: string[];
- *  initial: {
- *    name: string;
- *    price: string;
- *    compareAtPrice?: string;
- *    description?: string;
- *    category?: string;
- *    prepMinutes?: number;
- *    imageFile?: File|null;
- *    imagePreview?: string|null;
- *  };
- *  onClose: () => void;
- *  onSubmit: (values: { name: string; price: number; description?: string; category?: string }) => void;
- * }} props
- */
 export default function ProductDrawer({
   title,
   categories,
@@ -50,8 +32,9 @@ export default function ProductDrawer({
     description?: string;
     category?: string;
     prepMinutes?: number;
-    imageFile?: File | null;
     imagePreview?: string | null;
+    imagePreview2?: string | null;
+    imagePreviews?: (string | null)[]; // optional array form; if present, it will be used
   };
   onClose: () => void;
   onSubmit: (values: { name: string; price: number; description?: string; category?: string }) => void;
@@ -60,6 +43,17 @@ export default function ProductDrawer({
   const { token } = useAuthContext();
   const queryClient = useQueryClient();
 
+  // Build initial previews array (max 5)
+  const initPreviews = (() => {
+    if (Array.isArray(initial.imagePreviews) && initial.imagePreviews.length) {
+      return initial.imagePreviews.slice(0, 5);
+    }
+    const list: (string | null)[] = [];
+    if (typeof initial.imagePreview !== 'undefined') list.push(initial.imagePreview || null);
+    if (typeof initial.imagePreview2 !== 'undefined' && initial.imagePreview2 !== null) list.push(initial.imagePreview2);
+    return list.length ? list.slice(0, 5) : [null];
+  })();
+
   const [values, setValues] = useState(() => ({
     name: initial.name,
     price: initial.price,
@@ -67,9 +61,10 @@ export default function ProductDrawer({
     category: initial.category || '',
     compareAtPrice: initial.compareAtPrice || '',
     prepMinutes: initial.prepMinutes ?? 15,
-    imageFile: null as File | null,
-    imagePreview: initial.imagePreview || null as string | null,
+    imageFiles: [] as (File | null)[],
+    imagePreviews: initPreviews as (string | null)[],
   }));
+
   const [localError, setLocalError] = useState<string | null>(null);
   const [localCats, setLocalCats] = useState<string[]>(categories);
 
@@ -105,13 +100,14 @@ export default function ProductDrawer({
     },
   });
 
+  // Cleanup blob URLs on unmount
   useEffect(() => {
     return () => {
-      if (values.imagePreview?.startsWith('blob:')) {
-        try {
-          URL.revokeObjectURL(values.imagePreview);
-        } catch {}
-      }
+      try {
+        values.imagePreviews?.forEach((u) => {
+          if (u?.startsWith('blob:')) URL.revokeObjectURL(u);
+        });
+      } catch {}
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -138,25 +134,49 @@ export default function ProductDrawer({
     });
   };
 
-  const handlePick = (file: File, previewUrl: string) => {
+  // Helpers for gallery
+  const handlePickAt = (index: number, file: File, previewUrl: string) => {
     setValues((prev) => {
-      if (prev.imagePreview && prev.imagePreview !== previewUrl && prev.imagePreview.startsWith('blob:')) {
-        try {
-          URL.revokeObjectURL(prev.imagePreview);
-        } catch {}
+      const nextFiles = prev.imageFiles.slice();
+      const nextPreviews = prev.imagePreviews.slice();
+
+      // Revoke old blob if present
+      const prevUrl = nextPreviews[index];
+      if (prevUrl && prevUrl !== previewUrl && prevUrl.startsWith('blob:')) {
+        try { URL.revokeObjectURL(prevUrl); } catch {}
       }
-      return { ...prev, imageFile: file, imagePreview: previewUrl };
+
+      // Expand arrays if needed
+      while (nextFiles.length <= index) nextFiles.push(null);
+      while (nextPreviews.length <= index) nextPreviews.push(null);
+
+      nextFiles[index] = file;
+      nextPreviews[index] = previewUrl;
+
+      return { ...prev, imageFiles: nextFiles, imagePreviews: nextPreviews };
     });
   };
 
-  const handleClearImage = () => {
+  const handleUploadedAt = (index: number, url: string) => {
     setValues((prev) => {
-      if (prev.imagePreview?.startsWith('blob:')) {
-        try {
-          URL.revokeObjectURL(prev.imagePreview);
-        } catch {}
+      const next = prev.imagePreviews.slice();
+      while (next.length <= index) next.push(null);
+      next[index] = url;
+      return { ...prev, imagePreviews: next };
+    });
+  };
+
+  const handleClearAt = (index: number) => {
+    setValues((prev) => {
+      const nextPreviews = prev.imagePreviews.slice();
+      const toRevoke = nextPreviews[index];
+      if (toRevoke?.startsWith('blob:')) {
+        try { URL.revokeObjectURL(toRevoke); } catch {}
       }
-      return { ...prev, imageFile: null, imagePreview: null };
+      nextPreviews.splice(index, 1);
+      const nextFiles = prev.imageFiles.slice();
+      if (index < nextFiles.length) nextFiles.splice(index, 1);
+      return { ...prev, imageFiles: nextFiles, imagePreviews: nextPreviews.length ? nextPreviews : [null] };
     });
   };
 
@@ -172,14 +192,14 @@ export default function ProductDrawer({
         onClick={onClose}
       />
       <motion.aside
-        className="absolute right-0 top-0 h-screen w-full sm:w-[560px] md:w-[620px] bg-[#f5f5f5] border-l border-[#dbdbdb] shadow-2xl flex flex-col overflow-x-hidden"
-        initial={{ x: '100%' }}
-        animate={{ x: 0 }}
-        exit={{ x: '100%' }}
-        transition={{ type: 'tween', duration: 0.25, ease: 'easeOut' }}
-        aria-modal="true"
-        role="dialog"
-      >
+          className="absolute right-0 top-0 h-screen w-full sm:w-[460px] md:w-[520px] bg-[#f5f5f5] border-l border-[#dbdbdb] shadow-2xl flex flex-col overflow-x-hidden"
+          initial={{ x: '100%' }}
+          animate={{ x: 0 }}
+          exit={{ x: '100%' }}
+          transition={{ type: 'tween', duration: 0.25, ease: 'easeOut' }}
+          aria-modal="true"
+          role="dialog"
+        >
         <div className="flex items-center justify-between px-5 py-4 border-b border-[#dbdbdb] sticky top-0 bg-[#fcfcfc]">
           <h3 className="text-lg font-semibold text-[#2e2e30]">{title}</h3>
           <button className="text-[#6b7280] hover:text-[#374151]" onClick={onClose} aria-label="Close">
@@ -253,35 +273,17 @@ export default function ProductDrawer({
               />
             </Field>
 
+            {/* Media */}
             <Field>
-              <LabelRow text="Preparing Time" help="An estimated time to prepare this item." placement="right" />
-              <div className="flex items-center gap-4">
-                <Counter
-                  value={values.prepMinutes ?? 0}
-                  onChange={(n: number) => setValues((prev) => ({ ...prev, prepMinutes: Math.max(0, n) }))}
-                  min={0}
-                  step={1}
-                  inputWidthClass="w-20"
-                  ariaLabel="Preparing time"
-                />
-                <div className="text-sm font-normal text-[#a9a9ab]">Minutes</div>
-              </div>
-            </Field>
-
-            <Field>
-              <Label className="mb-2">Change Image</Label>
+              <Label className="mb-2">Media</Label>
               <ImageUploadZone
-                preview={values.imagePreview || null}
+                previews={values.imagePreviews}
+                maxCount={5}
                 uploadUrl={`${API_BASE}/api/uploads/images`}
                 authToken={token || undefined}
-                onPick={handlePick}
-                onClear={handleClearImage}
-                onUploaded={(resp) => {
-                  setValues((prev) => ({
-                    ...prev,
-                    imagePreview: resp.cdn.medium,
-                  }));
-                }}
+                onPick={(i, file, url) => handlePickAt(i, file, url)}
+                onUploaded={(i, resp) => handleUploadedAt(i, resp.cdn.medium)}
+                onClear={(i) => handleClearAt(i)}
               />
             </Field>
 

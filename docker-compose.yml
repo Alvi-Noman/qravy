@@ -31,6 +31,8 @@ services:
       NODE_ENV: development
       PORT: "4010"
       CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:5173}
+      # Force upload-service to use the same token as the gateway
+      UPLOAD_TOKEN: ${UPLOAD_SERVICE_TOKEN:?Set UPLOAD_SERVICE_TOKEN (OS env or root .env)}
     working_dir: /app/services/upload-service
     ports:
       - "4010:4010"
@@ -53,7 +55,8 @@ services:
       CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:5173}
       AUTH_SERVICE_URL: http://auth-service:3001
       UPLOAD_SERVICE_URL: http://upload-service:4010
-      UPLOAD_SERVICE_TOKEN: ${UPLOAD_SERVICE_TOKEN:-please-set-a-strong-token}
+      # Strict: refuse to start if var is missing (no fallback!)
+      UPLOAD_SERVICE_TOKEN: ${UPLOAD_SERVICE_TOKEN:?Set UPLOAD_SERVICE_TOKEN (OS env or root .env)}
     working_dir: /app/services/api-gateway
     ports:
       - "8080:8080"
