@@ -84,12 +84,9 @@ export default function Sidebar(): JSX.Element {
   return (
     <aside className="flex h-full w-64 flex-col bg-[#f5f5f5] px-4 py-4">
       <div className="mb-0 flex items-center">
-        <img
-          src="/qravy-logo-250X100.png"
-          alt="Qravy Logo"
-          className="h-10 w-auto"
-          style={{ maxWidth: 140, objectFit: 'contain' }}
-        />
+        <span className="text-3xl font-semibold tracking-tight text-slate-900">
+          Qravy.
+        </span>
       </div>
 
       <div className="mt-7 mb-6">
