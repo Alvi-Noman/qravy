@@ -1,3 +1,6 @@
+/**
+ * Image upload zone with per-tile debounce and in-flight guards
+ */
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { CloudArrowUpIcon } from '@heroicons/react/24/outline';
 
@@ -9,24 +12,17 @@ type Props = {
   onPick?: (index: number, file: File, previewUrl: string) => void;
   onUploaded?: (index: number, resp: UploadResponse) => void;
   onClear?: (index: number) => void;
-
   uploadUrl: string;
   authToken?: string;
-
-  maxCount?: number;                 // default 5
+  maxCount?: number;
   disabled?: boolean;
-  maxSizeMB?: number;                // default 20
+  maxSizeMB?: number;
   accept?: string;
   className?: string;
   id?: string;
   name?: string;
-
-  // Sizes
-  primaryWidthClass?: string;        // left big tile width (square)
-  // kept for compat but not used for sizing now (we compute thumbs dynamically)
+  primaryWidthClass?: string;
   thumbWidthClass?: string;
-
-  // Gap between rows/cols on the right (px). Default matches Tailwind gap-3 (12px)
   gapPx?: number;
 };
 
@@ -44,31 +40,28 @@ const ImageUploadZone: React.FC<Props> = ({
   className = '',
   id,
   name,
-  primaryWidthClass = 'w-56', // ~224px (1rem = 16px)
-  thumbWidthClass = 'w-28',   // not used for size; dynamic sizing below
+  primaryWidthClass = 'w-56',
+  thumbWidthClass = 'w-28',
   gapPx = 12,
 }) => {
-  // Normalize incoming previews (always at least one slot)
   const normalizedFromProps = useMemo<(string | null)[]>(() => {
     const limited = (previews || []).slice(0, maxCount);
     return limited.length > 0 ? limited : [null];
   }, [previews, maxCount]);
 
-  // Local state mirrors props for instant UI feedback
   const [localPreviews, setLocalPreviews] = useState<(string | null)[]>(normalizedFromProps);
   useEffect(() => setLocalPreviews(normalizedFromProps), [normalizedFromProps]);
 
-  // Per-tile states
   const [uploading, setUploading] = useState<boolean[]>([]);
   const [progress, setProgress] = useState<number[]>([]);
   const [errors, setErrors] = useState<(string | null)[]>([]);
   const [dragOver, setDragOver] = useState<boolean[]>([]);
   const lastFileRef = useRef<(File | null)[]>([]);
   const xhrRef = useRef<(XMLHttpRequest | null)[]>([]);
+  const clickTsRef = useRef<number[]>([]);
 
-  // Measure primary width (square => width = height)
   const primaryRef = useRef<HTMLDivElement | null>(null);
-  const [primaryPx, setPrimaryPx] = useState<number>(224); // fallback for w-56
+  const [primaryPx, setPrimaryPx] = useState<number>(224);
   useEffect(() => {
     const el = primaryRef.current;
     if (!el) return;
@@ -79,17 +72,12 @@ const ImageUploadZone: React.FC<Props> = ({
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
-
-  // Secondary size: two tiles plus one vertical gap equals primary height
-  // Example: (224 - 12) / 2 = 106 px
   const thumbPx = Math.floor((primaryPx - gapPx) / 2);
   const thumbSizeStyle: React.CSSProperties = { width: `${thumbPx}px`, height: `${thumbPx}px` };
 
-  // Hidden file input handling
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
 
-  // Ensure per-array lengths cover index
   const ensureIndex = (i: number) => {
     const growTo = i + 1;
     setUploading((prev) => {
@@ -114,12 +102,18 @@ const ImageUploadZone: React.FC<Props> = ({
     });
     while (lastFileRef.current.length < growTo) lastFileRef.current.push(null);
     while (xhrRef.current.length < growTo) xhrRef.current.push(null);
+    while (clickTsRef.current.length < growTo) clickTsRef.current.push(0);
   };
 
   const openDialogFor = (i: number) => {
     if (disabled) return;
-    setActiveIndex(i);
     ensureIndex(i);
+    const now = Date.now();
+    const last = clickTsRef.current[i] || 0;
+    if (now - last < 600) return;
+    if (uploading[i] || xhrRef.current[i]) return;
+    clickTsRef.current[i] = now;
+    setActiveIndex(i);
     fileInputRef.current?.click();
   };
 
@@ -137,7 +131,7 @@ const ImageUploadZone: React.FC<Props> = ({
 
   const matchesAccept = (file: File) => {
     const type = (file.type || '').toLowerCase();
-       const name = (file.name || '').toLowerCase();
+    const name = (file.name || '').toLowerCase();
     return acceptParts.some((p) => {
       if (p.startsWith('.')) return name.endsWith(p);
       if (p.endsWith('/*')) return type.startsWith(p.slice(0, -1));
@@ -153,20 +147,37 @@ const ImageUploadZone: React.FC<Props> = ({
 
   const revokeUrl = (url?: string | null) => {
     if (url?.startsWith('blob:')) {
-      try { URL.revokeObjectURL(url); } catch {}
+      try {
+        URL.revokeObjectURL(url);
+      } catch {}
     }
   };
 
   const setUploadingAt = (i: number, val: boolean) =>
-    setUploading((prev) => { const n = prev.slice(); n[i] = val; return n; });
-  const setProgressAt  = (i: number, val: number) =>
-    setProgress((prev) => { const n = prev.slice(); n[i] = val; return n; });
-  const setErrorAt     = (i: number, val: string | null) =>
-    setErrors((prev) => { const n = prev.slice(); n[i] = val; return n; });
-  const setDragOverAt  = (i: number, val: boolean) =>
-    setDragOver((prev) => { const n = prev.slice(); n[i] = val; return n; });
+    setUploading((prev) => {
+      const n = prev.slice();
+      n[i] = val;
+      return n;
+    });
+  const setProgressAt = (i: number, val: number) =>
+    setProgress((prev) => {
+      const n = prev.slice();
+      n[i] = val;
+      return n;
+    });
+  const setErrorAt = (i: number, val: string | null) =>
+    setErrors((prev) => {
+      const n = prev.slice();
+      n[i] = val;
+      return n;
+    });
+  const setDragOverAt = (i: number, val: boolean) =>
+    setDragOver((prev) => {
+      const n = prev.slice();
+      n[i] = val;
+      return n;
+    });
 
-  // Insert/replace preview at index
   const setPreviewAt = (i: number, val: string | null) =>
     setLocalPreviews((prev) => {
       const next = prev.slice();
@@ -176,21 +187,38 @@ const ImageUploadZone: React.FC<Props> = ({
     });
 
   const removeAt = (i: number) => {
-    try { xhrRef.current[i]?.abort(); } catch {}
+    try {
+      xhrRef.current[i]?.abort();
+    } catch {}
+    xhrRef.current[i] = null;
     revokeUrl(localPreviews[i]);
-
     setLocalPreviews((prev) => {
       const next = prev.slice();
       next.splice(i, 1);
       return next.length > 0 ? next : [null];
     });
-    setUploading((prev) => { const n = prev.slice(); n.splice(i,1); return n; });
-    setProgress((prev) => { const n = prev.slice(); n.splice(i,1); return n; });
-    setErrors((prev) => { const n = prev.slice(); n.splice(i,1); return n; });
-    setDragOver((prev) => { const n = prev.slice(); n.splice(i,1); return n; });
+    setUploading((prev) => {
+      const n = prev.slice();
+      n.splice(i, 1);
+      return n;
+    });
+    setProgress((prev) => {
+      const n = prev.slice();
+      n.splice(i, 1);
+      return n;
+    });
+    setErrors((prev) => {
+      const n = prev.slice();
+      n.splice(i, 1);
+      return n;
+    });
+    setDragOver((prev) => {
+      const n = prev.slice();
+      n.splice(i, 1);
+      return n;
+    });
     lastFileRef.current.splice(i, 1);
-    xhrRef.current.splice(i, 1);
-
+    clickTsRef.current.splice(i, 1);
     onClear?.(i);
   };
 
@@ -246,26 +274,23 @@ const ImageUploadZone: React.FC<Props> = ({
 
   const handleFilesFor = (i: number, fileList: FileList | null) => {
     if (!fileList?.length) return;
+    if (uploading[i] || xhrRef.current[i]) return;
     const file = fileList[0];
-
     ensureIndex(i);
-
     const msg = validate(file);
-    if (msg) { setErrorAt(i, msg); return; }
+    if (msg) {
+      setErrorAt(i, msg);
+      return;
+    }
     setErrorAt(i, null);
-
     const prevUrl = localPreviews[i];
     revokeUrl(prevUrl);
-
     const blobUrl = URL.createObjectURL(file);
     setPreviewAt(i, blobUrl);
     lastFileRef.current[i] = file;
-
     onPick?.(i, file, blobUrl);
-
     setUploadingAt(i, true);
     setProgressAt(i, 1);
-
     uploadWithRetry(i, file)
       .then((resp) => {
         setProgressAt(i, 100);
@@ -279,12 +304,14 @@ const ImageUploadZone: React.FC<Props> = ({
       .finally(() => {
         setUploadingAt(i, false);
         xhrRef.current[i] = null;
+        clickTsRef.current[i] = Date.now();
       });
   };
 
   const retry = (i: number) => {
     const last = lastFileRef.current[i];
     if (!last || disabled) return;
+    if (uploading[i] || xhrRef.current[i]) return;
     setErrorAt(i, null);
     setUploadingAt(i, true);
     setProgressAt(i, 1);
@@ -298,11 +325,15 @@ const ImageUploadZone: React.FC<Props> = ({
       .finally(() => {
         setUploadingAt(i, false);
         xhrRef.current[i] = null;
+        clickTsRef.current[i] = Date.now();
       });
   };
 
   const cancelUpload = (i: number) => {
-    try { xhrRef.current[i]?.abort(); } catch {}
+    try {
+      xhrRef.current[i]?.abort();
+    } catch {}
+    xhrRef.current[i] = null;
     setUploadingAt(i, false);
   };
 
@@ -310,7 +341,7 @@ const ImageUploadZone: React.FC<Props> = ({
     e.preventDefault();
     e.stopPropagation();
     setDragOverAt(i, false);
-    if (!disabled) handleFilesFor(i, e.dataTransfer.files);
+    if (!disabled && !uploading[i] && !xhrRef.current[i]) handleFilesFor(i, e.dataTransfer.files);
   };
   const onDragOver = (i: number, e: React.DragEvent) => {
     e.preventDefault();
@@ -322,19 +353,12 @@ const ImageUploadZone: React.FC<Props> = ({
   };
 
   const hasPrimary = localPreviews[0] !== null;
-  const count = localPreviews.length;
-  const canAddMore = hasPrimary && count < maxCount;
 
   function renderPrimary(i: number) {
     const hasImage = localPreviews[i] !== null;
     const errorId = errors[i] ? `image-zone-error-${i}` : undefined;
-
     return (
-      <div
-        key={`tile-${i}`}
-        ref={primaryRef}
-        className={`relative flex-none ${primaryWidthClass} self-start`}
-      >
+      <div key={`tile-${i}`} ref={primaryRef} className={`relative flex-none ${primaryWidthClass} self-start`}>
         <div
           className={[
             'relative rounded-lg border',
@@ -345,11 +369,7 @@ const ImageUploadZone: React.FC<Props> = ({
         >
           <div className="pt-[100%]" />
           {hasImage && (
-            <img
-              src={localPreviews[i] || ''}
-              alt="Primary image"
-              className="absolute inset-0 h-full w-full object-cover rounded-lg"
-            />
+            <img src={localPreviews[i] || ''} alt="Primary image" className="absolute inset-0 h-full w-full object-cover rounded-lg" />
           )}
           <div
             role="button"
@@ -376,7 +396,7 @@ const ImageUploadZone: React.FC<Props> = ({
                         e.stopPropagation();
                         openDialogFor(i);
                       }}
-                      disabled={disabled}
+                      disabled={disabled || uploading[i] || !!xhrRef.current[i]}
                       className="inline-flex items-center justify-center min-w-[100px] px-4 py-1.5 rounded-md border border-[#dbdbdb] bg-[#fcfcfc] hover:bg-[#f8f8f8] hover:border-[#bdbdbd] active:bg-[#eceff1] transition-colors text-sm text-[#2e2e30] focus:outline-none focus:ring-2 focus:ring-[#e5e7eb]"
                     >
                       Browse
@@ -433,13 +453,8 @@ const ImageUploadZone: React.FC<Props> = ({
   function renderThumb(i: number) {
     const hasImage = localPreviews[i] !== null;
     const errorId = errors[i] ? `image-zone-error-${i}` : undefined;
-
     return (
-      <div
-        key={`tile-${i}`}
-        className="relative flex-none self-start"
-        style={thumbSizeStyle}
-      >
+      <div key={`tile-${i}`} className="relative flex-none self-start" style={thumbSizeStyle}>
         <div
           className={[
             'relative h-full w-full rounded-md border',
@@ -449,11 +464,7 @@ const ImageUploadZone: React.FC<Props> = ({
           ].join(' ')}
         >
           {hasImage && (
-            <img
-              src={localPreviews[i] || ''}
-              alt={`Media ${i}`}
-              className="absolute inset-0 h-full w-full object-cover rounded-md"
-            />
+            <img src={localPreviews[i] || ''} alt={`Media ${i}`} className="absolute inset-0 h-full w-full object-cover rounded-md" />
           )}
           <div
             role="button"
@@ -517,7 +528,7 @@ const ImageUploadZone: React.FC<Props> = ({
       <button
         key="add-tile"
         type="button"
-        onClick={() => openDialogFor(i)}   // i MUST be the next index (append)
+        onClick={() => openDialogFor(i)}
         disabled={disabled}
         aria-label="Add image"
         className={`relative flex-none self-start rounded-md border border-dashed border-[#dbdbdb] bg-[#fcfcfc] hover:bg-[#f6f6f6] transition-colors ${disabled ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer'}`}
@@ -533,26 +544,15 @@ const ImageUploadZone: React.FC<Props> = ({
 
   return (
     <div className={`w-full ${className}`}>
-      {/* Two sections side-by-side, Shopify-style */}
       <div className="flex items-start gap-4">
-        {/* Left: primary image */}
         {renderPrimary(0)}
-
-        {/* Right: thumbnails (the + is ALWAYS last). Prevent stretch with items-start/self-start */}
         <div className="flex-1 min-w-0">
-          <div
-            className="flex flex-wrap items-start content-start gap-3"
-            style={{ height: `${primaryPx}px` }} // two rows fit: thumbPx + gapPx + thumbPx
-          >
-            {/* Thumbs 1..n */}
+          <div className="flex flex-wrap items-start content-start gap-3" style={{ height: `${primaryPx}px` }}>
             {localPreviews.slice(1).map((_, idx) => renderThumb(idx + 1))}
-            {/* + at end */}
             {hasPrimary && localPreviews.length < maxCount && renderAddTile(localPreviews.length)}
           </div>
         </div>
       </div>
-
-      {/* Shared hidden input */}
       <input
         ref={fileInputRef}
         id={id}
@@ -564,7 +564,7 @@ const ImageUploadZone: React.FC<Props> = ({
         onChange={(e) => {
           const input = e.currentTarget as HTMLInputElement;
           handleFilesFor(activeIndex, input.files);
-          input.value = ''; // allow selecting same file again
+          input.value = '';
         }}
       />
     </div>

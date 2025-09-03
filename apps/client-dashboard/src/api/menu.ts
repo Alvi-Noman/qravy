@@ -1,6 +1,5 @@
 /**
  * Menu API (per-user)
- * Sends full product payload including media, variations, and tags
  */
 import api from './auth';
 import type { v1 } from '../../../../packages/shared/src/types';
@@ -13,7 +12,7 @@ export type VariationInput = {
 
 export type NewMenuItem = {
   name: string;
-  price: number;
+  price?: number;
   compareAtPrice?: number;
   description?: string;
   category?: string;
@@ -26,6 +25,7 @@ export type NewMenuItem = {
 
 export type MenuItem = v1.MenuItemDTO;
 
+/** List menu items */
 export async function getMenuItems(token: string): Promise<MenuItem[]> {
   const res = await api.get('/api/v1/auth/menu-items', {
     headers: { Authorization: `Bearer ${token}` },
@@ -33,6 +33,7 @@ export async function getMenuItems(token: string): Promise<MenuItem[]> {
   return res.data.items as MenuItem[];
 }
 
+/** Create menu item */
 export async function createMenuItem(payload: NewMenuItem, token: string): Promise<MenuItem> {
   const res = await api.post('/api/v1/auth/menu-items', payload, {
     headers: { Authorization: `Bearer ${token}` },
@@ -40,6 +41,7 @@ export async function createMenuItem(payload: NewMenuItem, token: string): Promi
   return res.data.item as MenuItem;
 }
 
+/** Update menu item */
 export async function updateMenuItem(
   id: string,
   payload: Partial<NewMenuItem>,
@@ -51,6 +53,7 @@ export async function updateMenuItem(
   return res.data.item as MenuItem;
 }
 
+/** Delete menu item */
 export async function deleteMenuItem(id: string, token: string): Promise<void> {
   await api.post(`/api/v1/auth/menu-items/${encodeURIComponent(id)}/delete`, null, {
     headers: { Authorization: `Bearer ${token}` },

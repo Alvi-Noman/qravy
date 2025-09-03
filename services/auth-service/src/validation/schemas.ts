@@ -1,31 +1,34 @@
+/**
+ * Validation schemas for auth-service
+ */
 import { z } from 'zod';
 
-/** ObjectId string schema */
+/** ObjectId string */
 const objectId = z.string().regex(/^[a-fA-F0-9]{24}$/, 'Invalid id');
 
-/** Variation schema */
+/** Variation shape */
 const variationSchema = z.object({
   name: z.string().min(1, 'Variation name is required'),
   price: z.coerce.number().nonnegative().optional(),
   imageUrl: z.string().url().optional(),
 });
 
-/** Schema for POST /magic-link */
+/** Magic link */
 export const magicLinkSchema = z.object({
   email: z.string().email('Invalid email address'),
 });
 
-/** Schema for POST /me (profile update) */
+/** Profile update */
 export const profileUpdateSchema = z.object({
   name: z.string().min(1, 'Name is required'),
   company: z.string().min(1, 'Company is required'),
 });
 
-/** Create menu item: price required, compareAtPrice optional */
+/** Menu item create: product price or any variation price required */
 export const menuItemSchema = z
   .object({
-    name: z.string().min(1, 'Name is required'),
-    price: z.coerce.number().nonnegative('Price must be a non-negative number'),
+    name: z.string().min(1),
+    price: z.coerce.number().nonnegative().optional(),
     compareAtPrice: z.coerce.number().nonnegative().optional(),
     description: z.string().max(2000).optional(),
     category: z.string().max(100).optional(),
@@ -35,12 +38,37 @@ export const menuItemSchema = z
     tags: z.array(z.string().min(1).max(30)).max(100).optional(),
     restaurantId: objectId.optional(),
   })
-  .refine((v) => v.compareAtPrice === undefined || v.compareAtPrice >= v.price, {
-    message: 'compareAtPrice must be >= price',
-    path: ['compareAtPrice'],
+  .superRefine((data, ctx) => {
+    const hasProductPrice = typeof data.price === 'number';
+    const hasVariantPrice =
+      Array.isArray(data.variations) && data.variations.some((v) => typeof v.price === 'number');
+
+    if (!hasProductPrice && !hasVariantPrice) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['price'],
+        message: 'Provide a product price or at least one variation price',
+      });
+    }
+
+    if (!hasProductPrice && data.compareAtPrice !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['compareAtPrice'],
+        message: 'compareAtPrice is only allowed with product price',
+      });
+    }
+
+    if (hasProductPrice && data.compareAtPrice !== undefined && data.compareAtPrice < (data.price as number)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['compareAtPrice'],
+        message: 'compareAtPrice must be >= price',
+      });
+    }
   });
 
-/** Update menu item: partial, keep price/compareAt if provided */
+/** Menu item update */
 export const menuItemUpdateSchema = z
   .object({
     name: z.string().min(1).optional(),
@@ -58,14 +86,22 @@ export const menuItemUpdateSchema = z
     message: 'At least one field must be provided to update',
     path: ['_'],
   })
-  .refine(
-    (v) =>
-      v.compareAtPrice === undefined ||
-      v.price === undefined ||
-      (v.compareAtPrice as number) >= (v.price as number),
-    { message: 'compareAtPrice must be >= price', path: ['compareAtPrice'] }
-  );
+  .superRefine((data, ctx) => {
+    if (data.price !== undefined && data.compareAtPrice !== undefined && data.compareAtPrice < data.price) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['compareAtPrice'],
+        message: 'compareAtPrice must be >= price',
+      });
+    }
+  });
 
-/** Category schemas */
-export const categorySchema = z.object({ name: z.string().min(1, 'Name is required') });
-export const categoryUpdateSchema = z.object({ name: z.string().min(1, 'Name is required') });
+/** Category create */
+export const categorySchema = z.object({
+  name: z.string().min(1, 'Name is required'),
+});
+
+/** Category update */
+export const categoryUpdateSchema = z.object({
+  name: z.string().min(1, 'Name is required'),
+});

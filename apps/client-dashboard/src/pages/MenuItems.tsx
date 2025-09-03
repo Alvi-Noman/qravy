@@ -1,3 +1,6 @@
+/**
+ * Menu items page wiring Drawer with optional price when variants priced
+ */
 import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
 import { useMenuItems } from '../components/MenuItems/useMenuItems';
 import MenuToolbar, { type SortBy } from '../components/MenuItems/MenuToolbar';
@@ -16,7 +19,7 @@ type Channel = 'dine-in' | 'online';
 
 type DrawerSubmitValues = {
   name: string;
-  price: number;
+  price?: number;
   compareAtPrice?: number;
   category?: string;
   description?: string;
@@ -41,9 +44,7 @@ export default function MenuItemsPage(): JSX.Element {
   } = useMenuItems();
 
   useEffect(() => {
-    const onStorage = (e: StorageEvent) => {
-      if (e.key === 'menu:updated') itemsQuery.refetch();
-    };
+    const onStorage = (e: StorageEvent) => e.key === 'menu:updated' && itemsQuery.refetch();
     window.addEventListener('storage', onStorage);
     return () => window.removeEventListener('storage', onStorage);
   }, [itemsQuery]);
@@ -53,7 +54,6 @@ export default function MenuItemsPage(): JSX.Element {
   const [channels, setChannels] = useState<Set<Channel>>(new Set());
   const [selectedCategory, setSelectedCategory] = useState<string>('');
   const [sortBy, setSortBy] = useState<SortBy>('name-asc');
-
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
   const [openAdd, setOpenAdd] = useState(false);
@@ -70,9 +70,7 @@ export default function MenuItemsPage(): JSX.Element {
         it.name.toLowerCase().includes(qnorm) ||
         (it.description || '').toLowerCase().includes(qnorm) ||
         (it.category || '').toLowerCase().includes(qnorm);
-
       const matchesCategory = !selectedCategory || it.category === selectedCategory;
-
       const matchesChannels =
         channels.size === 0 ||
         Array.from(channels).every((ch) => {
@@ -80,10 +78,8 @@ export default function MenuItemsPage(): JSX.Element {
           if (ch === 'online') return itAny.visibility?.online !== false;
           return true;
         });
-
       const isHidden = itAny.hidden || itAny.status === 'hidden';
       const matchesStatus = status.size === 0 || status.has(isHidden ? 'hidden' : 'active');
-
       return matchesQ && matchesCategory && matchesChannels && matchesStatus;
     });
 
@@ -110,8 +106,7 @@ export default function MenuItemsPage(): JSX.Element {
   const toggleSelect = (id: string) =>
     setSelectedIds((prev) => {
       const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
+      next.has(id) ? next.delete(id) : next.add(id);
       return next;
     });
 
@@ -201,20 +196,12 @@ export default function MenuItemsPage(): JSX.Element {
                   key="add"
                   title="Add Product"
                   categories={categoryNames}
-                  initial={{
-                    name: '',
-                    price: '',
-                    category: '',
-                    description: '',
-                    imagePreviews: [],
-                    tags: [],
-                    variations: [],
-                  }}
+                  initial={{ name: '', price: '', category: '', description: '', imagePreviews: [], tags: [], variations: [] }}
                   onClose={() => setOpenAdd(false)}
+                  persistKey="add"
                   onSubmit={(values: DrawerSubmitValues) => {
                     const payload: NewMenuItem = {
                       name: values.name,
-                      price: values.price,
                       category: values.category || undefined,
                       description: values.description || undefined,
                       compareAtPrice: values.compareAtPrice,
@@ -222,6 +209,7 @@ export default function MenuItemsPage(): JSX.Element {
                       variations: values.variations,
                       tags: values.tags,
                     };
+                    if (typeof values.price === 'number') payload.price = values.price;
                     createMut.mutate(payload, { onSuccess: () => setOpenAdd(false) });
                   }}
                 />
@@ -251,18 +239,19 @@ export default function MenuItemsPage(): JSX.Element {
                       })) || [],
                   }}
                   onClose={() => setOpenEdit(null)}
+                  persistKey={`edit:${(openEdit as any).id}`}
                   onSubmit={(values: DrawerSubmitValues) => {
                     if (!openEdit) return;
                     const payload: Partial<NewMenuItem> = {
                       name: values.name,
-                      price: values.price,
-                      compareAtPrice: values.compareAtPrice,
                       category: values.category || undefined,
                       description: values.description || undefined,
+                      compareAtPrice: values.compareAtPrice,
                       media: values.media,
                       variations: values.variations,
                       tags: values.tags,
                     };
+                    if (typeof values.price === 'number') payload.price = values.price;
                     updateMut.mutate(
                       { id: (openEdit as any).id, payload },
                       { onSuccess: () => setOpenEdit(null) }
@@ -277,10 +266,7 @@ export default function MenuItemsPage(): JSX.Element {
                 onClose={() => setOpenBulkCategory(false)}
                 onConfirm={(category) => {
                   const ids = Array.from(selectedIds);
-                  if (!ids.length) {
-                    setOpenBulkCategory(false);
-                    return;
-                  }
+                  if (!ids.length) return setOpenBulkCategory(false);
                   bulkCategoryMut.mutate(
                     { ids, category },
                     {
