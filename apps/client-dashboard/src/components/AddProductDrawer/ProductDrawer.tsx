@@ -1,17 +1,15 @@
-/**
- * Product drawer with variant-aware price UI, submit debounce,
- * and 10s snapshot persistence on accidental close
- */
 import {
+  useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type InputHTMLAttributes,
   type ReactNode,
   type TextareaHTMLAttributes,
 } from 'react';
 import { motion } from 'framer-motion';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+  import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAuthContext } from '../../context/AuthContext';
 import CategorySelect from './CategorySelect';
 import { createCategory as apiCreateCategory, type Category } from '../../api/categories';
@@ -20,7 +18,25 @@ import Variations from './Variations';
 import ImageUploadZone from './ImageUploadZone';
 import Tags from './Tags';
 
-type UiVariation = { label: string; price?: string; imagePreview?: string | null };
+type UiVariation = { label: string; price?: string; imagePreview?: string | null; imageUrl?: string | null };
+
+const safeRevoke = (url?: string | null) => {
+  if (!url || !url.startsWith('blob:')) return;
+  requestAnimationFrame(() => {
+    try {
+      URL.revokeObjectURL(url);
+    } catch {}
+  });
+};
+
+const deepEqual = (a: unknown, b: unknown) => {
+  if (a === b) return true;
+  try {
+    return JSON.stringify(a) === JSON.stringify(b);
+  } catch {
+    return false;
+  }
+};
 
 export default function ProductDrawer({
   title,
@@ -61,10 +77,11 @@ export default function ProductDrawer({
   const queryClient = useQueryClient();
 
   const STORAGE_TTL_MS = 10_000;
+  const MAX_MEDIA = 5;
   const storageKey = useMemo(() => `pdraft:${persistKey || 'add'}`, [persistKey]);
 
   const initPreviews = (() => {
-    const list = Array.isArray(initial.imagePreviews) ? initial.imagePreviews.slice(0, 5) : [];
+    const list = Array.isArray(initial.imagePreviews) ? initial.imagePreviews.slice(0, MAX_MEDIA) : [];
     return list.length ? list : [null];
   })();
 
@@ -80,7 +97,7 @@ export default function ProductDrawer({
   }));
 
   const [remoteUrls, setRemoteUrls] = useState<string[]>(
-    (initial.imagePreviews || []).map((u) => (u && !u.startsWith('blob:') ? u : '')).slice(0, 5)
+    (initial.imagePreviews || []).map((u) => (u && !u.startsWith('blob:') ? u : '')).slice(0, MAX_MEDIA)
   );
   const [tags, setTags] = useState<string[]>(initial.tags || []);
   const [uiVariations, setUiVariations] = useState<UiVariation[]>(initial.variations || []);
@@ -88,10 +105,21 @@ export default function ProductDrawer({
   const [localError, setLocalError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [localCats, setLocalCats] = useState<string[]>(categories);
-
   useEffect(() => setLocalCats(categories), [categories]);
 
-  /** Restore snapshot if present and not expired */
+  const createCatMut = useMutation<Category, Error, string>({
+    mutationFn: async (name: string) => {
+      if (!token) throw new Error('Not authenticated');
+      return await apiCreateCategory(name, token);
+    },
+    onSuccess: (cat) => {
+      setLocalCats((prev) => (prev.includes(cat.name) ? prev : [...prev, cat.name]));
+      try {
+        queryClient.invalidateQueries({ queryKey: ['categories'] });
+      } catch {}
+    },
+  });
+
   useEffect(() => {
     try {
       const raw = sessionStorage.getItem(storageKey);
@@ -108,66 +136,69 @@ export default function ProductDrawer({
         sessionStorage.removeItem(storageKey);
         return;
       }
-      const savedValues = snap.values;
-      if (savedValues) {
+      const sv = snap.values;
+      if (sv) {
         setValues((prev) => ({
           ...prev,
-          ...savedValues,
-          imagePreviews: Array.isArray(savedValues.imagePreviews)
-            ? savedValues.imagePreviews
-            : prev.imagePreviews,
+          ...sv,
+          imagePreviews: Array.isArray(sv.imagePreviews) ? sv.imagePreviews : prev.imagePreviews,
         }));
       }
       if (Array.isArray(snap.tags)) setTags(snap.tags);
-      if (Array.isArray(snap.uiVariations)) setUiVariations(snap.uiVariations);
+      if (Array.isArray(snap.uiVariations)) {
+        const u = snap.uiVariations as UiVariation[];
+        setUiVariations((prev) => (deepEqual(prev, u) ? prev : u));
+      }
       if (Array.isArray(snap.remoteUrls)) setRemoteUrls(snap.remoteUrls);
     } catch {}
   }, [storageKey]);
 
+  const previewsRef = useRef<(string | null)[]>(values.imagePreviews);
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        saveSnapshot();
-        onClose();
-      }
-    };
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
-  }, [onClose, values, tags, uiVariations, remoteUrls, storageKey]);
-
-  const createCatMut = useMutation<Category, Error, string>({
-    mutationFn: (name) => apiCreateCategory(name, token || ''),
-    onSuccess: (created) => {
-      setLocalCats((prev) => (prev.includes(created.name) ? prev : [...prev, created.name].sort()));
-      setValues((prev) => ({ ...prev, category: created.name }));
-      queryClient.invalidateQueries({ queryKey: ['categories', token] });
-      try {
-        localStorage.setItem('categories:updated', String(Date.now()));
-      } catch {}
-    },
-  });
-
+    previewsRef.current = values.imagePreviews;
+  }, [values.imagePreviews]);
   useEffect(() => {
     return () => {
       try {
-        values.imagePreviews?.forEach((u) => {
-          if (u?.startsWith('blob:')) URL.revokeObjectURL(u);
-        });
+        previewsRef.current?.forEach((u) => safeRevoke(u));
       } catch {}
     };
   }, []);
+
+  const typedVariants = useMemo(
+    () => (uiVariations || []).filter((v) => v.label.trim() !== ''),
+    [uiVariations]
+  );
+
+  const variantUrls = useMemo(() => {
+    const items: string[] = [];
+    typedVariants.forEach((v) => {
+      const url = v.imageUrl || (v.imagePreview && !v.imagePreview.startsWith('blob:') ? v.imagePreview : null);
+      if (url) items.push(url);
+    });
+    return items;
+  }, [typedVariants]);
+
+  const galleryBase = useMemo(() => {
+    const base = (values.imagePreviews || []).filter((u) => u !== null) as string[];
+    const seen = new Set(variantUrls);
+    return base.filter((u) => !seen.has(u));
+  }, [values.imagePreviews, variantUrls]);
+
+  const galleryPreviews = useMemo(() => {
+    const merged = [...variantUrls, ...galleryBase];
+    return merged.length === 0 ? [null] : merged;
+  }, [variantUrls, galleryBase]);
+
+  const variantCount = variantUrls.length;
 
   const toNumber = (v: string) => Number(v);
   const priceNum = toNumber(values.price);
   const compareAtNum = values.compareAtPrice ? Number(values.compareAtPrice) : undefined;
 
   const hasVariantPrice = useMemo(
-    () =>
-      (uiVariations || []).some((v) => {
-        const n = v.price ? Number(v.price) : NaN;
-        return Number.isFinite(n) && n > 0;
-      }),
-    [uiVariations]
+    () => typedVariants.some((v) => !!v.price && Number(v.price) > 0),
+    [typedVariants]
   );
   const hasMainPrice = Number.isFinite(priceNum) && priceNum > 0;
   const allowMainPrice = !hasVariantPrice;
@@ -175,16 +206,13 @@ export default function ProductDrawer({
   const isFormValid =
     values.name.trim().length > 0 &&
     (hasMainPrice || hasVariantPrice) &&
-    (allowMainPrice
-      ? compareAtNum === undefined || (!Number.isNaN(compareAtNum) && compareAtNum >= priceNum)
-      : true);
+    (allowMainPrice ? compareAtNum === undefined || (!Number.isNaN(compareAtNum) && compareAtNum >= priceNum) : true);
 
-  /** Persist current state with 10s TTL */
   function saveSnapshot() {
     try {
       const snap = {
         t: Date.now(),
-        ttl: STORAGE_TTL_MS,
+        ttl: 10_000,
         values,
         tags,
         uiVariations,
@@ -194,7 +222,6 @@ export default function ProductDrawer({
     } catch {}
   }
 
-  /** Remove snapshot */
   function clearSnapshot() {
     try {
       sessionStorage.removeItem(storageKey);
@@ -215,29 +242,29 @@ export default function ProductDrawer({
     }
 
     const media: string[] = [];
-    const maxLen = Math.max(values.imagePreviews.length, remoteUrls.length);
-    for (let i = 0; i < maxLen; i++) {
-      const u = remoteUrls[i] || values.imagePreviews[i] || '';
+    galleryPreviews.forEach((u) => {
       if (u && !u.startsWith('blob:')) media.push(u);
-    }
+    });
 
     const variations =
-      uiVariations
-        .filter((v) => v.label.trim() !== '')
+      typedVariants
         .map((v) => {
           const p = v.price ? Number(v.price) : undefined;
+          const imageUrl =
+            v.imageUrl || (v.imagePreview && !v.imagePreview.startsWith('blob:') ? v.imagePreview : undefined);
           return {
             name: v.label.trim(),
             price: p !== undefined && Number.isFinite(p) && p >= 0 ? p : undefined,
-            imageUrl: undefined,
+            imageUrl,
           };
-        }) || [];
+        })
+        .filter((v) => v.name.length > 0) || [];
 
     const payload: Parameters<typeof onSubmit>[0] = {
       name: values.name.trim(),
       description: values.description?.trim() || undefined,
       category: values.category || undefined,
-      media: media.length ? media : undefined,
+      media,
       variations: variations.length ? variations : undefined,
       tags: tags.length ? tags : undefined,
     };
@@ -258,21 +285,134 @@ export default function ProductDrawer({
     onClose();
   };
 
+  const mapToBaseIndex = (mergedIndex: number) => mergedIndex - variantCount;
+
+  const removeUrlEverywhere = (url: string) => {
+    if (!url) return;
+
+    setUiVariations((prev) =>
+      prev.map((v) =>
+        v.imageUrl === url || v.imagePreview === url ? { ...v, imageUrl: null, imagePreview: null } : v
+      )
+    );
+
+    setValues((prev) => {
+      const nextPreviews = prev.imagePreviews.slice();
+      const nextFiles = prev.imageFiles.slice();
+      const toRevoke: string[] = [];
+
+      for (let j = nextPreviews.length - 1; j >= 0; j--) {
+        if (nextPreviews[j] === url) {
+          const revoke = nextPreviews[j];
+          if (revoke?.startsWith('blob:')) toRevoke.push(revoke);
+          nextPreviews.splice(j, 1);
+          if (j < nextFiles.length) nextFiles.splice(j, 1);
+        }
+      }
+
+      if (toRevoke.length) {
+        requestAnimationFrame(() => {
+          toRevoke.forEach((u) => {
+            try {
+              URL.revokeObjectURL(u);
+            } catch {}
+          });
+        });
+      }
+
+      return {
+        ...prev,
+        imageFiles: nextFiles,
+        imagePreviews: nextPreviews.length ? nextPreviews : [null],
+      };
+    });
+
+    setRemoteUrls((prev) => prev.filter((u) => u !== url));
+  };
+
+  const handleZonePick = (i: number, file: File, url: string) => {
+    const urlAtTile = galleryPreviews[i] || null;
+    const isVariantTile = urlAtTile ? variantUrls.includes(urlAtTile) : false;
+
+    if (isVariantTile && urlAtTile) {
+      setUiVariations((prev) => {
+        const next = prev.slice();
+        const typed = next.filter((v) => v.label.trim() !== '');
+        const idx = typed.findIndex((v) => {
+          const u = v.imageUrl || (v.imagePreview && !v.imagePreview.startsWith('blob:') ? v.imagePreview : null);
+          return u === urlAtTile;
+        });
+        if (idx < 0) return next;
+        const realIdx = next
+          .map((v, idx2) => ({ v, idx2 }))
+          .filter(({ v }) => v.label.trim() !== '')
+          [idx]?.idx2;
+        if (realIdx === undefined) return next;
+
+        const prevPreview = next[realIdx].imagePreview;
+        if (prevPreview && prevPreview.startsWith('blob:')) {
+          safeRevoke(prevPreview);
+        }
+        next[realIdx] = { ...next[realIdx], imagePreview: url, imageUrl: null };
+        return deepEqual(prev, next) ? prev : next;
+      });
+      return;
+    }
+
+    const baseIdx = mapToBaseIndex(i);
+    handlePickAt(baseIdx, file, url);
+  };
+
+  const handleZoneUploaded = (i: number, resp: { cdn: { medium: string } }) => {
+    const urlAtTile = galleryPreviews[i] || null;
+    const isVariantTile = urlAtTile ? variantUrls.includes(urlAtTile) : false;
+
+    if (isVariantTile && urlAtTile) {
+      const cdnUrl = resp.cdn.medium;
+      setUiVariations((prev) => {
+        const next = prev.slice();
+        const typed = next.filter((v) => v.label.trim() !== '');
+        const idx = typed.findIndex((v) => {
+          const u = v.imageUrl || (v.imagePreview && !v.imagePreview.startsWith('blob:') ? v.imagePreview : null);
+          return u === urlAtTile;
+        });
+        if (idx < 0) return prev;
+        const realIdx = next
+          .map((v, idx2) => ({ v, idx2 }))
+          .filter(({ v }) => v.label.trim() !== '')
+          [idx]?.idx2;
+        if (realIdx === undefined) return prev;
+
+        next[realIdx] = { ...next[realIdx], imagePreview: cdnUrl, imageUrl: cdnUrl };
+        return deepEqual(prev, next) ? prev : next;
+      });
+      return;
+    }
+
+    const baseIdx = mapToBaseIndex(i);
+    handleUploadedAt(baseIdx, resp.cdn.medium);
+  };
+
+  const handleZoneClear = (i: number) => {
+    const urlAtTile = galleryPreviews[i] || null;
+    if (!urlAtTile) return;
+    removeUrlEverywhere(urlAtTile);
+  };
+
   const handlePickAt = (index: number, file: File, previewUrl: string) => {
     setValues((prev) => {
       const nextFiles = prev.imageFiles.slice();
       const nextPreviews = prev.imagePreviews.slice();
       const prevUrl = nextPreviews[index];
       if (prevUrl && prevUrl !== previewUrl && prevUrl.startsWith('blob:')) {
-        try {
-          URL.revokeObjectURL(prevUrl);
-        } catch {}
+        safeRevoke(prevUrl);
       }
       while (nextFiles.length <= index) nextFiles.push(null);
       while (nextPreviews.length <= index) nextPreviews.push(null);
       nextFiles[index] = file;
       nextPreviews[index] = previewUrl;
-      return { ...prev, imageFiles: nextFiles, imagePreviews: nextPreviews };
+      const next = { ...prev, imageFiles: nextFiles, imagePreviews: nextPreviews };
+      return deepEqual(prev, next) ? prev : next;
     });
   };
 
@@ -281,7 +421,8 @@ export default function ProductDrawer({
       const next = prev.imagePreviews.slice();
       while (next.length <= index) next.push(null);
       next[index] = url;
-      return { ...prev, imagePreviews: next };
+      const merged = { ...prev, imagePreviews: next };
+      return deepEqual(prev, merged) ? prev : merged;
     });
     setRemoteUrls((prev) => {
       const next = prev.slice();
@@ -291,26 +432,9 @@ export default function ProductDrawer({
     });
   };
 
-  const handleClearAt = (index: number) => {
-    setValues((prev) => {
-      const nextPreviews = prev.imagePreviews.slice();
-      const toRevoke = nextPreviews[index];
-      if (toRevoke?.startsWith('blob:')) {
-        try {
-          URL.revokeObjectURL(toRevoke);
-        } catch {}
-      }
-      nextPreviews.splice(index, 1);
-      const nextFiles = prev.imageFiles.slice();
-      if (index < nextFiles.length) nextFiles.splice(index, 1);
-      return { ...prev, imageFiles: nextFiles, imagePreviews: nextPreviews.length ? nextPreviews : [null] };
-    });
-    setRemoteUrls((prev) => {
-      const next = prev.slice();
-      next.splice(index, 1);
-      return next;
-    });
-  };
+  const handleVariationsChange = useCallback((list: UiVariation[]) => {
+    setUiVariations((prev) => (deepEqual(prev, list) ? prev : list));
+  }, []);
 
   const isSaveDisabled = !isFormValid || createCatMut.isPending || saving;
 
@@ -334,11 +458,7 @@ export default function ProductDrawer({
       >
         <div className="flex items-center justify-between px-5 py-4 border-b border-[#dbdbdb] sticky top-0 bg-[#fcfcfc]">
           <h3 className="text-lg font-semibold text-[#2e2e30]">{title}</h3>
-          <button
-            className="text-[#6b7280] hover:text-[#374151]"
-            onClick={handleBackdropClick}
-            aria-label="Close"
-          >
+          <button className="text-[#6b7280] hover:text-[#374151]" onClick={handleBackdropClick} aria-label="Close">
             ✕
           </button>
         </div>
@@ -413,27 +533,32 @@ export default function ProductDrawer({
             <Field>
               <Label className="mb-2">Media</Label>
               <ImageUploadZone
-                previews={values.imagePreviews}
-                maxCount={5}
+                previews={galleryPreviews}
+                readOnlyCount={0}
+                maxCount={MAX_MEDIA}
                 uploadUrl={`${API_BASE}/api/uploads/images`}
                 authToken={token || undefined}
-                onPick={(i, file, url) => handlePickAt(i, file, url)}
-                onUploaded={(i, resp) => handleUploadedAt(i, resp.cdn.medium)}
-                onClear={(i) => handleClearAt(i)}
+                onPick={handleZonePick}
+                onUploaded={handleZoneUploaded}
+                onClear={handleZoneClear}
               />
             </Field>
 
-            <Variations value={uiVariations} onChange={setUiVariations} />
+            <Variations
+              value={uiVariations}
+              onChange={handleVariationsChange}
+              uploadUrl={`${API_BASE}/api/uploads/images`}
+              authToken={token || undefined}
+              onImageRemove={(_, url) => {
+                if (url) removeUrlEverywhere(url);
+              }}
+            />
 
             <Field>
               <Tags value={tags} onChange={setTags} />
             </Field>
 
-            {(localError || createCatMut.isError) && (
-              <div className="text-sm text-red-600">
-                {localError || (createCatMut.error as Error)?.message || 'Something went wrong.'}
-              </div>
-            )}
+            {localError && <div className="text-sm text-red-600">{localError}</div>}
           </div>
         </form>
 
@@ -461,17 +586,12 @@ export default function ProductDrawer({
   );
 }
 
-/** Field wrapper */
 function Field({ children }: { children: ReactNode }) {
   return <div className="text-[#2e2e30]">{children}</div>;
 }
-
-/** Label */
 function Label({ children, className = '' }: { children: ReactNode; className?: string }) {
   return <label className={`block text-sm font-medium text-[#2e2e30] mb-1 ${className}`}>{children}</label>;
 }
-
-/** Label row with help */
 function LabelRow({
   text,
   help,
@@ -493,8 +613,6 @@ function LabelRow({
     </div>
   );
 }
-
-/** Hover card */
 function HoverCard({
   label,
   placement = 'bottom',
@@ -511,36 +629,30 @@ function HoverCard({
   return (
     <span
       role="tooltip"
-      className={`pointer-events-none absolute ${pos} z-50 w-80 max-w-[22rem] rounded-md border border-[#dbdbdb] bg-[#fcfcfc] text-[#2e2e30] text-xs px-3 py-2 shadow-md opacity-0 translate-y-0 group-hover:opacity-100 group-hover:translate-y-[2px] transition duration-150 ease-out`}
+      className={`pointer-events-none absolute ${pos} z-50 max-w-[22rem] w-80 rounded-md border border-[#dbdbdb] bg-[#fcfcfc] px-3 py-2 text-xs text-[#2e2e30] shadow-md opacity-0 translate-y-0 transition duration-150 ease-out group-hover:translate-y-[2px] group-hover:opacity-100`}
     >
       {label}
     </span>
   );
 }
-
-/** Input */
 function Input(props: InputHTMLAttributes<HTMLInputElement>) {
   const { className, ...rest } = props;
   return (
     <input
       {...rest}
-      className={`w-full border border-[#dbdbdb] hover:border-[#111827] focus:border-[#111827] transition-colors rounded-md px-3 py-2 bg-[#fcfcfc] text-sm placeholder-[#a9a9ab] focus:outline-none focus:ring-0 text-[#2e2e30] ${className || ''}`}
+      className={`w-full rounded-md border border-[#dbdbdb] bg-[#fcfcfc] px-3 py-2 text-sm text-[#2e2e30] placeholder-[#a9a9ab] transition-colors hover:border-[#111827] focus:border-[#111827] focus:outline-none focus:ring-0 ${className || ''}`}
     />
   );
 }
-
-/** Textarea */
 function Textarea(props: TextareaHTMLAttributes<HTMLTextAreaElement>) {
   const { className, ...rest } = props;
   return (
     <textarea
       {...rest}
-      className={`w-full border border-[#dbdbdb] hover:border-[#111827] focus:border-[#111827] transition-colors rounded-md px-3 py-2 bg-[#fcfcfc] text-sm placeholder-[#a9a9ab] focus:outline-none focus:ring-0 text-[#2e2e30] ${className || ''}`}
+      className={`w-full rounded-md border border-[#dbdbdb] bg-[#fcfcfc] px-3 py-2 text-sm text-[#2e2e30] placeholder-[#a9a9ab] transition-colors hover:border-[#111827] focus:border-[#111827] focus:outline-none focus:ring-0 ${className || ''}`}
     />
   );
 }
-
-/** Currency input */
 function CurrencyInput({
   value,
   onChange,
@@ -554,12 +666,12 @@ function CurrencyInput({
 }) {
   return (
     <div className="flex items-stretch">
-      <span className="px-2 py-2 border border-[#dbdbdb] border-r-0 rounded-l-md bg-[#fcfcfc] text-sm text-[#6b7280] select-none">
+      <span className="select-none rounded-l-md border border-[#dbdbdb] bg-[#fcfcfc] px-2 py-2 text-sm text-[#6b7280]">
         ৳
       </span>
       <input
-        className={`w-full border border-[#dbdbdb] border-l-[#dbdbdb] hover:border-[#111827] hover:border-l-[#111827] focus:border-[#111827] focus:border-l-[#111827] transition-colors rounded-r-md px-3 py-2 text-sm placeholder-[#a9a9ab] focus:outline-none focus:ring-0 bg-[#fcfcfc] text-[#2e2e30] ${
-          disabled ? 'opacity-60 cursor-not-allowed' : ''
+        className={`w-full rounded-r-md border border-[#dbdbdb] border-l-0 bg-[#fcfcfc] px-3 py-2 text-sm text-[#2e2e30] placeholder-[#a9a9ab] transition-colors hover:border-[#111827] focus:border-[#111827] focus:outline-none focus:ring-0 ${
+          disabled ? 'cursor-not-allowed opacity-60' : ''
         }`}
         placeholder={placeholder}
         value={value}

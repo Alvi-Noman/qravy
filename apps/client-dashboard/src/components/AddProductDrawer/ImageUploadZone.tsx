@@ -1,6 +1,3 @@
-/**
- * Image upload zone with per-tile debounce and in-flight guards
- */
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { CloudArrowUpIcon } from '@heroicons/react/24/outline';
 
@@ -24,7 +21,13 @@ type Props = {
   primaryWidthClass?: string;
   thumbWidthClass?: string;
   gapPx?: number;
+  readOnlyCount?: number;
 };
+
+const arraysEqual = (a: (string | null)[], b: (string | null)[]) =>
+  a.length === b.length && a.every((v, i) => v === b[i]);
+
+const isLoadingSentinel = (src: string | null) => !!src && src.startsWith('loading:');
 
 const ImageUploadZone: React.FC<Props> = ({
   previews,
@@ -43,6 +46,7 @@ const ImageUploadZone: React.FC<Props> = ({
   primaryWidthClass = 'w-56',
   thumbWidthClass = 'w-28',
   gapPx = 12,
+  readOnlyCount = 0,
 }) => {
   const normalizedFromProps = useMemo<(string | null)[]>(() => {
     const limited = (previews || []).slice(0, maxCount);
@@ -50,7 +54,10 @@ const ImageUploadZone: React.FC<Props> = ({
   }, [previews, maxCount]);
 
   const [localPreviews, setLocalPreviews] = useState<(string | null)[]>(normalizedFromProps);
-  useEffect(() => setLocalPreviews(normalizedFromProps), [normalizedFromProps]);
+
+  useEffect(() => {
+    setLocalPreviews((prev) => (arraysEqual(prev, normalizedFromProps) ? prev : normalizedFromProps));
+  }, [normalizedFromProps]);
 
   const [uploading, setUploading] = useState<boolean[]>([]);
   const [progress, setProgress] = useState<number[]>([]);
@@ -67,7 +74,7 @@ const ImageUploadZone: React.FC<Props> = ({
     if (!el) return;
     const ro = new ResizeObserver((entries) => {
       const w = entries[0]?.contentRect?.width;
-      if (w && w > 0) setPrimaryPx(Math.floor(w));
+      if (w && w > 0) setPrimaryPx((prev) => (prev === Math.floor(w) ? prev : Math.floor(w)));
     });
     ro.observe(el);
     return () => ro.disconnect();
@@ -77,6 +84,8 @@ const ImageUploadZone: React.FC<Props> = ({
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
+
+  const isReadOnly = (i: number) => i < readOnlyCount || isLoadingSentinel(localPreviews[i] || null);
 
   const ensureIndex = (i: number) => {
     const growTo = i + 1;
@@ -106,7 +115,7 @@ const ImageUploadZone: React.FC<Props> = ({
   };
 
   const openDialogFor = (i: number) => {
-    if (disabled) return;
+    if (disabled || isReadOnly(i)) return;
     ensureIndex(i);
     const now = Date.now();
     const last = clickTsRef.current[i] || 0;
@@ -118,7 +127,7 @@ const ImageUploadZone: React.FC<Props> = ({
   };
 
   const handleKey = (i: number, e: React.KeyboardEvent) => {
-    if (!disabled && (e.key === 'Enter' || e.key === ' ')) {
+    if (!disabled && !isReadOnly(i) && (e.key === 'Enter' || e.key === ' ')) {
       e.preventDefault();
       openDialogFor(i);
     }
@@ -146,11 +155,12 @@ const ImageUploadZone: React.FC<Props> = ({
   };
 
   const revokeUrl = (url?: string | null) => {
-    if (url?.startsWith('blob:')) {
+    if (!url || !url.startsWith('blob:')) return;
+    requestAnimationFrame(() => {
       try {
         URL.revokeObjectURL(url);
       } catch {}
-    }
+    });
   };
 
   const setUploadingAt = (i: number, val: boolean) =>
@@ -187,6 +197,7 @@ const ImageUploadZone: React.FC<Props> = ({
     });
 
   const removeAt = (i: number) => {
+    if (isReadOnly(i)) return;
     try {
       xhrRef.current[i]?.abort();
     } catch {}
@@ -273,6 +284,7 @@ const ImageUploadZone: React.FC<Props> = ({
     });
 
   const handleFilesFor = (i: number, fileList: FileList | null) => {
+    if (isReadOnly(i)) return;
     if (!fileList?.length) return;
     if (uploading[i] || xhrRef.current[i]) return;
     const file = fileList[0];
@@ -309,6 +321,7 @@ const ImageUploadZone: React.FC<Props> = ({
   };
 
   const retry = (i: number) => {
+    if (isReadOnly(i)) return;
     const last = lastFileRef.current[i];
     if (!last || disabled) return;
     if (uploading[i] || xhrRef.current[i]) return;
@@ -330,6 +343,7 @@ const ImageUploadZone: React.FC<Props> = ({
   };
 
   const cancelUpload = (i: number) => {
+    if (isReadOnly(i)) return;
     try {
       xhrRef.current[i]?.abort();
     } catch {}
@@ -340,22 +354,25 @@ const ImageUploadZone: React.FC<Props> = ({
   const onDrop = (i: number, e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
+    if (isReadOnly(i)) return;
     setDragOverAt(i, false);
     if (!disabled && !uploading[i] && !xhrRef.current[i]) handleFilesFor(i, e.dataTransfer.files);
   };
   const onDragOver = (i: number, e: React.DragEvent) => {
     e.preventDefault();
-    if (!disabled) setDragOverAt(i, true);
+    if (!disabled && !isReadOnly(i)) setDragOverAt(i, true);
   };
   const onDragLeave = (i: number, e: React.DragEvent) => {
     e.preventDefault();
-    if (!disabled) setDragOverAt(i, false);
+    if (!disabled && !isReadOnly(i)) setDragOverAt(i, false);
   };
 
-  const hasPrimary = localPreviews[0] !== null;
+  const hasPrimary = localPreviews[0] !== null && !isLoadingSentinel(localPreviews[0]);
 
   function renderPrimary(i: number) {
-    const hasImage = localPreviews[i] !== null;
+    const readOnly = isReadOnly(i);
+    const loadingExternal = isLoadingSentinel(localPreviews[i]);
+    const hasImage = localPreviews[i] !== null && !loadingExternal;
     const errorId = errors[i] ? `image-zone-error-${i}` : undefined;
     return (
       <div key={`tile-${i}`} ref={primaryRef} className={`relative flex-none ${primaryWidthClass} self-start`}>
@@ -373,40 +390,72 @@ const ImageUploadZone: React.FC<Props> = ({
           )}
           <div
             role="button"
-            tabIndex={disabled ? -1 : 0}
-            aria-disabled={disabled}
+            tabIndex={disabled || readOnly ? -1 : 0}
+            aria-disabled={disabled || readOnly}
             aria-describedby={errorId}
             onClick={() => openDialogFor(i)}
             onKeyDown={(e) => handleKey(i, e)}
             onDrop={(e) => onDrop(i, e)}
             onDragOver={(e) => onDragOver(i, e)}
             onDragLeave={(e) => onDragLeave(i, e)}
-            className={`absolute inset-0 ${disabled ? 'pointer-events-none opacity-60 cursor-not-allowed' : 'cursor-pointer'}`}
+            className={`absolute inset-0 ${disabled || readOnly ? 'cursor-default' : 'cursor-pointer'}`}
           >
-            {!hasImage && (
+            {!hasImage && !loadingExternal && (
               <div className="absolute inset-0 flex items-center justify-center p-4 text-center">
                 <div className="flex flex-col items-center pointer-events-none select-none">
                   <CloudArrowUpIcon className="h-7 w-7 text-[#6b7280]" aria-hidden="true" />
                   <div className="mt-2 text-sm font-medium text-[#2e2e30]">Drag your Image Here</div>
                   <div className="my-1 text-xs text-[#a9a9ab]">or</div>
-                  <div className="pointer-events-auto">
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        openDialogFor(i);
-                      }}
-                      disabled={disabled || uploading[i] || !!xhrRef.current[i]}
-                      className="inline-flex items-center justify-center min-w-[100px] px-4 py-1.5 rounded-md border border-[#dbdbdb] bg-[#fcfcfc] hover:bg-[#f8f8f8] hover:border-[#bdbdbd] active:bg-[#eceff1] transition-colors text-sm text-[#2e2e30] focus:outline-none focus:ring-2 focus:ring-[#e5e7eb]"
-                    >
-                      Browse
-                    </button>
-                  </div>
+                  {!readOnly && (
+                    <div className="pointer-events-auto">
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          openDialogFor(i);
+                        }}
+                        disabled={disabled || uploading[i] || !!xhrRef.current[i]}
+                        className="inline-flex items-center justify-center min-w-[100px] px-4 py-1.5 rounded-md border border-[#dbdbdb] bg-[#fcfcfc] hover:bg-[#f8f8f8] hover:border-[#bdbdbd] active:bg-[#eceff1] transition-colors text-sm text-[#2e2e30] focus:outline-none focus:ring-2 focus:ring-[#e5e7eb]"
+                      >
+                        Browse
+                      </button>
+                    </div>
+                  )}
                 </div>
               </div>
             )}
 
-            {hasImage && !uploading[i] && (
+            {(uploading[i] || loadingExternal) && (
+              <div className="absolute inset-0 bg-black/30 flex flex-col items-center justify-center p-4">
+                {loadingExternal ? (
+                  <>
+                    <div className="h-6 w-6 rounded-full border-2 border-white/80 border-t-transparent animate-spin" />
+                    <div className="mt-2 text-xs text-white">Uploading...</div>
+                  </>
+                ) : (
+                  <>
+                    <div className="w-4/5 bg-white/60 rounded-full h-2 overflow-hidden">
+                      <div className="h-2 bg-[#111827] transition-all" style={{ width: `${progress[i]}%` }} />
+                    </div>
+                    <div className="mt-2 text-xs text-white">{progress[i]}%</div>
+                    {!readOnly && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          cancelUpload(i);
+                        }}
+                        className="mt-2 text-xs text-white underline"
+                      >
+                        Cancel
+                      </button>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
+
+            {hasImage && !uploading[i] && !readOnly && (
               <div className="absolute top-1 right-1">
                 <button
                   type="button"
@@ -420,30 +469,11 @@ const ImageUploadZone: React.FC<Props> = ({
                 </button>
               </div>
             )}
-
-            {uploading[i] && (
-              <div className="absolute inset-0 bg-black/30 flex flex-col items-center justify-center p-4">
-                <div className="w-4/5 bg-white/60 rounded-full h-2 overflow-hidden">
-                  <div className="h-2 bg-[#111827] transition-all" style={{ width: `${progress[i]}%` }} />
-                </div>
-                <div className="mt-2 text-xs text-white">{progress[i]}%</div>
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    cancelUpload(i);
-                  }}
-                  className="mt-2 text-xs text-white underline"
-                >
-                  Cancel
-                </button>
-              </div>
-            )}
           </div>
         </div>
         {errors[i] && (
           <p id={errorId} className="mt-2 text-sm text-red-600" role="alert" aria-live="polite">
-            {errors[i]} <button className="underline ml-2" onClick={() => retry(i)}>Retry</button>
+            {errors[i]} {!isReadOnly(i) && <button className="underline ml-2" onClick={() => retry(i)}>Retry</button>}
           </p>
         )}
       </div>
@@ -451,7 +481,9 @@ const ImageUploadZone: React.FC<Props> = ({
   }
 
   function renderThumb(i: number) {
-    const hasImage = localPreviews[i] !== null;
+    const readOnly = isReadOnly(i);
+    const loadingExternal = isLoadingSentinel(localPreviews[i]);
+    const hasImage = localPreviews[i] !== null && !loadingExternal;
     const errorId = errors[i] ? `image-zone-error-${i}` : undefined;
     return (
       <div key={`tile-${i}`} className="relative flex-none self-start" style={thumbSizeStyle}>
@@ -468,17 +500,47 @@ const ImageUploadZone: React.FC<Props> = ({
           )}
           <div
             role="button"
-            tabIndex={disabled ? -1 : 0}
-            aria-disabled={disabled}
+            tabIndex={disabled || readOnly ? -1 : 0}
+            aria-disabled={disabled || readOnly}
             aria-describedby={errorId}
             onClick={() => openDialogFor(i)}
             onKeyDown={(e) => handleKey(i, e)}
             onDrop={(e) => onDrop(i, e)}
             onDragOver={(e) => onDragOver(i, e)}
             onDragLeave={(e) => onDragLeave(i, e)}
-            className={`absolute inset-0 ${disabled ? 'pointer-events-none opacity-60 cursor-not-allowed' : 'cursor-pointer'}`}
+            className={`absolute inset-0 ${disabled || readOnly ? 'cursor-default' : 'cursor-pointer'}`}
           >
-            {hasImage && !uploading[i] && (
+            {(uploading[i] || loadingExternal) && (
+              <div className="absolute inset-0 bg-black/30 flex flex-col items-center justify-center p-4">
+                {loadingExternal ? (
+                  <>
+                    <div className="h-6 w-6 rounded-full border-2 border-white/80 border-t-transparent animate-spin" />
+                    <div className="mt-2 text-xs text-white">Uploading...</div>
+                  </>
+                ) : (
+                  <>
+                    <div className="w-4/5 bg-white/60 rounded-full h-2 overflow-hidden">
+                      <div className="h-2 bg-[#111827] transition-all" style={{ width: `${progress[i]}%` }} />
+                    </div>
+                    <div className="mt-2 text-xs text-white">{progress[i]}%</div>
+                    {!readOnly && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          cancelUpload(i);
+                        }}
+                        className="mt-2 text-xs text-white underline"
+                      >
+                        Cancel
+                      </button>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
+
+            {hasImage && !uploading[i] && !readOnly && (
               <div className="absolute top-1 right-1">
                 <button
                   type="button"
@@ -492,31 +554,12 @@ const ImageUploadZone: React.FC<Props> = ({
                 </button>
               </div>
             )}
-
-            {uploading[i] && (
-              <div className="absolute inset-0 bg-black/30 flex flex-col items-center justify-center p-4">
-                <div className="w-4/5 bg-white/60 rounded-full h-2 overflow-hidden">
-                  <div className="h-2 bg-[#111827] transition-all" style={{ width: `${progress[i]}%` }} />
-                </div>
-                <div className="mt-2 text-xs text-white">{progress[i]}%</div>
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    cancelUpload(i);
-                  }}
-                  className="mt-2 text-xs text-white underline"
-                >
-                  Cancel
-                </button>
-              </div>
-            )}
           </div>
         </div>
 
         {errors[i] && (
           <p id={errorId} className="mt-2 text-sm text-red-600" role="alert" aria-live="polite">
-            {errors[i]} <button className="underline ml-2" onClick={() => retry(i)}>Retry</button>
+            {errors[i]} {!isReadOnly(i) && <button className="underline ml-2" onClick={() => retry(i)}>Retry</button>}
           </p>
         )}
       </div>
@@ -553,6 +596,7 @@ const ImageUploadZone: React.FC<Props> = ({
           </div>
         </div>
       </div>
+
       <input
         ref={fileInputRef}
         id={id}
