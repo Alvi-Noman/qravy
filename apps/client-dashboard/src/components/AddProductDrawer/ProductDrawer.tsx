@@ -9,7 +9,7 @@ import {
   type TextareaHTMLAttributes,
 } from 'react';
 import { motion } from 'framer-motion';
-  import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAuthContext } from '../../context/AuthContext';
 import CategorySelect from './CategorySelect';
 import { createCategory as apiCreateCategory, type Category } from '../../api/categories';
@@ -103,6 +103,8 @@ export default function ProductDrawer({
   const [uiVariations, setUiVariations] = useState<UiVariation[]>(initial.variations || []);
 
   const [localError, setLocalError] = useState<string | null>(null);
+  const [varNameError, setVarNameError] = useState<string | null>(null);
+  const [varImageError, setVarImageError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [localCats, setLocalCats] = useState<string[]>(categories);
   useEffect(() => setLocalCats(categories), [categories]);
@@ -206,7 +208,11 @@ export default function ProductDrawer({
   const isFormValid =
     values.name.trim().length > 0 &&
     (hasMainPrice || hasVariantPrice) &&
-    (allowMainPrice ? compareAtNum === undefined || (!Number.isNaN(compareAtNum) && compareAtNum >= priceNum) : true);
+    (allowMainPrice
+      ? compareAtNum === undefined || (!Number.isNaN(compareAtNum) && compareAtNum >= priceNum)
+      : true) &&
+    !varNameError &&
+    !varImageError;
 
   function saveSnapshot() {
     try {
@@ -239,6 +245,7 @@ export default function ProductDrawer({
         return setLocalError('Enter a product price or at least one variation price.');
       if (allowMainPrice && compareAtNum !== undefined && (Number.isNaN(compareAtNum) || compareAtNum < priceNum))
         return setLocalError('Compare-at price must be ≥ product price.');
+      if (varNameError || varImageError) return;
     }
 
     const media: string[] = [];
@@ -286,6 +293,34 @@ export default function ProductDrawer({
   };
 
   const mapToBaseIndex = (mergedIndex: number) => mergedIndex - variantCount;
+
+  // NEW: pin upload targets across pick/upload
+  const pendingTargetsRef = useRef<
+    Map<number, { kind: 'variant'; realIdx: number } | { kind: 'base'; baseIdx: number }>
+  >(new Map());
+
+  // NEW: resolve merged index -> real index in values.imagePreviews
+  const resolveBaseIndexFromMerged = useCallback(
+    (mergedIndex: number) => {
+      const vUrls = variantUrls;
+      const basePos = mergedIndex - vUrls.length; // position inside the displayed base section
+      if (basePos < 0) return -1;
+
+      const original = values.imagePreviews || [];
+      // Build the mapping from displayed base tiles to their true indices
+      const indices: number[] = [];
+      for (let j = 0; j < original.length; j++) {
+        const u = original[j];
+        if (u !== null && !vUrls.includes(u)) indices.push(j);
+      }
+      if (basePos < indices.length) {
+        return indices[basePos];
+      }
+      // Clicked the “add” tile; append at the end of the originals
+      return original.length;
+    },
+    [variantUrls, values.imagePreviews]
+  );
 
   const removeUrlEverywhere = (url: string) => {
     if (!url) return;
@@ -342,12 +377,15 @@ export default function ProductDrawer({
           const u = v.imageUrl || (v.imagePreview && !v.imagePreview.startsWith('blob:') ? v.imagePreview : null);
           return u === urlAtTile;
         });
-        if (idx < 0) return next;
+        if (idx < 0) return prev;
         const realIdx = next
           .map((v, idx2) => ({ v, idx2 }))
           .filter(({ v }) => v.label.trim() !== '')
           [idx]?.idx2;
-        if (realIdx === undefined) return next;
+        if (realIdx === undefined) return prev;
+
+        // Pin exact variant slot for this tile index
+        pendingTargetsRef.current.set(i, { kind: 'variant', realIdx });
 
         const prevPreview = next[realIdx].imagePreview;
         if (prevPreview && prevPreview.startsWith('blob:')) {
@@ -359,16 +397,53 @@ export default function ProductDrawer({
       return;
     }
 
-    const baseIdx = mapToBaseIndex(i);
-    handlePickAt(baseIdx, file, url);
+    // Base tile or "add" tile: resolve true index in values.imagePreviews
+    const baseRealIdx = resolveBaseIndexFromMerged(i);
+    pendingTargetsRef.current.set(i, { kind: 'base', baseIdx: baseRealIdx });
+    handlePickAt(baseRealIdx, file, url);
   };
 
   const handleZoneUploaded = (i: number, resp: { cdn: { medium: string } }) => {
+    const pinned = pendingTargetsRef.current.get(i);
+    const cdnUrl = resp.cdn.medium;
+
+    if (pinned?.kind === 'variant') {
+      let duplicate = false;
+      setUiVariations((prev) => {
+        const next = prev.slice();
+        const realIdx = pinned.realIdx;
+        if (realIdx < 0 || realIdx >= next.length) return prev;
+
+        const existsElsewhere = next.some((v, j) => {
+          if (j === realIdx) return false;
+          const u = v.imageUrl || (v.imagePreview && !v.imagePreview.startsWith('blob:') ? v.imagePreview : null);
+          return u === cdnUrl;
+        });
+        if (existsElsewhere) {
+          duplicate = true;
+          return prev;
+        }
+
+        next[realIdx] = { ...next[realIdx], imagePreview: cdnUrl, imageUrl: cdnUrl };
+        return deepEqual(prev, next) ? prev : next;
+      });
+      setVarImageError(duplicate ? 'Each variation must have a unique image.' : null);
+      pendingTargetsRef.current.delete(i);
+      return;
+    }
+
+    if (pinned?.kind === 'base') {
+      handleUploadedAt(pinned.baseIdx, cdnUrl);
+      pendingTargetsRef.current.delete(i);
+      return;
+    }
+
+    // Fallback (should be rare)
     const urlAtTile = galleryPreviews[i] || null;
     const isVariantTile = urlAtTile ? variantUrls.includes(urlAtTile) : false;
 
     if (isVariantTile && urlAtTile) {
-      const cdnUrl = resp.cdn.medium;
+      let duplicate = false;
       setUiVariations((prev) => {
         const next = prev.slice();
         const typed = next.filter((v) => v.label.trim() !== '');
@@ -383,17 +458,30 @@ export default function ProductDrawer({
           [idx]?.idx2;
         if (realIdx === undefined) return prev;
 
+        const existsElsewhere = next.some((v, j) => {
+          if (j === realIdx) return false;
+          const u = v.imageUrl || (v.imagePreview && !v.imagePreview.startsWith('blob:') ? v.imagePreview : null);
+          return u === cdnUrl;
+        });
+        if (existsElsewhere) {
+          duplicate = true;
+          return prev;
+        }
+
         next[realIdx] = { ...next[realIdx], imagePreview: cdnUrl, imageUrl: cdnUrl };
         return deepEqual(prev, next) ? prev : next;
       });
+      setVarImageError(duplicate ? 'Each variation must have a unique image.' : null);
       return;
     }
 
     const baseIdx = mapToBaseIndex(i);
-    handleUploadedAt(baseIdx, resp.cdn.medium);
+    handleUploadedAt(baseIdx, cdnUrl);
   };
 
   const handleZoneClear = (i: number) => {
+    // Clear any pinned target for this tile index
+    pendingTargetsRef.current.delete(i);
     const urlAtTile = galleryPreviews[i] || null;
     if (!urlAtTile) return;
     removeUrlEverywhere(urlAtTile);
@@ -433,6 +521,33 @@ export default function ProductDrawer({
   };
 
   const handleVariationsChange = useCallback((list: UiVariation[]) => {
+    const typed = (list || []).filter((v) => v.label.trim() !== '');
+    const nameSet = new Set<string>();
+    let nameDup = false;
+    for (const v of typed) {
+      const key = v.label.trim().toLowerCase();
+      if (nameSet.has(key)) {
+        nameDup = true;
+        break;
+      }
+      nameSet.add(key);
+    }
+
+    const urlSet = new Set<string>();
+    let imgDup = false;
+    for (const v of typed) {
+      const u = v.imageUrl || (v.imagePreview && !v.imagePreview.startsWith('blob:') ? v.imagePreview : null);
+      if (u) {
+        if (urlSet.has(u)) {
+          imgDup = true;
+          break;
+        }
+        urlSet.add(u);
+      }
+    }
+
+    setVarNameError(nameDup ? 'Each variation must have a unique name.' : null);
+    setVarImageError(imgDup ? 'Each variation must have a unique image.' : null);
     setUiVariations((prev) => (deepEqual(prev, list) ? prev : list));
   }, []);
 
@@ -553,12 +668,19 @@ export default function ProductDrawer({
                 if (url) removeUrlEverywhere(url);
               }}
             />
+            {(varNameError || varImageError) && (
+              <div className="text-sm text-red-600">{varNameError || varImageError}</div>
+            )}
 
             <Field>
               <Tags value={tags} onChange={setTags} />
             </Field>
 
-            {localError && <div className="text-sm text-red-600">{localError}</div>}
+            {(localError || createCatMut.isError) && (
+              <div className="text-sm text-red-600">
+                {localError || (createCatMut.error as Error)?.message || 'Something went wrong.'}
+              </div>
+            )}
           </div>
         </form>
 
