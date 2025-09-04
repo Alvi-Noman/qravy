@@ -105,6 +105,7 @@ export default function ProductDrawer({
   const [localError, setLocalError] = useState<string | null>(null);
   const [varNameError, setVarNameError] = useState<string | null>(null);
   const [varImageError, setVarImageError] = useState<string | null>(null);
+  const [mediaImageError, setMediaImageError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [localCats, setLocalCats] = useState<string[]>(categories);
   useEffect(() => setLocalCats(categories), [categories]);
@@ -192,6 +193,12 @@ export default function ProductDrawer({
     return merged.length === 0 ? [null] : merged;
   }, [variantUrls, galleryBase]);
 
+  // Non-blob URLs currently shown in Media (Upload Zone), excluding variation images
+  const mediaUrls = useMemo(
+    () => galleryBase.filter((u): u is string => !!u && !u.startsWith('blob:')),
+    [galleryBase]
+  );
+
   const variantCount = variantUrls.length;
 
   const toNumber = (v: string) => Number(v);
@@ -212,7 +219,8 @@ export default function ProductDrawer({
       ? compareAtNum === undefined || (!Number.isNaN(compareAtNum) && compareAtNum >= priceNum)
       : true) &&
     !varNameError &&
-    !varImageError;
+    !varImageError &&
+    !mediaImageError;
 
   function saveSnapshot() {
     try {
@@ -245,7 +253,7 @@ export default function ProductDrawer({
         return setLocalError('Enter a product price or at least one variation price.');
       if (allowMainPrice && compareAtNum !== undefined && (Number.isNaN(compareAtNum) || compareAtNum < priceNum))
         return setLocalError('Compare-at price must be ≥ product price.');
-      if (varNameError || varImageError) return;
+      if (varNameError || varImageError || mediaImageError) return;
     }
 
     const media: string[] = [];
@@ -294,20 +302,29 @@ export default function ProductDrawer({
 
   const mapToBaseIndex = (mergedIndex: number) => mergedIndex - variantCount;
 
-  // NEW: pin upload targets across pick/upload
+  // Remount key for ImageUploadZone to flush local previews on rejection
+  const [mediaSyncKey, setMediaSyncKey] = useState(0);
+
+  // NEW: Remount key for Variations to clear any row imageError when Media changes (e.g., deletion)
+  const [variationsSyncKey, setVariationsSyncKey] = useState(0);
+
+  // Pin upload targets across pick/upload
   const pendingTargetsRef = useRef<
-    Map<number, { kind: 'variant'; realIdx: number } | { kind: 'base'; baseIdx: number }>
+    Map<
+      number,
+      | { kind: 'variant'; realIdx: number }
+      | { kind: 'base'; baseIdx: number; prev: string | null; added: boolean }
+    >
   >(new Map());
 
-  // NEW: resolve merged index -> real index in values.imagePreviews
+  // resolve merged index -> real index in values.imagePreviews
   const resolveBaseIndexFromMerged = useCallback(
     (mergedIndex: number) => {
       const vUrls = variantUrls;
-      const basePos = mergedIndex - vUrls.length; // position inside the displayed base section
+      const basePos = mergedIndex - vUrls.length;
       if (basePos < 0) return -1;
 
       const original = values.imagePreviews || [];
-      // Build the mapping from displayed base tiles to their true indices
       const indices: number[] = [];
       for (let j = 0; j < original.length; j++) {
         const u = original[j];
@@ -316,8 +333,7 @@ export default function ProductDrawer({
       if (basePos < indices.length) {
         return indices[basePos];
       }
-      // Clicked the “add” tile; append at the end of the originals
-      return original.length;
+      return original.length; // add tile -> append
     },
     [variantUrls, values.imagePreviews]
   );
@@ -366,6 +382,8 @@ export default function ProductDrawer({
   };
 
   const handleZonePick = (i: number, file: File, url: string) => {
+    setMediaImageError(null);
+
     const urlAtTile = galleryPreviews[i] || null;
     const isVariantTile = urlAtTile ? variantUrls.includes(urlAtTile) : false;
 
@@ -399,7 +417,12 @@ export default function ProductDrawer({
 
     // Base tile or "add" tile: resolve true index in values.imagePreviews
     const baseRealIdx = resolveBaseIndexFromMerged(i);
-    pendingTargetsRef.current.set(i, { kind: 'base', baseIdx: baseRealIdx });
+    const originalLength = values.imagePreviews.length;
+    const added = baseRealIdx >= originalLength; // picking into the add tile creates a new slot
+    const prevAtIndex = !added ? values.imagePreviews[baseRealIdx] ?? null : null;
+
+    pendingTargetsRef.current.set(i, { kind: 'base', baseIdx: baseRealIdx, prev: prevAtIndex, added });
+
     handlePickAt(baseRealIdx, file, url);
   };
 
@@ -433,58 +456,78 @@ export default function ProductDrawer({
     }
 
     if (pinned?.kind === 'base') {
-      handleUploadedAt(pinned.baseIdx, cdnUrl);
+      const baseIdx = pinned.baseIdx;
+
+      // Duplicate in variant images?
+      const existsInVariants = variantUrls.includes(cdnUrl);
+
+      // Duplicate in other base images?
+      const existsInBase = (values.imagePreviews || []).some(
+        (u, j) => j !== baseIdx && !!u && !u.startsWith('blob:') && u === cdnUrl
+      );
+
+      if (existsInVariants || existsInBase) {
+        setMediaImageError('Image already exists.');
+        // revert to the previous value (or remove slot if it was newly added)
+        setValues((prev) => {
+          const next = prev.imagePreviews.slice();
+          const current = next[baseIdx];
+          if (current && current.startsWith('blob:')) safeRevoke(current);
+          if (pinned.added) {
+            // remove the newly added slot
+            if (baseIdx < next.length) next.splice(baseIdx, 1);
+            return { ...prev, imagePreviews: next.length ? next : [null] };
+          } else {
+            next[baseIdx] = pinned.prev ?? null;
+            return { ...prev, imagePreviews: next };
+          }
+        });
+        setMediaSyncKey((k) => k + 1); // force ImageUploadZone to re-mount and forget optimistic state
+        pendingTargetsRef.current.delete(i);
+        return;
+      }
+
+      setMediaImageError(null);
+      handleUploadedAt(baseIdx, cdnUrl);
       pendingTargetsRef.current.delete(i);
       return;
     }
 
-    // Fallback (should be rare)
-    const urlAtTile = galleryPreviews[i] || null;
-    const isVariantTile = urlAtTile ? variantUrls.includes(urlAtTile) : false;
+    // Fallback (no pinned target found)
+    const baseIdx = mapToBaseIndex(i);
+    const existsInVariants = variantUrls.includes(cdnUrl);
+    const existsInBase = (values.imagePreviews || []).some(
+      (u, j) => j !== baseIdx && !!u && !u.startsWith('blob:') && u === cdnUrl
+    );
 
-    if (isVariantTile && urlAtTile) {
-      let duplicate = false;
-      setUiVariations((prev) => {
-        const next = prev.slice();
-        const typed = next.filter((v) => v.label.trim() !== '');
-        const idx = typed.findIndex((v) => {
-          const u = v.imageUrl || (v.imagePreview && !v.imagePreview.startsWith('blob:') ? v.imagePreview : null);
-          return u === urlAtTile;
-        });
-        if (idx < 0) return prev;
-        const realIdx = next
-          .map((v, idx2) => ({ v, idx2 }))
-          .filter(({ v }) => v.label.trim() !== '')
-          [idx]?.idx2;
-        if (realIdx === undefined) return prev;
-
-        const existsElsewhere = next.some((v, j) => {
-          if (j === realIdx) return false;
-          const u = v.imageUrl || (v.imagePreview && !v.imagePreview.startsWith('blob:') ? v.imagePreview : null);
-          return u === cdnUrl;
-        });
-        if (existsElsewhere) {
-          duplicate = true;
-          return prev;
-        }
-
-        next[realIdx] = { ...next[realIdx], imagePreview: cdnUrl, imageUrl: cdnUrl };
-        return deepEqual(prev, next) ? prev : next;
+    if (existsInVariants || existsInBase) {
+      setMediaImageError('Image already exists.');
+      // best effort revert: clear blob at this slot if present
+      setValues((prev) => {
+        const next = prev.imagePreviews.slice();
+        const current = next[baseIdx];
+        if (current && current.startsWith('blob:')) safeRevoke(current);
+        next[baseIdx] = null;
+        return { ...prev, imagePreviews: next };
       });
-      setVarImageError(duplicate ? 'Each variation must have a unique image.' : null);
+      setMediaSyncKey((k) => k + 1);
       return;
     }
 
-    const baseIdx = mapToBaseIndex(i);
+    setMediaImageError(null);
     handleUploadedAt(baseIdx, cdnUrl);
   };
 
   const handleZoneClear = (i: number) => {
     // Clear any pinned target for this tile index
     pendingTargetsRef.current.delete(i);
+    setMediaImageError(null);
     const urlAtTile = galleryPreviews[i] || null;
     if (!urlAtTile) return;
     removeUrlEverywhere(urlAtTile);
+
+    // NEW: also clear any "Image already exists" messages in Variations by remounting it
+    setVariationsSyncKey((k) => k + 1);
   };
 
   const handlePickAt = (index: number, file: File, previewUrl: string) => {
@@ -648,6 +691,7 @@ export default function ProductDrawer({
             <Field>
               <Label className="mb-2">Media</Label>
               <ImageUploadZone
+                key={mediaSyncKey} // force remount when we reject a duplicate
                 previews={galleryPreviews}
                 readOnlyCount={0}
                 maxCount={MAX_MEDIA}
@@ -655,15 +699,20 @@ export default function ProductDrawer({
                 authToken={token || undefined}
                 onPick={handleZonePick}
                 onUploaded={handleZoneUploaded}
-                onClear={handleZoneClear}
+                onClear={handleZoneClear} // clears variations' errors too
               />
+              {mediaImageError && (
+                <div className="mt-2 text-sm text-red-600 truncate">Image already exists.</div>
+              )}
             </Field>
 
             <Variations
+              key={variationsSyncKey} // NEW: remount to clear any row errors when Media changes (e.g., deletion)
               value={uiVariations}
               onChange={handleVariationsChange}
               uploadUrl={`${API_BASE}/api/uploads/images`}
               authToken={token || undefined}
+              mediaUrls={mediaUrls} // pass Media URLs for cross-validation
               onImageRemove={(_, url) => {
                 if (url) removeUrlEverywhere(url);
               }}
@@ -792,7 +841,7 @@ function CurrencyInput({
         ৳
       </span>
       <input
-        className={`w-full rounded-r-md border border-[#dbdbdb] border-l-0 bg-[#fcfcfc] px-3 py-2 text-sm text-[#2e2e30] placeholder-[#a9a9ab] transition-colors hover:border-[#111827] focus:border-[#111827] focus:outline-none focus:ring-0 ${
+        className={`w-full -ml-px rounded-r-md rounded-l-none border border-[#dbdbdb] bg-[#fcfcfc] px-3 py-2 text-sm text-[#2e2e30] placeholder-[#a9a9ab] transition-colors hover:border-[#111827] focus:border-[#111827] focus:outline-none focus:ring-0 ${
           disabled ? 'cursor-not-allowed opacity-60' : ''
         }`}
         placeholder={placeholder}

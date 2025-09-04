@@ -26,6 +26,9 @@ export type VariantValue = {
   imageFile?: File | null;
   imagePreview?: string | null;
   imageUrl?: string | null;
+  imageUploading?: boolean;
+  imageError?: string | null;
+  nameError?: string | null;
 };
 export type VariationGroup = { id: string; values: VariantValue[]; editing: boolean };
 
@@ -53,6 +56,7 @@ export default function Variations({
   authToken,
   onImageAdd,
   onImageRemove,
+  mediaUrls = [],
 }: {
   helpText?: string;
   value?: VariationsValue[];
@@ -61,6 +65,7 @@ export default function Variations({
   authToken?: string;
   onImageAdd?: (index: number, url: string) => void;
   onImageRemove?: (index: number, url?: string) => void;
+  mediaUrls?: string[];
 }) {
   const [group, setGroup] = useState<VariationGroup | null>(null);
 
@@ -77,6 +82,9 @@ export default function Variations({
         imagePreview: preview,
         imageUrl: url,
         imageFile: null,
+        imageUploading: false,
+        imageError: null,
+        nameError: null,
       };
     });
     setGroup({ id: cryptoId(), editing: false, values: normalizeInputs(values) });
@@ -99,7 +107,6 @@ export default function Variations({
 
       const typedCurrent = g.values.filter((v) => v.label.trim() !== '');
 
-      // Build signatures in the same order (current rows' order) to avoid false diffs
       const curSig = JSON.stringify(
         typedCurrent.map((v) => [v.label, v.imagePreview ?? null, v.imageUrl ?? null, v.price ?? ''])
       );
@@ -135,7 +142,12 @@ export default function Variations({
         if (r.imagePreview && r.imagePreview.startsWith('blob:') && r.imagePreview !== nextPreview) {
           safeRevoke(r.imagePreview);
         }
-        return { ...r, imagePreview: nextPreview, imageUrl: nextUrl, price: nextPrice ?? r.price };
+        return {
+          ...r,
+          imagePreview: nextPreview,
+          imageUrl: nextUrl,
+          price: nextPrice ?? r.price,
+        };
       });
 
       return { ...g, values: nextValues };
@@ -222,21 +234,147 @@ export default function Variations({
     return url;
   }
 
+  const rows = typed;
+
+  // Duplicate name set (case-insensitive, trimmed) – used for blur validation
+  const duplicateNameSet = useMemo(() => {
+    const counts = new Map<string, number>();
+    (group?.values || []).forEach((v) => {
+      const k = v.label.trim().toLowerCase();
+      if (!k) return;
+      counts.set(k, (counts.get(k) || 0) + 1);
+    });
+    const dups = new Set<string>();
+    counts.forEach((n, k) => {
+      if (n > 1) dups.add(k);
+    });
+    return dups;
+  }, [group?.values]);
+
+  // Duplicate image set (not used to render; row error is r.imageError)
+  const duplicateImageSet = useMemo(() => {
+    const counts = new Map<string, number>();
+    (group?.values || []).forEach((v) => {
+      const finalUrl =
+        v.imageUrl || (v.imagePreview && !v.imagePreview.startsWith('blob:') ? v.imagePreview : null);
+      if (!finalUrl) return;
+      counts.set(finalUrl, (counts.get(finalUrl) || 0) + 1);
+    });
+    const dups = new Set<string>();
+    counts.forEach((n, k) => {
+      if (n > 1) dups.add(k);
+    });
+    return dups;
+  }, [group?.values]);
+
+  // Media URLs set (non-blob, from parent)
+  const mediaSet = useMemo(() => new Set((mediaUrls || []).filter(Boolean)), [mediaUrls]);
+
+  // Clear imageError on all rows except the interacted row
+  const clearImageErrorsExcept = (exceptId?: string) => {
+    setGroup((g) => {
+      if (!g) return g;
+      let changed = false;
+      const values = g.values.map((v) => {
+        if (v.id !== exceptId && v.imageError) {
+          changed = true;
+          return { ...v, imageError: null };
+        }
+        return v;
+      });
+      return changed ? { ...g, values } : g;
+    });
+  };
+
+  // Name: validate on leaving the field, clear input if duplicate, set error; hide error while typing
+  const handleNameBlur = (idx: number) => {
+    setGroup((g) => {
+      if (!g) return g;
+      const values = [...g.values];
+      const curr = values[idx];
+      if (!curr) return g;
+
+      const key = curr.label.trim().toLowerCase();
+      if (!key) {
+        values[idx] = { ...curr, nameError: null };
+        return { ...g, values: normalizeInputs(values) };
+      }
+
+      const dup = values.findIndex((v, j) => j !== idx && v.label.trim().toLowerCase() === key) >= 0;
+
+      if (dup) {
+        values[idx] = { ...curr, label: '', nameError: 'Variation name already exists' };
+      } else {
+        values[idx] = { ...curr, nameError: null };
+      }
+      return { ...g, values: normalizeInputs(values) };
+    });
+  };
+
+  // Image upload handler with duplicate checks (media + other variations)
   const handlePickFile = async (idx: number, file: File, blobUrl: string) => {
-    setValue(idx, { imageFile: file, imagePreview: blobUrl });
+    const rowId = rows[idx]?.id;
+    if (!group || !rowId) return;
+    const fullIndex = group.values.findIndex((v) => v.id === rowId);
+    if (fullIndex < 0) return;
+
+    // set preview and start spinner
+    setValue(fullIndex, {
+      imageFile: file,
+      imagePreview: blobUrl,
+      imageUrl: null,
+      imageUploading: true,
+      imageError: null,
+    });
+
     try {
       const cdn = await uploadVariantImage(file);
       if (cdn) {
-        setValue(idx, { imagePreview: cdn, imageUrl: cdn, imageFile: null });
-        onImageAdd?.(idx, cdn);
+        const dupMedia = mediaSet.has(cdn);
+        const dupVariant = (group.values || []).some((v) => {
+          if (v.id === rowId) return false;
+          const final =
+            v.imageUrl || (v.imagePreview && !v.imagePreview.startsWith('blob:') ? v.imagePreview : null);
+        return !!final && final === cdn;
+        });
+
+        if (dupMedia) {
+          setValue(fullIndex, {
+            imageUploading: false,
+            imageError: 'Image already exists',
+            imageFile: null,
+            imagePreview: null,
+            imageUrl: null,
+          });
+        } else if (dupVariant) {
+          setValue(fullIndex, {
+            imageUploading: false,
+            imageError: 'Image already exists in another variation.',
+            imageFile: null,
+            imagePreview: null,
+            imageUrl: null,
+          });
+        } else {
+          setValue(fullIndex, {
+            imagePreview: cdn,
+            imageUrl: cdn,
+            imageFile: null,
+            imageUploading: false,
+            imageError: null,
+          });
+          onImageAdd?.(idx, cdn);
+        }
+      } else {
+        setValue(fullIndex, { imageUploading: false });
       }
+
       try {
         if (blobUrl.startsWith('blob:')) URL.revokeObjectURL(blobUrl);
       } catch {}
-    } catch {}
+    } catch (err: any) {
+      setValue(fullIndex, { imageUploading: false, imageError: err?.message || 'Upload failed' });
+    }
   };
-
-  const rows = typed;
 
   return (
     <div className="text-[#2e2e30]">
@@ -273,9 +411,11 @@ export default function Variations({
                           item={v}
                           index={idx}
                           disabled={isBlank}
-                          onLabelChange={(label) => setValue(idx, { label })}
+                          onLabelChange={(label) => setValue(idx, { label, nameError: null })}
+                          onNameBlur={() => handleNameBlur(idx)}
                           onRemove={() => removeValue(idx)}
                           canRemove={canRemove}
+                          onRowInteract={(id) => clearImageErrorsExcept(id)}
                         />
                       );
                     })}
@@ -306,6 +446,7 @@ export default function Variations({
               {rows.length > 0 && (
                 <VariantTable
                   rows={rows}
+                  duplicateImageSet={duplicateImageSet}
                   onChange={(idx, patch) => {
                     const id = rows[idx].id;
                     const fullIndex = group.values.findIndex((v) => v.id === id);
@@ -318,10 +459,18 @@ export default function Variations({
                       r.imageUrl || (r.imagePreview && !r.imagePreview.startsWith('blob:') ? r.imagePreview : null);
                     if (group) {
                       const fullIndex = group.values.findIndex((v) => v.id === r.id);
-                      if (fullIndex >= 0) setValue(fullIndex, { imageFile: null, imagePreview: null, imageUrl: null });
+                      if (fullIndex >= 0)
+                        setValue(fullIndex, {
+                          imageFile: null,
+                          imagePreview: null,
+                          imageUrl: null,
+                          imageUploading: false,
+                          imageError: null,
+                        });
                     }
                     onImageRemove?.(idx, prevUrl || undefined);
                   }}
+                  onRowInteract={(id) => clearImageErrorsExcept(id)}
                 />
               )}
             </div>
@@ -356,6 +505,7 @@ export default function Variations({
               {rows.length > 0 && (
                 <VariantTable
                   rows={rows}
+                  duplicateImageSet={duplicateImageSet}
                   onChange={(idx, patch) => {
                     const id = rows[idx].id;
                     const fullIndex = group!.values.findIndex((v) => v.id === id);
@@ -368,10 +518,18 @@ export default function Variations({
                       r.imageUrl || (r.imagePreview && !r.imagePreview.startsWith('blob:') ? r.imagePreview : null);
                     if (group) {
                       const fullIndex = group.values.findIndex((v) => v.id === r.id);
-                      if (fullIndex >= 0) setValue(fullIndex, { imageFile: null, imagePreview: null, imageUrl: null });
+                      if (fullIndex >= 0)
+                        setValue(fullIndex, {
+                          imageFile: null,
+                          imagePreview: null,
+                          imageUrl: null,
+                          imageUploading: false,
+                          imageError: null,
+                        });
                     }
                     onImageRemove?.(idx, prevUrl || undefined);
                   }}
+                  onRowInteract={(id) => clearImageErrorsExcept(id)}
                   readOnlyLabels
                 />
               )}
@@ -390,6 +548,8 @@ function OptionRow({
   onLabelChange,
   onRemove,
   canRemove,
+  onNameBlur,
+  onRowInteract,
 }: {
   item: VariantValue;
   index: number;
@@ -397,6 +557,8 @@ function OptionRow({
   onLabelChange: (label: string) => void;
   onRemove: () => void;
   canRemove: boolean;
+  onNameBlur: () => void;
+  onRowInteract: (id: string) => void;
 }) {
   const { setNodeRef, attributes, listeners, transform, transition, isDragging } = useSortable({
     id: item.id,
@@ -411,8 +573,16 @@ function OptionRow({
 
   const handleProps = disabled ? {} : { ...attributes, ...listeners };
 
+  const showDup = !!item.nameError;
+  const errorId = showDup ? `var-name-err-${item.id}` : undefined;
+
   return (
-    <div ref={setNodeRef} style={style} className="flex min-w-0 items-center gap-2">
+    <div
+      ref={setNodeRef}
+      style={style}
+      className="flex min-w-0 items-start gap-2"
+      onPointerDown={() => onRowInteract(item.id)}
+    >
       <button
         type="button"
         className={`shrink-0 rounded-md p-1.5 ${
@@ -425,17 +595,30 @@ function OptionRow({
         <SixDotHandleIcon className="h-4 w-4" />
       </button>
 
-      <input
-        className="flex-1 rounded-md border border-[#dbdbdb] bg-[#fcfcfc] px-3 py-2 text-sm text-[#2e2e30] placeholder-[#a9a9ab] transition-colors hover:border-[#111827] focus:border-[#111827] focus:outline-none focus:ring-0"
-        placeholder={`Option ${index + 1}`}
-        value={item.label}
-        onChange={(e) => onLabelChange((e.target as HTMLInputElement).value)}
-      />
+      <div className="flex-1 min-w-0">
+        <input
+          className={`w-full rounded-md border bg-[#fcfcfc] px-3 py-2 text-sm text-[#2e2e30] placeholder-[#a9a9ab] transition-colors hover:border-[#111827] focus:border-[#111827] focus:outline-none focus:ring-0 ${
+            showDup ? 'border-red-500' : 'border-[#dbdbdb]'
+          }`}
+          placeholder={`Option ${index + 1}`}
+          value={item.label}
+          onChange={(e) => onLabelChange((e.target as HTMLInputElement).value)}
+          onFocus={() => onRowInteract(item.id)}
+          onBlur={onNameBlur}
+          aria-invalid={showDup || undefined}
+          aria-describedby={errorId}
+        />
+        {showDup && (
+          <p id={errorId} className="mt-1 text-xs text-red-600">
+            {item.nameError}
+          </p>
+        )}
+      </div>
 
       {canRemove && (
         <button
           type="button"
-          className="rounded-md border border-[#dbdbdb] bg-[#fcfcfc] px-2 py-2 text-sm text-red-600 transition-colors hover:bg-[#fff0f0]"
+          className="self-start rounded-md border border-[#dbdbdb] bg-[#fcfcfc] px-2 py-2 text-sm text-red-600 transition-colors hover:bg-[#fff0f0]"
           onClick={onRemove}
           aria-label="Remove option"
         >
@@ -448,15 +631,19 @@ function OptionRow({
 
 function VariantTable({
   rows,
+  duplicateImageSet, // kept for compatibility (not used to render errors)
   onChange,
   onPickFile,
   onRemoveImage,
+  onRowInteract,
   readOnlyLabels,
 }: {
   rows: VariantValue[];
+  duplicateImageSet: Set<string>;
   onChange: (index: number, patch: Partial<VariantValue>) => void;
   onPickFile: (index: number, file: File, blobUrl: string) => void;
   onRemoveImage?: (index: number, url?: string) => void;
+  onRowInteract?: (id: string) => void;
   readOnlyLabels?: boolean;
 }) {
   if (rows.length === 0) return null;
@@ -468,22 +655,53 @@ function VariantTable({
           <div className="pr-1 text-right text-sm font-semibold text-[#2e2e30]">Price</div>
         </div>
         <div className="divide-y divide-[#dbdbdb]">
-          {rows.map((r, idx) => (
-            <div key={r.id} className="grid grid-cols-[48px_1fr_120px] items-center gap-3 bg-[#fcfcfc] px-3 py-2">
-              <TinyImageBox
-                preview={r.imagePreview || null}
-                onPick={(file, url) => onPickFile(idx, file, url)}
-                onClear={() => {
-                  onChange(idx, { imageFile: null, imagePreview: null, imageUrl: null });
-                  const prevUrl =
-                    r.imageUrl || (r.imagePreview && !r.imagePreview.startsWith('blob:') ? r.imagePreview : null);
-                  onRemoveImage?.(idx, prevUrl || undefined);
-                }}
-              />
-              <div className="truncate text-sm text-[#2e2e30]">{readOnlyLabels ? r.label : r.label}</div>
-              <CurrencyCell value={r.price || ''} onChange={(v) => onChange(idx, { price: v })} />
-            </div>
-          ))}
+          {rows.map((r, idx) => {
+            const imgError = r.imageError || null;
+
+            return (
+              <div
+                key={r.id}
+                className="grid grid-cols-[48px_1fr_120px] items-start gap-3 bg-[#fcfcfc] px-3 py-2"
+                onPointerDown={() => onRowInteract?.(r.id)}
+                onFocusCapture={() => onRowInteract?.(r.id)}
+              >
+                <div className="flex flex-col items-start">
+                  <TinyImageBox
+                    preview={r.imagePreview || null}
+                    onPick={(file, url) => {
+                      onRowInteract?.(r.id);
+                      onPickFile(idx, file, url);
+                    }}
+                    onClear={() => {
+                      onRowInteract?.(r.id); // deleting also clears other rows' errors
+                      onChange(idx, {
+                        imageFile: null,
+                        imagePreview: null,
+                        imageUrl: null,
+                        imageUploading: false,
+                        imageError: null,
+                      });
+                      const prevUrl =
+                        r.imageUrl ||
+                        (r.imagePreview && !r.imagePreview.startsWith('blob:') ? r.imagePreview : null);
+                      onRemoveImage?.(idx, prevUrl || undefined);
+                    }}
+                    loading={!!r.imageUploading}
+                    invalid={!!imgError}
+                  />
+                </div>
+
+                <div className="self-center truncate text-sm text-[#2e2e30]">{readOnlyLabels ? r.label : r.label}</div>
+                <CurrencyCell value={r.price || ''} onChange={(v) => onChange(idx, { price: v })} />
+
+                {imgError && (
+                  <div className="col-span-3 mt-1 text-xs text-red-600 truncate" role="alert" aria-live="polite">
+                    {imgError}
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
       </div>
     </div>
@@ -513,10 +731,14 @@ function TinyImageBox({
   preview,
   onPick,
   onClear,
+  loading,
+  invalid,
 }: {
   preview: string | null;
   onPick: (file: File, previewUrl: string) => void;
   onClear: () => void;
+  loading?: boolean;
+  invalid?: boolean;
 }) {
   const inputRef = useRef<HTMLInputElement | null>(null);
   const hasImage = !!preview;
@@ -526,10 +748,11 @@ function TinyImageBox({
       <button
         type="button"
         className={`relative h-12 w-12 overflow-hidden rounded-md border ${
-          hasImage ? 'border-[#dbdbdb]' : 'border-dashed border-[#dbdbdb]'
+          invalid ? 'border-red-500' : hasImage ? 'border-[#dbdbdb]' : 'border-dashed border-[#dbdbdb]'
         } bg-[#fcfcfc] transition-colors hover:bg-[#f6f6f6]`}
         onClick={() => inputRef.current?.click()}
         aria-label="Pick variant image"
+        aria-busy={loading || undefined}
       >
         {hasImage ? (
           <img src={preview || ''} alt="" className="absolute inset-0 h-full w-full object-cover" />
@@ -538,9 +761,15 @@ function TinyImageBox({
             <PhotoIcon className="h-5 w-5 text-[#6b7280]" />
           </div>
         )}
+
+        {loading && (
+          <div className="absolute inset-0 bg-black/30 flex items-center justify-center">
+            <div className="h-6 w-6 rounded-full border-2 border-white/80 border-t-transparent animate-spin" />
+          </div>
+        )}
       </button>
 
-      {hasImage && (
+      {hasImage && !loading && (
         <button
           type="button"
           onClick={onClear}
@@ -557,10 +786,12 @@ function TinyImageBox({
         accept="image/*"
         className="hidden"
         onChange={(e) => {
-          const file = (e.target as HTMLInputElement).files?.[0];
+          const inputEl = e.target as HTMLInputElement;
+          const file = inputEl.files?.[0];
           if (!file) return;
           const url = URL.createObjectURL(file);
           onPick(file, url);
+          inputEl.value = ''; // allow re-pick of same file
         }}
       />
     </div>
