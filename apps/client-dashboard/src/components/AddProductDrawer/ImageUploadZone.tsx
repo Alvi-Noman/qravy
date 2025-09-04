@@ -44,7 +44,6 @@ const ImageUploadZone: React.FC<Props> = ({
   id,
   name,
   primaryWidthClass = 'w-56',
-  // thumbWidthClass is intentionally unused (layout is responsive)
   gapPx = 12,
   readOnlyCount = 0,
 }) => {
@@ -288,11 +287,9 @@ const ImageUploadZone: React.FC<Props> = ({
       attempt();
     });
 
-  const handleFilesFor = (i: number, fileList: FileList | null) => {
+  // Single-file flow used by multi-handler
+  const handleSingleAt = (i: number, file: File) => {
     if (isReadOnly(i)) return;
-    if (!fileList?.length) return;
-    if (uploading[i] || xhrRef.current[i]) return;
-    const file = fileList[0];
     ensureIndex(i);
     const msg = validate(file);
     if (msg) {
@@ -300,14 +297,18 @@ const ImageUploadZone: React.FC<Props> = ({
       return;
     }
     setErrorAt(i, null);
+
     const prevUrl = localPreviews[i];
     revokeUrl(prevUrl);
+
     const blobUrl = URL.createObjectURL(file);
     setPreviewAt(i, blobUrl);
     lastFileRef.current[i] = file;
     onPick?.(i, file, blobUrl);
+
     setUploadingAt(i, true);
     setProgressAt(i, 1);
+
     uploadWithRetry(i, file)
       .then((resp) => {
         setProgressAt(i, 100);
@@ -323,6 +324,19 @@ const ImageUploadZone: React.FC<Props> = ({
         xhrRef.current[i] = null;
         clickTsRef.current[i] = Date.now();
       });
+  };
+
+  // Multi-file handler: fills from starting index, respecting maxCount
+  const handleMultipleAt = (startIndex: number, fileList: FileList | null) => {
+    if (!fileList || disabled) return;
+    const files = Array.from(fileList);
+    if (files.length === 0) return;
+
+    const used = localPreviews.filter((v) => v !== null && !isLoadingSentinel(v)).length;
+    const room = Math.max(0, maxCount - used);
+    if (room <= 0) return;
+
+    files.slice(0, room).forEach((file, k) => handleSingleAt(startIndex + k, file));
   };
 
   const retry = (i: number) => {
@@ -361,7 +375,7 @@ const ImageUploadZone: React.FC<Props> = ({
     e.stopPropagation();
     if (isReadOnly(i)) return;
     setDragOverAt(i, false);
-    if (!disabled && !uploading[i] && !xhrRef.current[i]) handleFilesFor(i, e.dataTransfer.files);
+    if (!disabled) handleMultipleAt(i, e.dataTransfer.files);
   };
 
   const onDragOver = (i: number, e: React.DragEvent) => {
@@ -482,9 +496,7 @@ const ImageUploadZone: React.FC<Props> = ({
               </div>
             )}
 
-            {hasImage && !uploading[i] && !readOnly && (
-              <RemoveBadge onClick={() => removeAt(i)} />
-            )}
+            {hasImage && !uploading[i] && !readOnly && <RemoveBadge onClick={() => removeAt(i)} />}
           </div>
         </div>
 
@@ -564,9 +576,7 @@ const ImageUploadZone: React.FC<Props> = ({
               </div>
             )}
 
-            {hasImage && !uploading[i] && !readOnly && (
-              <RemoveBadge onClick={() => removeAt(i)} />
-            )}
+            {hasImage && !uploading[i] && !readOnly && <RemoveBadge onClick={() => removeAt(i)} />}
           </div>
         </div>
 
@@ -622,11 +632,12 @@ const ImageUploadZone: React.FC<Props> = ({
         name={name}
         type="file"
         accept={accept}
+        multiple
         disabled={disabled}
         className="sr-only"
         onChange={(e) => {
           const input = e.currentTarget as HTMLInputElement;
-          handleFilesFor(activeIndex, input.files);
+          handleMultipleAt(activeIndex, input.files);
           input.value = '';
         }}
       />

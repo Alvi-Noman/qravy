@@ -199,8 +199,7 @@ export default function ProductDrawer({
     [galleryBase]
   );
 
-  const variantCount = variantUrls.length;
-
+  // Multi-price logic
   const toNumber = (v: string) => Number(v);
   const priceNum = toNumber(values.price);
   const compareAtNum = values.compareAtPrice ? Number(values.compareAtPrice) : undefined;
@@ -300,8 +299,6 @@ export default function ProductDrawer({
     onClose();
   };
 
-  const mapToBaseIndex = (mergedIndex: number) => mergedIndex - variantCount;
-
   // Remount key for ImageUploadZone to flush local previews on rejection
   const [mediaSyncKey, setMediaSyncKey] = useState(0);
 
@@ -318,22 +315,30 @@ export default function ProductDrawer({
   >(new Map());
 
   // resolve merged index -> real index in values.imagePreviews
+  // UPDATED: allocates sequential new indices for multi-select beyond current base list
   const resolveBaseIndexFromMerged = useCallback(
     (mergedIndex: number) => {
       const vUrls = variantUrls;
-      const basePos = mergedIndex - vUrls.length;
-      if (basePos < 0) return -1;
+      const basePos = mergedIndex - vUrls.length; // position among base tiles in the merged list
+      if (basePos < 0) return -1; // variant tile
 
       const original = values.imagePreviews || [];
+
+      // real indices of existing base images in values.imagePreviews
       const indices: number[] = [];
       for (let j = 0; j < original.length; j++) {
         const u = original[j];
         if (u !== null && !vUrls.includes(u)) indices.push(j);
       }
+
       if (basePos < indices.length) {
+        // existing base tile -> map to its real index
         return indices[basePos];
       }
-      return original.length; // add tile -> append
+
+      // extra picks beyond current base tiles -> append sequentially past the end
+      const extra = basePos - indices.length; // 0,1,2,...
+      return original.length + extra;
     },
     [variantUrls, values.imagePreviews]
   );
@@ -493,8 +498,8 @@ export default function ProductDrawer({
       return;
     }
 
-    // Fallback (no pinned target found)
-    const baseIdx = mapToBaseIndex(i);
+    // Fallback (no pinned target found) — use the same resolver so multi-pick preserves order
+    const baseIdx = resolveBaseIndexFromMerged(i);
     const existsInVariants = variantUrls.includes(cdnUrl);
     const existsInBase = (values.imagePreviews || []).some(
       (u, j) => j !== baseIdx && !!u && !u.startsWith('blob:') && u === cdnUrl
