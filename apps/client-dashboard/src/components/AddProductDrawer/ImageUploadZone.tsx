@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { CloudArrowUpIcon } from '@heroicons/react/24/outline';
+import { CloudArrowUpIcon, XMarkIcon } from '@heroicons/react/24/outline';
 
 type CdnUrls = { original: string; thumbnail: string; medium: string; large: string };
 type UploadResponse = { ok: boolean; key: string; hash: string; mime: string; size: number; cdn: CdnUrls };
@@ -19,7 +19,7 @@ type Props = {
   id?: string;
   name?: string;
   primaryWidthClass?: string;
-  thumbWidthClass?: string;
+  thumbWidthClass?: string; // accepted for API compatibility (not used)
   gapPx?: number;
   readOnlyCount?: number;
 };
@@ -44,7 +44,7 @@ const ImageUploadZone: React.FC<Props> = ({
   id,
   name,
   primaryWidthClass = 'w-56',
-  thumbWidthClass = 'w-28',
+  // thumbWidthClass is intentionally unused (layout is responsive)
   gapPx = 12,
   readOnlyCount = 0,
 }) => {
@@ -69,6 +69,7 @@ const ImageUploadZone: React.FC<Props> = ({
 
   const primaryRef = useRef<HTMLDivElement | null>(null);
   const [primaryPx, setPrimaryPx] = useState<number>(224);
+
   useEffect(() => {
     const el = primaryRef.current;
     if (!el) return;
@@ -79,6 +80,7 @@ const ImageUploadZone: React.FC<Props> = ({
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
+
   const thumbPx = Math.floor((primaryPx - gapPx) / 2);
   const thumbSizeStyle: React.CSSProperties = { width: `${thumbPx}px`, height: `${thumbPx}px` };
 
@@ -169,18 +171,21 @@ const ImageUploadZone: React.FC<Props> = ({
       n[i] = val;
       return n;
     });
+
   const setProgressAt = (i: number, val: number) =>
     setProgress((prev) => {
       const n = prev.slice();
       n[i] = val;
       return n;
     });
+
   const setErrorAt = (i: number, val: string | null) =>
     setErrors((prev) => {
       const n = prev.slice();
       n[i] = val;
       return n;
     });
+
   const setDragOverAt = (i: number, val: boolean) =>
     setDragOver((prev) => {
       const n = prev.slice();
@@ -358,10 +363,12 @@ const ImageUploadZone: React.FC<Props> = ({
     setDragOverAt(i, false);
     if (!disabled && !uploading[i] && !xhrRef.current[i]) handleFilesFor(i, e.dataTransfer.files);
   };
+
   const onDragOver = (i: number, e: React.DragEvent) => {
     e.preventDefault();
     if (!disabled && !isReadOnly(i)) setDragOverAt(i, true);
   };
+
   const onDragLeave = (i: number, e: React.DragEvent) => {
     e.preventDefault();
     if (!disabled && !isReadOnly(i)) setDragOverAt(i, false);
@@ -369,25 +376,45 @@ const ImageUploadZone: React.FC<Props> = ({
 
   const hasPrimary = localPreviews[0] !== null && !isLoadingSentinel(localPreviews[0]);
 
+  function RemoveBadge({ onClick }: { onClick: (e: React.MouseEvent) => void }) {
+    return (
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          onClick(e);
+        }}
+        aria-label="Remove image"
+        className="absolute top-1 right-1 z-10 flex h-5 w-5 items-center justify-center rounded-full border border-[#dbdbdb] bg-white/95 text-[#111827] shadow hover:bg-white"
+      >
+        <XMarkIcon className="h-3 w-3" />
+      </button>
+    );
+  }
+
   function renderPrimary(i: number) {
     const readOnly = isReadOnly(i);
     const loadingExternal = isLoadingSentinel(localPreviews[i]);
     const hasImage = localPreviews[i] !== null && !loadingExternal;
     const errorId = errors[i] ? `image-zone-error-${i}` : undefined;
+
     return (
       <div key={`tile-${i}`} ref={primaryRef} className={`relative flex-none ${primaryWidthClass} self-start`}>
         <div
-          className={[
-            'relative rounded-lg border',
-            hasImage ? 'border-[#dbdbdb]' : 'border-dashed border-[#dbdbdb]',
-            dragOver[i] ? 'bg-[#f3f4f6]' : 'bg-[#fcfcfc] hover:bg-[#f6f6f6]',
-            'transition-colors',
-          ].join(' ')}
+          className={`relative rounded-lg border ${
+            hasImage ? 'border-[#dbdbdb]' : 'border-dashed border-[#dbdbdb]'
+          } ${dragOver[i] ? 'bg-[#f3f4f6]' : 'bg-[#fcfcfc] hover:bg-[#f6f6f6]'} transition-colors`}
         >
           <div className="pt-[100%]" />
+
           {hasImage && (
-            <img src={localPreviews[i] || ''} alt="Primary image" className="absolute inset-0 h-full w-full object-cover rounded-lg" />
+            <img
+              src={localPreviews[i] || ''}
+              alt="Primary image"
+              className="absolute inset-0 h-full w-full object-cover rounded-lg"
+            />
           )}
+
           <div
             role="button"
             tabIndex={disabled || readOnly ? -1 : 0}
@@ -456,24 +483,18 @@ const ImageUploadZone: React.FC<Props> = ({
             )}
 
             {hasImage && !uploading[i] && !readOnly && (
-              <div className="absolute top-1 right-1">
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    removeAt(i);
-                  }}
-                  className="px-2 py-1 rounded bg-white/85 backdrop-blur text-xs text-[#111827] border border-[#dbdbdb] hover:bg-white"
-                >
-                  Remove
-                </button>
-              </div>
+              <RemoveBadge onClick={() => removeAt(i)} />
             )}
           </div>
         </div>
+
         {errors[i] && (
           <p id={errorId} className="mt-2 text-sm text-red-600" role="alert" aria-live="polite">
-            {errors[i]} {!isReadOnly(i) && <button className="underline ml-2" onClick={() => retry(i)}>Retry</button>}
+            {errors[i]} {!isReadOnly(i) && (
+              <button className="underline ml-2" onClick={() => retry(i)}>
+                Retry
+              </button>
+            )}
           </p>
         )}
       </div>
@@ -485,19 +506,22 @@ const ImageUploadZone: React.FC<Props> = ({
     const loadingExternal = isLoadingSentinel(localPreviews[i]);
     const hasImage = localPreviews[i] !== null && !loadingExternal;
     const errorId = errors[i] ? `image-zone-error-${i}` : undefined;
+
     return (
       <div key={`tile-${i}`} className="relative flex-none self-start" style={thumbSizeStyle}>
         <div
-          className={[
-            'relative h-full w-full rounded-md border',
-            hasImage ? 'border-[#dbdbdb]' : 'border-dashed border-[#dbdbdb]',
-            dragOver[i] ? 'bg-[#f3f4f6]' : 'bg-[#fcfcfc] hover:bg-[#f6f6f6]',
-            'transition-colors',
-          ].join(' ')}
+          className={`relative h-full w-full rounded-md border ${
+            hasImage ? 'border-[#dbdbdb]' : 'border-dashed border-[#dbdbdb]'
+          } ${dragOver[i] ? 'bg-[#f3f4f6]' : 'bg-[#fcfcfc] hover:bg-[#f6f6f6]'} transition-colors`}
         >
           {hasImage && (
-            <img src={localPreviews[i] || ''} alt={`Media ${i}`} className="absolute inset-0 h-full w-full object-cover rounded-md" />
+            <img
+              src={localPreviews[i] || ''}
+              alt={`Media ${i}`}
+              className="absolute inset-0 h-full w-full object-cover rounded-md"
+            />
           )}
+
           <div
             role="button"
             tabIndex={disabled || readOnly ? -1 : 0}
@@ -541,25 +565,18 @@ const ImageUploadZone: React.FC<Props> = ({
             )}
 
             {hasImage && !uploading[i] && !readOnly && (
-              <div className="absolute top-1 right-1">
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    removeAt(i);
-                  }}
-                  className="px-2 py-1 rounded bg-white/85 backdrop-blur text-xs text-[#111827] border border-[#dbdbdb] hover:bg-white"
-                >
-                  Remove
-                </button>
-              </div>
+              <RemoveBadge onClick={() => removeAt(i)} />
             )}
           </div>
         </div>
 
         {errors[i] && (
           <p id={errorId} className="mt-2 text-sm text-red-600" role="alert" aria-live="polite">
-            {errors[i]} {!isReadOnly(i) && <button className="underline ml-2" onClick={() => retry(i)}>Retry</button>}
+            {errors[i]} {!isReadOnly(i) && (
+              <button className="underline ml-2" onClick={() => retry(i)}>
+                Retry
+              </button>
+            )}
           </p>
         )}
       </div>
@@ -574,7 +591,9 @@ const ImageUploadZone: React.FC<Props> = ({
         onClick={() => openDialogFor(i)}
         disabled={disabled}
         aria-label="Add image"
-        className={`relative flex-none self-start rounded-md border border-dashed border-[#dbdbdb] bg-[#fcfcfc] hover:bg-[#f6f6f6] transition-colors ${disabled ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer'}`}
+        className={`relative flex-none self-start rounded-md border border-dashed border-[#dbdbdb] bg-[#fcfcfc] hover:bg-[#f6f6f6] transition-colors ${
+          disabled ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer'
+        }`}
         style={thumbSizeStyle}
         onDrop={(e) => onDrop(i, e)}
         onDragOver={(e) => onDragOver(i, e)}
