@@ -140,6 +140,18 @@ export default function Tags({
       {/* Collapsed summary (always visible) */}
       {!open && (
         <div className="flex flex-col gap-2">
+          <div>
+            <button
+              type="button"
+              onClick={() => setOpen(true)}
+              className="inline-flex items-center gap-2 rounded-md border border-[#dbdbdb] bg-[#fcfcfc] px-3 py-2 text-sm font-medium text-[#2e2e30] hover:border-[#111827] hover:bg-[#f3f4f6] transition-colors"
+              aria-expanded={open}
+            >
+              <PlusCircleIcon className="h-5 w-5" />
+              {current.length > 0 ? `${buttonLabel} (${current.length})` : buttonLabel}
+            </button>
+          </div>
+
           {current.length > 0 && (
             <div className="flex flex-wrap gap-2">
               {current.map((tag) => (
@@ -160,17 +172,6 @@ export default function Tags({
               ))}
             </div>
           )}
-          <div>
-            <button
-              type="button"
-              onClick={() => setOpen(true)}
-              className="inline-flex items-center gap-2 rounded-md border border-[#dbdbdb] bg-[#fcfcfc] px-3 py-2 text-sm font-medium text-[#2e2e30] hover:border-[#111827] hover:bg-[#f3f4f6] transition-colors"
-              aria-expanded={open}
-            >
-              <PlusCircleIcon className="h-5 w-5" />
-              {current.length > 0 ? `${buttonLabel} (${current.length})` : buttonLabel}
-            </button>
-          </div>
         </div>
       )}
 

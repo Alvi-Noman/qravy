@@ -29,6 +29,8 @@ export type VariantValue = {
   imageUploading?: boolean;
   imageError?: string | null;
   nameError?: string | null;
+  // per-row price error
+  priceError?: string | null;
 };
 export type VariationGroup = { id: string; values: VariantValue[]; editing: boolean };
 
@@ -48,6 +50,14 @@ const safeRevoke = (url?: string | null) => {
   });
 };
 
+// Helper: is a string a valid number?
+const isValidNumber = (s: string) => {
+  const t = s.trim();
+  if (t === '') return false;
+  const n = Number(t);
+  return Number.isFinite(n);
+};
+
 export default function Variations({
   helpText = 'Add options like Size, Spice Level, or Toppings',
   value,
@@ -57,6 +67,8 @@ export default function Variations({
   onImageAdd,
   onImageRemove,
   mediaUrls = [],
+  // trigger to validate prices on demand (Save clicked)
+  validatePricesTick = 0,
 }: {
   helpText?: string;
   value?: VariationsValue[];
@@ -66,6 +78,7 @@ export default function Variations({
   onImageAdd?: (index: number, url: string) => void;
   onImageRemove?: (index: number, url?: string) => void;
   mediaUrls?: string[];
+  validatePricesTick?: number;
 }) {
   const [group, setGroup] = useState<VariationGroup | null>(null);
 
@@ -85,6 +98,7 @@ export default function Variations({
         imageUploading: false,
         imageError: null,
         nameError: null,
+        priceError: null,
       };
     });
     setGroup({ id: cryptoId(), editing: false, values: normalizeInputs(values) });
@@ -236,37 +250,6 @@ export default function Variations({
 
   const rows = typed;
 
-  // Duplicate name set (case-insensitive, trimmed) – used for blur validation
-  const duplicateNameSet = useMemo(() => {
-    const counts = new Map<string, number>();
-    (group?.values || []).forEach((v) => {
-      const k = v.label.trim().toLowerCase();
-      if (!k) return;
-      counts.set(k, (counts.get(k) || 0) + 1);
-    });
-    const dups = new Set<string>();
-    counts.forEach((n, k) => {
-      if (n > 1) dups.add(k);
-    });
-    return dups;
-  }, [group?.values]);
-
-  // Duplicate image set (not used to render; row error is r.imageError)
-  const duplicateImageSet = useMemo(() => {
-    const counts = new Map<string, number>();
-    (group?.values || []).forEach((v) => {
-      const finalUrl =
-        v.imageUrl || (v.imagePreview && !v.imagePreview.startsWith('blob:') ? v.imagePreview : null);
-      if (!finalUrl) return;
-      counts.set(finalUrl, (counts.get(finalUrl) || 0) + 1);
-    });
-    const dups = new Set<string>();
-    counts.forEach((n, k) => {
-      if (n > 1) dups.add(k);
-    });
-    return dups;
-  }, [group?.values]);
-
   // Media URLs set (non-blob, from parent)
   const mediaSet = useMemo(() => new Set((mediaUrls || []).filter(Boolean)), [mediaUrls]);
 
@@ -285,6 +268,20 @@ export default function Variations({
       return changed ? { ...g, values } : g;
     });
   };
+
+  // Validate prices on demand from parent (Save clicked)
+  useEffect(() => {
+    setGroup((g) => {
+      if (!g) return g;
+      const next = g.values.map((v) => {
+        if (v.label.trim() === '') return v;
+        const s = (v.price ?? '').trim();
+        const invalid = s === '' || !Number.isFinite(Number(s));
+        return { ...v, priceError: invalid ? 'Enter a number' : null };
+      });
+      return { ...g, values: next };
+    });
+  }, [validatePricesTick]);
 
   // Name: validate on leaving the field, clear input if duplicate, set error; hide error while typing
   const handleNameBlur = (idx: number) => {
@@ -335,7 +332,7 @@ export default function Variations({
           if (v.id === rowId) return false;
           const final =
             v.imageUrl || (v.imagePreview && !v.imagePreview.startsWith('blob:') ? v.imagePreview : null);
-        return !!final && final === cdn;
+          return !!final && final === cdn;
         });
 
         if (dupMedia) {
@@ -446,7 +443,7 @@ export default function Variations({
               {rows.length > 0 && (
                 <VariantTable
                   rows={rows}
-                  duplicateImageSet={duplicateImageSet}
+                  duplicateImageSet={new Set()}
                   onChange={(idx, patch) => {
                     const id = rows[idx].id;
                     const fullIndex = group.values.findIndex((v) => v.id === id);
@@ -492,20 +489,24 @@ export default function Variations({
                   )}
                 </div>
 
-                <button
-                  type="button"
-                  onClick={() => setGroup((g) => (g ? { ...g, editing: true } : g))}
-                  className="flex w-full items-center gap-2 rounded-md border border-[#dbdbdb] bg-[#fcfcfc] px-3 py-2 text-sm font-medium text-[#2e2e30] transition-colors hover:bg-[#f6f6f6]"
-                >
-                  <PlusCircleIcon className="h-5 w-5 text-[#2e2e30]" />
-                  <span>Add more options</span>
-                </button>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setGroup((g) => (g ? { ...g, editing: true, values: normalizeInputs(g.values) } : g))
+                    }
+                    className="flex flex-1 min-w-[180px] items-center gap-2 rounded-md border border-[#dbdbdb] bg-[#fcfcfc] px-3 py-2 text-sm font-medium text-[#2e2e30] transition-colors hover:bg-[#f6f6f6]"
+                  >
+                    <PlusCircleIcon className="h-5 w-5 text-[#2e2e30]" />
+                    <span>Add or Edit Options</span>
+                  </button>
+                </div>
               </div>
 
               {rows.length > 0 && (
                 <VariantTable
                   rows={rows}
-                  duplicateImageSet={duplicateImageSet}
+                  duplicateImageSet={new Set()}
                   onChange={(idx, patch) => {
                     const id = rows[idx].id;
                     const fullIndex = group!.values.findIndex((v) => v.id === id);
@@ -631,7 +632,7 @@ function OptionRow({
 
 function VariantTable({
   rows,
-  duplicateImageSet, // kept for compatibility (not used to render errors)
+  duplicateImageSet, // not used for rendering
   onChange,
   onPickFile,
   onRemoveImage,
@@ -650,13 +651,15 @@ function VariantTable({
   return (
     <div className="w-full overflow-x-hidden">
       <div className="w-full">
-        <div className="grid grid-cols-[48px_1fr_120px] items-center gap-3 border-b border-[#dbdbdb] bg-[#f6f6f6] px-3 py-2">
+        <div className="grid grid-cols-[48px_1fr_120px] items-center gap-3 border-y border-[#dbdbdb] bg-[#f6f6f6] px-3 py-2">
           <div className="col-span-2 text-sm font-semibold text-[#2e2e30]">Variations</div>
           <div className="pr-1 text-right text-sm font-semibold text-[#2e2e30]">Price</div>
         </div>
         <div className="divide-y divide-[#dbdbdb]">
           {rows.map((r, idx) => {
             const imgError = r.imageError || null;
+            const priceError = r.priceError || null;
+            const rowErrors = [imgError, priceError].filter(Boolean) as string[];
 
             return (
               <div
@@ -673,7 +676,7 @@ function VariantTable({
                       onPickFile(idx, file, url);
                     }}
                     onClear={() => {
-                      onRowInteract?.(r.id); // deleting also clears other rows' errors
+                      onRowInteract?.(r.id);
                       onChange(idx, {
                         imageFile: null,
                         imagePreview: null,
@@ -692,13 +695,28 @@ function VariantTable({
                 </div>
 
                 <div className="self-center truncate text-sm text-[#2e2e30]">{readOnlyLabels ? r.label : r.label}</div>
-                <CurrencyCell value={r.price || ''} onChange={(v) => onChange(idx, { price: v })} />
+                <CurrencyCell
+                  value={r.price || ''}
+                  invalid={!!priceError}
+                  onChange={(v) => {
+                    const t = v.trim();
+                    const valid = t !== '' && Number.isFinite(Number(t));
+                    // Only clear an existing error when valid; don't set errors while typing
+                    onChange(idx, { price: v, ...(valid ? { priceError: null } : {}) });
+                  }}
+                />
 
-                {imgError && (
-                  <div className="col-span-3 mt-1 text-xs text-red-600 truncate" role="alert" aria-live="polite">
-                    {imgError}
-                  </div>
-                )}
+                {rowErrors.length > 0 &&
+                  rowErrors.map((msg, j) => (
+                    <div
+                      key={`${r.id}-err-${j}`}
+                      className="col-span-3 mt-1 text-xs text-red-600"
+                      role="alert"
+                      aria-live="polite"
+                    >
+                      {msg}
+                    </div>
+                  ))}
               </div>
             );
           })}
@@ -708,7 +726,15 @@ function VariantTable({
   );
 }
 
-function CurrencyCell({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+function CurrencyCell({
+  value,
+  onChange,
+  invalid,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  invalid?: boolean;
+}) {
   return (
     <div className="flex items-center justify-end">
       <div className="inline-flex w-[120px] items-stretch">
@@ -716,11 +742,14 @@ function CurrencyCell({ value, onChange }: { value: string; onChange: (v: string
           ৳
         </span>
         <input
-          className="w-full -ml-px rounded-r-md rounded-l-none border border-[#dbdbdb] bg-[#fcfcfc] px-3 py-2 text-sm text-[#2e2e30] placeholder-[#a9a9ab] hover:border-[#111827] focus:border-[#111827] focus:outline-none focus:ring-0"
+          className={`w-full -ml-px rounded-r-md rounded-l-none border bg-[#fcfcfc] px-3 py-2 text-sm text-[#2e2e30] placeholder-[#a9a9ab] hover:border-[#111827] focus:outline-none focus:ring-0 ${
+            invalid ? 'border-red-500 focus:border-red-500' : 'border-[#dbdbdb] focus:border-[#111827]'
+          }`}
           placeholder="0.00"
           value={value}
           onChange={(e) => onChange((e.target as HTMLInputElement).value)}
           inputMode="decimal"
+          aria-invalid={invalid || undefined}
         />
       </div>
     </div>

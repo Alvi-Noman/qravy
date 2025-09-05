@@ -76,7 +76,7 @@ export default function ProductDrawer({
   const { token } = useAuthContext();
   const queryClient = useQueryClient();
 
-  const STORAGE_TTL_MS = 10_000;
+  const STORAGE_TTL_MS = 5_000;
   const MAX_MEDIA = 5;
   const storageKey = useMemo(() => `pdraft:${persistKey || 'add'}`, [persistKey]);
 
@@ -102,13 +102,23 @@ export default function ProductDrawer({
   const [tags, setTags] = useState<string[]>(initial.tags || []);
   const [uiVariations, setUiVariations] = useState<UiVariation[]>(initial.variations || []);
 
+  // Global errors
   const [localError, setLocalError] = useState<string | null>(null);
   const [varNameError, setVarNameError] = useState<string | null>(null);
   const [varImageError, setVarImageError] = useState<string | null>(null);
   const [mediaImageError, setMediaImageError] = useState<string | null>(null);
+
+  // Field-level errors (for inline highlight)
+  const [nameErr, setNameErr] = useState<string | null>(null);
+  const [priceErr, setPriceErr] = useState<string | null>(null);
+  const [compareAtErr, setCompareAtErr] = useState<string | null>(null);
+
   const [saving, setSaving] = useState(false);
   const [localCats, setLocalCats] = useState<string[]>(categories);
   useEffect(() => setLocalCats(categories), [categories]);
+
+  // Trigger to make Variations highlight invalid prices on submit click
+  const [varPriceValidateTick, setVarPriceValidateTick] = useState(0);
 
   const createCatMut = useMutation<Category, Error, string>({
     mutationFn: async (name: string) => {
@@ -188,10 +198,11 @@ export default function ProductDrawer({
     return base.filter((u) => !seen.has(u));
   }, [values.imagePreviews, variantUrls]);
 
+  // BASE-FIRST ordering so all tiles (not just primary) stay stable across rehydration
   const galleryPreviews = useMemo(() => {
-    const merged = [...variantUrls, ...galleryBase];
+    const merged = [...galleryBase, ...variantUrls];
     return merged.length === 0 ? [null] : merged;
-  }, [variantUrls, galleryBase]);
+  }, [galleryBase, variantUrls]);
 
   // Non-blob URLs currently shown in Media (Upload Zone), excluding variation images
   const mediaUrls = useMemo(
@@ -199,33 +210,24 @@ export default function ProductDrawer({
     [galleryBase]
   );
 
-  // Multi-price logic
   const toNumber = (v: string) => Number(v);
   const priceNum = toNumber(values.price);
   const compareAtNum = values.compareAtPrice ? Number(values.compareAtPrice) : undefined;
 
-  const hasVariantPrice = useMemo(
-    () => typedVariants.some((v) => !!v.price && Number(v.price) > 0),
-    [typedVariants]
-  );
-  const hasMainPrice = Number.isFinite(priceNum) && priceNum > 0;
-  const allowMainPrice = !hasVariantPrice;
+  // If any variations exist, main price is informational (disabled)
+  const hasAnyVariants = typedVariants.length > 0;
+  const allowMainPrice = !hasAnyVariants;
 
-  const isFormValid =
-    values.name.trim().length > 0 &&
-    (hasMainPrice || hasVariantPrice) &&
-    (allowMainPrice
-      ? compareAtNum === undefined || (!Number.isNaN(compareAtNum) && compareAtNum >= priceNum)
-      : true) &&
-    !varNameError &&
-    !varImageError &&
-    !mediaImageError;
+  const hasMainPrice = Number.isFinite(priceNum) && priceNum > 0;
+
+  // Keep Save enabled (only disable during saving or category creation)
+  const isSaveDisabled = createCatMut.isPending || saving;
 
   function saveSnapshot() {
     try {
       const snap = {
         t: Date.now(),
-        ttl: 10_000,
+        ttl: STORAGE_TTL_MS,
         values,
         tags,
         uiVariations,
@@ -241,18 +243,165 @@ export default function ProductDrawer({
     } catch {}
   }
 
+  // ========== Auto-scroll to first error ==========
+  const scrollRef = useRef<HTMLFormElement | HTMLDivElement | null>(null);
+
+  // Only target real errors (alerts or invalid fields)
+  const errorSelector = '[role="alert"], [aria-invalid="true"]';
+
+  const scrollErrorIntoView = useCallback(() => {
+    const container = scrollRef.current;
+    if (!container) return;
+
+    const firstErr = container.querySelector(errorSelector) as HTMLElement | null;
+    if (!firstErr) return;
+
+    // Focus only inputs/textarea/select (avoid focusing buttons)
+    const focusTarget =
+      (firstErr.matches('input,textarea,select')
+        ? firstErr
+        : firstErr.querySelector('input,textarea,select')) as HTMLElement | null;
+    try {
+      focusTarget?.focus?.({ preventScroll: true } as any);
+    } catch {}
+
+    const cRect = container.getBoundingClientRect();
+    const eRect = firstErr.getBoundingClientRect();
+
+    // Extra spacing around the error
+    const TOP_BUFFER = 96;
+    const BOTTOM_BUFFER = 24;
+
+    const isAbove = eRect.top < cRect.top + TOP_BUFFER;
+    const isBelow = eRect.bottom > cRect.bottom - BOTTOM_BUFFER;
+
+    if (isAbove || isBelow) {
+      const targetTop = eRect.top - cRect.top - TOP_BUFFER;
+      const delta = isAbove ? targetTop : eRect.bottom - cRect.bottom + BOTTOM_BUFFER;
+      container.scrollTo({ top: Math.max(0, container.scrollTop + delta), behavior: 'smooth' });
+    }
+  }, []);
+
+  const scheduleScrollToError = useCallback(() => {
+    requestAnimationFrame(() => setTimeout(scrollErrorIntoView, 0));
+  }, [scrollErrorIntoView]);
+
+  // Observe dynamic error changes inside the drawer (e.g., Variations row errors)
+  useEffect(() => {
+    const root = scrollRef.current;
+    if (!root) return;
+
+    let scheduled = false;
+    const schedule = () => {
+      if (scheduled) return;
+      scheduled = true;
+      requestAnimationFrame(() => {
+        scheduled = false;
+        scrollErrorIntoView();
+      });
+    };
+
+    const observer = new MutationObserver((mutations) => {
+      for (const m of mutations) {
+        if (m.type === 'childList') {
+          for (const node of Array.from(m.addedNodes)) {
+            if (!(node instanceof HTMLElement)) continue;
+            if (node.matches(errorSelector) || node.querySelector?.(errorSelector)) {
+              schedule();
+              return;
+            }
+          }
+        } else if (m.type === 'attributes') {
+          const t = m.target as HTMLElement;
+          if (t.matches(errorSelector)) {
+            schedule();
+            return;
+          }
+        }
+      }
+    });
+
+    // Only observe aria-invalid changes (not class)
+    observer.observe(root, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['aria-invalid'],
+    });
+
+    return () => observer.disconnect();
+  }, [errorSelector, scrollErrorIntoView]);
+
+  // Inline validators
+  const validateBeforeSubmit = (): boolean => {
+    let hasError = false;
+    setLocalError(null);
+
+    // Name
+    if (!values.name.trim()) {
+      setNameErr('Name is required.');
+      hasError = true;
+    } else {
+      setNameErr(null);
+    }
+
+    // Pricing
+    if (hasAnyVariants) {
+      // Invalid if empty or non-numeric
+      const invalid = typedVariants.some((v) => {
+        const s = (v.price ?? '').trim();
+        if (s === '') return true;
+        const n = Number(s);
+        return !Number.isFinite(n);
+      });
+
+      // Trigger row validations in Variations (shows "Enter a number")
+      setVarPriceValidateTick((t) => t + 1);
+      if (invalid) hasError = true;
+
+      // No main price validation needed
+      setPriceErr(null);
+      setCompareAtErr(null);
+    } else {
+      // Require product price
+      if (!values.price || !Number.isFinite(priceNum) || priceNum <= 0) {
+        setPriceErr('Enter a product price.');
+        hasError = true;
+      } else {
+        setPriceErr(null);
+      }
+
+      // Compare-at must be valid and ≥ price (if present)
+      if ((values.compareAtPrice ?? '').trim() !== '') {
+        if (Number.isNaN(compareAtNum as number)) {
+          setCompareAtErr('Enter a valid number.');
+          hasError = true;
+        } else if ((compareAtNum as number) < priceNum) {
+          setCompareAtErr('Compare-at price must be ≥ product price.');
+          hasError = true;
+        } else {
+          setCompareAtErr(null);
+        }
+      } else {
+        setCompareAtErr(null);
+      }
+    }
+
+    // Block submit also when we already have known variation/global issues
+    if (varNameError || varImageError || mediaImageError) hasError = true;
+
+    return !hasError;
+  };
+
   const handleSubmit: React.FormEventHandler<HTMLFormElement> = (e) => {
     e.preventDefault();
     if (saving) return;
-    setLocalError(null);
 
-    if (!isFormValid) {
-      if (!values.name.trim()) return setLocalError('Name is required.');
-      if (!hasMainPrice && !hasVariantPrice)
-        return setLocalError('Enter a product price or at least one variation price.');
-      if (allowMainPrice && compareAtNum !== undefined && (Number.isNaN(compareAtNum) || compareAtNum < priceNum))
-        return setLocalError('Compare-at price must be ≥ product price.');
-      if (varNameError || varImageError || mediaImageError) return;
+    const ok = validateBeforeSubmit();
+    if (!ok) {
+      // Let the UI update, then scroll to the first error
+      scheduleScrollToError();
+      return;
     }
 
     const media: string[] = [];
@@ -272,14 +421,15 @@ export default function ProductDrawer({
             imageUrl,
           };
         })
-        .filter((v) => v.name.length > 0) || [];
+        .filter((v) => v.name.length > 0);
 
     const payload: Parameters<typeof onSubmit>[0] = {
       name: values.name.trim(),
       description: values.description?.trim() || undefined,
       category: values.category || undefined,
       media,
-      variations: variations.length ? variations : undefined,
+      // IMPORTANT: always include variations. [] explicitly clears on backend.
+      variations,
       tags: tags.length ? tags : undefined,
     };
 
@@ -294,6 +444,30 @@ export default function ProductDrawer({
     setTimeout(() => setSaving(false), 1200);
   };
 
+  // Also auto-scroll whenever a tracked error becomes present
+  useEffect(() => {
+    if (
+      nameErr ||
+      priceErr ||
+      compareAtErr ||
+      varNameError ||
+      varImageError ||
+      mediaImageError ||
+      createCatMut.isError
+    ) {
+      scheduleScrollToError();
+    }
+  }, [
+    nameErr,
+    priceErr,
+    compareAtErr,
+    varNameError,
+    varImageError,
+    mediaImageError,
+    createCatMut.isError,
+    scheduleScrollToError,
+  ]);
+
   const handleBackdropClick = () => {
     saveSnapshot();
     onClose();
@@ -302,7 +476,7 @@ export default function ProductDrawer({
   // Remount key for ImageUploadZone to flush local previews on rejection
   const [mediaSyncKey, setMediaSyncKey] = useState(0);
 
-  // NEW: Remount key for Variations to clear any row imageError when Media changes (e.g., deletion)
+  // Remount key for Variations to clear any row imageError when Media changes (e.g., deletion)
   const [variationsSyncKey, setVariationsSyncKey] = useState(0);
 
   // Pin upload targets across pick/upload
@@ -314,30 +488,27 @@ export default function ProductDrawer({
     >
   >(new Map());
 
-  // resolve merged index -> real index in values.imagePreviews
-  // UPDATED: allocates sequential new indices for multi-select beyond current base list
+  // Map merged gallery index -> underlying base index in values.imagePreviews
+  // BASE-FIRST mapping (base tiles first, then variant tiles)
   const resolveBaseIndexFromMerged = useCallback(
     (mergedIndex: number) => {
-      const vUrls = variantUrls;
-      const basePos = mergedIndex - vUrls.length; // position among base tiles in the merged list
-      if (basePos < 0) return -1; // variant tile
-
       const original = values.imagePreviews || [];
+      const vUrls = variantUrls;
 
-      // real indices of existing base images in values.imagePreviews
-      const indices: number[] = [];
+      // indices of existing base images (exclude those used by variants)
+      const baseIndices: number[] = [];
       for (let j = 0; j < original.length; j++) {
         const u = original[j];
-        if (u !== null && !vUrls.includes(u)) indices.push(j);
+        if (u !== null && !vUrls.includes(u)) baseIndices.push(j);
       }
 
-      if (basePos < indices.length) {
-        // existing base tile -> map to its real index
-        return indices[basePos];
+      // If mergedIndex points to an existing base tile, map directly
+      if (mergedIndex < baseIndices.length) {
+        return baseIndices[mergedIndex];
       }
 
-      // extra picks beyond current base tiles -> append sequentially past the end
-      const extra = basePos - indices.length; // 0,1,2,...
+      // Otherwise it's the "add tile" region for base images; append after the end
+      const extra = mergedIndex - baseIndices.length;
       return original.length + extra;
     },
     [variantUrls, values.imagePreviews]
@@ -407,7 +578,7 @@ export default function ProductDrawer({
           [idx]?.idx2;
         if (realIdx === undefined) return prev;
 
-        // Pin exact variant slot for this tile index
+        // Pin exact variant slot
         pendingTargetsRef.current.set(i, { kind: 'variant', realIdx });
 
         const prevPreview = next[realIdx].imagePreview;
@@ -420,10 +591,10 @@ export default function ProductDrawer({
       return;
     }
 
-    // Base tile or "add" tile: resolve true index in values.imagePreviews
+    // Base tile or "add" tile
     const baseRealIdx = resolveBaseIndexFromMerged(i);
     const originalLength = values.imagePreviews.length;
-    const added = baseRealIdx >= originalLength; // picking into the add tile creates a new slot
+    const added = baseRealIdx >= originalLength;
     const prevAtIndex = !added ? values.imagePreviews[baseRealIdx] ?? null : null;
 
     pendingTargetsRef.current.set(i, { kind: 'base', baseIdx: baseRealIdx, prev: prevAtIndex, added });
@@ -463,23 +634,18 @@ export default function ProductDrawer({
     if (pinned?.kind === 'base') {
       const baseIdx = pinned.baseIdx;
 
-      // Duplicate in variant images?
       const existsInVariants = variantUrls.includes(cdnUrl);
-
-      // Duplicate in other base images?
       const existsInBase = (values.imagePreviews || []).some(
         (u, j) => j !== baseIdx && !!u && !u.startsWith('blob:') && u === cdnUrl
       );
 
       if (existsInVariants || existsInBase) {
         setMediaImageError('Image already exists.');
-        // revert to the previous value (or remove slot if it was newly added)
         setValues((prev) => {
           const next = prev.imagePreviews.slice();
           const current = next[baseIdx];
           if (current && current.startsWith('blob:')) safeRevoke(current);
           if (pinned.added) {
-            // remove the newly added slot
             if (baseIdx < next.length) next.splice(baseIdx, 1);
             return { ...prev, imagePreviews: next.length ? next : [null] };
           } else {
@@ -487,7 +653,7 @@ export default function ProductDrawer({
             return { ...prev, imagePreviews: next };
           }
         });
-        setMediaSyncKey((k) => k + 1); // force ImageUploadZone to re-mount and forget optimistic state
+        setMediaSyncKey((k) => k + 1);
         pendingTargetsRef.current.delete(i);
         return;
       }
@@ -498,7 +664,7 @@ export default function ProductDrawer({
       return;
     }
 
-    // Fallback (no pinned target found) — use the same resolver so multi-pick preserves order
+    // Fallback (no pinned target)
     const baseIdx = resolveBaseIndexFromMerged(i);
     const existsInVariants = variantUrls.includes(cdnUrl);
     const existsInBase = (values.imagePreviews || []).some(
@@ -507,7 +673,6 @@ export default function ProductDrawer({
 
     if (existsInVariants || existsInBase) {
       setMediaImageError('Image already exists.');
-      // best effort revert: clear blob at this slot if present
       setValues((prev) => {
         const next = prev.imagePreviews.slice();
         const current = next[baseIdx];
@@ -524,14 +689,11 @@ export default function ProductDrawer({
   };
 
   const handleZoneClear = (i: number) => {
-    // Clear any pinned target for this tile index
     pendingTargetsRef.current.delete(i);
     setMediaImageError(null);
     const urlAtTile = galleryPreviews[i] || null;
     if (!urlAtTile) return;
     removeUrlEverywhere(urlAtTile);
-
-    // NEW: also clear any "Image already exists" messages in Variations by remounting it
     setVariationsSyncKey((k) => k + 1);
   };
 
@@ -599,8 +761,6 @@ export default function ProductDrawer({
     setUiVariations((prev) => (deepEqual(prev, list) ? prev : list));
   }, []);
 
-  const isSaveDisabled = !isFormValid || createCatMut.isPending || saving;
-
   return (
     <div className="fixed inset-0 z-50">
       <motion.div
@@ -626,7 +786,12 @@ export default function ProductDrawer({
           </button>
         </div>
 
-        <form id="product-form" onSubmit={handleSubmit} className="flex-1 overflow-y-auto p-5 bg-[#fcfcfc]">
+        <form
+          id="product-form"
+          onSubmit={handleSubmit}
+          className="flex-1 overflow-y-auto p-5 bg-[#fcfcfc]"
+          ref={scrollRef as any}
+        >
           <div className="space-y-5">
             <Field>
               <Label>Item Name</Label>
@@ -635,24 +800,42 @@ export default function ProductDrawer({
                 onChange={(e) => {
                   const v = (e.target as HTMLInputElement).value;
                   setValues((prev) => ({ ...prev, name: v }));
+                  if (nameErr) setNameErr(null);
                 }}
                 placeholder="e.g., Chicken Biryani"
+                className={nameErr ? 'border-red-500' : ''}
                 required
+                aria-invalid={!!nameErr || undefined}
               />
+              {nameErr && (
+                <div className="mt-1 text-xs text-red-600" role="alert" aria-live="polite">
+                  {nameErr}
+                </div>
+              )}
             </Field>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <Field>
                 <LabelRow text="Price" />
                 <CurrencyInput
-                  value={hasVariantPrice ? '' : values.price}
-                  onChange={(v: string) => setValues((prev) => ({ ...prev, price: v }))}
-                  placeholder={hasVariantPrice ? 'Set by Variant' : '0.00'}
-                  disabled={hasVariantPrice}
+                  value={allowMainPrice ? values.price : ''}
+                  onChange={(v: string) => {
+                    setValues((prev) => ({ ...prev, price: v }));
+                    if (priceErr) setPriceErr(null);
+                    if (compareAtErr) setCompareAtErr(null);
+                  }}
+                  placeholder={allowMainPrice ? '0.00' : 'Set by Variations'}
+                  disabled={!allowMainPrice}
+                  invalid={!!priceErr}
                 />
+                {priceErr && (
+                  <div className="mt-1 text-xs text-red-600" role="alert" aria-live="polite">
+                    {priceErr}
+                  </div>
+                )}
               </Field>
 
-              {!hasVariantPrice && (
+              {allowMainPrice && (
                 <Field>
                   <LabelRow
                     text="Compare-at Price"
@@ -661,10 +844,19 @@ export default function ProductDrawer({
                   />
                   <CurrencyInput
                     value={values.compareAtPrice || ''}
-                    onChange={(v: string) => setValues((prev) => ({ ...prev, compareAtPrice: v }))}
+                    onChange={(v: string) => {
+                      setValues((prev) => ({ ...prev, compareAtPrice: v }));
+                      if (compareAtErr) setCompareAtErr(null);
+                    }}
                     placeholder="0.00"
                     disabled={!hasMainPrice}
+                    invalid={!!compareAtErr}
                   />
+                  {compareAtErr && (
+                    <div className="mt-1 text-xs text-red-600" role="alert" aria-live="polite">
+                      {compareAtErr}
+                    </div>
+                  )}
                 </Field>
               )}
             </div>
@@ -696,7 +888,7 @@ export default function ProductDrawer({
             <Field>
               <Label className="mb-2">Media</Label>
               <ImageUploadZone
-                key={mediaSyncKey} // force remount when we reject a duplicate
+                key={mediaSyncKey}
                 previews={galleryPreviews}
                 readOnlyCount={0}
                 maxCount={MAX_MEDIA}
@@ -704,26 +896,32 @@ export default function ProductDrawer({
                 authToken={token || undefined}
                 onPick={handleZonePick}
                 onUploaded={handleZoneUploaded}
-                onClear={handleZoneClear} // clears variations' errors too
+                onClear={handleZoneClear}
               />
               {mediaImageError && (
-                <div className="mt-2 text-sm text-red-600 truncate">Image already exists.</div>
+                <div className="mt-2 text-sm text-red-600 truncate" role="alert" aria-live="polite">
+                  {mediaImageError}
+                </div>
               )}
             </Field>
 
             <Variations
-              key={variationsSyncKey} // NEW: remount to clear any row errors when Media changes (e.g., deletion)
+              key={variationsSyncKey}
               value={uiVariations}
               onChange={handleVariationsChange}
               uploadUrl={`${API_BASE}/api/uploads/images`}
               authToken={token || undefined}
-              mediaUrls={mediaUrls} // pass Media URLs for cross-validation
+              mediaUrls={mediaUrls}
+              validatePricesTick={varPriceValidateTick}
               onImageRemove={(_, url) => {
                 if (url) removeUrlEverywhere(url);
               }}
             />
-            {(varNameError || varImageError) && (
-              <div className="text-sm text-red-600">{varNameError || varImageError}</div>
+            {/* Only show global image error; duplicate-name error is hidden here */}
+            {varImageError && (
+              <div className="text-sm text-red-600" role="alert" aria-live="polite">
+                {varImageError}
+              </div>
             )}
 
             <Field>
@@ -731,7 +929,7 @@ export default function ProductDrawer({
             </Field>
 
             {(localError || createCatMut.isError) && (
-              <div className="text-sm text-red-600">
+              <div className="text-sm text-red-600" role="alert" aria-live="polite">
                 {localError || (createCatMut.error as Error)?.message || 'Something went wrong.'}
               </div>
             )}
@@ -742,7 +940,11 @@ export default function ProductDrawer({
           <button
             type="button"
             className="px-4 py-2 rounded-md border border-[#dbdbdb] hover:border-[#111827] transition-colors text-sm text-[#2e2e30] bg-[#fcfcfc] hover:bg-[#f3f4f6]"
-            onClick={onClose}
+            onClick={() => {
+              // Optional: discard any stale draft so it doesn’t repopulate on next open
+              clearSnapshot();
+              onClose();
+            }}
           >
             Cancel
           </button>
@@ -750,7 +952,7 @@ export default function ProductDrawer({
             type="submit"
             form="product-form"
             className={`px-4 py-2 rounded-md text-sm text-white ${
-              isSaveDisabled ? 'bg-[#b0b0b5] cursor-not-allowed' : saving ? 'bg-[#111827] cursor-wait' : 'bg-[#111827] hover:opacity-90'
+              saving ? 'bg-[#111827] cursor-wait' : 'bg-[#111827] hover:opacity-90'
             }`}
             disabled={isSaveDisabled}
           >
@@ -834,11 +1036,13 @@ function CurrencyInput({
   onChange,
   placeholder = '0.00',
   disabled = false,
+  invalid = false,
 }: {
   value: string;
   onChange: (val: string) => void;
   placeholder?: string;
   disabled?: boolean;
+  invalid?: boolean;
 }) {
   return (
     <div className="flex items-stretch">
@@ -846,9 +1050,11 @@ function CurrencyInput({
         ৳
       </span>
       <input
-        className={`w-full -ml-px rounded-r-md rounded-l-none border border-[#dbdbdb] bg-[#fcfcfc] px-3 py-2 text-sm text-[#2e2e30] placeholder-[#a9a9ab] transition-colors hover:border-[#111827] focus:border-[#111827] focus:outline-none focus:ring-0 ${
-          disabled ? 'cursor-not-allowed opacity-60' : ''
-        }`}
+        className={`w-full -ml-px rounded-r-md rounded-l-none border bg-[#fcfcfc] px-3 py-2 text-sm text-[#2e2e30] placeholder-[#a9a9ab] transition-colors focus:outline-none focus:ring-0 ${
+          invalid
+            ? 'border-red-500 focus:border-red-500'
+            : 'border-[#dbdbdb] hover:border-[#111827] focus:border-[#111827]'
+        } ${disabled ? 'cursor-not-allowed opacity-60' : ''}`}
         placeholder={placeholder}
         value={value}
         disabled={disabled}
