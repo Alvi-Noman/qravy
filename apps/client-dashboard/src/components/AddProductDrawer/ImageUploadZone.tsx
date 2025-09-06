@@ -52,14 +52,18 @@ const ImageUploadZone: React.FC<Props> = ({
     return limited.length > 0 ? limited : [null];
   }, [previews, maxCount]);
 
+  // Only resync local state when the content actually changes (signature-based)
+  const normalizedSig = useMemo(() => JSON.stringify(normalizedFromProps), [normalizedFromProps]);
   const [localPreviews, setLocalPreviews] = useState<(string | null)[]>(normalizedFromProps);
-
+  const lastSigRef = useRef<string>(normalizedSig);
   useEffect(() => {
-    setLocalPreviews((prev) => (arraysEqual(prev, normalizedFromProps) ? prev : normalizedFromProps));
-  }, [normalizedFromProps]);
+    if (normalizedSig !== lastSigRef.current) {
+      lastSigRef.current = normalizedSig;
+      setLocalPreviews((prev) => (arraysEqual(prev, normalizedFromProps) ? prev : normalizedFromProps));
+    }
+  }, [normalizedSig, normalizedFromProps]);
 
   const [uploading, setUploading] = useState<boolean[]>([]);
-  const [progress, setProgress] = useState<number[]>([]);
   const [errors, setErrors] = useState<(string | null)[]>([]);
   const [dragOver, setDragOver] = useState<boolean[]>([]);
   const lastFileRef = useRef<(File | null)[]>([]);
@@ -93,11 +97,6 @@ const ImageUploadZone: React.FC<Props> = ({
     setUploading((prev) => {
       const next = prev.slice(0, growTo);
       while (next.length < growTo) next.push(false);
-      return next;
-    });
-    setProgress((prev) => {
-      const next = prev.slice(0, growTo);
-      while (next.length < growTo) next.push(0);
       return next;
     });
     setErrors((prev) => {
@@ -171,13 +170,6 @@ const ImageUploadZone: React.FC<Props> = ({
       return n;
     });
 
-  const setProgressAt = (i: number, val: number) =>
-    setProgress((prev) => {
-      const n = prev.slice();
-      n[i] = val;
-      return n;
-    });
-
   const setErrorAt = (i: number, val: string | null) =>
     setErrors((prev) => {
       const n = prev.slice();
@@ -217,11 +209,6 @@ const ImageUploadZone: React.FC<Props> = ({
       n.splice(i, 1);
       return n;
     });
-    setProgress((prev) => {
-      const n = prev.slice();
-      n.splice(i, 1);
-      return n;
-    });
     setErrors((prev) => {
       const n = prev.slice();
       n.splice(i, 1);
@@ -246,9 +233,10 @@ const ImageUploadZone: React.FC<Props> = ({
         xhrRef.current[i] = xhr;
         xhr.open('POST', uploadUrl, true);
         if (authToken) xhr.setRequestHeader('Authorization', `Bearer ${authToken}`);
-        xhr.upload.onprogress = (evt) => {
-          if (evt.lengthComputable) setProgressAt(i, Math.round((evt.loaded / evt.total) * 100));
-        };
+
+        // We don't track progress visually anymore — spinner only
+        xhr.upload.onprogress = null;
+
         xhr.onreadystatechange = () => {
           if (xhr.readyState !== 4) return;
           if (xhr.status >= 200 && xhr.status < 300) {
@@ -307,16 +295,14 @@ const ImageUploadZone: React.FC<Props> = ({
     onPick?.(i, file, blobUrl);
 
     setUploadingAt(i, true);
-    setProgressAt(i, 1);
 
     uploadWithRetry(i, file)
       .then((resp) => {
-        setProgressAt(i, 100);
         onUploaded?.(i, resp);
         setTimeout(() => {
           setPreviewAt(i, resp.cdn.medium);
           revokeUrl(blobUrl);
-        }, 100);
+        }, 50);
       })
       .catch((err) => setErrorAt(i, err.message || 'Upload failed'))
       .finally(() => {
@@ -346,12 +332,10 @@ const ImageUploadZone: React.FC<Props> = ({
     if (uploading[i] || xhrRef.current[i]) return;
     setErrorAt(i, null);
     setUploadingAt(i, true);
-    setProgressAt(i, 1);
     uploadWithRetry(i, last)
       .then((resp) => {
-        setProgressAt(i, 100);
         onUploaded?.(i, resp);
-        setTimeout(() => setPreviewAt(i, resp.cdn.medium), 100);
+        setTimeout(() => setPreviewAt(i, resp.cdn.medium), 50);
       })
       .catch((err) => setErrorAt(i, err.message || 'Upload failed'))
       .finally(() => {
@@ -403,6 +387,27 @@ const ImageUploadZone: React.FC<Props> = ({
       >
         <XMarkIcon className="h-3 w-3" />
       </button>
+    );
+  }
+
+  function SpinnerOverlay({ show, onCancel }: { show: boolean; onCancel?: () => void }) {
+    if (!show) return null;
+    return (
+      <div className="absolute inset-0 bg-black/35 flex flex-col items-center justify-center p-4 z-20">
+        <div className="h-8 w-8 rounded-full border-2 border-white/80 border-t-transparent animate-spin" />
+        {onCancel && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onCancel();
+            }}
+            className="mt-2 text-xs text-white underline"
+          >
+            Cancel
+          </button>
+        )}
+      </div>
     );
   }
 
@@ -466,35 +471,11 @@ const ImageUploadZone: React.FC<Props> = ({
               </div>
             )}
 
-            {(uploading[i] || loadingExternal) && (
-              <div className="absolute inset-0 bg-black/30 flex flex-col items-center justify-center p-4">
-                {loadingExternal ? (
-                  <>
-                    <div className="h-6 w-6 rounded-full border-2 border-white/80 border-t-transparent animate-spin" />
-                    <div className="mt-2 text-xs text-white">Uploading...</div>
-                  </>
-                ) : (
-                  <>
-                    <div className="w-4/5 bg-white/60 rounded-full h-2 overflow-hidden">
-                      <div className="h-2 bg-[#111827] transition-all" style={{ width: `${progress[i]}%` }} />
-                    </div>
-                    <div className="mt-2 text-xs text-white">{progress[i]}%</div>
-                    {!readOnly && (
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          cancelUpload(i);
-                        }}
-                        className="mt-2 text-xs text-white underline"
-                      >
-                        Cancel
-                      </button>
-                    )}
-                  </>
-                )}
-              </div>
-            )}
+            {/* Simple spinner overlay (no progress bar/percent) */}
+            <SpinnerOverlay
+              show={uploading[i] || loadingExternal}
+              onCancel={!readOnly && uploading[i] ? () => cancelUpload(i) : undefined}
+            />
 
             {hasImage && !uploading[i] && !readOnly && <RemoveBadge onClick={() => removeAt(i)} />}
           </div>
@@ -546,35 +527,10 @@ const ImageUploadZone: React.FC<Props> = ({
             onDragLeave={(e) => onDragLeave(i, e)}
             className={`absolute inset-0 ${disabled || readOnly ? 'cursor-default' : 'cursor-pointer'}`}
           >
-            {(uploading[i] || loadingExternal) && (
-              <div className="absolute inset-0 bg-black/30 flex flex-col items-center justify-center p-4">
-                {loadingExternal ? (
-                  <>
-                    <div className="h-6 w-6 rounded-full border-2 border-white/80 border-t-transparent animate-spin" />
-                    <div className="mt-2 text-xs text-white">Uploading...</div>
-                  </>
-                ) : (
-                  <>
-                    <div className="w-4/5 bg-white/60 rounded-full h-2 overflow-hidden">
-                      <div className="h-2 bg-[#111827] transition-all" style={{ width: `${progress[i]}%` }} />
-                    </div>
-                    <div className="mt-2 text-xs text-white">{progress[i]}%</div>
-                    {!readOnly && (
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          cancelUpload(i);
-                        }}
-                        className="mt-2 text-xs text-white underline"
-                      >
-                        Cancel
-                      </button>
-                    )}
-                  </>
-                )}
-              </div>
-            )}
+            <SpinnerOverlay
+              show={uploading[i] || loadingExternal}
+              onCancel={!readOnly && uploading[i] ? () => cancelUpload(i) : undefined}
+            />
 
             {hasImage && !uploading[i] && !readOnly && <RemoveBadge onClick={() => removeAt(i)} />}
           </div>

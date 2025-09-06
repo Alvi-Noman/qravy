@@ -29,7 +29,6 @@ export type VariantValue = {
   imageUploading?: boolean;
   imageError?: string | null;
   nameError?: string | null;
-  // per-row price error
   priceError?: string | null;
 };
 export type VariationGroup = { id: string; values: VariantValue[]; editing: boolean };
@@ -50,13 +49,28 @@ const safeRevoke = (url?: string | null) => {
   });
 };
 
-// Helper: is a string a valid number?
-const isValidNumber = (s: string) => {
-  const t = s.trim();
-  if (t === '') return false;
-  const n = Number(t);
-  return Number.isFinite(n);
-};
+const stableUrl = (u?: string | null) => (u && !u.startsWith('blob:') ? u : null);
+
+function seedGroupFromValue(list?: VariationsValue[] | null): VariationGroup | null {
+  if (!list || list.length === 0) return null;
+  const values: VariantValue[] = list.map((v) => {
+    const preview = v.imagePreview ?? v.imageUrl ?? null;
+    const url = v.imageUrl ?? stableUrl(preview);
+    return {
+      id: cryptoId(),
+      label: v.label,
+      price: v.price,
+      imagePreview: preview,
+      imageUrl: url,
+      imageFile: null,
+      imageUploading: false,
+      imageError: null,
+      nameError: null,
+      priceError: null,
+    };
+  });
+  return { id: cryptoId(), editing: false, values: normalizeInputs(values) };
+}
 
 export default function Variations({
   helpText = 'Add options like Size, Spice Level, or Toppings',
@@ -80,93 +94,23 @@ export default function Variations({
   mediaUrls?: string[];
   validatePricesTick?: number;
 }) {
-  const [group, setGroup] = useState<VariationGroup | null>(null);
+  // Seed once (or when value first becomes available)
+  const [group, setGroup] = useState<VariationGroup | null>(() => seedGroupFromValue(value));
 
-  // Seed from props exactly once (when group is null)
+  // One-shot flag to prevent reseeding immediately after an intentional delete
+  const skipNextSeedRef = useRef(false);
+
   useEffect(() => {
-    if (group || !value || value.length === 0) return;
-    const values: VariantValue[] = value.map((v) => {
-      const preview = v.imagePreview ?? v.imageUrl ?? null;
-      const url = v.imageUrl ?? (preview && !preview.startsWith('blob:') ? preview : null);
-      return {
-        id: cryptoId(),
-        label: v.label,
-        price: v.price,
-        imagePreview: preview,
-        imageUrl: url,
-        imageFile: null,
-        imageUploading: false,
-        imageError: null,
-        nameError: null,
-        priceError: null,
-      };
-    });
-    setGroup({ id: cryptoId(), editing: false, values: normalizeInputs(values) });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [value]);
-
-  // Sync from props -> rows, but only if content actually differs
-  useEffect(() => {
-    if (!value) return;
-    setGroup((g) => {
-      if (!g) return g;
-
-      const map = new Map(
-        value.map((v) => {
-          const preview = v.imagePreview ?? v.imageUrl ?? null;
-          const url = v.imageUrl ?? (preview && !preview.startsWith('blob:') ? preview : null);
-          return [v.label, { preview, url, price: v.price }];
-        })
-      );
-
-      const typedCurrent = g.values.filter((v) => v.label.trim() !== '');
-
-      const curSig = JSON.stringify(
-        typedCurrent.map((v) => [v.label, v.imagePreview ?? null, v.imageUrl ?? null, v.price ?? ''])
-      );
-      const nextSig = JSON.stringify(
-        typedCurrent.map((v) => {
-          const f = map.get(v.label);
-          const nextPreview = f?.preview ?? null;
-          const nextUrl = f?.url ?? null;
-          const nextPrice = f?.price ?? '';
-          return [v.label, nextPreview, nextUrl, nextPrice];
-        })
-      );
-
-      if (curSig === nextSig) return g;
-
-      const nextValues = g.values.map((r) => {
-        if (r.label.trim() === '') return r;
-        const f = map.get(r.label);
-        if (!f) return r;
-
-        const nextPreview = f.preview;
-        const nextUrl = f.url;
-        const nextPrice = f.price;
-
-        if (
-          r.imagePreview === nextPreview &&
-          r.imageUrl === nextUrl &&
-          (nextPrice === undefined || r.price === nextPrice)
-        ) {
-          return r;
-        }
-
-        if (r.imagePreview && r.imagePreview.startsWith('blob:') && r.imagePreview !== nextPreview) {
-          safeRevoke(r.imagePreview);
-        }
-        return {
-          ...r,
-          imagePreview: nextPreview,
-          imageUrl: nextUrl,
-          price: nextPrice ?? r.price,
-        };
-      });
-
-      return { ...g, values: nextValues };
-    });
-  }, [value]);
+    if (!group) {
+      if (skipNextSeedRef.current) {
+        // consume the skip and do not reseed from props this cycle
+        skipNextSeedRef.current = false;
+        return;
+      }
+      const seeded = seedGroupFromValue(value);
+      if (seeded) setGroup(seeded);
+    }
+  }, [group, value]);
 
   const updateValues = (next: VariantValue[]) =>
     setGroup((g) => (g ? { ...g, values: normalizeInputs(next) } : g));
@@ -273,13 +217,16 @@ export default function Variations({
   useEffect(() => {
     setGroup((g) => {
       if (!g) return g;
+      let changed = false;
       const next = g.values.map((v) => {
         if (v.label.trim() === '') return v;
         const s = (v.price ?? '').trim();
         const invalid = s === '' || !Number.isFinite(Number(s));
-        return { ...v, priceError: invalid ? 'Enter a number' : null };
+        const nextV = { ...v, priceError: invalid ? 'Price cannot be kept empty' : null };
+        if (nextV.priceError !== v.priceError) changed = true;
+        return nextV;
       });
-      return { ...g, values: next };
+      return changed ? { ...g, values: next } : g;
     });
   }, [validatePricesTick]);
 
@@ -373,6 +320,15 @@ export default function Variations({
     }
   };
 
+  // Helper to revoke all blob previews in one go (used on Delete)
+  const revokeAllPreviews = () => {
+    try {
+      (group?.values || []).forEach((v) => {
+        if (v?.imagePreview?.startsWith('blob:')) safeRevoke(v.imagePreview);
+      });
+    } catch {}
+  };
+
   return (
     <div className="text-[#2e2e30]">
       <div className="mb-2 flex items-center gap-2">
@@ -422,7 +378,17 @@ export default function Variations({
                 <div className="mt-2 flex justify-between">
                   <button
                     type="button"
-                    onClick={() => setGroup(null)}
+                    onClick={() => {
+                      // Prevent immediate reseed from props, clear previews, and notify parent
+                      skipNextSeedRef.current = true;
+                      revokeAllPreviews();
+                      setGroup(null);
+                      // Emit empty list immediately so parent clears its value
+                      if (onChange) {
+                        lastEmitRef.current = '[]';
+                        onChange([]);
+                      }
+                    }}
                     className="rounded-md border border-[#dbdbdb] bg-[#fcfcfc] px-3 py-1.5 text-sm text-red-600 transition-colors hover:bg-[#fff0f0]"
                   >
                     Delete
@@ -701,7 +667,6 @@ function VariantTable({
                   onChange={(v) => {
                     const t = v.trim();
                     const valid = t !== '' && Number.isFinite(Number(t));
-                    // Only clear an existing error when valid; don't set errors while typing
                     onChange(idx, { price: v, ...(valid ? { priceError: null } : {}) });
                   }}
                 />

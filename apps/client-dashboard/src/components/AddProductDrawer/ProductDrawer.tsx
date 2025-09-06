@@ -133,10 +133,12 @@ export default function ProductDrawer({
     },
   });
 
+  // Restore snapshot (narrow arrays before setting to satisfy TS and avoid loops)
   useEffect(() => {
     try {
       const raw = sessionStorage.getItem(storageKey);
       if (!raw) return;
+
       const snap = JSON.parse(raw) as {
         t: number;
         ttl: number;
@@ -145,24 +147,39 @@ export default function ProductDrawer({
         uiVariations?: UiVariation[];
         remoteUrls?: string[];
       };
+
       if (!snap?.t || Date.now() - snap.t > (snap.ttl || STORAGE_TTL_MS)) {
         sessionStorage.removeItem(storageKey);
         return;
       }
-      const sv = snap.values;
-      if (sv) {
-        setValues((prev) => ({
-          ...prev,
-          ...sv,
-          imagePreviews: Array.isArray(sv.imagePreviews) ? sv.imagePreviews : prev.imagePreviews,
-        }));
+
+      if (snap.values) {
+        const sv = snap.values;
+        const { imageFiles: _discard, ...svRest } = sv as any;
+        setValues((prev) => {
+          const merged = {
+            ...prev,
+            ...svRest,
+            imagePreviews: Array.isArray(sv.imagePreviews) ? sv.imagePreviews : prev.imagePreviews,
+          };
+          return deepEqual(prev, merged) ? prev : merged;
+        });
       }
-      if (Array.isArray(snap.tags)) setTags(snap.tags);
+
+      if (Array.isArray(snap.tags)) {
+        const newTags: string[] = snap.tags;
+        setTags((prev) => (deepEqual(prev, newTags) ? prev : newTags));
+      }
+
       if (Array.isArray(snap.uiVariations)) {
-        const u = snap.uiVariations as UiVariation[];
-        setUiVariations((prev) => (deepEqual(prev, u) ? prev : u));
+        const newVars: UiVariation[] = snap.uiVariations;
+        setUiVariations((prev) => (deepEqual(prev, newVars) ? prev : newVars));
       }
-      if (Array.isArray(snap.remoteUrls)) setRemoteUrls(snap.remoteUrls);
+
+      if (Array.isArray(snap.remoteUrls)) {
+        const newRemote: string[] = snap.remoteUrls;
+        setRemoteUrls((prev) => (deepEqual(prev, newRemote) ? prev : newRemote));
+      }
     } catch {}
   }, [storageKey]);
 
@@ -183,6 +200,7 @@ export default function ProductDrawer({
     [uiVariations]
   );
 
+  // Resolved (non-blob) variant URLs (for dedupe and base filtering)
   const variantUrls = useMemo(() => {
     const items: string[] = [];
     typedVariants.forEach((v) => {
@@ -192,17 +210,32 @@ export default function ProductDrawer({
     return items;
   }, [typedVariants]);
 
+  // Variant tiles for Media grid: include CDN URLs, and include uploading blobs as "loading:" sentinels
+  const variantTiles = useMemo(() => {
+    return (
+      typedVariants
+        .map((v) => {
+          const cdn = v.imageUrl || (v.imagePreview && !v.imagePreview.startsWith('blob:') ? v.imagePreview : null);
+          if (cdn) return cdn;
+          const blob = v.imagePreview && v.imagePreview.startsWith('blob:') ? v.imagePreview : null;
+          return blob ? `loading:${blob}` : null;
+        })
+        .filter(Boolean) as string[]
+    );
+  }, [typedVariants]);
+
+  // Base gallery images (excluding those used by resolved variant URLs)
   const galleryBase = useMemo(() => {
     const base = (values.imagePreviews || []).filter((u) => u !== null) as string[];
     const seen = new Set(variantUrls);
     return base.filter((u) => !seen.has(u));
   }, [values.imagePreviews, variantUrls]);
 
-  // BASE-FIRST ordering so all tiles (not just primary) stay stable across rehydration
+  // ORDER: [all variant tiles (including loading: sentinels)] + [all base images]
   const galleryPreviews = useMemo(() => {
-    const merged = [...galleryBase, ...variantUrls];
+    const merged = [...variantTiles, ...galleryBase];
     return merged.length === 0 ? [null] : merged;
-  }, [galleryBase, variantUrls]);
+  }, [variantTiles, galleryBase]);
 
   // Non-blob URLs currently shown in Media (Upload Zone), excluding variation images
   const mediaUrls = useMemo(
@@ -225,12 +258,31 @@ export default function ProductDrawer({
 
   function saveSnapshot() {
     try {
+      const scrubBlob = (u: string | null) => (u && u.startsWith('blob:') ? null : u);
+
+      // Only store stable URLs; remove File refs
+      const { imageFiles: _drop, ...restValues } = values;
+      const snapValues = {
+        ...restValues,
+        imagePreviews: (values.imagePreviews || []).map((u) => scrubBlob(u || null)),
+      };
+
+      const scrubVar = (v: UiVariation): UiVariation => {
+        const finalUrl = v.imageUrl || (v.imagePreview && !v.imagePreview.startsWith('blob:') ? v.imagePreview : null);
+        return {
+          label: v.label,
+          price: v.price,
+          imagePreview: finalUrl,
+          imageUrl: finalUrl,
+        };
+      };
+
       const snap = {
         t: Date.now(),
         ttl: STORAGE_TTL_MS,
-        values,
+        values: snapValues,
         tags,
-        uiVariations,
+        uiVariations: (uiVariations || []).map(scrubVar),
         remoteUrls,
       };
       sessionStorage.setItem(storageKey, JSON.stringify(snap));
@@ -245,8 +297,6 @@ export default function ProductDrawer({
 
   // ========== Auto-scroll to first error ==========
   const scrollRef = useRef<HTMLFormElement | HTMLDivElement | null>(null);
-
-  // Only target real errors (alerts or invalid fields)
   const errorSelector = '[role="alert"], [aria-invalid="true"]';
 
   const scrollErrorIntoView = useCallback(() => {
@@ -256,7 +306,6 @@ export default function ProductDrawer({
     const firstErr = container.querySelector(errorSelector) as HTMLElement | null;
     if (!firstErr) return;
 
-    // Focus only inputs/textarea/select (avoid focusing buttons)
     const focusTarget =
       (firstErr.matches('input,textarea,select')
         ? firstErr
@@ -268,7 +317,6 @@ export default function ProductDrawer({
     const cRect = container.getBoundingClientRect();
     const eRect = firstErr.getBoundingClientRect();
 
-    // Extra spacing around the error
     const TOP_BUFFER = 96;
     const BOTTOM_BUFFER = 24;
 
@@ -387,7 +435,7 @@ export default function ProductDrawer({
       }
     }
 
-    // Block submit also when we already have known variation/global issues
+    // Block submit when we already have known variation/global issues
     if (varNameError || varImageError || mediaImageError) hasError = true;
 
     return !hasError;
@@ -399,14 +447,13 @@ export default function ProductDrawer({
 
     const ok = validateBeforeSubmit();
     if (!ok) {
-      // Let the UI update, then scroll to the first error
       scheduleScrollToError();
       return;
     }
 
     const media: string[] = [];
     galleryPreviews.forEach((u) => {
-      if (u && !u.startsWith('blob:')) media.push(u);
+      if (u && !u.startsWith('blob:') && !u.startsWith('loading:')) media.push(u);
     });
 
     const variations =
@@ -433,7 +480,7 @@ export default function ProductDrawer({
       tags: tags.length ? tags : undefined,
     };
 
-    if (allowMainPrice && hasMainPrice) {
+    if (!hasAnyVariants && hasMainPrice) {
       payload.price = priceNum;
       if (compareAtNum !== undefined) payload.compareAtPrice = compareAtNum;
     }
@@ -489,29 +536,36 @@ export default function ProductDrawer({
   >(new Map());
 
   // Map merged gallery index -> underlying base index in values.imagePreviews
-  // BASE-FIRST mapping (base tiles first, then variant tiles)
+  // Layout: [variants (including loading: sentinels)] + [base (all)]
   const resolveBaseIndexFromMerged = useCallback(
     (mergedIndex: number) => {
       const original = values.imagePreviews || [];
-      const vUrls = variantUrls;
 
-      // indices of existing base images (exclude those used by variants)
+      // Use the variantTiles length (not just resolved URLs) to know the variant block size
+      const variantCount = (typedVariants || []).length;
+
+      // indices of existing base images (exclude those used by resolved variant URLs)
       const baseIndices: number[] = [];
+      const vUrlSet = new Set(variantUrls);
       for (let j = 0; j < original.length; j++) {
         const u = original[j];
-        if (u !== null && !vUrls.includes(u)) baseIndices.push(j);
+        if (u !== null && !vUrlSet.has(u)) baseIndices.push(j);
       }
 
-      // If mergedIndex points to an existing base tile, map directly
-      if (mergedIndex < baseIndices.length) {
-        return baseIndices[mergedIndex];
-      }
+      // If clicking within the variants block, resolver should not be used; fallback to append
+      if (mergedIndex < variantCount) return original.length;
 
-      // Otherwise it's the "add tile" region for base images; append after the end
-      const extra = mergedIndex - baseIndices.length;
+      // Map into base region
+      const basePos = mergedIndex - variantCount;
+
+      if (basePos < baseIndices.length) {
+        return baseIndices[basePos];
+      }
+      // Beyond existing base images -> append
+      const extra = basePos - baseIndices.length;
       return original.length + extra;
     },
-    [variantUrls, values.imagePreviews]
+    [typedVariants, variantUrls, values.imagePreviews]
   );
 
   const removeUrlEverywhere = (url: string) => {
@@ -561,15 +615,20 @@ export default function ProductDrawer({
     setMediaImageError(null);
 
     const urlAtTile = galleryPreviews[i] || null;
-    const isVariantTile = urlAtTile ? variantUrls.includes(urlAtTile) : false;
+    const isVariantTile =
+      typeof urlAtTile === 'string' && (urlAtTile.startsWith('loading:') || variantUrls.includes(urlAtTile));
 
     if (isVariantTile && urlAtTile) {
       setUiVariations((prev) => {
         const next = prev.slice();
         const typed = next.filter((v) => v.label.trim() !== '');
         const idx = typed.findIndex((v) => {
-          const u = v.imageUrl || (v.imagePreview && !v.imagePreview.startsWith('blob:') ? v.imagePreview : null);
-          return u === urlAtTile;
+          const final =
+            v.imageUrl || (v.imagePreview && !v.imagePreview.startsWith('blob:') ? v.imagePreview : null);
+          const sentinel = v.imagePreview && v.imagePreview.startsWith('blob:')
+            ? `loading:${v.imagePreview}`
+            : null;
+          return final === urlAtTile || sentinel === urlAtTile;
         });
         if (idx < 0) return prev;
         const realIdx = next
@@ -591,7 +650,7 @@ export default function ProductDrawer({
       return;
     }
 
-    // Base tile or "add" tile
+    // Base tile or "add" tile (after variants)
     const baseRealIdx = resolveBaseIndexFromMerged(i);
     const originalLength = values.imagePreviews.length;
     const added = baseRealIdx >= originalLength;
@@ -888,7 +947,7 @@ export default function ProductDrawer({
             <Field>
               <Label className="mb-2">Media</Label>
               <ImageUploadZone
-                key={mediaSyncKey}
+                key={mediaSyncKey} // keep instance stable during uploads
                 previews={galleryPreviews}
                 readOnlyCount={0}
                 maxCount={MAX_MEDIA}
@@ -941,7 +1000,6 @@ export default function ProductDrawer({
             type="button"
             className="px-4 py-2 rounded-md border border-[#dbdbdb] hover:border-[#111827] transition-colors text-sm text-[#2e2e30] bg-[#fcfcfc] hover:bg-[#f3f4f6]"
             onClick={() => {
-              // Optional: discard any stale draft so it doesn’t repopulate on next open
               clearSnapshot();
               onClose();
             }}
