@@ -38,6 +38,11 @@ const deepEqual = (a: unknown, b: unknown) => {
   }
 };
 
+// NEW: minimum visual saving duration + helpers
+const MIN_SAVE_MS = 1200;
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const isPromise = (v: any): v is Promise<unknown> => v && typeof v.then === 'function';
+
 export default function ProductDrawer({
   title,
   categories,
@@ -69,7 +74,7 @@ export default function ProductDrawer({
     media?: string[];
     variations?: { name: string; price?: number; imageUrl?: string }[];
     tags?: string[];
-  }) => void;
+  }) => void | Promise<void>; // allow async submit
   persistKey?: string;
 }) {
   const API_BASE = import.meta.env.VITE_API_BASE_URL || '';
@@ -441,7 +446,7 @@ export default function ProductDrawer({
     return !hasError;
   };
 
-  const handleSubmit: React.FormEventHandler<HTMLFormElement> = (e) => {
+  const handleSubmit: React.FormEventHandler<HTMLFormElement> = async (e) => {
     e.preventDefault();
     if (saving) return;
 
@@ -487,8 +492,29 @@ export default function ProductDrawer({
 
     clearSnapshot();
     setSaving(true);
-    onSubmit(payload);
-    setTimeout(() => setSaving(false), 1200);
+    setLocalError(null);
+
+    const minDelay = sleep(MIN_SAVE_MS);
+
+    try {
+      const maybe = onSubmit(payload);
+      if (isPromise(maybe)) {
+        await Promise.all([maybe, minDelay]); // wait for success + min duration
+        setSaving(false);
+        onClose(); // trigger slide-out
+      } else {
+        // If onSubmit is sync, still show loader for at least MIN_SAVE_MS
+        await minDelay;
+        setSaving(false);
+        // Parent can still decide to close externally if needed
+      }
+    } catch (err) {
+      // Ensure the bar is visible for MIN_SAVE_MS even on error
+      await minDelay;
+      setSaving(false);
+      setLocalError(err instanceof Error ? err.message : 'Failed to save product.');
+      scheduleScrollToError();
+    }
   };
 
   // Also auto-scroll whenever a tracked error becomes present
@@ -516,6 +542,7 @@ export default function ProductDrawer({
   ]);
 
   const handleBackdropClick = () => {
+    if (saving) return; // block closing during saving
     saveSnapshot();
     onClose();
   };
@@ -837,12 +864,30 @@ export default function ProductDrawer({
         transition={{ type: 'tween', duration: 0.25, ease: 'easeOut' }}
         aria-modal="true"
         role="dialog"
+        aria-busy={saving || undefined}
       >
         <div className="flex items-center justify-between px-5 py-4 border-b border-[#dbdbdb] sticky top-0 bg-[#fcfcfc]">
           <h3 className="text-lg font-semibold text-[#2e2e30]">{title}</h3>
-          <button className="text-[#6b7280] hover:text-[#374151]" onClick={handleBackdropClick} aria-label="Close">
+          <button
+            className={`text-[#6b7280] hover:text-[#374151] ${saving ? 'cursor-not-allowed opacity-60' : ''}`}
+            onClick={handleBackdropClick}
+            aria-label="Close"
+            disabled={saving}
+            type="button"
+          >
             ✕
           </button>
+
+          {saving && (
+            <div className="absolute left-0 right-0 bottom-0 h-0.5 overflow-hidden">
+              <motion.div
+                className="h-full bg-[#111827]"
+                initial={{ x: '-100%' }}
+                animate={{ x: '100%' }}
+                transition={{ duration: 1.2, ease: 'easeInOut', repeat: Infinity }}
+              />
+            </div>
+          )}
         </div>
 
         <form
@@ -998,11 +1043,15 @@ export default function ProductDrawer({
         <div className="px-5 py-4 border-t border-[#dbdbdb] sticky bottom-0 bg-[#fcfcfc] flex justify-end gap-3">
           <button
             type="button"
-            className="px-4 py-2 rounded-md border border-[#dbdbdb] hover:border-[#111827] transition-colors text-sm text-[#2e2e30] bg-[#fcfcfc] hover:bg-[#f3f4f6]"
+            className={`px-4 py-2 rounded-md border border-[#dbdbdb] transition-colors text-sm text-[#2e2e30] bg-[#fcfcfc] hover:bg-[#f3f4f6] hover:border-[#111827] ${
+              saving ? 'opacity-60 cursor-not-allowed' : ''
+            }`}
             onClick={() => {
+              if (saving) return;
               clearSnapshot();
               onClose();
             }}
+            disabled={saving}
           >
             Cancel
           </button>
@@ -1014,7 +1063,7 @@ export default function ProductDrawer({
             }`}
             disabled={isSaveDisabled}
           >
-            Save Changes
+            {saving ? 'Saving…' : 'Save Changes'}
           </button>
         </div>
       </motion.aside>

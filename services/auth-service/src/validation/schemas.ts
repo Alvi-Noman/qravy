@@ -3,28 +3,28 @@
  */
 import { z } from 'zod';
 
-/** ObjectId string */
 const objectId = z.string().regex(/^[a-fA-F0-9]{24}$/, 'Invalid id');
 
-/** Variation shape */
 const variationSchema = z.object({
   name: z.string().min(1, 'Variation name is required'),
   price: z.coerce.number().nonnegative().optional(),
   imageUrl: z.string().url().optional(),
 });
 
-/** Magic link */
+const availabilityFields = {
+  hidden: z.boolean().optional(),
+  status: z.enum(['active', 'hidden']).optional(),
+};
+
 export const magicLinkSchema = z.object({
   email: z.string().email('Invalid email address'),
 });
 
-/** Profile update */
 export const profileUpdateSchema = z.object({
   name: z.string().min(1, 'Name is required'),
   company: z.string().min(1, 'Company is required'),
 });
 
-/** Menu item create: product price or any variation price required */
 export const menuItemSchema = z
   .object({
     name: z.string().min(1),
@@ -37,6 +37,7 @@ export const menuItemSchema = z
     variations: z.array(variationSchema).max(100).optional(),
     tags: z.array(z.string().min(1).max(30)).max(100).optional(),
     restaurantId: objectId.optional(),
+    ...availabilityFields,
   })
   .superRefine((data, ctx) => {
     const hasProductPrice = typeof data.price === 'number';
@@ -68,7 +69,6 @@ export const menuItemSchema = z
     }
   });
 
-/** Menu item update */
 export const menuItemUpdateSchema = z
   .object({
     name: z.string().min(1).optional(),
@@ -81,6 +81,7 @@ export const menuItemUpdateSchema = z
     variations: z.array(variationSchema).max(100).optional(),
     tags: z.array(z.string().min(1).max(30)).max(100).optional(),
     restaurantId: objectId.optional(),
+    ...availabilityFields,
   })
   .refine((data) => Object.keys(data).length > 0, {
     message: 'At least one field must be provided to update',
@@ -96,12 +97,33 @@ export const menuItemUpdateSchema = z
     }
   });
 
-/** Category create */
+/** Bulk: availability */
+export const bulkAvailabilitySchema = z.object({
+  ids: z.array(objectId).min(1).max(100),
+  active: z.boolean(),
+});
+
+/** Bulk: delete */
+export const bulkDeleteSchema = z.object({
+  ids: z.array(objectId).min(1).max(100),
+});
+
+/** Bulk: change category */
+export const bulkCategorySchema = z
+  .object({
+    ids: z.array(objectId).min(1).max(100),
+    category: z.string().max(100).optional(),
+    categoryId: objectId.optional(),
+  })
+  .refine((d) => d.category !== undefined || d.categoryId !== undefined, {
+    path: ['_'],
+    message: 'Provide category or categoryId',
+  });
+
 export const categorySchema = z.object({
   name: z.string().min(1, 'Name is required'),
 });
 
-/** Category update */
 export const categoryUpdateSchema = z.object({
   name: z.string().min(1, 'Name is required'),
 });

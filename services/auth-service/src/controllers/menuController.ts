@@ -1,6 +1,5 @@
 /**
- * Menu controller
- * List, create, update, delete per-user menu items
+ * Menu controller: list, create, update, delete, bulk ops
  */
 import type { Request, Response, NextFunction } from 'express';
 import { ObjectId } from 'mongodb';
@@ -14,7 +13,6 @@ function col() {
   return client.db('authDB').collection<MenuItemDoc>('menuItems');
 }
 
-/** Coerce numbers from number|string */
 function num(v: unknown): number | undefined {
   if (typeof v === 'number' && Number.isFinite(v)) return v;
   if (typeof v === 'string') {
@@ -24,7 +22,6 @@ function num(v: unknown): number | undefined {
   return undefined;
 }
 
-/** Normalize variations and drop undefined fields */
 function normalizeVariations(list: unknown): Array<Pick<Variation, 'name'> & Partial<Variation>> {
   const arr = Array.isArray(list) ? list : [];
   const out: Array<Pick<Variation, 'name'> & Partial<Variation>> = [];
@@ -34,7 +31,6 @@ function normalizeVariations(list: unknown): Array<Pick<Variation, 'name'> & Par
     if (!name) continue;
     const p = num(r?.price);
     const imageUrl = typeof r?.imageUrl === 'string' && r.imageUrl.trim() ? (r.imageUrl as string) : undefined;
-
     const v: any = { name };
     if (p !== undefined && p >= 0) v.price = p;
     if (imageUrl !== undefined) v.imageUrl = imageUrl;
@@ -43,7 +39,6 @@ function normalizeVariations(list: unknown): Array<Pick<Variation, 'name'> & Par
   return out;
 }
 
-/** First priced variation */
 function firstVariantPrice(variations?: Array<{ price?: number }>): number | undefined {
   if (!Array.isArray(variations)) return undefined;
   for (const v of variations) {
@@ -83,6 +78,8 @@ export async function createMenuItem(req: Request, res: Response, next: NextFunc
       variations?: Array<Variation | Record<string, unknown>>;
       tags?: string[];
       restaurantId?: string;
+      hidden?: boolean;
+      status?: 'active' | 'hidden';
     };
 
     const now = new Date();
@@ -96,11 +93,16 @@ export async function createMenuItem(req: Request, res: Response, next: NextFunc
     const effectiveCompareAt =
       effectivePrice !== undefined && cmp !== undefined && cmp >= effectivePrice ? cmp : undefined;
 
+    let hidden = typeof body.hidden === 'boolean' ? body.hidden : false;
+    let status: 'active' | 'hidden' = body.status === 'hidden' ? 'hidden' : hidden ? 'hidden' : 'active';
+
     const doc: any = {
       userId: new ObjectId(userId),
       name: String(body.name || '').trim(),
       createdAt: now,
       updatedAt: now,
+      hidden,
+      status,
     };
 
     if (body.restaurantId && ObjectId.isValid(body.restaurantId)) doc.restaurantId = new ObjectId(body.restaurantId);
@@ -159,6 +161,8 @@ export async function updateMenuItem(req: Request, res: Response, next: NextFunc
       variations?: Array<Variation | Record<string, unknown>>;
       tags?: string[];
       restaurantId?: string;
+      hidden?: boolean;
+      status?: 'active' | 'hidden';
     };
 
     const before = await col().findOne({ _id: new ObjectId(id), userId: new ObjectId(userId) });
@@ -179,17 +183,20 @@ export async function updateMenuItem(req: Request, res: Response, next: NextFunc
       if (cmp !== undefined && ref !== undefined && cmp >= ref) setOps.compareAtPrice = cmp;
     }
 
-    if (body.description !== undefined) setOps.description = typeof body.description === 'string' ? body.description : undefined;
-    if (body.category !== undefined) setOps.category = typeof body.category === 'string' ? body.category : undefined;
+    if (body.description !== undefined)
+      setOps.description = typeof body.description === 'string' ? body.description : undefined;
+
+    if (body.category !== undefined)
+      setOps.category = typeof body.category === 'string' ? body.category : undefined;
 
     if (body.categoryId !== undefined) {
-      setOps.categoryId = body.categoryId && ObjectId.isValid(body.categoryId) ? new ObjectId(body.categoryId) : undefined;
+      setOps.categoryId =
+        body.categoryId && ObjectId.isValid(body.categoryId) ? new ObjectId(body.categoryId) : undefined;
     }
 
     if (body.media !== undefined) {
       const media = Array.isArray(body.media) ? body.media.filter((u) => typeof u === 'string' && u) : [];
-      if (media.length) setOps.media = media;
-      else setOps.media = [];
+      setOps.media = media.length ? media : [];
     }
 
     if (body.variations !== undefined) {
@@ -198,16 +205,22 @@ export async function updateMenuItem(req: Request, res: Response, next: NextFunc
     }
 
     if (body.tags !== undefined) {
-      const tags =
-        Array.isArray(body.tags)
-          ? body.tags.filter((t) => typeof t === 'string' && t.trim()).map((t) => t.trim())
-          : [];
+      const tags = Array.isArray(body.tags)
+        ? body.tags.filter((t) => typeof t === 'string' && t.trim()).map((t) => t.trim())
+        : [];
       setOps.tags = tags;
     }
 
     if (body.restaurantId !== undefined) {
       setOps.restaurantId =
         body.restaurantId && ObjectId.isValid(body.restaurantId) ? new ObjectId(body.restaurantId) : undefined;
+    }
+
+    if (body.hidden !== undefined || body.status !== undefined) {
+      const st: 'active' | 'hidden' =
+        body.status !== undefined ? (body.status === 'hidden' ? 'hidden' : 'active') : body.hidden ? 'hidden' : 'active';
+      setOps.status = st;
+      setOps.hidden = st === 'hidden';
     }
 
     const after = await col().findOneAndUpdate(
@@ -261,6 +274,125 @@ export async function deleteMenuItem(req: Request, res: Response, next: NextFunc
     return res.ok({ deleted: true });
   } catch (err) {
     logger.error(`deleteMenuItem error: ${(err as Error).message}`);
+    next(err);
+  }
+}
+
+/** POST /api/v1/auth/menu-items/bulk/availability */
+export async function bulkSetAvailability(req: Request, res: Response, next: NextFunction) {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.fail(401, 'Unauthorized');
+
+    const { ids, active } = req.body as { ids: string[]; active: boolean };
+    const oids = (ids || []).filter((s) => ObjectId.isValid(s)).map((s) => new ObjectId(s));
+    if (!oids.length) return res.fail(400, 'No valid ids');
+
+    const st: 'active' | 'hidden' = active ? 'active' : 'hidden';
+    const now = new Date();
+    const result = await col().updateMany(
+      { _id: { $in: oids }, userId: new ObjectId(userId) },
+      { $set: { hidden: !active, status: st, updatedAt: now } }
+    );
+
+    const docs = await col()
+      .find({ _id: { $in: oids }, userId: new ObjectId(userId) })
+      .toArray();
+
+    await auditLog({
+      userId,
+      action: 'MENU_ITEM_BULK_AVAILABILITY',
+      after: docs.map(toMenuItemDTO),
+      ip: req.ip || 'unknown',
+      userAgent: req.headers['user-agent'] || 'unknown',
+    });
+
+    return res.ok({
+      matchedCount: result.matchedCount,
+      modifiedCount: result.modifiedCount,
+      items: docs.map(toMenuItemDTO),
+    });
+  } catch (err) {
+    logger.error(`bulkSetAvailability error: ${(err as Error).message}`);
+    next(err);
+  }
+}
+
+/** POST /api/v1/auth/menu-items/bulk/delete */
+export async function bulkDeleteMenuItems(req: Request, res: Response, next: NextFunction) {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.fail(401, 'Unauthorized');
+
+    const { ids } = req.body as { ids: string[] };
+    const oids = (ids || []).filter((s) => ObjectId.isValid(s)).map((s) => new ObjectId(s));
+    if (!oids.length) return res.fail(400, 'No valid ids');
+
+    const before = await col()
+      .find({ _id: { $in: oids }, userId: new ObjectId(userId) })
+      .toArray();
+
+    const del = await col().deleteMany({ _id: { $in: oids }, userId: new ObjectId(userId) });
+
+    await auditLog({
+      userId,
+      action: 'MENU_ITEM_BULK_DELETE',
+      before: before.map(toMenuItemDTO),
+      ip: req.ip || 'unknown',
+      userAgent: req.headers['user-agent'] || 'unknown',
+    });
+
+    return res.ok({ deletedCount: del.deletedCount, ids });
+  } catch (err) {
+    logger.error(`bulkDeleteMenuItems error: ${(err as Error).message}`);
+    next(err);
+  }
+}
+
+/** POST /api/v1/auth/menu-items/bulk/category */
+export async function bulkChangeCategory(req: Request, res: Response, next: NextFunction) {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.fail(401, 'Unauthorized');
+
+    const { ids, category, categoryId } = req.body as {
+      ids: string[];
+      category?: string;
+      categoryId?: string;
+    };
+
+    const oids = (ids || []).filter((s) => ObjectId.isValid(s)).map((s) => new ObjectId(s));
+    if (!oids.length) return res.fail(400, 'No valid ids');
+
+    const setOps: any = { updatedAt: new Date() };
+    if (category !== undefined) setOps.category = typeof category === 'string' ? category : undefined;
+    if (categoryId !== undefined)
+      setOps.categoryId = categoryId && ObjectId.isValid(categoryId) ? new ObjectId(categoryId) : undefined;
+
+    const result = await col().updateMany(
+      { _id: { $in: oids }, userId: new ObjectId(userId) },
+      { $set: setOps }
+    );
+
+    const docs = await col()
+      .find({ _id: { $in: oids }, userId: new ObjectId(userId) })
+      .toArray();
+
+    await auditLog({
+      userId,
+      action: 'MENU_ITEM_BULK_CATEGORY',
+      after: docs.map(toMenuItemDTO),
+      ip: req.ip || 'unknown',
+      userAgent: req.headers['user-agent'] || 'unknown',
+    });
+
+    return res.ok({
+      matchedCount: result.matchedCount,
+      modifiedCount: result.modifiedCount,
+      items: docs.map(toMenuItemDTO),
+    });
+  } catch (err) {
+    logger.error(`bulkChangeCategory error: ${(err as Error).message}`);
     next(err);
   }
 }

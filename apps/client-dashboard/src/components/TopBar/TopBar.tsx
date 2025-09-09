@@ -1,8 +1,12 @@
+/**
+ * TopBar with a thin animated loader at the bottom edge.
+ */
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { BellIcon, SparklesIcon } from '@heroicons/react/24/outline';
 import TopbarSearch from './TopbarSearch.js';
 import TopbarProfileMenu from './TopbarProfileMenu.js';
+import { useProgress } from '../../context/ProgressContext';
 
 type NotificationItem = { id: string; title: string; desc: string; time: string; seen: boolean };
 
@@ -15,10 +19,9 @@ const DUMMY_NOTIFICATIONS: NotificationItem[] = [
 ];
 
 export default function TopBar({ onAIClick }: { onAIClick?: () => void }): JSX.Element {
-  // Digital Menu status
-  const [isLive, setIsLive] = useState(true);
+  const { active } = useProgress();
 
-  // Notifications
+  const [isLive, setIsLive] = useState(true);
   const [notifOpen, setNotifOpen] = useState(false);
   const [notifFilter, setNotifFilter] = useState<'all' | 'seen' | 'unseen'>('all');
   const notifRef = useRef<HTMLDivElement>(null);
@@ -31,7 +34,6 @@ export default function TopBar({ onAIClick }: { onAIClick?: () => void }): JSX.E
     [notifFilter]
   );
 
-  // Close notifications on outside click / ESC
   useEffect(() => {
     if (!notifOpen) return;
     const onDocClick = (e: MouseEvent) => {
@@ -48,43 +50,43 @@ export default function TopBar({ onAIClick }: { onAIClick?: () => void }): JSX.E
   }, [notifOpen]);
 
   return (
-    <div className="sticky top-0 z-20 border-b border-[#ececec] bg-[#fcfcfc]/95 backdrop-blur">
-      <div className="flex items-center gap-3 px-4 py-2">
-        {/* Left: Digital Menu status pill */}
-        <DigitalMenuStatus
-          isLive={isLive}
-          onChange={(next) => setIsLive(next)}
-          scopeLabel="Main Branch"
-          viewMenuHref="/menu"
-        />
+    <div className="sticky top-0 z-30 border-b border-[#ececec] bg-[#fcfcfc]/95 backdrop-blur">
+      <div className="relative">
+        <div className="flex items-center gap-3 px-4 py-2">
+          <DigitalMenuStatus
+            isLive={isLive}
+            onChange={(next) => setIsLive(next)}
+            scopeLabel="Main Branch"
+            viewMenuHref="/menu"
+          />
 
-        {/* Right: wider search, AI, notifications, profile */}
-        <TopbarSearch className="ml-auto mr-2 w-[28rem] md:w-[40rem]" />
+          <TopbarSearch className="ml-auto mr-2 w-[28rem] md:w-[40rem]" />
 
-        {/* AI Assistant */}
-        <button
-          type="button"
-          aria-label="AI Assistant"
-          onClick={() => onAIClick?.()}
-          className="rounded-md p-2 text-slate-700 hover:bg-[#f6f6f6]"
-          title="AI Assistant"
-        >
-          <SparklesIcon className="h-5 w-5 text-slate-600" />
-        </button>
+          <button
+            type="button"
+            aria-label="AI Assistant"
+            onClick={() => onAIClick?.()}
+            className="rounded-md p-2 text-slate-700 hover:bg-[#f6f6f6]"
+            title="AI Assistant"
+          >
+            <SparklesIcon className="h-5 w-5 text-slate-600" />
+          </button>
 
-        {/* Notifications with green dot */}
-        <TopbarNotifications
-          items={filteredNotifications}
-          notifOpen={notifOpen}
-          setNotifOpen={setNotifOpen}
-          notifFilter={notifFilter}
-          setNotifFilter={setNotifFilter}
-          notifRef={notifRef}
-        />
+          <TopbarNotifications
+            items={filteredNotifications}
+            notifOpen={notifOpen}
+            setNotifOpen={setNotifOpen}
+            notifFilter={notifFilter}
+            setNotifFilter={setNotifFilter}
+            notifRef={notifRef}
+          />
 
-        <div className="ml-2 shrink-0">
-          <TopbarProfileMenu />
+          <div className="ml-2 shrink-0">
+            <TopbarProfileMenu />
+          </div>
         </div>
+
+        <TopbarProgress active={active} />
       </div>
     </div>
   );
@@ -381,6 +383,37 @@ function TopbarNotifications({
           </motion.div>
         )}
       </AnimatePresence>
+    </div>
+  );
+}
+
+/** Thin animated progress line at the bottom border of the topbar */
+function TopbarProgress({ active }: { active: boolean }) {
+  return (
+    <div className="absolute left-0 right-0 bottom-0 h-[2px]">
+      <div
+        className="relative h-full overflow-hidden"
+        style={{ opacity: active ? 1 : 0, transition: 'opacity 120ms ease' }}
+        aria-hidden={!active}
+      >
+        <div
+          className="absolute inset-0"
+          style={{
+            backgroundImage:
+              'linear-gradient(90deg, rgba(99,102,241,0) 0%, rgba(99,102,241,0.9) 50%, rgba(99,102,241,0) 100%)',
+            backgroundSize: '200% 100%',
+            animation: 'topbar-progress-move 1.1s linear infinite',
+          }}
+        />
+      </div>
+      <style>
+        {`
+          @keyframes topbar-progress-move {
+            0% { background-position: 0% 0; }
+            100% { background-position: 200% 0; }
+          }
+        `}
+      </style>
     </div>
   );
 }

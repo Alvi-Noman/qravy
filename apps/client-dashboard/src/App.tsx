@@ -1,9 +1,13 @@
+/**
+ * App entry with Auth + Progress providers and Toaster.
+ */
 import { Routes, Route, useLocation, useNavigate, Navigate } from 'react-router-dom';
 import { useEffect, lazy, Suspense } from 'react';
 import { AuthProvider, useAuthContext } from './context/AuthContext';
 import LoadingScreen from './components/LoadingScreen';
+import { ProgressProvider } from './context/ProgressContext';
+import { Toaster } from './components/Toaster';
 
-// Lazy-loaded pages/layout (match exact filenames)
 const DashboardLayout = lazy(() => import('./layout/DashboardLayout'));
 const Dashboard = lazy(() => import('./pages/Dashboard'));
 const Orders = lazy(() => import('./pages/Orders'));
@@ -16,8 +20,6 @@ const Verify = lazy(() => import('./pages/Verify'));
 const HomeRedirect = lazy(() => import('./pages/HomeRedirect'));
 const CreateRestaurant = lazy(() => import('./pages/CreateRestaurant'));
 const OnboardingWizard = lazy(() => import('./pages/restaurant/OnboardingWizard'));
-
-// NEW: Manage Categories page
 const ManageCategories = lazy(() => import('./pages/ManageCategories'));
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
@@ -72,66 +74,67 @@ function RequireOnboarding({ children }: { children: React.ReactNode }) {
 function App() {
   return (
     <AuthProvider>
-      <Suspense fallback={<LoadingScreen />}>
-        <Routes>
-          <Route
-            path="/dashboard"
-            element={
-              <RequireVerifiedAndOnboarded>
-                <DashboardLayout />
-              </RequireVerifiedAndOnboarded>
-            }
-          >
-            <Route index element={<Dashboard />} />
-          </Route>
+      <ProgressProvider>
+        <Suspense fallback={<LoadingScreen />}>
+          <Routes>
+            <Route
+              path="/dashboard"
+              element={
+                <RequireVerifiedAndOnboarded>
+                  <DashboardLayout />
+                </RequireVerifiedAndOnboarded>
+              }
+            >
+              <Route index element={<Dashboard />} />
+            </Route>
 
-          <Route
-            element={
-              <RequireVerifiedAndOnboarded>
-                <DashboardLayout />
-              </RequireVerifiedAndOnboarded>
-            }
-          >
-            <Route path="/orders" element={<Orders />} />
-            <Route path="/menu-items" element={<MenuItemsPage />} />
-            <Route path="/categories" element={<Categories />} />
-            {/* NEW: manage categories route */}
-            <Route path="/categories/manage" element={<ManageCategories />} />
-          </Route>
+            <Route
+              element={
+                <RequireVerifiedAndOnboarded>
+                  <DashboardLayout />
+                </RequireVerifiedAndOnboarded>
+              }
+            >
+              <Route path="/orders" element={<Orders />} />
+              <Route path="/menu-items" element={<MenuItemsPage />} />
+              <Route path="/categories" element={<Categories />} />
+              <Route path="/categories/manage" element={<ManageCategories />} />
+            </Route>
 
-          {/* Legacy redirects */}
-          <Route path="/dashboard/orders" element={<Navigate to="/orders" replace />} />
-          <Route path="/dashboard/menu-items" element={<Navigate to="/menu-items" replace />} />
-          <Route path="/dashboard/categories" element={<Navigate to="/categories" replace />} />
-          <Route path="/dashboard/categories/manage" element={<Navigate to="/categories/manage" replace />} />
+            <Route path="/dashboard/orders" element={<Navigate to="/orders" replace />} />
+            <Route path="/dashboard/menu-items" element={<Navigate to="/menu-items" replace />} />
+            <Route path="/dashboard/categories" element={<Navigate to="/categories" replace />} />
+            <Route path="/dashboard/categories/manage" element={<Navigate to="/categories/manage" replace />} />
 
-          <Route path="/login" element={<Login />} />
-          <Route path="/signup" element={<Signup />} />
-          <Route path="/magic-link" element={<MagicLink />} />
-          <Route path="/verify" element={<Verify />} />
+            <Route path="/login" element={<Login />} />
+            <Route path="/signup" element={<Signup />} />
+            <Route path="/magic-link" element={<MagicLink />} />
+            <Route path="/verify" element={<Verify />} />
 
-          <Route
-            path="/create-restaurant"
-            element={
-              <RequireAuth>
-                <CreateRestaurant />
-              </RequireAuth>
-            }
-          />
-          <Route
-            path="/:restaurantUrl/welcome"
-            element={
-              <RequireAuth>
-                <RequireOnboarding>
-                  <OnboardingWizard />
-                </RequireOnboarding>
-              </RequireAuth>
-            }
-          />
+            <Route
+              path="/create-restaurant"
+              element={
+                <RequireAuth>
+                  <CreateRestaurant />
+                </RequireAuth>
+              }
+            />
+            <Route
+              path="/:restaurantUrl/welcome"
+              element={
+                <RequireAuth>
+                  <RequireOnboarding>
+                    <OnboardingWizard />
+                  </RequireOnboarding>
+                </RequireAuth>
+              }
+            />
 
-          <Route path="/" element={<HomeRedirect />} />
-        </Routes>
-      </Suspense>
+            <Route path="/" element={<HomeRedirect />} />
+          </Routes>
+        </Suspense>
+        <Toaster />
+      </ProgressProvider>
     </AuthProvider>
   );
 }

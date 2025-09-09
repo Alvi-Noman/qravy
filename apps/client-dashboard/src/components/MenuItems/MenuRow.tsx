@@ -12,6 +12,7 @@ import type { MenuItem as TMenuItem } from '../../api/menu';
 export default function MenuRow({
   item,
   selected,
+  isNew = false, // highlight control
   onToggleSelect,
   onToggleAvailability,
   onEdit,
@@ -20,6 +21,7 @@ export default function MenuRow({
 }: {
   item: TMenuItem;
   selected: boolean;
+  isNew?: boolean;
   onToggleSelect: (id: string) => void;
   onToggleAvailability: (id: string, active: boolean) => void;
   onEdit: (item: TMenuItem) => void;
@@ -28,6 +30,14 @@ export default function MenuRow({
 }) {
   const itAny = item as any;
   const active = !(itAny.hidden || itAny.status === 'hidden');
+
+  // Variations: compute lowest price (if any)
+  const variations: any[] = Array.isArray(itAny.variations) ? itAny.variations : [];
+  const hasVariations = variations.length > 0;
+  const variantNumericPrices: number[] = variations
+    .map((v) => Number(v?.price))
+    .filter((n) => Number.isFinite(n) && n >= 0);
+  const lowestVariantPrice = variantNumericPrices.length ? Math.min(...variantNumericPrices) : null;
 
   const [open, setOpen] = useState(false);
   const anchorRef = useRef<HTMLButtonElement | null>(null);
@@ -68,7 +78,14 @@ export default function MenuRow({
   }, [open]);
 
   return (
-    <tr className="border-t border-[#f2f2f2] hover:bg-[#fafafa]">
+    <tr
+      data-item-id={item.id}
+      className="border-t border-[#f2f2f2] hover:bg-[#fafafa] transition-colors duration-700"
+      style={{
+        // Very light brand-tinted highlight; override with CSS var if you have one
+        backgroundColor: isNew ? 'var(--brand-25, #f9fbff)' : undefined,
+      }}
+    >
       <td className="px-3 py-4 align-middle">
         <input
           type="checkbox"
@@ -100,9 +117,25 @@ export default function MenuRow({
 
       <td className="px-3 py-4 align-middle">
         <div className="flex items-center gap-2">
-          <span className="font-medium text-[#111827]">৳{Number((itAny.price ?? 0)).toFixed(2)}</span>
-          {itAny.compareAtPrice != null && Number(itAny.compareAtPrice) > Number(itAny.price ?? 0) && (
-            <span className="text-xs text-[#6b7280] line-through">৳{Number(itAny.compareAtPrice).toFixed(2)}</span>
+          {hasVariations ? (
+            lowestVariantPrice !== null ? (
+              <span className="font-medium text-[#111827]">
+                From ৳{lowestVariantPrice.toFixed(2)}{' '}
+                <span className="text-xs text-[#6b7280]">(Lowest Price)</span>
+              </span>
+            ) : (
+              <span className="text-sm text-[#6b7280]">—</span>
+            )
+          ) : (
+            <>
+              <span className="font-medium text-[#111827]">৳{Number(itAny.price ?? 0).toFixed(2)}</span>
+              {itAny.compareAtPrice != null &&
+                Number(itAny.compareAtPrice) > Number(itAny.price ?? 0) && (
+                  <span className="text-xs text-[#6b7280] line-through">
+                    ৳{Number(itAny.compareAtPrice).toFixed(2)}
+                  </span>
+                )}
+            </>
           )}
         </div>
       </td>
@@ -113,65 +146,148 @@ export default function MenuRow({
           role="switch"
           aria-checked={active}
           onClick={() => onToggleAvailability(item.id, !active)}
-          className={`relative inline-flex h-6 w-11 items-center rounded-full transition ${active ? 'bg-slate-400' : 'bg-slate-300'}`}
+          className={`relative inline-flex h-6 w-11 items-center rounded-full transition ${
+            active ? 'bg-slate-400' : 'bg-slate-300'
+          }`}
         >
-          <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition ${active ? 'translate-x-6' : 'translate-x-1'}`} />
+          <span
+            className={`inline-block h-4 w-4 transform rounded-full bg-white transition ${
+              active ? 'translate-x-6' : 'translate-x-1'
+            }`}
+          />
         </button>
       </td>
 
       <td className="px-3 py-4 align-middle text-right">
-        <button
-          ref={anchorRef}
-          type="button"
-          onClick={(e) => {
-            e.stopPropagation();
-            setOpen((v) => !v);
-          }}
-          className="rounded-md p-1.5 text-[#111827] hover:bg-[#f3f4f6]"
-        >
-          <EllipsisHorizontalIcon className="h-7 w-7" />
-        </button>
-
-        {typeof window !== 'undefined' &&
-          createPortal(
-            <AnimatePresence>
-              {open && pos ? (
-                <motion.div
-                  initial={{ opacity: 0, y: 6 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: 6 }}
-                  transition={{ duration: 0.15, ease: 'easeOut' }}
-                  style={{ position: 'fixed', top: pos.top, left: pos.left }}
-                  className="z-[1000] w-40 overflow-hidden rounded-lg border border-[#ececec] bg-white shadow-lg"
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  <ul className="py-1 text-sm">
-                    <li>
-                      <button type="button" onClick={() => { setOpen(false); onEdit(item); }} className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-[#f5f5f5]">
-                        <PencilSquareIcon className="h-4 w-4 text-[#6b7280]" />
-                        Edit
-                      </button>
-                    </li>
-                    <li>
-                      <button type="button" onClick={() => { setOpen(false); onDuplicate(item.id); }} className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-[#f5f5f5]">
-                        <DocumentDuplicateIcon className="h-4 w-4 text-[#6b7280]" />
-                        Duplicate
-                      </button>
-                    </li>
-                    <li>
-                      <button type="button" onClick={() => { setOpen(false); onDelete(item.id); }} className="flex w-full items-center gap-2 px-3 py-2 text-left text-red-600 hover:bg-[#fff0f0]">
-                        <TrashIcon className="h-4 w-4" />
-                        Delete
-                      </button>
-                    </li>
-                  </ul>
-                </motion.div>
-              ) : null}
-            </AnimatePresence>,
-            document.body
-          )}
+        <RowMenu item={item} onEdit={onEdit} onDuplicate={onDuplicate} onDelete={onDelete} />
       </td>
     </tr>
+  );
+}
+
+function RowMenu({
+  item,
+  onEdit,
+  onDuplicate,
+  onDelete,
+}: {
+  item: TMenuItem;
+  onEdit: (item: TMenuItem) => void;
+  onDuplicate: (id: string) => void;
+  onDelete: (id: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const anchorRef = useRef<HTMLButtonElement | null>(null);
+  const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
+  const MENU_WIDTH = 160;
+
+  useEffect(() => {
+    if (!open) return;
+    const onClick = () => setOpen(false);
+    window.addEventListener('click', onClick);
+    return () => window.removeEventListener('click', onClick);
+  }, [open]);
+
+  const recalc = () => {
+    if (!anchorRef.current) return;
+    const rect = anchorRef.current.getBoundingClientRect();
+    const margin = 8;
+    let left = rect.right - MENU_WIDTH;
+    left = Math.max(margin, Math.min(left, window.innerWidth - MENU_WIDTH - margin));
+    const top = rect.bottom + margin;
+    setPos({ top, left });
+  };
+
+  useLayoutEffect(() => {
+    if (open) recalc();
+    else setPos(null);
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onSR = () => recalc();
+    window.addEventListener('resize', onSR);
+    window.addEventListener('scroll', onSR, true);
+    return () => {
+      window.removeEventListener('resize', onSR);
+      window.removeEventListener('scroll', onSR, true);
+    };
+  }, [open]);
+
+  return (
+    <>
+      <button
+        ref={anchorRef}
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          setOpen((v) => !v);
+        }}
+        className="rounded-md p-1.5 text-[#111827] hover:bg-[#f3f4f6]"
+      >
+        <EllipsisHorizontalIcon className="h-7 w-7" />
+      </button>
+
+      {typeof window !== 'undefined' &&
+        createPortal(
+          <AnimatePresence>
+            {open && pos ? (
+              <motion.div
+                initial={{ opacity: 0, y: 6 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: 6 }}
+                transition={{ duration: 0.15, ease: 'easeOut' }}
+                style={{ position: 'fixed', top: pos.top, left: pos.left }}
+                className="z-[1000] w-40 overflow-hidden rounded-lg border border-[#ececec] bg-white shadow-lg"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <ul className="py-1 text-sm">
+                  <li>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setOpen(false);
+                        onEdit(item);
+                      }}
+                      className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-[#f5f5f5]"
+                    >
+                      <PencilSquareIcon className="h-4 w-4 text-[#6b7280]" />
+                      Edit
+                    </button>
+                  </li>
+                  <li>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setOpen(false);
+                        onDuplicate(item.id);
+                      }}
+                      className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-[#f5f5f5]"
+                    >
+                      <DocumentDuplicateIcon className="h-4 w-4 text-[#6b7280]" />
+                      Duplicate
+                    </button>
+                  </li>
+                  <li>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setOpen(false);
+                        onDelete(item.id);
+                      }}
+                      className="flex w-full items-center gap-2 px-3 py-2 text-left text-red-600 hover:bg-[#fff0f0]"
+                    >
+                      <TrashIcon className="h-4 w-4" />
+                      Delete
+                    </button>
+                  </li>
+                </ul>
+              </motion.div>
+            ) : null}
+          </AnimatePresence>,
+          document.body
+        )}
+    </>
   );
 }
 

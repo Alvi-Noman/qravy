@@ -1,4 +1,7 @@
-/** Public user shape */
+/**
+ * Shared public types (v1)
+ */
+
 export interface UserDTO {
   id: string;
   email: string;
@@ -6,14 +9,12 @@ export interface UserDTO {
   isOnboarded: boolean;
 }
 
-/** Public variation shape */
 export interface VariationDTO {
   name: string;
   price?: number;
   imageUrl?: string;
 }
 
-/** Public menu item shape */
 export interface MenuItemDTO {
   id: string;
   name: string;
@@ -28,9 +29,10 @@ export interface MenuItemDTO {
   restaurantId?: string;
   createdAt: string;
   updatedAt: string;
+  hidden?: boolean;
+  status?: 'active' | 'hidden';
 }
 
-/** Public category shape */
 export interface CategoryDTO {
   id: string;
   name: string;

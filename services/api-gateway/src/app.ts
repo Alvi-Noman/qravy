@@ -1,9 +1,10 @@
 /**
- * @file API Gateway
+ * API Gateway
  */
 import express, { type Application, type Request, type Response, type NextFunction } from 'express';
 import cors from 'cors';
 import { createProxyMiddleware } from 'http-proxy-middleware';
+import type { ClientRequest } from 'http';
 import { config as loadEnv } from 'dotenv';
 import logger from './utils/logger.js';
 import registerUploadsProxy from './proxy/uploads.js';
@@ -11,6 +12,8 @@ import registerUploadsProxy from './proxy/uploads.js';
 loadEnv();
 
 const app: Application = express();
+
+app.set('trust proxy', 1);
 
 app.use((req: Request, _res: Response, next: NextFunction) => {
   logger.http(`[API Gateway] ${req.method} ${req.url}`);
@@ -22,28 +25,29 @@ app.use(
     origin: process.env.CORS_ORIGIN || 'http://localhost:5173',
     credentials: true,
     methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'authorization']
+    allowedHeaders: ['Content-Type', 'Authorization', 'authorization'],
   })
 );
-app.options('*', cors());
+
+app.use(express.json({ limit: '2mb' }));
 
 const AUTH_TARGET = process.env.AUTH_SERVICE_URL || 'http://auth-service:3001';
-logger.info(`[API Gateway] Proxy target for /api/v1/auth => ${AUTH_TARGET}`);
 
 app.use(
   '/api/v1/auth',
   createProxyMiddleware({
     target: AUTH_TARGET,
     changeOrigin: true,
-    cookieDomainRewrite: 'localhost',
     xfwd: true,
-    onProxyRes: (proxyRes, req, res) => {
-      // Explicitly set CORS headers to ensure they’re included
-      res.setHeader('Access-Control-Allow-Origin', process.env.CORS_ORIGIN || 'http://localhost:5173');
-      res.setHeader('Access-Control-Allow-Credentials', 'true');
-      res.setHeader('Access-Control-Allow-Methods', 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS');
-      res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization,authorization');
-    }
+    cookieDomainRewrite: 'localhost',
+    onProxyReq: (proxyReq: ClientRequest, req: Request & { body?: unknown }) => {
+      if (!req.body || !Object.keys(req.body as object).length) return;
+      const ct = (proxyReq.getHeader('content-type') as string | undefined) || '';
+      if (!ct.includes('application/json')) return;
+      const body = JSON.stringify(req.body);
+      proxyReq.setHeader('content-length', Buffer.byteLength(body));
+      proxyReq.write(body);
+    },
   })
 );
 

@@ -17,8 +17,8 @@ services:
       - 8.8.8.8
       - 1.1.1.1
     restart: unless-stopped
-    volumes:
-      - ./services/auth-service/src:/app/services/auth-service/src
+    #volumes:
+    # - ./services/auth-service/src:/app/services/auth-service/src
     command: ["pnpm", "run", "dev"]
 
   upload-service:
@@ -39,8 +39,8 @@ services:
     depends_on:
       - auth-service
     restart: unless-stopped
-    volumes:
-      - ./services/upload-service/src:/app/services/upload-service/src
+    #volumes:
+    # - ./services/upload-service/src:/app/services/upload-service/src
     command: ["pnpm", "run", "dev"]
 
   api-gateway:
@@ -64,8 +64,8 @@ services:
       - auth-service
       - upload-service
     restart: unless-stopped
-    volumes:
-      - ./services/api-gateway/src:/app/services/api-gateway/src
+    #volumes:
+    #  - ./services/api-gateway/src:/app/services/api-gateway/src
     command: ["pnpm", "run", "dev"]
 
 networks:

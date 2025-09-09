@@ -22,6 +22,8 @@ export interface MenuItemDoc {
   media?: string[];
   variations?: Variation[];
   tags?: string[];
+  hidden?: boolean;
+  status?: 'active' | 'hidden';
   createdAt: Date;
   updatedAt: Date;
 }

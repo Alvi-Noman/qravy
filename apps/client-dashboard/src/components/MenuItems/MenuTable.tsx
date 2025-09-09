@@ -3,6 +3,7 @@ import MenuRow from './MenuRow';
 
 export default function MenuTable({
   items,
+  highlightId,
   selectedIds,
   onToggleSelect,
   onToggleSelectAll,
@@ -12,6 +13,7 @@ export default function MenuTable({
   onDelete,
 }: {
   items: TMenuItem[];
+  highlightId?: string | null;
   selectedIds: Set<string>;
   onToggleSelect: (id: string) => void;
   onToggleSelectAll: () => void;
@@ -47,18 +49,22 @@ export default function MenuTable({
             </tr>
           </thead>
           <tbody>
-            {items.map((it) => (
-              <MenuRow
-                key={it.id}
-                item={it}
-                selected={selectedIds.has(it.id)}
-                onToggleSelect={onToggleSelect}
-                onToggleAvailability={onToggleAvailability}
-                onEdit={onEdit}
-                onDuplicate={onDuplicate}
-                onDelete={onDelete}
-              />
-            ))}
+            {items.map((it) => {
+              const isNew = it.id === highlightId; // reuse same prop for highlight
+              return (
+                <MenuRow
+                  key={it.id}
+                  item={it}
+                  selected={selectedIds.has(it.id)}
+                  isNew={isNew}
+                  onToggleSelect={onToggleSelect}
+                  onToggleAvailability={onToggleAvailability}
+                  onEdit={onEdit}
+                  onDuplicate={onDuplicate}
+                  onDelete={onDelete}
+                />
+              );
+            })}
 
             {items.length === 0 && (
               <tr>

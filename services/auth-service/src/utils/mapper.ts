@@ -11,7 +11,6 @@ function toId(id?: ObjectId): string {
   return id ? id.toString() : '';
 }
 
-/** User document to DTO */
 export function toUserDTO(user: UserDoc): v1.UserDTO {
   return {
     id: toId(user._id),
@@ -21,12 +20,11 @@ export function toUserDTO(user: UserDoc): v1.UserDTO {
   };
 }
 
-/** Menu item document to DTO */
 export function toMenuItemDTO(doc: MenuItemDoc): v1.MenuItemDTO {
   return {
     id: toId(doc._id),
     name: doc.name,
-    price: doc.price,
+    price: doc.price as number,
     compareAtPrice: doc.compareAtPrice,
     description: doc.description,
     category: doc.category,
@@ -41,10 +39,11 @@ export function toMenuItemDTO(doc: MenuItemDoc): v1.MenuItemDTO {
     restaurantId: toId(doc.restaurantId),
     createdAt: doc.createdAt.toISOString(),
     updatedAt: doc.updatedAt.toISOString(),
+    hidden: !!doc.hidden,
+    status: (doc.status as 'active' | 'hidden') ?? (doc.hidden ? 'hidden' : 'active'),
   };
 }
 
-/** Category document to DTO */
 export function toCategoryDTO(doc: CategoryDoc): v1.CategoryDTO {
   return {
     id: toId(doc._id),
