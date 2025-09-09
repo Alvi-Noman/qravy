@@ -1,3 +1,4 @@
+// components/Categories/CategoryRow.tsx
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Link } from 'react-router-dom';
@@ -15,6 +16,7 @@ export default function CategoryRow({
   selected,
   active,
   disabled,
+  isNew = false, // NEW
   onToggleSelect,
   onToggleAvailability,
   onEdit,
@@ -25,6 +27,7 @@ export default function CategoryRow({
   selected: boolean;
   active: boolean;
   disabled?: boolean;
+  isNew?: boolean; // NEW
   onToggleSelect: (id: string) => void;
   onToggleAvailability: (category: Category, active: boolean) => void;
   onEdit: (category: Category) => void;
@@ -71,7 +74,14 @@ export default function CategoryRow({
   const manageHref = `/categories/manage?c=${encodeURIComponent(category.name)}`;
 
   return (
-    <tr className="border-t border-[#f2f2f2] hover:bg-[#fafafa]">
+    <tr
+      data-item-id={category.id} // NEW (used for scroll/highlight)
+      className="border-t border-[#f2f2f2] hover:bg-[#fafafa]"
+      style={{
+        backgroundColor: isNew ? 'var(--brand-25, #f9fbff)' : undefined, // NEW
+        transition: 'background-color 700ms ease',
+      }}
+    >
       <td className="px-3 py-3 align-middle">
         <input
           type="checkbox"
@@ -83,7 +93,6 @@ export default function CategoryRow({
       </td>
 
       <td className="px-3 py-3 align-middle">
-        {/* Clickable category name -> Manage Categories with this category preselected */}
         <Link
           to={manageHref}
           state={{ selectedCategory: category.name }}

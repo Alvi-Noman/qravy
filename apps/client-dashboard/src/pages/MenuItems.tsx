@@ -29,7 +29,7 @@ type DrawerSubmitValues = {
   tags?: string[];
 };
 
-const HIGHLIGHT_HOLD_MS = 2000;
+const HIGHLIGHT_HOLD_MS = 2500;
 const SHRINK_DISTANCE = 80; // pixels of scroll until fully compact
 
 function getScrollContainer(el: HTMLElement): HTMLElement | Window {

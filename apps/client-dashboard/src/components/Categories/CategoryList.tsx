@@ -1,3 +1,4 @@
+// components/Categories/CategoryList.tsx
 import type { Category } from '../../api/categories';
 import CategoryRow from './CategoryRow';
 
@@ -7,6 +8,7 @@ export default function CategoryList({
   activeByName,
   toggling,
   selectedIds,
+  highlightId, // NEW
   onToggleSelect,
   onToggleSelectAll,
   onToggleAvailability,
@@ -18,6 +20,7 @@ export default function CategoryList({
   activeByName: Map<string, boolean>;
   toggling: boolean;
   selectedIds: Set<string>;
+  highlightId?: string | null; // NEW
   onToggleSelect: (id: string) => void;
   onToggleSelectAll: () => void;
   onToggleAvailability: (category: Category, active: boolean) => void;
@@ -61,6 +64,7 @@ export default function CategoryList({
                   selected={selectedIds.has(c.id)}
                   active={active}
                   disabled={toggling || usageCount === 0}
+                  isNew={highlightId === c.id} // NEW
                   onToggleSelect={onToggleSelect}
                   onToggleAvailability={onToggleAvailability}
                   onEdit={onEdit}

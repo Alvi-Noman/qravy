@@ -1,3 +1,4 @@
+// components/Categories/useCategories.ts
 import { useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
@@ -14,6 +15,7 @@ import {
   type NewMenuItem,
 } from '../../api/menu';
 import { useAuthContext } from '../../context/AuthContext';
+import { toastSuccess, toastError } from '../Toaster'; // NEW
 
 function broadcast() {
   try {
@@ -67,7 +69,11 @@ export function useCategories() {
       queryClient.setQueryData<Category[]>(['categories', token], (prev) =>
         [...(prev ?? []), created].sort((a, b) => a.name.localeCompare(b.name))
       );
+      toastSuccess('Category added'); // NEW
       broadcast();
+    },
+    onError: (e: any) => {
+      toastError(e?.message || 'Failed to add category'); // NEW
     },
   });
 
@@ -104,10 +110,12 @@ export function useCategories() {
           .map((c) => (c.id === updated.id ? updated : c))
           .sort((a, b) => a.name.localeCompare(b.name))
       );
+      toastSuccess('Category renamed'); // NEW
       broadcast();
     },
-    onError: () => {
+    onError: (e) => {
       queryClient.invalidateQueries({ queryKey: ['menu-items', token] });
+      toastError((e as any)?.message || 'Failed to rename category'); // NEW
     },
   });
 
@@ -152,7 +160,11 @@ export function useCategories() {
         (prev ?? []).filter((c) => c.id !== id)
       );
       queryClient.invalidateQueries({ queryKey: ['menu-items', token] });
+      toastSuccess('Category deleted'); // NEW
       broadcast();
+    },
+    onError: (e: any) => {
+      toastError(e?.message || 'Failed to delete category'); // NEW
     },
   });
 
@@ -191,15 +203,16 @@ export function useCategories() {
         (prev ?? []).filter((c) => !removedIds.includes(c.id))
       );
       queryClient.invalidateQueries({ queryKey: ['menu-items', token] });
+      toastSuccess('Categories merged'); // NEW
       broadcast();
     },
-    onError: () => {
+    onError: (e: any) => {
       queryClient.invalidateQueries({ queryKey: ['menu-items', token] });
       queryClient.invalidateQueries({ queryKey: ['categories', token] });
+      toastError(e?.message || 'Failed to merge categories'); // NEW
     },
   });
 
-  // Toggle availability (sets all items in the category active/hidden)
   const availabilityMut = useMutation<
     { name: string; active: boolean },
     Error,
@@ -215,11 +228,7 @@ export function useCategories() {
         targets.map((it) =>
           updateMenuItem(
             it.id,
-            (
-              active
-                ? { hidden: false, status: 'active' }
-                : { hidden: true, status: 'hidden' }
-            ) as unknown as Partial<NewMenuItem>,
+            (active ? { hidden: false, status: 'active' } : { hidden: true, status: 'hidden' }) as unknown as Partial<NewMenuItem>,
             token as string
           )
         )
