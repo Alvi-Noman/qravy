@@ -92,9 +92,14 @@ export default function CategoriesPage() {
   const [deleteTarget, setDeleteTarget] = useState<Category | null>(null);
   const [openMerge, setOpenMerge] = useState(false);
 
+  // Freeze list while renaming; unfreeze after dialog closes
+  const [frozenCategories, setFrozenCategories] = useState<Category[] | null>(null);
+  const sourceCategories = frozenCategories ?? categories;
+
   // Highlight states
-  const [pendingHighlightId, setPendingHighlightId] = useState<string | null>(null);
-  const [highlightId, setHighlightId] = useState<string | null>(null);
+  const [pendingHighlightId, setPendingHighlightId] = useState<string | null>(null); // ADD: autoscroll + highlight
+  const [highlightId, setHighlightId] = useState<string | null>(null); // shared highlight
+  const [queuedHighlightId, setQueuedHighlightId] = useState<string | null>(null); // EDIT: highlight only (no scroll)
 
   // Scroll container + shrink progress
   const contentRef = useRef<HTMLDivElement | null>(null);
@@ -143,7 +148,7 @@ export default function CategoriesPage() {
   }, [items]);
 
   const viewCategories = useMemo(() => {
-    let list = categories.slice();
+    let list = sourceCategories.slice();
 
     const qnorm = q.trim().toLowerCase();
     if (qnorm) list = list.filter((c) => c.name.toLowerCase().includes(qnorm));
@@ -171,9 +176,9 @@ export default function CategoriesPage() {
       list.sort((a, b) => (usageMap.get(b.name) ?? 0) - (usageMap.get(a.name) ?? 0));
 
     return list;
-  }, [categories, items, q, channels, sortBy, usageMap]);
+  }, [sourceCategories, items, q, channels, sortBy, usageMap]);
 
-  // When a new/renamed category appears in the filtered+sorted view, scroll and highlight it
+  // ADD: autoscroll then highlight when pendingHighlightId is set
   useEffect(() => {
     if (!pendingHighlightId) return;
     const exists = viewCategories.some((c) => c.id === pendingHighlightId);
@@ -201,6 +206,32 @@ export default function CategoriesPage() {
 
     return () => cancelAnimationFrame(raf);
   }, [pendingHighlightId, viewCategories]);
+
+  // Freeze when renaming dialog opens; snapshot the current list
+  useEffect(() => {
+    if (openForm && editing && !frozenCategories) {
+      setFrozenCategories(categories);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openForm, editing]);
+
+  // On dialog close: unfreeze and run queued highlight after refetch (NO autoscroll on edit)
+  useEffect(() => {
+    if (!openForm && (frozenCategories || queuedHighlightId)) {
+      categoriesQuery
+        .refetch()
+        .catch(() => {})
+        .finally(() => {
+          if (queuedHighlightId) {
+            setHighlightId(queuedHighlightId); // highlight in place
+            setQueuedHighlightId(null);
+            window.setTimeout(() => setHighlightId(null), HIGHLIGHT_HOLD_MS);
+          }
+          setFrozenCategories(null);
+        });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openForm]);
 
   const toggleSelect = (id: string) =>
     setSelectedIds((prev) => {
@@ -353,10 +384,12 @@ export default function CategoriesPage() {
                     if (editing) {
                       const updated = await renameMut.mutateAsync({ id: editing.id, newName: name });
                       setOpenForm(false);
-                      setPendingHighlightId(updated.id);
+                      // EDIT: queue highlight only (no autoscroll). Runs after dialog closes.
+                      setQueuedHighlightId(updated.id);
                     } else {
                       const created = await createMut.mutateAsync(name);
                       setOpenForm(false);
+                      // ADD: autoscroll then highlight
                       setPendingHighlightId(created.id);
                     }
                   }}

@@ -155,7 +155,7 @@ export function Toaster() {
 
   return createPortal(
     <div
-      className="pointer-events-none fixed bottom-4 left-1/2 z-[1200] w-[min(92vw,420px)] -translate-x-1/2 sm:bottom-6"
+      className="pointer-events-none fixed bottom-4 left-1/2 z-[1200] w-[min(92vw,320px)] -translate-x-1/2 sm:bottom-6"
       aria-live="polite"
       aria-atomic="false"
     >
@@ -175,26 +175,6 @@ function ToastItem({ toast, onClose }: { toast: ToastData; onClose: (id: number)
   const startRef = useRef<number>(Date.now());
   const remainingRef = useRef<number>(toast.duration);
   const timerRef = useRef<number | null>(null);
-
-  const Icon = useMemo(() => {
-    if (toast.icon) return () => <>{toast.icon}</>;
-    switch (toast.type) {
-      case 'success':
-        return () => <CheckCircleIcon className="h-5 w-5 text-emerald-600" />;
-      case 'error':
-        return () => <XCircleIcon className="h-5 w-5 text-red-600" />;
-      case 'info':
-      default:
-        return () => <InformationCircleIcon className="h-5 w-5 text-slate-600" />;
-    }
-  }, [toast.icon, toast.type]);
-
-  const accent =
-    toast.type === 'success'
-      ? 'bg-emerald-500'
-      : toast.type === 'error'
-      ? 'bg-red-500'
-      : 'bg-indigo-500';
 
   const clearTimer = () => {
     if (timerRef.current != null) {
@@ -228,13 +208,14 @@ function ToastItem({ toast, onClose }: { toast: ToastData; onClose: (id: number)
     startTimer();
   };
 
-  const onActionClick = () => {
-    try {
-      toast.action?.onClick?.();
-    } finally {
-      onClose(toast.id);
-    }
-  };
+  // Success/error icons; info stays text-only. Custom icon prop still supported.
+  const iconEl =
+    toast.icon ??
+    (toast.type === 'success' ? (
+      <CheckCircleIcon className="h-5 w-5 text-emerald-400" aria-hidden="true" />
+    ) : toast.type === 'error' ? (
+      <XCircleIcon className="h-5 w-5 text-red-400" aria-hidden="true" />
+    ) : null);
 
   return (
     <motion.div
@@ -249,37 +230,24 @@ function ToastItem({ toast, onClose }: { toast: ToastData; onClose: (id: number)
       onDragEnd={(_, info) => {
         if (info.offset.y > 70) onClose(toast.id);
       }}
-      className="pointer-events-auto mb-2 select-none overflow-hidden rounded-xl border border-slate-200/80 bg-white/95 shadow-xl backdrop-blur-md ring-1 ring-black/5"
+      className="pointer-events-auto mb-2 select-none overflow-hidden rounded-xl border border-white/10 bg-[#2f2f30] shadow-xl backdrop-blur-md ring-1 ring-white/5"
       onMouseEnter={onEnter}
       onMouseLeave={onLeave}
       role="status"
       aria-live="polite"
     >
       <div className="relative flex items-start gap-3 px-3 py-2.5">
-        <span className={`absolute left-0 top-0 h-full w-1 ${accent}`} />
-        <div className="mt-0.5 shrink-0">
-          <Icon />
-        </div>
+        {iconEl ? <div className="mt-0.5 shrink-0">{iconEl}</div> : null}
 
-        <div className="min-w-0 flex-1 text-[13px] leading-5 text-slate-900">
+        <div className="min-w-0 flex-1 text-[13px] leading-5 text-white/90">
           <div className="break-words">{toast.message}</div>
-
-          {toast.action ? (
-            <button
-              type="button"
-              onClick={onActionClick}
-              className="mt-1 inline-flex items-center rounded-md bg-slate-900 px-2 py-1 text-[11px] font-medium text-white hover:opacity-90"
-            >
-              {toast.action.label}
-            </button>
-          ) : null}
         </div>
 
         <button
           type="button"
           aria-label="Dismiss"
           onClick={() => onClose(toast.id)}
-          className="mt-0.5 rounded-md p-1 text-slate-500 hover:bg-slate-100 hover:text-slate-800"
+          className="mt-0.5 rounded-md p-1 text-white/70 hover:bg-white/10 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/20"
         >
           <XMarkIcon className="h-4 w-4" />
         </button>

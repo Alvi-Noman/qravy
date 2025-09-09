@@ -105,20 +105,28 @@ export default function MenuItemsPage(): JSX.Element {
   const [openBulkCategory, setOpenBulkCategory] = useState(false);
   const [openDeleteMany, setOpenDeleteMany] = useState(false);
 
+  // Freeze table while editing; unfreeze after drawer closes
+  const [frozenItems, setFrozenItems] = useState<TMenuItem[] | null>(null);
+
+  // Add flow: autoscroll then highlight
   const [pendingHighlightId, setPendingHighlightId] = useState<string | null>(null);
+
+  // Shared current highlight id
   const [highlightId, setHighlightId] = useState<string | null>(null);
+
+  // Edit flow: queue highlight (no scroll) until drawer closes
+  const [queuedHighlightId, setQueuedHighlightId] = useState<string | null>(null);
 
   const contentRef = useRef<HTMLDivElement | null>(null);
   const [shrink, setShrink] = useState(0); // 0..1 based on scroll
 
-  // Track shrink progress based on scroll position
+  // Header shrink/glass effect
   useLayoutEffect(() => {
     const scroller = contentRef.current;
     if (!scroller) return;
 
     let raf = 0;
     let last = -1;
-
     const clamp01 = (n: number) => Math.max(0, Math.min(1, n));
 
     const onScroll = () => {
@@ -139,9 +147,12 @@ export default function MenuItemsPage(): JSX.Element {
 
   const loading = itemsQuery.isLoading || categoriesQuery.isLoading;
 
+  // Use frozen snapshot while editing; live items otherwise
+  const sourceItems = frozenItems ?? items;
+
   const viewItems = useMemo(() => {
     const qnorm = q.trim().toLowerCase();
-    let list = items.filter((it) => {
+    let list = sourceItems.filter((it) => {
       const itAny = it as any;
       const matchesQ =
         !qnorm ||
@@ -179,8 +190,9 @@ export default function MenuItemsPage(): JSX.Element {
         );
     }
     return list;
-  }, [items, q, status, channels, selectedCategory, sortBy]);
+  }, [sourceItems, q, status, channels, selectedCategory, sortBy]);
 
+  // ADD: autoscroll then highlight
   useEffect(() => {
     if (!pendingHighlightId) return;
     const exists = viewItems.some((it) => it.id === pendingHighlightId);
@@ -209,6 +221,32 @@ export default function MenuItemsPage(): JSX.Element {
     return () => cancelAnimationFrame(raf);
   }, [pendingHighlightId, viewItems]);
 
+  // EDIT: freeze table when drawer opens
+  useEffect(() => {
+    if (openEdit && !frozenItems) {
+      setFrozenItems(items);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openEdit]);
+
+  // EDIT: when drawer closes, refetch and just highlight in place (NO autoscroll)
+  useEffect(() => {
+    if (!openEdit && (frozenItems || queuedHighlightId)) {
+      itemsQuery
+        .refetch()
+        .catch(() => {})
+        .finally(() => {
+          if (queuedHighlightId) {
+            setHighlightId(queuedHighlightId); // no scroll
+            setQueuedHighlightId(null);
+            window.setTimeout(() => setHighlightId(null), HIGHLIGHT_HOLD_MS);
+          }
+          setFrozenItems(null);
+        });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openEdit]);
+
   const toggleSelect = (id: string) =>
     setSelectedIds((prev) => {
       const next = new Set(prev);
@@ -235,10 +273,8 @@ export default function MenuItemsPage(): JSX.Element {
             'sticky top-0 z-20 flex items-center justify-between border-b border-[#ececec] px-6',
           ].join(' ')}
           style={{
-            // Smoothly reduce vertical padding from 16px to 8px as you scroll
             paddingTop: `${16 - 8 * shrink}px`,
             paddingBottom: `${16 - 8 * shrink}px`,
-            // Fade background from solid to 25% alpha as you scroll
             backgroundColor: `rgba(252, 252, 252, ${1 - 0.75 * shrink})`,
             WebkitBackdropFilter: 'blur(5px)',
             backdropFilter: 'blur(5px)',
@@ -359,6 +395,7 @@ export default function MenuItemsPage(): JSX.Element {
                         if (typeof values.price === 'number') payload.price = values.price;
 
                         const created = await createMut.mutateAsync(payload);
+                        // ADD: autoscroll then highlight
                         setPendingHighlightId((created as any).id);
                       }}
                     />
@@ -403,7 +440,8 @@ export default function MenuItemsPage(): JSX.Element {
                         };
                         if (typeof values.price === 'number') payload.price = values.price;
                         await updateMut.mutateAsync({ id: editingId, payload });
-                        setPendingHighlightId(editingId);
+                        // EDIT: queue highlight only (no autoscroll). Runs after drawer closes.
+                        setQueuedHighlightId(editingId);
                       }}
                     />
                   )}
@@ -426,7 +464,7 @@ export default function MenuItemsPage(): JSX.Element {
                       }
                     );
                   }}
-                  isSubmitting={bulkCategoryMut.isPending}
+                  isSubmitting={bulkAvailabilityMut.isPending}
                 />
 
                 <ConfirmDeleteItemsDialog
