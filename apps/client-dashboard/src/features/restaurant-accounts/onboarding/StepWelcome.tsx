@@ -1,4 +1,3 @@
-// pages/restaurant/steps/StepWelcome.tsx
 type StepProps = {
   onNext: () => void;
 };

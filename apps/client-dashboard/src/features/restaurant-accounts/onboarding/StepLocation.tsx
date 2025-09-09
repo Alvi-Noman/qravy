@@ -1,4 +1,3 @@
-// pages/restaurant/steps/StepLocation.tsx
 import { useState } from 'react';
 
 type StepProps = {
