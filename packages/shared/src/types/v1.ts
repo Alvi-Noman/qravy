@@ -1,12 +1,7 @@
-/**
- * Shared public types (v1)
- */
-
 export interface UserDTO {
   id: string;
   email: string;
   isVerified: boolean;
-  isOnboarded: boolean;
 }
 
 export interface VariationDTO {
@@ -36,6 +31,15 @@ export interface MenuItemDTO {
 export interface CategoryDTO {
   id: string;
   name: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TenantDTO {
+  id: string;
+  name: string;
+  subdomain: string;
+  onboardingCompleted: boolean;
   createdAt: string;
   updatedAt: string;
 }

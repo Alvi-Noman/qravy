@@ -169,4 +169,31 @@ export async function completeOnboarding<T = unknown>(token?: string): Promise<T
   }
 }
 
+/**
+ * Create a tenant (restaurant) with name and subdomain.
+ * Uses Authorization from interceptor; token param not required.
+ * Provide a generic to type the response shape at call sites.
+ */
+export async function createTenant<T = unknown>(body: { name: string; subdomain: string }): Promise<T> {
+  try {
+    const response = await api.post<T>('/api/v1/auth/tenants', body);
+    return response.data;
+  } catch (error) {
+    throw new Error(extractErrorMessage(error));
+  }
+}
+
+/**
+ * Get the current user's tenant.
+ * Provide a generic to type the response shape at call sites.
+ */
+export async function getMyTenant<T = unknown>(): Promise<T> {
+  try {
+    const response = await api.get<T>('/api/v1/auth/tenants/me');
+    return response.data;
+  } catch (error) {
+    throw new Error(extractErrorMessage(error));
+  }
+}
+
 export default api;

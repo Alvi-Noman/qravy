@@ -1,3 +1,4 @@
+// services/auth-service/src/validation/schemas.ts
 /**
  * Validation schemas for auth-service
  */
@@ -23,6 +24,18 @@ export const magicLinkSchema = z.object({
 export const profileUpdateSchema = z.object({
   name: z.string().min(1, 'Name is required'),
   company: z.string().min(1, 'Company is required'),
+});
+
+export const tenantCreateSchema = z.object({
+  name: z.string().min(1, 'Name is required').max(100),
+  subdomain: z
+    .string()
+    .toLowerCase()
+    .trim()
+    .regex(/^[a-z0-9-]{3,32}$/, 'Invalid subdomain')
+    .refine((s) => !s.startsWith('-') && !s.endsWith('-') && !s.includes('--'), {
+      message: 'Invalid subdomain',
+    }),
 });
 
 export const menuItemSchema = z

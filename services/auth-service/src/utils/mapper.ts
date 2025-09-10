@@ -1,10 +1,8 @@
-/**
- * Mapper utilities: Mongo Doc -> Public DTO
- */
 import type { ObjectId } from 'mongodb';
-import type { UserDoc } from '../models/User.js';
 import type { MenuItemDoc } from '../models/MenuItem.js';
 import type { CategoryDoc } from '../models/Category.js';
+import type { TenantDoc } from '../models/Tenant.js';
+import type { UserDoc } from '../models/User.js';
 import type { v1 } from '../../../../packages/shared/src/types/index.js';
 
 function toId(id?: ObjectId): string {
@@ -16,7 +14,6 @@ export function toUserDTO(user: UserDoc): v1.UserDTO {
     id: toId(user._id),
     email: user.email,
     isVerified: !!user.isVerified,
-    isOnboarded: !!user.isOnboarded,
   };
 }
 
@@ -48,6 +45,17 @@ export function toCategoryDTO(doc: CategoryDoc): v1.CategoryDTO {
   return {
     id: toId(doc._id),
     name: doc.name,
+    createdAt: doc.createdAt.toISOString(),
+    updatedAt: doc.updatedAt.toISOString(),
+  };
+}
+
+export function toTenantDTO(doc: TenantDoc): v1.TenantDTO {
+  return {
+    id: toId(doc._id),
+    name: doc.name,
+    subdomain: doc.subdomain,
+    onboardingCompleted: !!doc.onboardingCompleted,
     createdAt: doc.createdAt.toISOString(),
     updatedAt: doc.updatedAt.toISOString(),
   };

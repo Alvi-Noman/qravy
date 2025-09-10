@@ -13,7 +13,8 @@ export interface UserDoc {
   _id?: ObjectId;
   email: string;
   isVerified?: boolean;
-  isOnboarded?: boolean;
+
+  tenantId?: ObjectId;
 
   refreshTokens?: RefreshToken[];
 

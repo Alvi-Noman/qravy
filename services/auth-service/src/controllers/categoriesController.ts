@@ -1,8 +1,3 @@
-/**
- * Categories controller
- * - List, create, update (POST), delete (POST) per-user categories
- * - Delete cascades: removing a category deletes all menuItems with that category for the same user
- */
 import type { Request, Response, NextFunction } from 'express';
 import { ObjectId } from 'mongodb';
 import { client } from '../db.js';
@@ -19,13 +14,17 @@ function menuItemsCol() {
   return client.db('authDB').collection('menuItems');
 }
 
+function canWrite(role?: string): boolean {
+  return role === 'owner' || role === 'admin' || role === 'editor';
+}
+
 export async function listCategories(req: Request, res: Response, next: NextFunction) {
   try {
-    const userId = req.user?.id;
-    if (!userId) return res.fail(401, 'Unauthorized');
+    const tenantId = req.user?.tenantId;
+    if (!tenantId) return res.fail(409, 'Tenant not set');
 
     const docs = await categoriesCol()
-      .find({ userId: new ObjectId(userId) })
+      .find({ tenantId: new ObjectId(tenantId) })
       .sort({ name: 1 })
       .toArray();
 
@@ -39,13 +38,17 @@ export async function listCategories(req: Request, res: Response, next: NextFunc
 export async function createCategory(req: Request, res: Response, next: NextFunction) {
   try {
     const userId = req.user?.id;
+    const tenantId = req.user?.tenantId;
     if (!userId) return res.fail(401, 'Unauthorized');
+    if (!tenantId) return res.fail(409, 'Tenant not set');
+    if (!canWrite(req.user?.role)) return res.fail(403, 'Forbidden');
 
     const { name } = req.body as { name: string };
 
     const now = new Date();
     const doc: CategoryDoc = {
-      userId: new ObjectId(userId),
+      tenantId: new ObjectId(tenantId),
+      createdBy: new ObjectId(userId),
       name,
       createdAt: now,
       updatedAt: now,
@@ -76,18 +79,21 @@ export async function createCategory(req: Request, res: Response, next: NextFunc
 export async function updateCategory(req: Request, res: Response, next: NextFunction) {
   try {
     const userId = req.user?.id;
+    const tenantId = req.user?.tenantId;
     if (!userId) return res.fail(401, 'Unauthorized');
+    if (!tenantId) return res.fail(409, 'Tenant not set');
+    if (!canWrite(req.user?.role)) return res.fail(403, 'Forbidden');
 
     const { id } = req.params;
     const { name } = req.body as { name: string };
     if (!ObjectId.isValid(id)) return res.fail(400, 'Invalid id');
 
-    const before = await categoriesCol().findOne({ _id: new ObjectId(id), userId: new ObjectId(userId) });
+    const filter = { _id: new ObjectId(id), tenantId: new ObjectId(tenantId) };
+    const before = await categoriesCol().findOne(filter);
     if (!before) return res.fail(404, 'Category not found');
 
-    // Return the updated document directly (driver overload without metadata)
     const doc = await categoriesCol().findOneAndUpdate(
-      { _id: new ObjectId(id), userId: new ObjectId(userId) },
+      filter,
       { $set: { name, updatedAt: new Date() } },
       { returnDocument: 'after' }
     );
@@ -117,20 +123,24 @@ export async function updateCategory(req: Request, res: Response, next: NextFunc
 export async function deleteCategory(req: Request, res: Response, next: NextFunction) {
   try {
     const userId = req.user?.id;
+    const tenantId = req.user?.tenantId;
     if (!userId) return res.fail(401, 'Unauthorized');
+    if (!tenantId) return res.fail(409, 'Tenant not set');
+    if (!canWrite(req.user?.role)) return res.fail(403, 'Forbidden');
 
     const { id } = req.params;
     if (!ObjectId.isValid(id)) return res.fail(400, 'Invalid id');
 
-    const cat = await categoriesCol().findOne({ _id: new ObjectId(id), userId: new ObjectId(userId) });
+    const filter = { _id: new ObjectId(id), tenantId: new ObjectId(tenantId) };
+    const cat = await categoriesCol().findOne(filter);
     if (!cat) return res.fail(404, 'Category not found');
 
     const delItems = await menuItemsCol().deleteMany({
-      userId: new ObjectId(userId),
+      tenantId: new ObjectId(tenantId),
       category: cat.name,
     });
 
-    await categoriesCol().deleteOne({ _id: new ObjectId(id), userId: new ObjectId(userId) });
+    await categoriesCol().deleteOne(filter);
 
     await auditLog({
       userId,
@@ -142,7 +152,7 @@ export async function deleteCategory(req: Request, res: Response, next: NextFunc
     });
 
     logger.info(
-      `Category deleted: ${cat.name} for user ${userId}. Also deleted ${delItems.deletedCount || 0} menu items.`
+      `Category deleted: ${cat.name} for tenant ${tenantId}. Also deleted ${delItems.deletedCount || 0} menu items.`
     );
 
     return res.ok({ deleted: true, deletedProducts: delItems.deletedCount || 0 });

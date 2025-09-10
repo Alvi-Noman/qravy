@@ -1,9 +1,3 @@
-/**
- * Auth controller
- * - Magic link send/verify
- * - Refresh/logout/session management
- * - Complete onboarding
- */
 import type { Request, Response, NextFunction } from 'express';
 import jwt, { type JwtPayload } from 'jsonwebtoken';
 import { Db, Collection, ObjectId } from 'mongodb';
@@ -21,21 +15,18 @@ let db: Db | null = null;
 
 type AccessClaims = { id: string; email: string } & JwtPayload;
 
-/** Narrow unknown into a payload with id and email */
 function isJwtPayloadWithIdEmail(payload: unknown): payload is AccessClaims {
   if (!payload || typeof payload !== 'object') return false;
   const obj = payload as Record<string, unknown>;
   return typeof obj.id === 'string' && typeof obj.email === 'string';
 }
 
-/** Simple formatter for logs */
 function userInfo(user: { email?: string; _id?: ObjectId } | null): string {
   const id = user?._id ? user._id.toString() : 'unknown-id';
   const email = user?.email ?? 'unknown-email';
   return `${email} (${id})`;
 }
 
-/** Typed users collection helper */
 export async function getUsersCollection(): Promise<Collection<UserDoc>> {
   if (!db) {
     db = client.db('authDB');
@@ -57,7 +48,6 @@ function generateMagicLinkToken(): string {
   return crypto.randomBytes(32).toString('hex');
 }
 
-/** POST /api/v1/auth/magic-link */
 export const sendMagicLink = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
     const { email: rawEmail } = req.body as { email: string };
@@ -83,7 +73,6 @@ export const sendMagicLink = async (req: Request, res: Response, next: NextFunct
         refreshTokens: [],
         magicLinkToken,
         magicLinkTokenExpires,
-        isOnboarded: false,
       });
       user = await collection.findOne({ _id: insertResult.insertedId });
       logger.info(`Created new user: ${email} from IP ${ip}`);
@@ -117,7 +106,6 @@ export const sendMagicLink = async (req: Request, res: Response, next: NextFunct
   }
 };
 
-/** GET /api/v1/auth/magic-link/verify */
 export const verifyMagicLink = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
     const { token } = req.query;
@@ -193,7 +181,6 @@ export const verifyMagicLink = async (req: Request, res: Response, next: NextFun
         id: (user._id as ObjectId).toString(),
         email: user.email,
         isVerified: true,
-        isOnboarded: user.isOnboarded,
       },
     });
   } catch (error) {
@@ -203,20 +190,19 @@ export const verifyMagicLink = async (req: Request, res: Response, next: NextFun
   }
 };
 
-/** POST /api/v1/auth/onboarding/complete (JWT protected) */
 export const completeOnboarding = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
     const userId = req.user?.id;
-    if (!userId) {
-      res.fail(401, 'Unauthorized');
-      return;
-    }
-    const collection = await getUsersCollection();
-    await collection.updateOne(
-      { _id: new ObjectId(userId) },
-      { $set: { isOnboarded: true } }
-    );
-    logger.info(`User onboarding completed: ${userId}`);
+    const tenantId = req.user?.tenantId;
+    if (!userId) return void res.fail(401, 'Unauthorized');
+    if (!tenantId) return void res.fail(409, 'Tenant not set');
+
+    await client
+      .db('authDB')
+      .collection('tenants')
+      .updateOne({ _id: new ObjectId(tenantId) }, { $set: { onboardingCompleted: true, updatedAt: new Date() } });
+
+    logger.info(`Tenant onboarding completed: ${tenantId} by user ${userId}`);
     res.ok({ message: 'Onboarding complete' });
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
@@ -225,7 +211,6 @@ export const completeOnboarding = async (req: Request, res: Response, next: Next
   }
 };
 
-/** POST /api/v1/auth/refresh-token */
 export const refreshToken = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
     const cookies = (req as unknown as { cookies?: Record<string, string> }).cookies;
@@ -266,7 +251,6 @@ export const refreshToken = async (req: Request, res: Response, next: NextFuncti
       return;
     }
 
-    // Remove the used token (rotate)
     cleanedTokens.splice(existingTokenIndex, 1);
 
     const newRefreshToken = generateRefreshToken({
@@ -316,7 +300,6 @@ export const refreshToken = async (req: Request, res: Response, next: NextFuncti
   }
 };
 
-/** POST /api/v1/auth/logout */
 export const logout = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
     const cookies = (req as unknown as { cookies?: Record<string, string> }).cookies;
@@ -368,7 +351,6 @@ export const logout = async (req: Request, res: Response, next: NextFunction): P
   }
 };
 
-/** POST /api/v1/auth/logout-all */
 export const logoutAll = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
     const userId = req.user?.id;
@@ -387,7 +369,6 @@ export const logoutAll = async (req: Request, res: Response, next: NextFunction)
   }
 };
 
-/** POST /api/v1/auth/revoke-session */
 export const revokeSession = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
     const userId = req.user?.id;

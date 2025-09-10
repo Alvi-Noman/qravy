@@ -1,9 +1,10 @@
 /**
  * Auth context for user + token state and auth actions.
+ * - Persists token in localStorage
+ * - Uses a ref-backed getter for the interceptor (no stale closure)
  * - Handles refresh flow on app start
- * - Exposes login/logout/refresh/reloadUser
  */
-import { createContext, useContext, useState, useEffect, useRef, type ReactNode } from 'react';
+import { createContext, useContext, useState, useEffect, useRef, useCallback, type ReactNode } from 'react';
 import { attachAuthInterceptor, getMe, refreshToken as apiRefreshToken } from '../api/auth';
 
 export interface AuthUser {
@@ -18,7 +19,7 @@ interface AuthContextType {
   token: string | null;
   loading: boolean;
   login: (token: string, user: AuthUser) => void;
-  logout: () => void;
+  logout: () => Promise<void>;
   refreshToken: () => Promise<void>;
   reloadUser: () => Promise<void>;
 }
@@ -30,30 +31,61 @@ type RefreshResponse = {
   token?: string | null;
   user?: AuthUser | null;
 };
+type MeResponse = { user: AuthUser };
 
-type MeResponse = {
-  user: AuthUser;
-};
+const TOKEN_KEY = (import.meta.env.VITE_JWT_TOKEN_KEY as string) || 'auth_token';
 
 export const AuthProvider = ({ children }: { children: ReactNode }) => {
+  // Initialize from localStorage so we have a token on first paint if present
+  const [token, setTokenState] = useState<string | null>(() => {
+    try {
+      return localStorage.getItem(TOKEN_KEY);
+    } catch {
+      return null;
+    }
+  });
   const [user, setUser] = useState<AuthUser | null>(null);
-  const [token, setToken] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
-  const isRefreshing = useRef(false);
+  // Keep a ref so interceptor getter always has the latest value
+  const tokenRef = useRef<string | null>(token);
+  useEffect(() => {
+    tokenRef.current = token;
+  }, [token]);
 
-  const refreshToken = async (): Promise<void> => {
-    if (isRefreshing.current) return;
-    isRefreshing.current = true;
+  const setToken = useCallback((tok: string | null) => {
+    setTokenState(tok);
+    tokenRef.current = tok;
+    try {
+      if (tok) localStorage.setItem(TOKEN_KEY, tok);
+      else localStorage.removeItem(TOKEN_KEY);
+    } catch {
+      /* ignore storage failures in dev */
+    }
+  }, []);
+
+  const reloadUser = useCallback(async (): Promise<void> => {
+    const t = tokenRef.current;
+    if (!t) return;
+    try {
+      const me = await getMe<MeResponse>(t);
+      setUser(me.user);
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  const refreshToken = useCallback(async (): Promise<void> => {
     try {
       const data = await apiRefreshToken<RefreshResponse>();
-      setToken(data.token ?? null);
+      const newToken = data.token ?? null;
+      setToken(newToken);
 
       if (data.user) {
         setUser(data.user);
-      } else if (data.token) {
+      } else if (newToken) {
         try {
-          const me = await getMe<MeResponse>(data.token);
+          const me = await getMe<MeResponse>(newToken);
           setUser(me.user);
         } catch {
           setUser(null);
@@ -65,44 +97,46 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       setToken(null);
       setUser(null);
     } finally {
-      isRefreshing.current = false;
       setLoading(false);
     }
-  };
+  }, [setToken]);
 
-  const reloadUser = async (): Promise<void> => {
-    if (!token) return;
-    try {
-      const me = await getMe<MeResponse>(token);
-      setUser(me.user);
-    } catch {
-      // ignore
-    }
-  };
+  const login = useCallback(
+    (tok: string, usr: AuthUser): void => {
+      setToken(tok); // persist + ref update
+      setUser(usr);
+      // tab sync ping
+      try {
+        localStorage.setItem('login', Date.now().toString());
+      } catch {}
+    },
+    [setToken]
+  );
 
-  const login = (tok: string, usr: AuthUser): void => {
-    setToken(tok);
-    setUser(usr);
-    localStorage.setItem('login', Date.now().toString());
-  };
-
-  const logout = async (): Promise<void> => {
+  const logout = useCallback(async (): Promise<void> => {
     setToken(null);
     setUser(null);
-    await fetch(`${import.meta.env.VITE_API_BASE_URL}/api/v1/auth/logout`, {
-      method: 'POST',
-      credentials: 'include',
-    });
-    localStorage.setItem('logout', Date.now().toString());
-  };
+    try {
+      await fetch(`${import.meta.env.VITE_API_BASE_URL}/api/v1/auth/logout`, {
+        method: 'POST',
+        credentials: 'include',
+      });
+    } catch {
+      // ignore network errors on logout
+    }
+    try {
+      localStorage.setItem('logout', Date.now().toString());
+    } catch {}
+  }, [setToken]);
 
+  // Attach interceptors once, with a stable token getter
   useEffect(() => {
     attachAuthInterceptor(
-      () => token,
+      () => tokenRef.current ?? localStorage.getItem(TOKEN_KEY),
       refreshToken,
       logout
     );
-    // Attempt refresh on app boot
+    // Attempt refresh on app boot (populate token/user if cookie exists)
     refreshToken();
 
     // Tab sync for login/logout
@@ -112,6 +146,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         setUser(null);
       }
       if (e.key === 'login') {
+        // Another tab logged in; reload to pick up state
         window.location.reload();
       }
     };
@@ -121,7 +156,9 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   }, []);
 
   return (
-    <AuthContext.Provider value={{ user, token, loading, login, logout, refreshToken, reloadUser }}>
+    <AuthContext.Provider
+      value={{ user, token, loading, login, logout, refreshToken, reloadUser }}
+    >
       {children}
     </AuthContext.Provider>
   );

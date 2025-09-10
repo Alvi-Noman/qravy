@@ -1,10 +1,11 @@
 import { ObjectId } from 'mongodb';
 
-export interface CategoryDoc {
+export interface TenantDoc {
   _id?: ObjectId;
-  tenantId: ObjectId;
-  createdBy?: ObjectId;
   name: string;
+  subdomain: string;
+  ownerId: ObjectId;
+  onboardingCompleted: boolean;
   createdAt: Date;
   updatedAt: Date;
 }

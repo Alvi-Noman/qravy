@@ -1,8 +1,8 @@
-// apps/client-dashboard/src/pages/CreateRestaurant.tsx
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { AnimatePresence, motion } from 'framer-motion';
 import { useAuthContext } from '../context/AuthContext';
+import { createTenant, completeOnboarding } from '../api/auth';
 
 export default function CreateRestaurant() {
   const navigate = useNavigate();
@@ -15,14 +15,12 @@ export default function CreateRestaurant() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
 
-  // If already onboarded, send to dashboard
   useEffect(() => {
     if (!loading && user?.isOnboarded) {
       navigate('/dashboard', { replace: true });
     }
   }, [loading, user, navigate]);
 
-  // Auto-generate slug from name until user edits slug manually
   useEffect(() => {
     if (!slugManuallyEdited) {
       const next = slugify(name);
@@ -43,11 +41,26 @@ export default function CreateRestaurant() {
 
     try {
       setIsSubmitting(true);
-      // TODO: Call your backend API to create restaurant
-      // await api.createRestaurant({ name, restaurantUrl });
-      navigate('/welcome');
+
+      await createTenant({
+        name: name.trim(),
+        subdomain: restaurantUrl.trim().toLowerCase(),
+      });
+
+      try {
+        await completeOnboarding();
+      } catch {
+        // non-fatal
+      }
+
+      navigate('/onboarding');
     } catch (err) {
-      setLocalError((err as Error)?.message || 'Could not create restaurant. Please try again.');
+      const msg = (err as Error)?.message || 'Could not create restaurant. Please try again.';
+      if (/subdomain/i.test(msg) || /taken/i.test(msg) || /409/.test(msg)) {
+        setLocalError('That URL is taken. Please try a different one.');
+      } else {
+        setLocalError(msg);
+      }
     } finally {
       setIsSubmitting(false);
     }
@@ -65,34 +78,40 @@ export default function CreateRestaurant() {
             transition={{ duration: 0.25 }}
             className="w-full flex flex-col items-center"
           >
-            <h2 className="text-xl font-medium mb-6 text-[#2e2e30]">Create your Qravy Account</h2>
+            <h2 className="text-xl font-medium text-[#2e2e30] text-center mb-2">Create your Qravy Account</h2>
+            <p className="w-96 text-sm text-[#5b5b5d] text-center mt-3 mb-8">
+              We’ll set up your Restaurant Account and Subdomain. You can change these later.
+            </p>
 
             <form onSubmit={handleSubmit} noValidate className="w-full flex flex-col items-center">
-              <label className="sr-only" htmlFor="restaurant-name">Restaurant name</label>
-              <input
-                id="restaurant-name"
-                type="text"
-                placeholder="Restaurant name"
-                className="p-3 w-96 border border-[#cecece] hover:border-[#b0b0b5] rounded-md mb-4 text-[#2e2e30] bg-transparent focus:outline-none text-base font-normal focus:border-[#b0b0b5]"
-                value={name}
-                onChange={(e) => {
-                  setName(e.target.value);
-                  setLocalError(null);
-                }}
-                required
-                disabled={isSubmitting}
-                autoComplete="organization"
-              />
-
-              {/* URL input group with padding and taller chips, no blue focus ring */}
-              <div className="w-96 mb-2">
-                <label htmlFor="restaurant-url" className="block text-sm text-[#5b5b5d] mb-1">
-                  Restaurant URL
+              {/* Restaurant name */}
+              <div className="w-96 mb-4">
+                <label htmlFor="restaurant-name" className="block text-base text-[#2e2e30] mb-1">
+                  Restaurant name
                 </label>
-                <div
-                  className={`relative flex items-center gap-2 rounded-md border border-[#cecece] hover:border-[#b0b0b5] bg-white transition px-2`}
-                >
-                  <span className="select-none text-[#5b5b5d] shrink-0 whitespace-nowrap">
+                <input
+                  id="restaurant-name"
+                  type="text"
+                  placeholder="Enter your restaurant name."
+                  className="p-3 w-full border border-[#cecece] hover:border-[#b0b0b5] rounded-md text-[#2e2e30] bg-transparent focus:outline-none text-base font-normal"
+                  value={name}
+                  onChange={(e) => {
+                    setName(e.target.value);
+                    setLocalError(null);
+                  }}
+                  required
+                  disabled={isSubmitting}
+                  autoComplete="organization"
+                />
+              </div>
+
+              {/* URL input group with smaller prefix/suffix chips */}
+              <div className="w-96 mb-2">
+                <label htmlFor="restaurant-url" className="block text-base text-[#2e2e30] mb-1">
+                  Subdomain
+                </label>
+                <div className="relative flex items-center gap-2 rounded-md border border-[#cecece] hover:border-[#b0b0b5] bg-white transition px-2">
+                  <span className="select-none text-[#2e2e30] shrink-0 whitespace-nowrap">
                     <span className="inline-flex items-center h-8 px-2 rounded bg-[#f7f7f9] text-sm leading-none">
                       https://
                     </span>
@@ -121,7 +140,7 @@ export default function CreateRestaurant() {
                     inputMode="text"
                   />
 
-                  <span className="select-none text-[#5b5b5d] shrink-0 whitespace-nowrap">
+                  <span className="select-none text-[#2e2e30] shrink-0 whitespace-nowrap">
                     <span className="inline-flex items-center h-8 px-2 rounded bg-[#f7f7f9] text-sm leading-none">
                       .qravy.com
                     </span>
@@ -151,14 +170,14 @@ export default function CreateRestaurant() {
                   <line x1="12" y1="8" x2="12.01" y2="8"></line>
                 </svg>
                 <span className="text-[#5b5b5d]">
-                  This will be your restaurant’s unique web address
+                  You can add a custom domain later if you want. 
                 </span>
               </div>
 
               {localError && (
                 <div
                   id="restaurant-url-error"
-                  className="text-red-500 -mt-2 mb-4 text-sm w-96 font-normal text-left"
+                  className="text-red-500 -mt-1 mb-3 text-sm w-96 font-normal text-left"
                   role="alert"
                   aria-live="polite"
                 >
@@ -168,12 +187,11 @@ export default function CreateRestaurant() {
 
               <button
                 type="submit"
-                className={`w-96 h-12 rounded-md font-medium mb-4 transition border text-center
-                  ${isSubmitting
-                    ? 'bg-[#fefefe] border-[#cecece] text-[#b0b0b5] cursor-not-allowed'
-                    : 'bg-white border-[#cecece] text-[#2e2e30] hover:bg-[#f5f5f5]'
-                  }
-                `}
+                className={`w-96 h-12 rounded-md font-medium mb-2 transition border text-center ${
+                  isSubmitting
+                    ? 'bg-[#efeff2] border-[#dcdce1] text-[#9a9aa1] cursor-not-allowed'
+                    : 'bg-[#2e2e30] border-[#2e2e30] text-white hover:bg-[#262629]'
+                }`}
                 disabled={isSubmitting}
               >
                 {isSubmitting ? 'Creating…' : 'Create restaurant'}

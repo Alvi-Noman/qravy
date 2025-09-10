@@ -1,14 +1,6 @@
 import { MongoClient } from 'mongodb';
 import logger from './logger.js';
 
-/**
- * Ensure required indexes and JSON Schema validators exist.
- * - users: unique email, magicLinkToken idx, $jsonSchema validator
- * - menuItems: userId+createdAt idx, userId+category idx, $jsonSchema validator
- * - categories: unique (userId,name) idx, $jsonSchema validator
- * - audits: userId+createdAt idx, $jsonSchema validator
- */
-
 function userJsonSchema() {
   return {
     $jsonSchema: {
@@ -19,7 +11,7 @@ function userJsonSchema() {
         _id: { bsonType: 'objectId' },
         email: { bsonType: 'string' },
         isVerified: { bsonType: ['bool', 'null'] },
-        isOnboarded: { bsonType: ['bool', 'null'] },
+        tenantId: { bsonType: ['objectId', 'null'] },
         refreshTokens: {
           bsonType: ['array', 'null'],
           items: {
@@ -44,21 +36,55 @@ function userJsonSchema() {
   };
 }
 
-/**
- * Menu item validator
- * - price is optional (variant-only pricing allowed)
- * - compareAtPrice optional and can be null
- * - variations[].imageUrl can be string or null
- */
+function tenantJsonSchema() {
+  return {
+    $jsonSchema: {
+      bsonType: 'object',
+      required: ['name', 'subdomain', 'ownerId', 'onboardingCompleted', 'createdAt', 'updatedAt'],
+      additionalProperties: true,
+      properties: {
+        _id: { bsonType: 'objectId' },
+        name: { bsonType: 'string' },
+        subdomain: { bsonType: 'string' },
+        ownerId: { bsonType: 'objectId' },
+        onboardingCompleted: { bsonType: 'bool' },
+        createdAt: { bsonType: 'date' },
+        updatedAt: { bsonType: 'date' },
+      },
+    },
+  };
+}
+
+function membershipJsonSchema() {
+  return {
+    $jsonSchema: {
+      bsonType: 'object',
+      required: ['tenantId', 'userId', 'role', 'status', 'createdAt', 'updatedAt'],
+      additionalProperties: true,
+      properties: {
+        _id: { bsonType: 'objectId' },
+        tenantId: { bsonType: 'objectId' },
+        userId: { bsonType: 'objectId' },
+        role: { enum: ['owner', 'admin', 'editor', 'viewer'] },
+        status: { enum: ['active', 'invited'] },
+        createdAt: { bsonType: 'date' },
+        updatedAt: { bsonType: 'date' },
+      },
+    },
+  };
+}
+
 function menuItemJsonSchema() {
   return {
     $jsonSchema: {
       bsonType: 'object',
-      required: ['userId', 'name', 'createdAt', 'updatedAt'],
+      required: ['tenantId', 'name', 'createdAt', 'updatedAt'],
       additionalProperties: true,
       properties: {
         _id: { bsonType: 'objectId' },
-        userId: { bsonType: 'objectId' },
+        tenantId: { bsonType: 'objectId' },
+        createdBy: { bsonType: ['objectId', 'null'] },
+        updatedBy: { bsonType: ['objectId', 'null'] },
         restaurantId: { bsonType: ['objectId', 'null'] },
         name: { bsonType: 'string' },
         price: { bsonType: ['double', 'int', 'long', 'decimal'] },
@@ -66,10 +92,7 @@ function menuItemJsonSchema() {
         description: { bsonType: ['string', 'null'] },
         category: { bsonType: ['string', 'null'] },
         categoryId: { bsonType: ['objectId', 'null'] },
-        media: {
-          bsonType: ['array', 'null'],
-          items: { bsonType: 'string' },
-        },
+        media: { bsonType: ['array', 'null'], items: { bsonType: 'string' } },
         variations: {
           bsonType: ['array', 'null'],
           items: {
@@ -83,10 +106,7 @@ function menuItemJsonSchema() {
             },
           },
         },
-        tags: {
-          bsonType: ['array', 'null'],
-          items: { bsonType: 'string' },
-        },
+        tags: { bsonType: ['array', 'null'], items: { bsonType: 'string' } },
         createdAt: { bsonType: 'date' },
         updatedAt: { bsonType: 'date' },
       },
@@ -98,11 +118,12 @@ function categoryJsonSchema() {
   return {
     $jsonSchema: {
       bsonType: 'object',
-      required: ['userId', 'name', 'createdAt', 'updatedAt'],
+      required: ['tenantId', 'name', 'createdAt', 'updatedAt'],
       additionalProperties: true,
       properties: {
         _id: { bsonType: 'objectId' },
-        userId: { bsonType: 'objectId' },
+        tenantId: { bsonType: 'objectId' },
+        createdBy: { bsonType: ['objectId', 'null'] },
         name: { bsonType: 'string' },
         createdAt: { bsonType: 'date' },
         updatedAt: { bsonType: 'date' },
@@ -143,7 +164,6 @@ function errorMessage(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
-/** Apply validator via collMod or create collection with validator */
 async function ensureValidator(client: MongoClient, collection: string, schema: object): Promise<void> {
   const db = client.db('authDB');
   try {
@@ -168,7 +188,6 @@ async function ensureValidator(client: MongoClient, collection: string, schema: 
   }
 }
 
-/** Ensure indexes and validators on all collections */
 export async function ensureUserIndexes(client: MongoClient): Promise<void> {
   const db = client.db('authDB');
 
@@ -177,22 +196,36 @@ export async function ensureUserIndexes(client: MongoClient): Promise<void> {
   logger.info('Ensured unique index on users.email');
   await users.createIndex({ magicLinkToken: 1 });
   logger.info('Ensured index on users.magicLinkToken');
+  await users.createIndex({ tenantId: 1 });
+  logger.info('Ensured index on users.tenantId');
+
+  const tenants = db.collection('tenants');
+  await tenants.createIndex({ subdomain: 1 }, { unique: true });
+  logger.info('Ensured unique index on tenants.subdomain');
+  await tenants.createIndex({ ownerId: 1, createdAt: -1 });
+  logger.info('Ensured index on tenants.ownerId,createdAt');
+
+  const memberships = db.collection('memberships');
+  await memberships.createIndex({ tenantId: 1, userId: 1 }, { unique: true, name: 'ux_tenant_user' });
+  logger.info('Ensured unique index on memberships.tenantId,userId');
 
   const menuItems = db.collection('menuItems');
-  await menuItems.createIndex({ userId: 1, createdAt: -1 });
-  logger.info('Ensured compound index on menuItems.userId,createdAt');
-  await menuItems.createIndex({ userId: 1, category: 1 });
-  logger.info('Ensured compound index on menuItems.userId,category');
+  await menuItems.createIndex({ tenantId: 1, createdAt: -1 });
+  logger.info('Ensured compound index on menuItems.tenantId,createdAt');
+  await menuItems.createIndex({ tenantId: 1, category: 1 });
+  logger.info('Ensured compound index on menuItems.tenantId,category');
 
   const categories = db.collection('categories');
-  await categories.createIndex({ userId: 1, name: 1 }, { unique: true });
-  logger.info('Ensured unique compound index on categories.userId,name');
+  await categories.createIndex({ tenantId: 1, name: 1 }, { unique: true });
+  logger.info('Ensured unique compound index on categories.tenantId,name');
 
   const audits = db.collection('audits');
   await audits.createIndex({ userId: 1, createdAt: -1 });
   logger.info('Ensured index on audits.userId,createdAt');
 
   await ensureValidator(client, 'users', userJsonSchema());
+  await ensureValidator(client, 'tenants', tenantJsonSchema());
+  await ensureValidator(client, 'memberships', membershipJsonSchema());
   await ensureValidator(client, 'menuItems', menuItemJsonSchema());
   await ensureValidator(client, 'categories', categoryJsonSchema());
   await ensureValidator(client, 'audits', auditJsonSchema());

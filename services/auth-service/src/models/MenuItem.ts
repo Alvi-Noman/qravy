@@ -1,6 +1,3 @@
-/**
- * MongoDB models for menu items
- */
 import { ObjectId } from 'mongodb';
 
 export interface Variation {
@@ -11,7 +8,9 @@ export interface Variation {
 
 export interface MenuItemDoc {
   _id?: ObjectId;
-  userId: ObjectId;
+  tenantId: ObjectId;
+  createdBy?: ObjectId;
+  updatedBy?: ObjectId;
   restaurantId?: ObjectId;
   name: string;
   price?: number;

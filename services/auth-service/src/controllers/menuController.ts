@@ -1,6 +1,3 @@
-/**
- * Menu controller: list, create, update, delete, bulk ops
- */
 import type { Request, Response, NextFunction } from 'express';
 import { ObjectId } from 'mongodb';
 import { client } from '../db.js';
@@ -11,6 +8,10 @@ import { auditLog } from '../utils/audit.js';
 
 function col() {
   return client.db('authDB').collection<MenuItemDoc>('menuItems');
+}
+
+function canWrite(role?: string): boolean {
+  return role === 'owner' || role === 'admin' || role === 'editor';
 }
 
 function num(v: unknown): number | undefined {
@@ -30,7 +31,7 @@ function normalizeVariations(list: unknown): Array<Pick<Variation, 'name'> & Par
     const name = typeof r?.name === 'string' ? r.name.trim() : '';
     if (!name) continue;
     const p = num(r?.price);
-    const imageUrl = typeof r?.imageUrl === 'string' && r.imageUrl.trim() ? (r.imageUrl as string) : undefined;
+    const imageUrl = typeof r?.imageUrl === 'string' && r.imageUrl.trim() ? (r?.imageUrl as string) : undefined;
     const v: any = { name };
     if (p !== undefined && p >= 0) v.price = p;
     if (imageUrl !== undefined) v.imageUrl = imageUrl;
@@ -47,13 +48,12 @@ function firstVariantPrice(variations?: Array<{ price?: number }>): number | und
   return undefined;
 }
 
-/** GET /api/v1/auth/menu-items */
 export async function listMenuItems(req: Request, res: Response, next: NextFunction) {
   try {
-    const userId = req.user?.id;
-    if (!userId) return res.fail(401, 'Unauthorized');
+    const tenantId = req.user?.tenantId;
+    if (!tenantId) return res.fail(409, 'Tenant not set');
 
-    const docs = await col().find({ userId: new ObjectId(userId) }).sort({ createdAt: -1 }).toArray();
+    const docs = await col().find({ tenantId: new ObjectId(tenantId) }).sort({ createdAt: -1 }).toArray();
     return res.ok({ items: docs.map(toMenuItemDTO) });
   } catch (err) {
     logger.error(`listMenuItems error: ${(err as Error).message}`);
@@ -61,11 +61,13 @@ export async function listMenuItems(req: Request, res: Response, next: NextFunct
   }
 }
 
-/** POST /api/v1/auth/menu-items */
 export async function createMenuItem(req: Request, res: Response, next: NextFunction) {
   try {
     const userId = req.user?.id;
+    const tenantId = req.user?.tenantId;
     if (!userId) return res.fail(401, 'Unauthorized');
+    if (!tenantId) return res.fail(409, 'Tenant not set');
+    if (!canWrite(req.user?.role)) return res.fail(403, 'Forbidden');
 
     const body = req.body as {
       name: string;
@@ -83,12 +85,10 @@ export async function createMenuItem(req: Request, res: Response, next: NextFunc
     };
 
     const now = new Date();
-
     const normVariations = normalizeVariations(body.variations);
     const mainPrice = num(body.price);
     const derived = firstVariantPrice(normVariations);
     const effectivePrice = mainPrice !== undefined ? mainPrice : derived;
-
     const cmp = num(body.compareAtPrice);
     const effectiveCompareAt =
       effectivePrice !== undefined && cmp !== undefined && cmp >= effectivePrice ? cmp : undefined;
@@ -97,7 +97,8 @@ export async function createMenuItem(req: Request, res: Response, next: NextFunc
     let status: 'active' | 'hidden' = body.status === 'hidden' ? 'hidden' : hidden ? 'hidden' : 'active';
 
     const doc: any = {
-      userId: new ObjectId(userId),
+      tenantId: new ObjectId(tenantId),
+      createdBy: new ObjectId(userId),
       name: String(body.name || '').trim(),
       createdAt: now,
       updatedAt: now,
@@ -108,14 +109,12 @@ export async function createMenuItem(req: Request, res: Response, next: NextFunc
     if (body.restaurantId && ObjectId.isValid(body.restaurantId)) doc.restaurantId = new ObjectId(body.restaurantId);
     if (effectivePrice !== undefined) doc.price = effectivePrice;
     if (effectiveCompareAt !== undefined) doc.compareAtPrice = effectiveCompareAt;
-
     if (typeof body.description === 'string') doc.description = body.description;
     if (typeof body.category === 'string') doc.category = body.category;
     if (body.categoryId && ObjectId.isValid(body.categoryId)) doc.categoryId = new ObjectId(body.categoryId);
 
     const media = Array.isArray(body.media) ? body.media.filter((u) => typeof u === 'string' && u) : [];
     if (media.length) doc.media = media;
-
     if (normVariations.length) doc.variations = normVariations;
 
     const tags =
@@ -141,11 +140,13 @@ export async function createMenuItem(req: Request, res: Response, next: NextFunc
   }
 }
 
-/** POST /api/v1/auth/menu-items/:id/update */
 export async function updateMenuItem(req: Request, res: Response, next: NextFunction) {
   try {
     const userId = req.user?.id;
+    const tenantId = req.user?.tenantId;
     if (!userId) return res.fail(401, 'Unauthorized');
+    if (!tenantId) return res.fail(409, 'Tenant not set');
+    if (!canWrite(req.user?.role)) return res.fail(403, 'Forbidden');
 
     const { id } = req.params;
     if (!ObjectId.isValid(id)) return res.fail(400, 'Invalid id');
@@ -165,10 +166,11 @@ export async function updateMenuItem(req: Request, res: Response, next: NextFunc
       status?: 'active' | 'hidden';
     };
 
-    const before = await col().findOne({ _id: new ObjectId(id), userId: new ObjectId(userId) });
+    const filter = { _id: new ObjectId(id), tenantId: new ObjectId(tenantId) };
+    const before = await col().findOne(filter);
     if (!before) return res.fail(404, 'Item not found');
 
-    const setOps: any = { updatedAt: new Date() };
+    const setOps: any = { updatedAt: new Date(), updatedBy: new ObjectId(userId) };
 
     if (body.name !== undefined) setOps.name = String(body.name || '').trim();
 
@@ -192,7 +194,7 @@ export async function updateMenuItem(req: Request, res: Response, next: NextFunc
     if (body.categoryId !== undefined) {
       setOps.categoryId =
         body.categoryId && ObjectId.isValid(body.categoryId) ? new ObjectId(body.categoryId) : undefined;
-    }
+      }
 
     if (body.media !== undefined) {
       const media = Array.isArray(body.media) ? body.media.filter((u) => typeof u === 'string' && u) : [];
@@ -224,7 +226,7 @@ export async function updateMenuItem(req: Request, res: Response, next: NextFunc
     }
 
     const after = await col().findOneAndUpdate(
-      { _id: new ObjectId(id), userId: new ObjectId(userId) },
+      filter,
       { $set: setOps },
       { returnDocument: 'after', includeResultMetadata: false }
     );
@@ -248,17 +250,19 @@ export async function updateMenuItem(req: Request, res: Response, next: NextFunc
   }
 }
 
-/** POST /api/v1/auth/menu-items/:id/delete */
 export async function deleteMenuItem(req: Request, res: Response, next: NextFunction) {
   try {
     const userId = req.user?.id;
+    const tenantId = req.user?.tenantId;
     if (!userId) return res.fail(401, 'Unauthorized');
+    if (!tenantId) return res.fail(409, 'Tenant not set');
+    if (!canWrite(req.user?.role)) return res.fail(403, 'Forbidden');
 
     const { id } = req.params;
     if (!ObjectId.isValid(id)) return res.fail(400, 'Invalid id');
 
     const deleted = await col().findOneAndDelete(
-      { _id: new ObjectId(id), userId: new ObjectId(userId) },
+      { _id: new ObjectId(id), tenantId: new ObjectId(tenantId) },
       { includeResultMetadata: false }
     );
     if (!deleted) return res.fail(404, 'Item not found');
@@ -278,11 +282,13 @@ export async function deleteMenuItem(req: Request, res: Response, next: NextFunc
   }
 }
 
-/** POST /api/v1/auth/menu-items/bulk/availability */
 export async function bulkSetAvailability(req: Request, res: Response, next: NextFunction) {
   try {
     const userId = req.user?.id;
+    const tenantId = req.user?.tenantId;
     if (!userId) return res.fail(401, 'Unauthorized');
+    if (!tenantId) return res.fail(409, 'Tenant not set');
+    if (!canWrite(req.user?.role)) return res.fail(403, 'Forbidden');
 
     const { ids, active } = req.body as { ids: string[]; active: boolean };
     const oids = (ids || []).filter((s) => ObjectId.isValid(s)).map((s) => new ObjectId(s));
@@ -291,13 +297,11 @@ export async function bulkSetAvailability(req: Request, res: Response, next: Nex
     const st: 'active' | 'hidden' = active ? 'active' : 'hidden';
     const now = new Date();
     const result = await col().updateMany(
-      { _id: { $in: oids }, userId: new ObjectId(userId) },
-      { $set: { hidden: !active, status: st, updatedAt: now } }
+      { _id: { $in: oids }, tenantId: new ObjectId(tenantId) },
+      { $set: { hidden: !active, status: st, updatedAt: now, updatedBy: new ObjectId(userId) } }
     );
 
-    const docs = await col()
-      .find({ _id: { $in: oids }, userId: new ObjectId(userId) })
-      .toArray();
+    const docs = await col().find({ _id: { $in: oids }, tenantId: new ObjectId(tenantId) }).toArray();
 
     await auditLog({
       userId,
@@ -318,21 +322,21 @@ export async function bulkSetAvailability(req: Request, res: Response, next: Nex
   }
 }
 
-/** POST /api/v1/auth/menu-items/bulk/delete */
 export async function bulkDeleteMenuItems(req: Request, res: Response, next: NextFunction) {
   try {
     const userId = req.user?.id;
+    const tenantId = req.user?.tenantId;
     if (!userId) return res.fail(401, 'Unauthorized');
+    if (!tenantId) return res.fail(409, 'Tenant not set');
+    if (!canWrite(req.user?.role)) return res.fail(403, 'Forbidden');
 
     const { ids } = req.body as { ids: string[] };
     const oids = (ids || []).filter((s) => ObjectId.isValid(s)).map((s) => new ObjectId(s));
     if (!oids.length) return res.fail(400, 'No valid ids');
 
-    const before = await col()
-      .find({ _id: { $in: oids }, userId: new ObjectId(userId) })
-      .toArray();
+    const before = await col().find({ _id: { $in: oids }, tenantId: new ObjectId(tenantId) }).toArray();
 
-    const del = await col().deleteMany({ _id: { $in: oids }, userId: new ObjectId(userId) });
+    const del = await col().deleteMany({ _id: { $in: oids }, tenantId: new ObjectId(tenantId) });
 
     await auditLog({
       userId,
@@ -349,11 +353,13 @@ export async function bulkDeleteMenuItems(req: Request, res: Response, next: Nex
   }
 }
 
-/** POST /api/v1/auth/menu-items/bulk/category */
 export async function bulkChangeCategory(req: Request, res: Response, next: NextFunction) {
   try {
     const userId = req.user?.id;
+    const tenantId = req.user?.tenantId;
     if (!userId) return res.fail(401, 'Unauthorized');
+    if (!tenantId) return res.fail(409, 'Tenant not set');
+    if (!canWrite(req.user?.role)) return res.fail(403, 'Forbidden');
 
     const { ids, category, categoryId } = req.body as {
       ids: string[];
@@ -364,19 +370,17 @@ export async function bulkChangeCategory(req: Request, res: Response, next: Next
     const oids = (ids || []).filter((s) => ObjectId.isValid(s)).map((s) => new ObjectId(s));
     if (!oids.length) return res.fail(400, 'No valid ids');
 
-    const setOps: any = { updatedAt: new Date() };
+    const setOps: any = { updatedAt: new Date(), updatedBy: new ObjectId(userId) };
     if (category !== undefined) setOps.category = typeof category === 'string' ? category : undefined;
     if (categoryId !== undefined)
       setOps.categoryId = categoryId && ObjectId.isValid(categoryId) ? new ObjectId(categoryId) : undefined;
 
     const result = await col().updateMany(
-      { _id: { $in: oids }, userId: new ObjectId(userId) },
+      { _id: { $in: oids }, tenantId: new ObjectId(tenantId) },
       { $set: setOps }
     );
 
-    const docs = await col()
-      .find({ _id: { $in: oids }, userId: new ObjectId(userId) })
-      .toArray();
+    const docs = await col().find({ _id: { $in: oids }, tenantId: new ObjectId(tenantId) }).toArray();
 
     await auditLog({
       userId,

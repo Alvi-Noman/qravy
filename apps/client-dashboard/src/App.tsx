@@ -19,7 +19,7 @@ const MagicLink = lazy(() => import('./pages/MagicLink'));
 const Verify = lazy(() => import('./pages/Verify'));
 const HomeRedirect = lazy(() => import('./pages/HomeRedirect'));
 const CreateRestaurant = lazy(() => import('./pages/CreateRestaurant'));
-const Welcome = lazy(() => import('./pages/Welcome')); 
+const Onboarding = lazy(() => import('./pages/Onboarding')); 
 const ManageCategories = lazy(() => import('./pages/ManageCategories'));
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
@@ -49,7 +49,7 @@ function RequireVerifiedAndOnboarded({ children }: { children: React.ReactNode }
       } else if (!user?.isVerified) {
         navigate('/login', { replace: true });
       } else if (!user?.isOnboarded) {
-        navigate('/welcome', { replace: true });
+        navigate('/onboarding', { replace: true });
       }
     }
   }, [token, user, loading, navigate, location]);
@@ -121,11 +121,11 @@ function App() {
             />
 
             <Route
-              path="/welcome"
+              path="/onboarding"
               element={
                 <RequireAuth>
                   <RequireOnboarding>
-                    <Welcome />
+                    <Onboarding />
                   </RequireOnboarding>
                 </RequireAuth>
               }

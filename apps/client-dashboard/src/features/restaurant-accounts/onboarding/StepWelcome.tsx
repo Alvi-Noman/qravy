@@ -1,13 +1,29 @@
-type StepProps = {
-  onNext: () => void;
-};
+import React from 'react';
 
-export default function StepWelcome({ onNext }: StepProps) {
+export default function StepWelcome({ onNext }: { onNext: () => void }) {
   return (
-    <div className="bg-white p-8 rounded shadow w-96">
-      <h2 className="text-xl font-bold mb-4">Welcome!</h2>
-      <p className="mb-6">Let&apos;s get your restaurant set up.</p>
-      <button onClick={onNext} className="w-full bg-blue-500 text-white p-2 rounded">Next</button>
+    <div className="w-full flex flex-col items-center">
+      {/* Brand icon at the top */}
+      <img
+        src="/qravy-icon-200X200.png"
+        alt="Qravy"
+        className="h-16 w-16 mb-6"
+        loading="eager"
+        decoding="async"
+      />
+
+      <h2 className="text-xl font-medium text-[#2e2e30] text-center mb-2">Welcome to Qravy</h2>
+      <p className="w-full text-sm text-[#5b5b5d] text-center mt-3 mb-8">
+        Let’s set up your restaurant in a few quick steps. You can change these anytime.
+      </p>
+
+      <button
+        type="button"
+        onClick={onNext}
+        className="w-full h-12 rounded-md font-medium transition border text-center bg-[#2e2e30] border-[#2e2e30] text-white hover:bg-[#262629]"
+      >
+        Get started
+      </button>
     </div>
   );
 }
