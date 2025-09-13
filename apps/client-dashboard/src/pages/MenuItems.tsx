@@ -1,8 +1,14 @@
 /**
- * Menu items page wiring Drawer with optional price when variants priced
+ * MenuItemsPage.tsx
+ *
+ * A full React component for managing menu items.
+ * Includes toolbar, filtering, sorting, bulk actions, product drawer,
+ * and an improved Empty State that matches the Dashboard's "centered icon" style.
  */
+
 import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence } from 'framer-motion';
+import { Squares2X2Icon } from '@heroicons/react/24/outline';
 import { useMenuItems } from '../components/MenuItems/useMenuItems';
 import MenuToolbar, { type SortBy } from '../components/MenuItems/MenuToolbar';
 import MenuToolbarSkeleton from '../components/MenuItems/MenuToolbarSkeleton';
@@ -18,6 +24,9 @@ const ProductDrawer = lazy(() => import('../components/AddProductDrawer/ProductD
 type Status = 'active' | 'hidden';
 type Channel = 'dine-in' | 'online';
 
+/**
+ * Drawer values for creating or editing menu items
+ */
 type DrawerSubmitValues = {
   name: string;
   price?: number;
@@ -30,8 +39,11 @@ type DrawerSubmitValues = {
 };
 
 const HIGHLIGHT_HOLD_MS = 2500;
-const SHRINK_DISTANCE = 80; // pixels of scroll until fully compact
+const SHRINK_DISTANCE = 80;
 
+/**
+ * Util: Recursively finds the scroll container for an element.
+ */
 function getScrollContainer(el: HTMLElement): HTMLElement | Window {
   let node: HTMLElement | null = el.parentElement;
   while (node) {
@@ -44,12 +56,20 @@ function getScrollContainer(el: HTMLElement): HTMLElement | Window {
   }
   return window;
 }
+
+/**
+ * Util: Returns the current scrollTop for a scroller (HTMLElement or window).
+ */
 function getScrollTop(scroller: HTMLElement | Window): number {
   if (scroller === window) {
     return window.scrollY || document.documentElement.scrollTop || (document.body ? document.body.scrollTop : 0);
   }
   return (scroller as HTMLElement).scrollTop;
 }
+
+/**
+ * Util: Waits for scroll to remain idle for a given duration.
+ */
 function waitForScrollIdle(scroller: HTMLElement | Window, idleMs = 140, maxWaitMs = 2500): Promise<void> {
   return new Promise((resolve) => {
     let lastTop = getScrollTop(scroller);
@@ -72,7 +92,11 @@ function waitForScrollIdle(scroller: HTMLElement | Window, idleMs = 140, maxWait
   });
 }
 
+/**
+ * Main Menu Items page component
+ */
 export default function MenuItemsPage(): JSX.Element {
+  // Hook providing menu queries and mutations
   const {
     itemsQuery,
     categoriesQuery,
@@ -87,12 +111,14 @@ export default function MenuItemsPage(): JSX.Element {
     bulkCategoryMut,
   } = useMenuItems();
 
+  // Refetch on storage events (multi-tab)
   useEffect(() => {
     const onStorage = (e: StorageEvent) => e.key === 'menu:updated' && itemsQuery.refetch();
     window.addEventListener('storage', onStorage);
     return () => window.removeEventListener('storage', onStorage);
   }, [itemsQuery]);
 
+  // Filter and UI states
   const [q, setQ] = useState('');
   const [status, setStatus] = useState<Set<Status>>(new Set());
   const [channels, setChannels] = useState<Set<Channel>>(new Set());
@@ -100,35 +126,28 @@ export default function MenuItemsPage(): JSX.Element {
   const [sortBy, setSortBy] = useState<SortBy>('name-asc');
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
+  // Drawer & dialog states
   const [openAdd, setOpenAdd] = useState(false);
   const [openEdit, setOpenEdit] = useState<TMenuItem | null>(null);
   const [openBulkCategory, setOpenBulkCategory] = useState(false);
   const [openDeleteMany, setOpenDeleteMany] = useState(false);
 
-  // Freeze table while editing; unfreeze after drawer closes
+  // Highlight and freeze states
   const [frozenItems, setFrozenItems] = useState<TMenuItem[] | null>(null);
-
-  // Add flow: autoscroll then highlight
   const [pendingHighlightId, setPendingHighlightId] = useState<string | null>(null);
-
-  // Shared current highlight id
   const [highlightId, setHighlightId] = useState<string | null>(null);
-
-  // Edit flow: queue highlight (no scroll) until drawer closes
   const [queuedHighlightId, setQueuedHighlightId] = useState<string | null>(null);
 
+  // Header shrink effect
   const contentRef = useRef<HTMLDivElement | null>(null);
-  const [shrink, setShrink] = useState(0); // 0..1 based on scroll
+  const [shrink, setShrink] = useState(0);
 
-  // Header shrink/glass effect
   useLayoutEffect(() => {
     const scroller = contentRef.current;
     if (!scroller) return;
-
     let raf = 0;
     let last = -1;
     const clamp01 = (n: number) => Math.max(0, Math.min(1, n));
-
     const onScroll = () => {
       const t = clamp01(scroller.scrollTop / SHRINK_DISTANCE);
       if (t === last) return;
@@ -136,8 +155,7 @@ export default function MenuItemsPage(): JSX.Element {
       if (raf) cancelAnimationFrame(raf);
       raf = requestAnimationFrame(() => setShrink(t));
     };
-
-    onScroll(); // initial
+    onScroll();
     scroller.addEventListener('scroll', onScroll, { passive: true });
     return () => {
       scroller.removeEventListener('scroll', onScroll);
@@ -146,10 +164,11 @@ export default function MenuItemsPage(): JSX.Element {
   }, []);
 
   const loading = itemsQuery.isLoading || categoriesQuery.isLoading;
-
-  // Use frozen snapshot while editing; live items otherwise
   const sourceItems = frozenItems ?? items;
 
+  /**
+   * Derived filtered + sorted items view
+   */
   const viewItems = useMemo(() => {
     const qnorm = q.trim().toLowerCase();
     let list = sourceItems.filter((it) => {
@@ -174,62 +193,43 @@ export default function MenuItemsPage(): JSX.Element {
 
     if (sortBy === 'name-asc') list = list.slice().sort((a, b) => a.name.localeCompare(b.name));
     if (sortBy === 'created-desc') {
-      list = list
-        .slice()
-        .sort(
-          (a: any, b: any) =>
-            new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime()
-        );
+      list = list.slice().sort((a: any, b: any) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
     }
     if (sortBy === 'most-used') {
-      list = list
-        .slice()
-        .sort(
-          (a: any, b: any) =>
-            (b.usageCount || b.ordersCount || 0) - (a.usageCount || a.ordersCount || 0)
-        );
+      list = list.slice().sort((a: any, b: any) => (b.usageCount || b.ordersCount || 0) - (a.usageCount || a.ordersCount || 0));
     }
     return list;
   }, [sourceItems, q, status, channels, selectedCategory, sortBy]);
 
-  // ADD: autoscroll then highlight
+  /**
+   * Highlighting and refetch logic for edits/adds
+   */
   useEffect(() => {
     if (!pendingHighlightId) return;
     const exists = viewItems.some((it) => it.id === pendingHighlightId);
     if (!exists) return;
-
     const node = document.querySelector(`[data-item-id="${pendingHighlightId}"]`) as HTMLElement | null;
     if (!node) return;
-
     const scroller = contentRef.current || getScrollContainer(node);
     const before = getScrollTop(scroller);
-
     node.scrollIntoView({ behavior: 'smooth', block: 'center' });
-
     const raf = requestAnimationFrame(async () => {
       const after = getScrollTop(scroller);
       const didScroll = after !== before;
-
-      if (didScroll) {
-        await waitForScrollIdle(scroller, 140, 2500);
-      }
+      if (didScroll) await waitForScrollIdle(scroller, 140, 2500);
       setHighlightId(pendingHighlightId);
       setPendingHighlightId(null);
       window.setTimeout(() => setHighlightId(null), HIGHLIGHT_HOLD_MS);
     });
-
     return () => cancelAnimationFrame(raf);
   }, [pendingHighlightId, viewItems]);
 
-  // EDIT: freeze table when drawer opens
   useEffect(() => {
     if (openEdit && !frozenItems) {
       setFrozenItems(items);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [openEdit]);
+  }, [openEdit, items, frozenItems]);
 
-  // EDIT: when drawer closes, refetch and just highlight in place (NO autoscroll)
   useEffect(() => {
     if (!openEdit && (frozenItems || queuedHighlightId)) {
       itemsQuery
@@ -237,16 +237,16 @@ export default function MenuItemsPage(): JSX.Element {
         .catch(() => {})
         .finally(() => {
           if (queuedHighlightId) {
-            setHighlightId(queuedHighlightId); // no scroll
+            setHighlightId(queuedHighlightId);
             setQueuedHighlightId(null);
             window.setTimeout(() => setHighlightId(null), HIGHLIGHT_HOLD_MS);
           }
           setFrozenItems(null);
         });
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [openEdit]);
+  }, [openEdit, frozenItems, queuedHighlightId, itemsQuery]);
 
+  // Selection helpers
   const toggleSelect = (id: string) =>
     setSelectedIds((prev) => {
       const next = new Set(prev);
@@ -264,14 +264,10 @@ export default function MenuItemsPage(): JSX.Element {
 
   return (
     <div className="flex h-full flex-col min-h-0">
-      <div
-        ref={contentRef}
-        className="flex-1 min-h-0 overflow-y-auto p-0 text-[#2e2e30] text-sm"
-      >
+      <div ref={contentRef} className="flex-1 min-h-0 overflow-y-auto p-0 text-[#2e2e30] text-sm">
+        {/* Header with shrink effect */}
         <div
-          className={[
-            'sticky top-0 z-20 flex items-center justify-between border-b border-[#ececec] px-6',
-          ].join(' ')}
+          className="sticky top-0 z-20 flex items-center justify-between border-b border-[#ececec] px-6"
           style={{
             paddingTop: `${16 - 8 * shrink}px`,
             paddingBottom: `${16 - 8 * shrink}px`,
@@ -305,6 +301,7 @@ export default function MenuItemsPage(): JSX.Element {
           </button>
         </div>
 
+        {/* Body */}
         <div className="px-6 pt-4">
           {loading ? (
             <>
@@ -332,38 +329,59 @@ export default function MenuItemsPage(): JSX.Element {
               />
 
               <div className="mt-4 space-y-4">
-                <Suspense fallback={<MenuTableSkeleton rows={6} />}>
-                  <MenuTable
-                    items={viewItems}
-                    highlightId={highlightId}
-                    selectedIds={selectedIds}
-                    onToggleSelect={toggleSelect}
-                    onToggleSelectAll={toggleSelectAll}
-                    onToggleAvailability={(id, active) => availabilityMut.mutate({ id, active })}
-                    onEdit={(item) => setOpenEdit(item)}
-                    onDuplicate={(id) => duplicateMut.mutate(id)}
-                    onDelete={(id) => {
-                      if (confirm('Delete this item?')) deleteMut.mutate({ id });
-                    }}
-                  />
-                </Suspense>
+                {/* Empty State (Dashboard style) */}
+                {!viewItems.length ? (
+                  <div className="flex h-[60vh] flex-col items-center justify-center text-center p-8">
+                    <Squares2X2Icon className="h-12 w-12 text-slate-400 mb-3" />
+                    <h2 className="text-xl font-semibold text-[#2e2e30]">No Menu Items Yet</h2>
+                    <p className="text-sm text-[#6b6b70] mt-2 mb-6 max-w-md">
+                      Get started by adding your first product. Menu items will appear here once created.
+                    </p>
+                    <button
+                      onClick={() => setOpenAdd(true)}
+                      className="rounded-md bg-[#2e2e30] text-white px-5 py-2 hover:opacity-90"
+                    >
+                      Add Product
+                    </button>
+                  </div>
+                ) : (
+                  <Suspense fallback={<MenuTableSkeleton rows={6} />}>
+                    <MenuTable
+                      items={viewItems}
+                      highlightId={highlightId}
+                      selectedIds={selectedIds}
+                      onToggleSelect={toggleSelect}
+                      onToggleSelectAll={toggleSelectAll}
+                      onToggleAvailability={(id, active) => availabilityMut.mutate({ id, active })}
+                      onEdit={(item) => setOpenEdit(item)}
+                      onDuplicate={(id) => duplicateMut.mutate(id)}
+                      onDelete={(id) => {
+                        if (confirm('Delete this item?')) deleteMut.mutate({ id });
+                      }}
+                    />
+                  </Suspense>
+                )}
               </div>
 
-              <BulkActionsBar
-                count={selectedIds.size}
-                onSetAvailable={() => {
-                  const ids = Array.from(selectedIds);
-                  if (ids.length) bulkAvailabilityMut.mutate({ ids, active: true });
-                }}
-                onSetUnavailable={() => {
-                  const ids = Array.from(selectedIds);
-                  if (ids.length) bulkAvailabilityMut.mutate({ ids, active: false });
-                }}
-                onAssignCategory={() => setOpenBulkCategory(true)}
-                onDelete={() => setOpenDeleteMany(true)}
-                onClear={clearSelection}
-              />
+              {/* Bulk Actions */}
+              {viewItems.length > 0 && (
+                <BulkActionsBar
+                  count={selectedIds.size}
+                  onSetAvailable={() => {
+                    const ids = Array.from(selectedIds);
+                    if (ids.length) bulkAvailabilityMut.mutate({ ids, active: true });
+                  }}
+                  onSetUnavailable={() => {
+                    const ids = Array.from(selectedIds);
+                    if (ids.length) bulkAvailabilityMut.mutate({ ids, active: false });
+                  }}
+                  onAssignCategory={() => setOpenBulkCategory(true)}
+                  onDelete={() => setOpenDeleteMany(true)}
+                  onClear={clearSelection}
+                />
+              )}
 
+              {/* Drawers & Dialogs */}
               <Suspense fallback={null}>
                 <AnimatePresence initial={false} mode="wait">
                   {openAdd && (
@@ -393,9 +411,7 @@ export default function MenuItemsPage(): JSX.Element {
                           tags: values.tags,
                         };
                         if (typeof values.price === 'number') payload.price = values.price;
-
                         const created = await createMut.mutateAsync(payload);
-                        // ADD: autoscroll then highlight
                         setPendingHighlightId((created as any).id);
                       }}
                     />
@@ -440,7 +456,6 @@ export default function MenuItemsPage(): JSX.Element {
                         };
                         if (typeof values.price === 'number') payload.price = values.price;
                         await updateMut.mutateAsync({ id: editingId, payload });
-                        // EDIT: queue highlight only (no autoscroll). Runs after drawer closes.
                         setQueuedHighlightId(editingId);
                       }}
                     />

@@ -7,6 +7,7 @@ import { createTenant, getMyTenant, saveOnboardingStep } from '../controllers/te
 
 const router: RouterType = express.Router();
 
+// Tenant routes
 router.post('/tenants', authenticateJWT, validateRequest(tenantCreateSchema), createTenant);
 router.get('/tenants/me', authenticateJWT, getMyTenant);
 router.post('/tenants/onboarding-step', authenticateJWT, saveOnboardingStep);

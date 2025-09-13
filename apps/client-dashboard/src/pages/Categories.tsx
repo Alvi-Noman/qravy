@@ -1,5 +1,20 @@
-// apps/client-dashboard/src/pages/Categories.tsx
-import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+/**
+ * CategoriesPage.tsx
+ *
+ * A full React component for managing categories. Similar structure to MenuItemsPage,
+ * but tailored to categories workflow with empty state inspired by Dashboard (center aligned,
+ * icon, title, description, call-to-action).
+ */
+
+import {
+  lazy,
+  Suspense,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { Link } from 'react-router-dom';
 import type { Category } from '../api/categories';
 import { useCategories } from '../components/Categories/useCategories';
@@ -7,6 +22,7 @@ import { BulkActionsBar } from '../components/Categories';
 import CategoriesToolbar from '../components/Categories/CategoriesToolbar';
 import CategoriesToolbarSkeleton from '../components/Categories/CategoriesToolbarSkeleton';
 import CategoryListSkeleton from '../components/Categories/CategoryListSkeleton';
+import { TagIcon } from '@heroicons/react/24/outline';
 
 const CategoryList = lazy(() => import('../components/Categories/CategoryList'));
 const CategoryFormDialog = lazy(() => import('../components/Categories/CategoryFormDialog'));
@@ -16,16 +32,19 @@ const MergeCategoriesDialog = lazy(() => import('../components/Categories/MergeC
 type SortBy = 'name-asc' | 'created-desc' | 'most-used';
 
 const HIGHLIGHT_HOLD_MS = 2500;
-const SHRINK_DISTANCE = 80; // pixels of scroll until fully compact
+const SHRINK_DISTANCE = 80;
 
-// Scroll helpers (same pattern as Menu Items)
+/**
+ * Scroll helpers (same as in MenuItemsPage)
+ */
 function getScrollContainer(el: HTMLElement): HTMLElement | Window {
   let node: HTMLElement | null = el.parentElement;
   while (node) {
     const style = getComputedStyle(node);
     const oy = style.overflowY;
     const scrollable =
-      (oy === 'auto' || oy === 'scroll' || oy === 'overlay') && node.scrollHeight > node.clientHeight;
+      (oy === 'auto' || oy === 'scroll' || oy === 'overlay') &&
+      node.scrollHeight > node.clientHeight;
     if (scrollable) return node;
     node = node.parentElement;
   }
@@ -33,11 +52,19 @@ function getScrollContainer(el: HTMLElement): HTMLElement | Window {
 }
 function getScrollTop(scroller: HTMLElement | Window): number {
   if (scroller === window) {
-    return window.scrollY || document.documentElement.scrollTop || (document.body ? document.body.scrollTop : 0);
+    return (
+      window.scrollY ||
+      document.documentElement.scrollTop ||
+      (document.body ? document.body.scrollTop : 0)
+    );
   }
   return (scroller as HTMLElement).scrollTop;
 }
-function waitForScrollIdle(scroller: HTMLElement | Window, idleMs = 140, maxWaitMs = 2500): Promise<void> {
+function waitForScrollIdle(
+  scroller: HTMLElement | Window,
+  idleMs = 140,
+  maxWaitMs = 2500
+): Promise<void> {
   return new Promise((resolve) => {
     let lastTop = getScrollTop(scroller);
     let lastChange = performance.now();
@@ -59,6 +86,9 @@ function waitForScrollIdle(scroller: HTMLElement | Window, idleMs = 140, maxWait
   });
 }
 
+/**
+ * Main CategoriesPage component
+ */
 export default function CategoriesPage() {
   const {
     categoriesQuery,
@@ -72,7 +102,7 @@ export default function CategoriesPage() {
     availabilityMut,
   } = useCategories();
 
-  // Cross-tab refresh
+  // Storage listener for cross-tab updates
   useEffect(() => {
     const onStorage = (e: StorageEvent) => {
       if (e.key === 'categories:updated') categoriesQuery.refetch();
@@ -81,6 +111,7 @@ export default function CategoriesPage() {
     return () => window.removeEventListener('storage', onStorage);
   }, [categoriesQuery]);
 
+  // UI + filter states
   const [q, setQ] = useState('');
   const [sortBy, setSortBy] = useState<SortBy>('name-asc');
   const [channels, setChannels] = useState<Set<'dine-in' | 'online'>>(new Set());
@@ -92,29 +123,30 @@ export default function CategoriesPage() {
   const [deleteTarget, setDeleteTarget] = useState<Category | null>(null);
   const [openMerge, setOpenMerge] = useState(false);
 
-  // Freeze list while renaming; unfreeze after dialog closes
-  const [frozenCategories, setFrozenCategories] = useState<Category[] | null>(null);
+  // Freeze + highlight states (for editing/adding)
+  const [frozenCategories, setFrozenCategories] = useState<Category[] | null>(
+    null
+  );
   const sourceCategories = frozenCategories ?? categories;
 
-  // Highlight states
-  const [pendingHighlightId, setPendingHighlightId] = useState<string | null>(null); // ADD: autoscroll + highlight
-  const [highlightId, setHighlightId] = useState<string | null>(null); // shared highlight
-  const [queuedHighlightId, setQueuedHighlightId] = useState<string | null>(null); // EDIT: highlight only (no scroll)
+  const [pendingHighlightId, setPendingHighlightId] = useState<string | null>(
+    null
+  );
+  const [highlightId, setHighlightId] = useState<string | null>(null);
+  const [queuedHighlightId, setQueuedHighlightId] = useState<string | null>(
+    null
+  );
 
-  // Scroll container + shrink progress
+  // Scroll shrink header
   const contentRef = useRef<HTMLDivElement | null>(null);
-  const [shrink, setShrink] = useState(0); // 0..1 based on scroll
+  const [shrink, setShrink] = useState(0);
 
-  // Track shrink progress based on scroll position (same as Menu Items)
   useLayoutEffect(() => {
     const scroller = contentRef.current;
     if (!scroller) return;
-
     let raf = 0;
     let last = -1;
-
     const clamp01 = (n: number) => Math.max(0, Math.min(1, n));
-
     const onScroll = () => {
       const t = clamp01(scroller.scrollTop / SHRINK_DISTANCE);
       if (t === last) return;
@@ -122,8 +154,7 @@ export default function CategoriesPage() {
       if (raf) cancelAnimationFrame(raf);
       raf = requestAnimationFrame(() => setShrink(t));
     };
-
-    onScroll(); // initial
+    onScroll();
     scroller.addEventListener('scroll', onScroll, { passive: true });
     return () => {
       scroller.removeEventListener('scroll', onScroll);
@@ -131,35 +162,33 @@ export default function CategoriesPage() {
     };
   }, []);
 
-  const existingNames = useMemo(() => categories.map((c) => c.name), [categories]);
-
-  // Compute category "active" if any item in the category is active
+  // Derived values
+  const existingNames = useMemo(
+    () => categories.map((c) => c.name),
+    [categories]
+  );
   const activeByName = useMemo(() => {
     const m = new Map<string, boolean>();
     for (const it of items) {
       const name = (it.category || '').trim();
       if (!name) continue;
-      const itAny = it as unknown as Record<string, any>;
+      const itAny = it as any;
       const isActive = !(itAny.hidden || itAny.status === 'hidden');
       if (isActive) m.set(name, true);
       else if (!m.has(name)) m.set(name, false);
     }
     return m;
   }, [items]);
-
   const viewCategories = useMemo(() => {
     let list = sourceCategories.slice();
-
     const qnorm = q.trim().toLowerCase();
     if (qnorm) list = list.filter((c) => c.name.toLowerCase().includes(qnorm));
-
-    // Channel filter: include categories that have at least one item visible in selected channels
     if (channels.size > 0) {
       const selected = Array.from(channels);
       list = list.filter((c) =>
         items.some((it) => {
           if (it.category !== c.name) return false;
-          const itAny = it as unknown as Record<string, any>;
+          const itAny = it as any;
           return selected.every((ch) => {
             if (ch === 'dine-in') return itAny.visibility?.dineIn !== false;
             if (ch === 'online') return itAny.visibility?.online !== false;
@@ -168,54 +197,46 @@ export default function CategoriesPage() {
         })
       );
     }
-
     if (sortBy === 'name-asc') list.sort((a, b) => a.name.localeCompare(b.name));
     if (sortBy === 'created-desc')
-      list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+      list.sort(
+        (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+      );
     if (sortBy === 'most-used')
       list.sort((a, b) => (usageMap.get(b.name) ?? 0) - (usageMap.get(a.name) ?? 0));
-
     return list;
   }, [sourceCategories, items, q, channels, sortBy, usageMap]);
 
-  // ADD: autoscroll then highlight when pendingHighlightId is set
+  // Highlight logic (auto-scroll + highlight)
   useEffect(() => {
     if (!pendingHighlightId) return;
     const exists = viewCategories.some((c) => c.id === pendingHighlightId);
     if (!exists) return;
-
-    const node = document.querySelector(`[data-item-id="${pendingHighlightId}"]`) as HTMLElement | null;
+    const node = document.querySelector(
+      `[data-item-id="${pendingHighlightId}"]`
+    ) as HTMLElement | null;
     if (!node) return;
-
     const scroller = contentRef.current || getScrollContainer(node);
     const before = getScrollTop(scroller);
-
     node.scrollIntoView({ behavior: 'smooth', block: 'center' });
-
     const raf = requestAnimationFrame(async () => {
       const after = getScrollTop(scroller);
       const didScroll = after !== before;
-
-      if (didScroll) {
-        await waitForScrollIdle(scroller, 140, 2500);
-      }
+      if (didScroll) await waitForScrollIdle(scroller, 140, 2500);
       setHighlightId(pendingHighlightId);
       setPendingHighlightId(null);
       window.setTimeout(() => setHighlightId(null), HIGHLIGHT_HOLD_MS);
     });
-
     return () => cancelAnimationFrame(raf);
   }, [pendingHighlightId, viewCategories]);
 
-  // Freeze when renaming dialog opens; snapshot the current list
+  // Freeze list during edit, restore after
   useEffect(() => {
     if (openForm && editing && !frozenCategories) {
       setFrozenCategories(categories);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [openForm, editing]);
 
-  // On dialog close: unfreeze and run queued highlight after refetch (NO autoscroll on edit)
   useEffect(() => {
     if (!openForm && (frozenCategories || queuedHighlightId)) {
       categoriesQuery
@@ -223,44 +244,44 @@ export default function CategoriesPage() {
         .catch(() => {})
         .finally(() => {
           if (queuedHighlightId) {
-            setHighlightId(queuedHighlightId); // highlight in place
+            setHighlightId(queuedHighlightId);
             setQueuedHighlightId(null);
             window.setTimeout(() => setHighlightId(null), HIGHLIGHT_HOLD_MS);
           }
           setFrozenCategories(null);
         });
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [openForm]);
 
+  // Selection helpers
   const toggleSelect = (id: string) =>
     setSelectedIds((prev) => {
       const next = new Set(prev);
       next.has(id) ? next.delete(id) : next.add(id);
       return next;
     });
-
   const toggleSelectAll = () => {
     if (!viewCategories.length) return;
     const all = viewCategories.every((c) => selectedIds.has(c.id));
-    setSelectedIds(all ? new Set() : new Set(viewCategories.map((c) => c.id)));
+    setSelectedIds(
+      all ? new Set() : new Set(viewCategories.map((c) => c.id))
+    );
   };
 
   const loading = categoriesQuery.isLoading;
 
   return (
     <div className="flex h-full flex-col min-h-0">
-      <div ref={contentRef} className="flex-1 min-h-0 overflow-y-auto p-0 text-[#2e2e30] text-sm">
-        {/* Sticky, shrinking, glassy header (matches Menu Items) */}
+      <div
+        ref={contentRef}
+        className="flex-1 min-h-0 overflow-y-auto p-0 text-[#2e2e30] text-sm"
+      >
+        {/* Header with shrink effect */}
         <div
-          className={[
-            'sticky top-0 z-20 flex items-center justify-between border-b border-[#ececec] px-6',
-          ].join(' ')}
+          className="sticky top-0 z-20 flex items-center justify-between border-b border-[#ececec] px-6"
           style={{
-            // Smoothly reduce vertical padding from 16px to 8px as you scroll
             paddingTop: `${16 - 8 * shrink}px`,
             paddingBottom: `${16 - 8 * shrink}px`,
-            // Fade background from solid to 25% alpha as you scroll
             backgroundColor: `rgba(252, 252, 252, ${1 - 0.75 * shrink})`,
             WebkitBackdropFilter: 'blur(5px)',
             backdropFilter: 'blur(5px)',
@@ -273,18 +294,15 @@ export default function CategoriesPage() {
               transform: `translateY(${2 * shrink}px) scale(${1 - 0.06 * shrink})`,
               transformOrigin: 'left center',
               transition: 'transform 160ms ease',
-              willChange: 'transform',
             }}
           >
             Categories
           </h2>
-
           <div
             className="flex items-center gap-2"
             style={{
               transform: `scale(${1 - 0.05 * shrink})`,
               transformOrigin: 'right center',
-              willChange: 'transform',
               transition: 'transform 160ms ease',
             }}
           >
@@ -295,7 +313,7 @@ export default function CategoriesPage() {
               Manage Category
             </Link>
             <button
-              className="rounded-md bg-[#2e2e30] px-4 py-2 text-sm text-white hover:opacity-90 transition-transform"
+              className="rounded-md bg-[#2e2e30] px-4 py-2 text-sm text-white hover:opacity-90"
               onClick={() => {
                 setEditing(null);
                 setOpenForm(true);
@@ -306,7 +324,7 @@ export default function CategoriesPage() {
           </div>
         </div>
 
-        {/* Content */}
+        {/* Body */}
         <div className="px-6 pt-4">
           {loading ? (
             <>
@@ -329,45 +347,67 @@ export default function CategoriesPage() {
               />
 
               <div className="mt-4 space-y-4">
-                <Suspense fallback={<CategoryListSkeleton rows={6} />}>
-                  <CategoryList
-                    categories={viewCategories}
-                    usageByName={usageMap}
-                    activeByName={activeByName}
-                    toggling={availabilityMut.isPending}
-                    selectedIds={selectedIds}
-                    onToggleSelect={toggleSelect}
-                    onToggleSelectAll={toggleSelectAll}
-                    onToggleAvailability={(category, active) =>
-                      availabilityMut.mutate({ name: category.name, active })
-                    }
-                    onEdit={(c) => {
-                      setEditing(c);
-                      setOpenForm(true);
-                    }}
-                    onDelete={(c) => {
-                      setDeleteTarget(c);
-                      setOpenDelete(true);
-                    }}
-                    highlightId={highlightId}
-                  />
-                </Suspense>
+                {/* Empty State (Dashboard style) */}
+                {!viewCategories.length ? (
+                  <div className="flex h-[60vh] flex-col items-center justify-center text-center p-8">
+                    <TagIcon className="h-12 w-12 text-slate-400 mb-3" />
+                    <h2 className="text-xl font-semibold text-[#2e2e30]">
+                      No Categories Yet
+                    </h2>
+                    <p className="text-sm text-[#6b6b70] mt-2 mb-6 max-w-md">
+                      Organize your menu by creating categories. Once added,
+                      they'll appear here.
+                    </p>
+                    <button
+                      onClick={() => setOpenForm(true)}
+                      className="rounded-md bg-[#2e2e30] text-white px-5 py-2 hover:opacity-90"
+                    >
+                      Add Category
+                    </button>
+                  </div>
+                ) : (
+                  <Suspense fallback={<CategoryListSkeleton rows={6} />}>
+                    <CategoryList
+                      categories={viewCategories}
+                      usageByName={usageMap}
+                      activeByName={activeByName}
+                      toggling={availabilityMut.isPending}
+                      selectedIds={selectedIds}
+                      onToggleSelect={toggleSelect}
+                      onToggleSelectAll={toggleSelectAll}
+                      onToggleAvailability={(category, active) =>
+                        availabilityMut.mutate({ name: category.name, active })
+                      }
+                      onEdit={(c) => {
+                        setEditing(c);
+                        setOpenForm(true);
+                      }}
+                      onDelete={(c) => {
+                        setDeleteTarget(c);
+                        setOpenDelete(true);
+                      }}
+                      highlightId={highlightId}
+                    />
+                  </Suspense>
+                )}
               </div>
 
-              <BulkActionsBar
-                count={selectedIds.size}
-                onClear={() => setSelectedIds(new Set())}
-                onMerge={() => setOpenMerge(true)}
-                onDelete={() => {
-                  const firstId = Array.from(selectedIds)[0];
-                  const target = categories.find((c) => c.id === firstId) || null;
-                  if (!target) return;
-                  setDeleteTarget(target);
-                  setOpenDelete(true);
-                }}
-              />
-
-              {/* Lazy dialogs */}
+              {/* Bulk actions + dialogs */}
+              {viewCategories.length > 0 && (
+                <BulkActionsBar
+                  count={selectedIds.size}
+                  onClear={() => setSelectedIds(new Set())}
+                  onMerge={() => setOpenMerge(true)}
+                  onDelete={() => {
+                    const firstId = Array.from(selectedIds)[0];
+                    const target =
+                      categories.find((c) => c.id === firstId) || null;
+                    if (!target) return;
+                    setDeleteTarget(target);
+                    setOpenDelete(true);
+                  }}
+                />
+              )}
               <Suspense fallback={null}>
                 <CategoryFormDialog
                   open={openForm}
@@ -375,31 +415,38 @@ export default function CategoriesPage() {
                   initialName={editing?.name || ''}
                   existingNames={
                     editing
-                      ? existingNames.filter((n) => n.toLowerCase() !== editing.name.toLowerCase())
+                      ? existingNames.filter(
+                          (n) =>
+                            n.toLowerCase() !== editing.name.toLowerCase()
+                        )
                       : existingNames
                   }
-                  isSubmitting={createMut.isPending || renameMut.isPending}
+                  isSubmitting={
+                    createMut.isPending || renameMut.isPending
+                  }
                   onClose={() => setOpenForm(false)}
                   onSubmit={async (name) => {
                     if (editing) {
-                      const updated = await renameMut.mutateAsync({ id: editing.id, newName: name });
+                      const updated = await renameMut.mutateAsync({
+                        id: editing.id,
+                        newName: name,
+                      });
                       setOpenForm(false);
-                      // EDIT: queue highlight only (no autoscroll). Runs after dialog closes.
                       setQueuedHighlightId(updated.id);
                     } else {
                       const created = await createMut.mutateAsync(name);
                       setOpenForm(false);
-                      // ADD: autoscroll then highlight
                       setPendingHighlightId(created.id);
                     }
                   }}
                 />
-
                 <DeleteReassignDialog
                   open={openDelete}
                   category={deleteTarget}
                   categories={categories}
-                  usageCount={deleteTarget ? usageMap.get(deleteTarget.name) ?? 0 : 0}
+                  usageCount={
+                    deleteTarget ? usageMap.get(deleteTarget.name) ?? 0 : 0
+                  }
                   isSubmitting={deleteMut.isPending}
                   onClose={() => setOpenDelete(false)}
                   onConfirm={({ mode, reassignToId }) => {
@@ -410,7 +457,6 @@ export default function CategoriesPage() {
                     );
                   }}
                 />
-
                 <MergeCategoriesDialog
                   open={openMerge}
                   selectedIds={Array.from(selectedIds)}

@@ -23,7 +23,7 @@ export async function createTenant(req: Request, res: Response, next: NextFuncti
     const userId = req.user?.id;
     if (!userId) return res.fail(401, 'Unauthorized');
 
-    // Prevent creating more than one tenant for the same user
+    // Ensure single tenant per user
     const user = await usersCol().findOne({ _id: new ObjectId(userId) });
     if (user?.tenantId) {
       return res.fail(400, 'User already has a tenant. Only one restaurant allowed.');
@@ -34,12 +34,7 @@ export async function createTenant(req: Request, res: Response, next: NextFuncti
     const cleanSub = String(subdomain || '').trim().toLowerCase();
 
     if (!cleanName) return res.fail(400, 'Name is required');
-    if (
-      !/^[a-z0-9-]{3,32}$/.test(cleanSub) ||
-      cleanSub.startsWith('-') ||
-      cleanSub.endsWith('-') ||
-      /--/.test(cleanSub)
-    ) {
+    if (!/^[a-z0-9-]{3,32}$/.test(cleanSub) || cleanSub.startsWith('-') || cleanSub.endsWith('-') || /--/.test(cleanSub)) {
       return res.fail(400, 'Invalid subdomain');
     }
 
@@ -59,6 +54,7 @@ export async function createTenant(req: Request, res: Response, next: NextFuncti
     const ins = await tenantsCol().insertOne(doc);
     const created: TenantDoc = { ...doc, _id: ins.insertedId };
 
+    // Register owner as active member
     const member: MembershipDoc = {
       tenantId: ins.insertedId,
       userId: new ObjectId(userId),
@@ -69,11 +65,10 @@ export async function createTenant(req: Request, res: Response, next: NextFuncti
     };
     await membershipsCol().insertOne(member);
 
-    await usersCol().updateOne(
-      { _id: new ObjectId(userId) },
-      { $set: { tenantId: ins.insertedId } }
-    );
+    // Link tenant to user
+    await usersCol().updateOne({ _id: new ObjectId(userId) }, { $set: { tenantId: ins.insertedId } });
 
+    // Audit log
     await auditLog({
       userId,
       action: 'TENANT_CREATE',
@@ -119,6 +114,9 @@ export async function saveOnboardingStep(req: Request, res: Response, next: Next
     if (step === 'owner') update.ownerInfo = data;
     if (step === 'restaurant') update.restaurantInfo = data;
     if (step === 'plan') update.planInfo = data;
+
+    // If final step is "plan", mark onboarding as complete
+    if (step === 'plan') update.onboardingCompleted = true;
 
     await tenantsCol().updateOne(
       { _id: new ObjectId(tenantId) },
