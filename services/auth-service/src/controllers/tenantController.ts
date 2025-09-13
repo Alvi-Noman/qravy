@@ -23,12 +23,23 @@ export async function createTenant(req: Request, res: Response, next: NextFuncti
     const userId = req.user?.id;
     if (!userId) return res.fail(401, 'Unauthorized');
 
+    // Prevent creating more than one tenant for the same user
+    const user = await usersCol().findOne({ _id: new ObjectId(userId) });
+    if (user?.tenantId) {
+      return res.fail(400, 'User already has a tenant. Only one restaurant allowed.');
+    }
+
     const { name, subdomain } = req.body as { name: string; subdomain: string };
     const cleanName = String(name || '').trim();
     const cleanSub = String(subdomain || '').trim().toLowerCase();
 
     if (!cleanName) return res.fail(400, 'Name is required');
-    if (!/^[a-z0-9-]{3,32}$/.test(cleanSub) || cleanSub.startsWith('-') || cleanSub.endsWith('-') || /--/.test(cleanSub)) {
+    if (
+      !/^[a-z0-9-]{3,32}$/.test(cleanSub) ||
+      cleanSub.startsWith('-') ||
+      cleanSub.endsWith('-') ||
+      /--/.test(cleanSub)
+    ) {
       return res.fail(400, 'Invalid subdomain');
     }
 
@@ -93,6 +104,31 @@ export async function getMyTenant(req: Request, res: Response, next: NextFunctio
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     logger.error(`getMyTenant error: ${msg}`);
+    next(err);
+  }
+}
+
+export async function saveOnboardingStep(req: Request, res: Response, next: NextFunction) {
+  try {
+    const tenantId = req.user?.tenantId;
+    if (!tenantId) return res.fail(400, 'No tenant found');
+
+    const { step, data } = req.body;
+
+    const update: Partial<TenantDoc> = {};
+    if (step === 'owner') update.ownerInfo = data;
+    if (step === 'restaurant') update.restaurantInfo = data;
+    if (step === 'plan') update.planInfo = data;
+
+    await tenantsCol().updateOne(
+      { _id: new ObjectId(tenantId) },
+      { $set: { ...update, updatedAt: new Date() } }
+    );
+
+    return res.ok({ message: `${step} saved` });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.error(`saveOnboardingStep error: ${msg}`);
     next(err);
   }
 }

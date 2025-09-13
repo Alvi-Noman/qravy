@@ -9,11 +9,13 @@ function toId(id?: ObjectId): string {
   return id ? id.toString() : '';
 }
 
-export function toUserDTO(user: UserDoc): v1.UserDTO {
+export function toUserDTO(user: UserDoc, tenant?: TenantDoc): v1.UserDTO {
   return {
     id: toId(user._id),
     email: user.email,
     isVerified: !!user.isVerified,
+    tenantId: user.tenantId ? toId(user.tenantId) : null,
+    isOnboarded: tenant?.onboardingCompleted ?? false,
   };
 }
 

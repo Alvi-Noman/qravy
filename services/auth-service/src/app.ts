@@ -1,4 +1,3 @@
-// services/auth-service/src/app.ts
 /**
  * Auth service app
  * - Rate limit (skips OPTIONS so preflights don't count)
@@ -13,6 +12,7 @@ import morgan from 'morgan';
 import authRoutes from './routes/authRoutes.js';
 import menuRoutes from './routes/menuRoutes.js';
 import tenantRoutes from './routes/tenantRoutes.js';
+import userRoutes from './routes/userRoutes.js'; 
 import logger from './utils/logger.js';
 import { responseFormatter } from './middleware/response.js';
 import { errorHandler } from './middleware/errorHandler.js';
@@ -49,6 +49,7 @@ app.get('/health', (_req: Request, res: Response) => {
 app.use('/api/v1/auth', authRoutes);
 app.use('/api/v1/auth', menuRoutes);
 app.use('/api/v1/auth', tenantRoutes);
+app.use('/api/v1/auth', userRoutes); 
 
 if (process.env.NODE_ENV !== 'production') {
   app.use('/api/v1', (req: Request, res: Response) => {

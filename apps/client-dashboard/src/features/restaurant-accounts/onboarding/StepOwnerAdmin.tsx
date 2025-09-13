@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { OwnerAdminInfo } from './types';
+import api from '../../../api/auth';
 
 type Props = { value: OwnerAdminInfo; onChange: (v: OwnerAdminInfo) => void; onNext: () => void };
 
@@ -52,10 +53,16 @@ export default function StepOwnerAdmin({ value, onChange, onNext }: Props) {
     };
   }, []);
 
-  const submit = (e: React.FormEvent) => {
+  const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!value.fullName.trim()) return setError('Please enter your name.');
     if (!value.phone.trim()) return setError('Please enter your phone number.');
+
+    await api.post('/api/v1/auth/tenants/onboarding-step', {
+      step: 'owner',
+      data: value,
+    });
+
     onNext();
   };
 
@@ -84,7 +91,6 @@ export default function StepOwnerAdmin({ value, onChange, onNext }: Props) {
 
       <div className="w-full mb-4">
         <label htmlFor="owner-phone" className="block text-base text-[#2e2e30] mb-1">Phone number</label>
-
         <div
           ref={groupRef}
           className="relative flex items-center gap-2 rounded-md border border-[#cecece] hover:border-[#b0b0b5] bg-white transition px-2"
@@ -98,16 +104,7 @@ export default function StepOwnerAdmin({ value, onChange, onNext }: Props) {
             title={DIAL_CODES.find(d => d.code === dialCode)?.label || dialCode}
           >
             {dialCode}
-            <svg
-              aria-hidden="true"
-              width="14"
-              height="14"
-              viewBox="0 0 24 24"
-              className="ml-1 text-[#5b5b5d]"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-            >
+            <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" className="ml-1 text-[#5b5b5d]" fill="none" stroke="currentColor" strokeWidth="2">
               <path d="M6 9l6 6 6-6" />
             </svg>
           </button>

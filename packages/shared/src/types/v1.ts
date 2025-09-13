@@ -2,6 +2,8 @@ export interface UserDTO {
   id: string;
   email: string;
   isVerified: boolean;
+  tenantId: string | null;
+  isOnboarded: boolean;
 }
 
 export interface VariationDTO {

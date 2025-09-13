@@ -12,6 +12,7 @@ function userJsonSchema() {
         email: { bsonType: 'string' },
         isVerified: { bsonType: ['bool', 'null'] },
         tenantId: { bsonType: ['objectId', 'null'] },
+        isOnboarded: { bsonType: ['bool', 'null'] },
         refreshTokens: {
           bsonType: ['array', 'null'],
           items: {
@@ -48,6 +49,27 @@ function tenantJsonSchema() {
         subdomain: { bsonType: 'string' },
         ownerId: { bsonType: 'objectId' },
         onboardingCompleted: { bsonType: 'bool' },
+        ownerInfo: {
+          bsonType: ['object', 'null'],
+          properties: {
+            fullName: { bsonType: 'string' },
+            phone: { bsonType: 'string' },
+          },
+        },
+        restaurantInfo: {
+          bsonType: ['object', 'null'],
+          properties: {
+            restaurantType: { bsonType: 'string' },
+            country: { bsonType: 'string' },
+            address: { bsonType: 'string' },
+          },
+        },
+        planInfo: {
+          bsonType: ['object', 'null'],
+          properties: {
+            planId: { bsonType: 'string' },
+          },
+        },
         createdAt: { bsonType: 'date' },
         updatedAt: { bsonType: 'date' },
       },

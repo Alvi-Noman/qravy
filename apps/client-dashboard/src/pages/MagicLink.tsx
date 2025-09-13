@@ -11,7 +11,7 @@ type AuthUser = {
   email: string;
   name: string;
   company: string;
-  isOnboarded?: boolean;
+  tenantId?: string | null;
 };
 
 type VerifyResponse = {
@@ -19,10 +19,6 @@ type VerifyResponse = {
   user: AuthUser;
 };
 
-/**
- * Page component for verifying a magic login link.
- * Displays success, error, or pending state.
- */
 export default function MagicLink() {
   const [searchParams] = useSearchParams();
   const token = searchParams.get('token') ?? '';
@@ -41,8 +37,12 @@ export default function MagicLink() {
     if (isSuccess && data?.token && data.user) {
       login(data.token, data.user);
       timeoutRef.current = window.setTimeout(() => {
-        navigate(data.user.isOnboarded ? '/dashboard' : '/create-restaurant');
-      }, 1500);
+        if (!data.user.tenantId) {
+          navigate('/create-restaurant', { replace: true });
+        } else {
+          navigate('/dashboard', { replace: true });
+        }
+      }, 1000);
     }
     return () => {
       if (timeoutRef.current) clearTimeout(timeoutRef.current);
@@ -56,7 +56,6 @@ export default function MagicLink() {
     <div className="min-h-screen w-full bg-[#fcfcfc] font-inter">
       {status === 'success' && <AuthSuccessScreen />}
       {status === 'error' && <AuthErrorScreen />}
-      {/* pending renders nothing */}
     </div>
   );
 }

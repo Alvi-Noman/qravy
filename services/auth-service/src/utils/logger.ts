@@ -6,7 +6,7 @@ const customLevels = {
   error: 0,
   warn: 1,
   info: 2,
-  http: 3, // for Morgan HTTP logs
+  http: 3,
   debug: 4,
 };
 

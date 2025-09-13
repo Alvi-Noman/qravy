@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import type { RestaurantInfo } from './types';
+import api from '../../../api/auth';
 
 type Props = {
   value: RestaurantInfo;
@@ -36,22 +37,18 @@ const COUNTRIES = [
 
 export default function StepRestaurantInfo({ value, onChange, onNext }: Props) {
   const [error, setError] = useState<string | null>(null);
-
-  // Category dropdown
   const [catOpen, setCatOpen] = useState(false);
   const catRef = useRef<HTMLDivElement | null>(null);
-
-  // Country dropdown with search (tall card)
   const [countryOpen, setCountryOpen] = useState(false);
   const [countryQuery, setCountryQuery] = useState('');
   const countryRef = useRef<HTMLDivElement | null>(null);
+
   const filteredCountries = useMemo(() => {
     const q = countryQuery.trim().toLowerCase();
     if (!q) return COUNTRIES;
     return COUNTRIES.filter((c) => c.toLowerCase().includes(q));
   }, [countryQuery]);
 
-  // Close popovers on outside click / ESC
   useEffect(() => {
     const onDocClick = (e: MouseEvent) => {
       const t = e.target as Node;
@@ -84,11 +81,17 @@ export default function StepRestaurantInfo({ value, onChange, onNext }: Props) {
     setCountryOpen(false);
   };
 
-  const submit = (e: React.FormEvent) => {
+  const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!value.restaurantType.trim()) return setError('Please select a restaurant category.');
     if (!value.country.trim()) return setError('Please select your country.');
     if (!value.address.trim()) return setError('Please enter your address.');
+
+    await api.post('/api/v1/auth/tenants/onboarding-step', {
+      step: 'restaurant',
+      data: value,
+    });
+
     onNext();
   };
 
@@ -99,10 +102,8 @@ export default function StepRestaurantInfo({ value, onChange, onNext }: Props) {
         These details appear on your profile. You can update them anytime.
       </p>
 
-      {/* Category dropdown (animated) */}
       <div className="w-full mb-4 relative" ref={catRef}>
         <label htmlFor="category-trigger" className="block text-base text-[#2e2e30] mb-1">Restaurant category?</label>
-
         <button
           id="category-trigger"
           type="button"
@@ -123,7 +124,6 @@ export default function StepRestaurantInfo({ value, onChange, onNext }: Props) {
             </svg>
           </div>
         </button>
-
         <AnimatePresence>
           {catOpen && (
             <motion.div
@@ -147,16 +147,11 @@ export default function StepRestaurantInfo({ value, onChange, onNext }: Props) {
                     className={[
                       'w-full text-left px-3 py-2 text-sm flex items-center justify-between',
                       'transition-colors',
-                      selected ? 'bg-[#efeff2] text-[#2e2e30]' : 'hover:bg-[#f5f5f5] text-[#2e2e30]',
-                      'active:bg-[#efeff2]'
+                      selected ? 'bg-[#efeff2] text-[#2e2e30]' : 'hover:bg-[#f5f5f5] text-[#2e2e30]'
                     ].join(' ')}
                   >
                     <span>{c}</span>
-                    {selected && (
-                      <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" className="text-[#2e2e30]" fill="none" stroke="currentColor" strokeWidth="2">
-                        <path d="M20 6L9 17l-5-5" />
-                      </svg>
-                    )}
+                    {selected && <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" className="text-[#2e2e30]" fill="none" stroke="currentColor" strokeWidth="2"><path d="M20 6L9 17l-5-5" /></svg>}
                   </button>
                 );
               })}
@@ -165,10 +160,8 @@ export default function StepRestaurantInfo({ value, onChange, onNext }: Props) {
         </AnimatePresence>
       </div>
 
-      {/* Country dropdown */}
       <div className="w-full mb-4 relative" ref={countryRef}>
         <label htmlFor="country-trigger" className="block text-base text-[#2e2e30] mb-1">Country</label>
-
         <button
           id="country-trigger"
           type="button"
@@ -178,8 +171,7 @@ export default function StepRestaurantInfo({ value, onChange, onNext }: Props) {
           className={[
             'w-full h-12 px-3 border rounded-md bg-white text-left text-[#2e2e30] text-base font-normal',
             'transition-colors',
-            countryOpen ? 'border-[#b0b0b5]' : 'border-[#cecece] hover:border-[#b0b0b5]',
-            'focus:outline-none'
+            countryOpen ? 'border-[#b0b0b5]' : 'border-[#cecece] hover:border-[#b0b0b5]'
           ].join(' ')}
         >
           <div className="w-full flex items-center justify-between">
@@ -189,7 +181,6 @@ export default function StepRestaurantInfo({ value, onChange, onNext }: Props) {
             </svg>
           </div>
         </button>
-
         <AnimatePresence>
           {countryOpen && (
             <motion.div
@@ -199,9 +190,8 @@ export default function StepRestaurantInfo({ value, onChange, onNext }: Props) {
               animate={{ opacity: 1, y: 0, scale: 1 }}
               exit={{ opacity: 0, y: 6, scale: 0.98 }}
               transition={{ duration: 0.15 }}
-              className="absolute left-0 right-0 top-full mt-2 z-[9999] max-h-[32rem] overflow-hidden rounded-md border border-[#cecece] bg-white shadow-[0_8px_20px_rgba(0,0,0,0.06)]"
+              className="absolute left-0 right-0 top-full mt-2 z-[9999] max-h-[32rem] overflow-hidden rounded-md border border-[#cecece] bg-white shadow-md"
             >
-              {/* Search header */}
               <div className="sticky top-0 z-10 bg-white border-b border-[#ececec] p-2">
                 <input
                   type="text"
@@ -211,12 +201,8 @@ export default function StepRestaurantInfo({ value, onChange, onNext }: Props) {
                   className="w-full rounded-md border border-[#dbdbdb] px-3 py-2 text-sm text-[#2e2e30] placeholder-[#a9a9ab] focus:outline-none focus:border-[#b0b0b5]"
                 />
               </div>
-
-              {/* Country list */}
               <div className="max-h-[29rem] overflow-y-auto">
-                {filteredCountries.length === 0 && (
-                  <div className="px-3 py-3 text-sm text-[#6b7280]">No results</div>
-                )}
+                {filteredCountries.length === 0 && <div className="px-3 py-3 text-sm text-[#6b7280]">No results</div>}
                 {filteredCountries.map((c) => {
                   const selected = c === value.country;
                   return (
@@ -229,16 +215,11 @@ export default function StepRestaurantInfo({ value, onChange, onNext }: Props) {
                       className={[
                         'w-full text-left px-3 py-2 text-sm flex items-center justify-between',
                         'transition-colors',
-                        selected ? 'bg-[#efeff2] text-[#2e2e30]' : 'hover:bg-[#f5f5f5] text-[#2e2e30]',
-                        'active:bg-[#efeff2]'
+                        selected ? 'bg-[#efeff2] text-[#2e2e30]' : 'hover:bg-[#f5f5f5] text-[#2e2e30]'
                       ].join(' ')}
                     >
                       <span>{c}</span>
-                      {selected && (
-                        <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" className="text-[#2e2e30]" fill="none" stroke="currentColor" strokeWidth="2">
-                          <path d="M20 6L9 17l-5-5" />
-                        </svg>
-                      )}
+                      {selected && <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" className="text-[#2e2e30]" fill="none" stroke="currentColor" strokeWidth="2"><path d="M20 6L9 17l-5-5" /></svg>}
                     </button>
                   );
                 })}
@@ -248,7 +229,6 @@ export default function StepRestaurantInfo({ value, onChange, onNext }: Props) {
         </AnimatePresence>
       </div>
 
-      {/* Address */}
       <div className="w-full mb-4">
         <label htmlFor="address" className="block text-base text-[#2e2e30] mb-1">Address</label>
         <input

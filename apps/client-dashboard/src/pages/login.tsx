@@ -1,3 +1,4 @@
+// apps/client-dashboard/src/pages/Login.tsx
 import { Link, useNavigate } from 'react-router-dom';
 import { useState, useEffect } from 'react';
 import { useMutation } from '@tanstack/react-query';
@@ -7,25 +8,40 @@ import { AnimatePresence, motion } from 'framer-motion';
 import Logo from '../components/Logo';
 
 export default function Login() {
-  const { token, loading } = useAuthContext();
+  const { token, user, loading } = useAuthContext();
   const navigate = useNavigate();
   const [showEmail, setShowEmail] = useState(false);
 
+  // 🚨 Redirect if already authenticated
   useEffect(() => {
-    if (!loading && token) {
-      navigate('/dashboard', { replace: true });
+    if (!loading && token && user) {
+      if (!user.tenantId) {
+        navigate('/create-restaurant', { replace: true });
+      } else {
+        navigate('/dashboard', { replace: true });
+      }
     }
-  }, [token, loading, navigate]);
+  }, [token, user, loading, navigate]);
 
+  // 🚨 Watch for cross-tab login events
   useEffect(() => {
     const onStorage = (e: StorageEvent) => {
-      if (e.key === 'login' && e.newValue) {
-        navigate('/dashboard', { replace: true });
+      if (e.key === 'login' && e.newValue && user) {
+        if (!user.tenantId) {
+          navigate('/create-restaurant', { replace: true });
+        } else {
+          navigate('/dashboard', { replace: true });
+        }
       }
     };
     window.addEventListener('storage', onStorage);
     return () => window.removeEventListener('storage', onStorage);
-  }, [navigate]);
+  }, [navigate, user]);
+
+  // 🚨 If logged in, don't render login UI at all
+  if (!loading && token && user) {
+    return null; // Just let useEffect redirect
+  }
 
   return (
     <div className="min-h-screen w-full bg-[#fcfcfc] flex flex-col font-inter">
@@ -94,7 +110,6 @@ function EmailEntry({ onBack }: { onBack: () => void }) {
     onSuccess: () => setSent(true),
   });
 
-  // Simple email regex for client-side validation
   const isValidEmail = (value: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
 
   const getErrorMessage = (): string => {

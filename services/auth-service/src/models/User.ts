@@ -15,9 +15,9 @@ export interface UserDoc {
   isVerified?: boolean;
 
   tenantId?: ObjectId;
+  isOnboarded?: boolean;  
 
   refreshTokens?: RefreshToken[];
-
   failedLoginAttempts?: number;
   lockUntil?: Date | null;
 

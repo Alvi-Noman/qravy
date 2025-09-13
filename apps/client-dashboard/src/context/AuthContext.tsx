@@ -1,10 +1,4 @@
-/**
- * Auth context for user + token state and auth actions.
- * - Persists token in localStorage
- * - Uses a ref-backed getter for the interceptor (no stale closure)
- * - Handles refresh flow on app start
- */
-import { createContext, useContext, useState, useEffect, useRef, useCallback, type ReactNode } from 'react';
+import { createContext, useContext, useState, useEffect, useRef, useCallback, ReactNode } from 'react';
 import { attachAuthInterceptor, getMe, refreshToken as apiRefreshToken } from '../api/auth';
 
 export interface AuthUser {
@@ -12,6 +6,7 @@ export interface AuthUser {
   email: string;
   isVerified?: boolean;
   isOnboarded?: boolean;
+  tenantId?: string | null;
 }
 
 interface AuthContextType {
@@ -26,17 +21,12 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-// Response shapes from the API
-type RefreshResponse = {
-  token?: string | null;
-  user?: AuthUser | null;
-};
+type RefreshResponse = { token?: string | null; user?: AuthUser | null };
 type MeResponse = { user: AuthUser };
 
 const TOKEN_KEY = (import.meta.env.VITE_JWT_TOKEN_KEY as string) || 'auth_token';
 
 export const AuthProvider = ({ children }: { children: ReactNode }) => {
-  // Initialize from localStorage so we have a token on first paint if present
   const [token, setTokenState] = useState<string | null>(() => {
     try {
       return localStorage.getItem(TOKEN_KEY);
@@ -47,7 +37,6 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // Keep a ref so interceptor getter always has the latest value
   const tokenRef = useRef<string | null>(token);
   useEffect(() => {
     tokenRef.current = token;
@@ -59,9 +48,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     try {
       if (tok) localStorage.setItem(TOKEN_KEY, tok);
       else localStorage.removeItem(TOKEN_KEY);
-    } catch {
-      /* ignore storage failures in dev */
-    }
+    } catch {}
   }, []);
 
   const reloadUser = useCallback(async (): Promise<void> => {
@@ -70,9 +57,11 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     try {
       const me = await getMe<MeResponse>(t);
       setUser(me.user);
-    } catch {
-      // ignore
-    }
+      // 🚨 broadcast user changes (tenant created, onboarding done, etc.)
+      try {
+        localStorage.setItem('user_updated', Date.now().toString());
+      } catch {}
+    } catch {}
   }, []);
 
   const refreshToken = useCallback(async (): Promise<void> => {
@@ -80,13 +69,19 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       const data = await apiRefreshToken<RefreshResponse>();
       const newToken = data.token ?? null;
       setToken(newToken);
-
       if (data.user) {
         setUser(data.user);
+        // 🚨 broadcast updated user
+        try {
+          localStorage.setItem('user_updated', Date.now().toString());
+        } catch {}
       } else if (newToken) {
         try {
           const me = await getMe<MeResponse>(newToken);
           setUser(me.user);
+          try {
+            localStorage.setItem('user_updated', Date.now().toString());
+          } catch {}
         } catch {
           setUser(null);
         }
@@ -103,11 +98,12 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
 
   const login = useCallback(
     (tok: string, usr: AuthUser): void => {
-      setToken(tok); // persist + ref update
+      setToken(tok);
       setUser(usr);
-      // tab sync ping
       try {
         localStorage.setItem('login', Date.now().toString());
+        // 🚨 also trigger user_updated right away
+        localStorage.setItem('user_updated', Date.now().toString());
       } catch {}
     },
     [setToken]
@@ -121,44 +117,40 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         method: 'POST',
         credentials: 'include',
       });
-    } catch {
-      // ignore network errors on logout
-    }
+    } catch {}
     try {
       localStorage.setItem('logout', Date.now().toString());
     } catch {}
   }, [setToken]);
 
-  // Attach interceptors once, with a stable token getter
   useEffect(() => {
     attachAuthInterceptor(
       () => tokenRef.current ?? localStorage.getItem(TOKEN_KEY),
       refreshToken,
       logout
     );
-    // Attempt refresh on app boot (populate token/user if cookie exists)
     refreshToken();
 
-    // Tab sync for login/logout
     const handleStorage = (e: StorageEvent) => {
       if (e.key === 'logout') {
         setToken(null);
         setUser(null);
       }
       if (e.key === 'login') {
-        // Another tab logged in; reload to pick up state
         window.location.reload();
       }
+      if (e.key === 'user_updated') {
+        // 🚨 re-fetch latest user in other tabs
+        reloadUser();
+      }
     };
+
     window.addEventListener('storage', handleStorage);
     return () => window.removeEventListener('storage', handleStorage);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [refreshToken, logout, reloadUser]);
 
   return (
-    <AuthContext.Provider
-      value={{ user, token, loading, login, logout, refreshToken, reloadUser }}
-    >
+    <AuthContext.Provider value={{ user, token, loading, login, logout, refreshToken, reloadUser }}>
       {children}
     </AuthContext.Provider>
   );

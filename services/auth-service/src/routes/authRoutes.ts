@@ -31,8 +31,8 @@ import {
   categoryUpdateSchema,
 } from '../validation/schemas.js';
 import { ObjectId } from 'mongodb';
-import { toUserDTO } from '../utils/mapper.js';
-import type { RefreshToken, UserDoc } from '../models/User.js';
+import { client } from '../db.js';
+import type { UserDoc } from '../models/User.js';
 
 const router: Router = Router();
 
@@ -54,32 +54,31 @@ router.post('/logout', logout);
 // Complete onboarding (protected)
 router.post('/onboarding/complete', authenticateJWT, completeOnboarding);
 
-// Menu items (protected; POST for update/delete per your current setup)
+// Menu items
 router.get('/menu-items', authenticateJWT, listMenuItems);
 router.post('/menu-items', authenticateJWT, validateRequest(menuItemSchema), createMenuItem);
 router.post('/menu-items/:id/update', authenticateJWT, validateRequest(menuItemUpdateSchema), updateMenuItem);
 router.post('/menu-items/:id/delete', authenticateJWT, deleteMenuItem);
 
-// Categories (protected; POST for update/delete)
+// Categories
 router.get('/categories', authenticateJWT, listCategories);
 router.post('/categories', authenticateJWT, validateRequest(categorySchema), createCategory);
 router.post('/categories/:id/update', authenticateJWT, validateRequest(categoryUpdateSchema), updateCategory);
 router.post('/categories/:id/delete', authenticateJWT, deleteCategory);
 
-// Sessions management (protected)
+// Sessions
 router.post('/logout-all', authenticateJWT, logoutAll);
 router.post('/revoke-session', authenticateJWT, revokeSession);
 
-// List sessions (protected) — now using res.ok
+// Sessions list
 router.get('/sessions', authenticateJWT, async (req: Request, res: Response) => {
   const userId = req.user?.id;
   if (!userId) return res.fail(401, 'Unauthorized');
-
   const collection = await getUsersCollection();
   const user = await collection.findOne({ _id: new ObjectId(userId) });
   if (!user) return res.status(404).json({ message: 'User not found' });
 
-  const sessions = (user.refreshTokens ?? []).map((t: RefreshToken) => ({
+  const sessions = (user.refreshTokens ?? []).map((t) => ({
     tokenId: t.tokenId,
     createdAt: t.createdAt,
     expiresAt: t.expiresAt,
@@ -89,16 +88,32 @@ router.get('/sessions', authenticateJWT, async (req: Request, res: Response) => 
   return res.ok({ sessions });
 });
 
-// Me (protected) — return DTO (sanitized) — now using res.ok
+// Me (derived isOnboarded)
 router.get('/me', authenticateJWT, async (req: Request, res: Response) => {
   const userId = req.user?.id;
   if (!userId) return res.fail(401, 'Unauthorized');
 
   const collection = await getUsersCollection();
-  const user = await collection.findOne({ _id: new ObjectId(userId) });
+  const user = await collection.findOne({ _id: new ObjectId(userId) }) as UserDoc | null;
   if (!user) return res.status(404).json({ message: 'User not found' });
 
-  return res.ok({ user: toUserDTO(user as UserDoc) });
+  let isOnboarded = false;
+  let tenantId: string | null = null;
+  if (user.tenantId) {
+    tenantId = user.tenantId.toString();
+    const tenant = await client.db('authDB').collection('tenants').findOne({ _id: user.tenantId });
+    if (tenant?.onboardingCompleted) isOnboarded = true;
+  }
+
+  return res.ok({
+    user: {
+      id: user._id?.toString() || '',
+      email: user.email,
+      isVerified: !!user.isVerified,
+      tenantId,
+      isOnboarded,
+    },
+  });
 });
 
 export default router;

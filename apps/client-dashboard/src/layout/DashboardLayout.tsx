@@ -1,9 +1,10 @@
 // apps/client-dashboard/src/layout/DashboardLayout.tsx
 import { useState, lazy, Suspense } from 'react';
+import { Outlet, Navigate, useLocation } from 'react-router-dom';
 import TopBar from '../components/TopBar/TopBar';
 import AIAssistantPanel from '../components/AIAssistantPanel';
-import { Outlet } from 'react-router-dom';
 import { ScopeProvider } from '../context/ScopeContext';
+import { useAuthContext } from '../context/AuthContext';
 
 const Sidebar = lazy(() => import('../components/SideBar/Sidebar'));
 
@@ -63,6 +64,18 @@ function SidebarFallback() {
 
 export default function DashboardLayout(): JSX.Element {
   const [aiOpen, setAiOpen] = useState(false);
+  const { user, loading } = useAuthContext();
+  const location = useLocation();
+
+  // 🚨 Redirect guard: unify with Login + MagicLink
+  if (!loading && user) {
+    if (!user.tenantId && location.pathname !== '/create-restaurant') {
+      return <Navigate to="/create-restaurant" replace />;
+    }
+    if (user.tenantId && location.pathname === '/create-restaurant') {
+      return <Navigate to="/dashboard" replace />;
+    }
+  }
 
   return (
     <ScopeProvider>
@@ -80,8 +93,11 @@ export default function DashboardLayout(): JSX.Element {
                 transition: 'grid-template-columns 220ms ease',
               }}
             >
-              {/* Left: app content (shrinks when AI opens) */}
-              <div className="flex h-full min-h-0 flex-col overflow-y-auto overscroll-contain" style={{ scrollbarGutter: 'stable' }}>
+              {/* Left: app content */}
+              <div
+                className="flex h-full min-h-0 flex-col overflow-y-auto overscroll-contain"
+                style={{ scrollbarGutter: 'stable' }}
+              >
                 <TopBar onAIClick={() => setAiOpen(true)} />
                 <div className="flex-1 min-h-0 min-w-0">
                   <Outlet />
