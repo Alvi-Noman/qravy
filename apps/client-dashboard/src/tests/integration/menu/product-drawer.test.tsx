@@ -5,7 +5,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { http, HttpResponse } from 'msw';
 import { server } from '../../msw/server';
 import { AuthProvider } from '../../../context/AuthContext';
-import ProductDrawer from '../../../components/AddProductDrawer/ProductDrawer';
+import ProductDrawer from '../../../components/add-product-drawer/ProductDrawer';
 import React, { useState } from 'react';
 
 function AppHarness({

@@ -1,5 +1,17 @@
-import { createContext, useContext, useState, useEffect, useRef, useCallback, ReactNode } from 'react';
-import { attachAuthInterceptor, getMe, refreshToken as apiRefreshToken } from '../api/auth';
+import {
+  createContext,
+  useContext,
+  useState,
+  useEffect,
+  useRef,
+  useCallback,
+  ReactNode,
+} from 'react';
+import {
+  attachAuthInterceptor,
+  getMe,
+  refreshToken as apiRefreshToken,
+} from '../api/auth';
 
 export interface AuthUser {
   id: string;
@@ -24,7 +36,8 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 type RefreshResponse = { token?: string | null; user?: AuthUser | null };
 type MeResponse = { user: AuthUser };
 
-const TOKEN_KEY = (import.meta.env.VITE_JWT_TOKEN_KEY as string) || 'auth_token';
+const TOKEN_KEY =
+  (import.meta.env.VITE_JWT_TOKEN_KEY as string) || 'auth_token';
 
 export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const [token, setTokenState] = useState<string | null>(() => {
@@ -51,31 +64,34 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     } catch {}
   }, []);
 
+  /** Reload user from API using current token */
   const reloadUser = useCallback(async (): Promise<void> => {
     const t = tokenRef.current;
     if (!t) return;
     try {
       const me = await getMe<MeResponse>(t);
       setUser(me.user);
-      // 🚨 broadcast user changes (tenant created, onboarding done, etc.)
-      try {
-        localStorage.setItem('user_updated', Date.now().toString());
-      } catch {}
-    } catch {}
+      // ❌ no broadcast here to avoid feedback loops
+    } catch {
+      setUser(null);
+    }
   }, []);
 
+  /** Attempt to refresh token and fetch user */
   const refreshToken = useCallback(async (): Promise<void> => {
     try {
       const data = await apiRefreshToken<RefreshResponse>();
       const newToken = data.token ?? null;
       setToken(newToken);
+
       if (data.user) {
         setUser(data.user);
-        // 🚨 broadcast updated user
+        // ✅ broadcast once only on new login
         try {
           localStorage.setItem('user_updated', Date.now().toString());
         } catch {}
       } else if (newToken) {
+        // fallback: fetch user with new token
         try {
           const me = await getMe<MeResponse>(newToken);
           setUser(me.user);
@@ -96,27 +112,31 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     }
   }, [setToken]);
 
+  /** Complete login (persist token + user, broadcast) */
   const login = useCallback(
     (tok: string, usr: AuthUser): void => {
       setToken(tok);
       setUser(usr);
       try {
         localStorage.setItem('login', Date.now().toString());
-        // 🚨 also trigger user_updated right away
         localStorage.setItem('user_updated', Date.now().toString());
       } catch {}
     },
     [setToken]
   );
 
+  /** Logout and clear */
   const logout = useCallback(async (): Promise<void> => {
     setToken(null);
     setUser(null);
     try {
-      await fetch(`${import.meta.env.VITE_API_BASE_URL}/api/v1/auth/logout`, {
-        method: 'POST',
-        credentials: 'include',
-      });
+      await fetch(
+        `${import.meta.env.VITE_API_BASE_URL}/api/v1/auth/logout`,
+        {
+          method: 'POST',
+          credentials: 'include',
+        }
+      );
     } catch {}
     try {
       localStorage.setItem('logout', Date.now().toString());
@@ -129,6 +149,8 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       refreshToken,
       logout
     );
+
+    // Initial attempt to refresh on mount
     refreshToken();
 
     const handleStorage = (e: StorageEvent) => {
@@ -140,7 +162,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         window.location.reload();
       }
       if (e.key === 'user_updated') {
-        // 🚨 re-fetch latest user in other tabs
+        // ✅ safe reload for other tabs
         reloadUser();
       }
     };
@@ -150,7 +172,9 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   }, [refreshToken, logout, reloadUser]);
 
   return (
-    <AuthContext.Provider value={{ user, token, loading, login, logout, refreshToken, reloadUser }}>
+    <AuthContext.Provider
+      value={{ user, token, loading, login, logout, refreshToken, reloadUser }}
+    >
       {children}
     </AuthContext.Provider>
   );

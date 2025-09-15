@@ -9,17 +9,17 @@
 import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence } from 'framer-motion';
 import { Squares2X2Icon } from '@heroicons/react/24/outline';
-import { useMenuItems } from '../components/MenuItems/useMenuItems';
-import MenuToolbar, { type SortBy } from '../components/MenuItems/MenuToolbar';
-import MenuToolbarSkeleton from '../components/MenuItems/MenuToolbarSkeleton';
-import MenuTableSkeleton from '../components/MenuItems/MenuTableSkeleton';
-import BulkActionsBar from '../components/MenuItems/BulkActionsBar';
+import { useMenuItems } from '../components/menu-items/useMenuItems';
+import MenuToolbar, { type SortBy } from '../components/menu-items/MenuToolbar';
+import MenuToolbarSkeleton from '../components/menu-items/MenuToolbarSkeleton';
+import MenuTableSkeleton from '../components/menu-items/MenuTableSkeleton';
+import BulkActionsBar from '../components/menu-items/BulkActionsBar';
 import type { MenuItem as TMenuItem, NewMenuItem } from '../api/menu';
 
-const MenuTable = lazy(() => import('../components/MenuItems/MenuTable'));
-const BulkChangeCategoryDialog = lazy(() => import('../components/MenuItems/BulkChangeCategoryDialog'));
-const ConfirmDeleteItemsDialog = lazy(() => import('../components/MenuItems/ConfirmDeleteItemsDialog'));
-const ProductDrawer = lazy(() => import('../components/AddProductDrawer/ProductDrawer'));
+const MenuTable = lazy(() => import('../components/menu-items/MenuTable'));
+const BulkChangeCategoryDialog = lazy(() => import('../components/menu-items/BulkChangeCategoryDialog'));
+const ConfirmDeleteItemsDialog = lazy(() => import('../components/menu-items/ConfirmDeleteItemsDialog'));
+const ProductDrawer = lazy(() => import('../components/add-product-drawer/ProductDrawer'));
 
 type Status = 'active' | 'hidden';
 type Channel = 'dine-in' | 'online';

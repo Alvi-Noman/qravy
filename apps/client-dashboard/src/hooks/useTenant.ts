@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import { getTenant } from '../api/tenant';
+import { getTenant } from '../api/tenant'; // ensure file name is api/tenant.ts
 import { useAuthContext } from '../context/AuthContext';
 import type { TenantDTO } from '../../../../packages/shared/src/types/v1';
 

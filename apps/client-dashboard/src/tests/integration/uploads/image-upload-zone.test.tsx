@@ -3,7 +3,7 @@ import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import React from 'react';
 
-import ImageUploadZone from '../../../components/AddProductDrawer/ImageUploadZone';
+import ImageUploadZone from '../../../components/add-product-drawer/ImageUploadZone';
 
 type UploadResponse = {
   ok: boolean;

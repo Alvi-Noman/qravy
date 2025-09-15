@@ -14,7 +14,7 @@ import {
   useDraggable,
 } from '@dnd-kit/core';
 import { ArrowsUpDownIcon, MagnifyingGlassIcon, CheckIcon, XMarkIcon } from '@heroicons/react/24/outline';
-import { useMenuItems } from '../components/MenuItems/useMenuItems';
+import { useMenuItems } from '../components/menu-items/useMenuItems';
 
 type PanelSortBy = 'name-asc' | 'created-desc' | 'price-asc' | 'price-desc';
 

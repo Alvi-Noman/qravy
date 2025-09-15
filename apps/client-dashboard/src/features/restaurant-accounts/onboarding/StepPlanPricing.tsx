@@ -41,7 +41,7 @@ export default function StepPlanPricing({ value, onChange }: StepPlanPricingProp
   const { reloadUser } = useAuthContext();
 
   const plans: {
-    id: PlanId;
+    id: PlanId; // 'p1' | 'p2'
     title: string;
     monthly: string;
     yearly: string;
@@ -66,14 +66,21 @@ export default function StepPlanPricing({ value, onChange }: StepPlanPricingProp
   ];
 
   const handleSelect = async (id: PlanId) => {
-    onChange({ planId: id });
+    // Normalize to 4 canonical plan IDs:
+    // Starter monthly -> p1_m, Starter yearly -> p1_y
+    // Pro monthly -> p2_m, Pro yearly -> p2_y
+    const base = id === 'p1' ? 'p1' : 'p2';
+    const suffix = billingCycle === 'monthly' ? 'm' : 'y';
+    const normalizedPlanId = `${base}_${suffix}`;
+
+    onChange({ planId: normalizedPlanId } as any);
     setLoadingPlan(id);
 
     const start = Date.now();
     try {
       await api.post('/api/v1/auth/tenants/onboarding-step', {
         step: 'plan',
-        data: { planId: id },
+        data: { planId: normalizedPlanId },
       });
       await completeOnboarding();
       await reloadUser();

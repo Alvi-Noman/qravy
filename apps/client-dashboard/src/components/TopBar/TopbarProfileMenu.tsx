@@ -75,7 +75,7 @@ export default function TopbarProfileMenu({
       key: 'settings',
       label: 'Settings',
       icon: Cog6ToothIcon,
-      onClick: () => navigate('/dashboard/settings'),
+      onClick: () => navigate('/settings'), // <-- routed here
     },
     {
       key: 'help',

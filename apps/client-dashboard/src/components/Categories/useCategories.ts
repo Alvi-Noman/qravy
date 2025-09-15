@@ -1,4 +1,4 @@
-// components/Categories/useCategories.ts
+// components/categories/useCategories.ts
 import { useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {

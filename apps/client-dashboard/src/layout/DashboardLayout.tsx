@@ -1,12 +1,22 @@
-// apps/client-dashboard/src/layout/DashboardLayout.tsx
-import { useState, lazy, Suspense } from 'react';
+import { useState, useEffect, lazy, Suspense } from 'react';
 import { Outlet, Navigate, useLocation } from 'react-router-dom';
-import TopBar from '../components/TopBar/TopBar';
+import TopBar from '../components/topbar/TopBar';
 import AIAssistantPanel from '../components/AIAssistantPanel';
 import { ScopeProvider } from '../context/ScopeContext';
 import { useAuthContext } from '../context/AuthContext';
 
-const Sidebar = lazy(() => import('../components/SideBar/Sidebar'));
+// Trial UI
+import TrialToast from '../components/billing/TrialToast';
+import PaywallModal from '../components/billing/PaywallModal';
+import { useTrial } from '../hooks/useTrial';
+
+// NEW
+import { useTenant } from '../hooks/useTenant';
+import { planInfoFromId } from '../api/billing';
+import { useQueryClient } from '@tanstack/react-query';
+import { subscribeTenant } from '../api/tenant'; // or '../api/tenants' if that’s your file
+
+const Sidebar = lazy(() => import('../components/sidebar/Sidebar'));
 
 const AI_PANEL_WIDTH = 380;
 
@@ -64,8 +74,18 @@ function SidebarFallback() {
 
 export default function DashboardLayout(): JSX.Element {
   const [aiOpen, setAiOpen] = useState(false);
-  const { user, loading } = useAuthContext();
+  const { user, loading, token } = useAuthContext();
   const location = useLocation();
+  const queryClient = useQueryClient();
+
+  // Tenant + plan (from backend)
+  const { data: tenant, isLoading: tenantLoading } = useTenant();
+  const resolvedPlan = planInfoFromId(tenant?.planInfo?.planId);
+
+  // Trial state — wired to backend via tenant
+  const trial = useTrial(tenant);
+  const [paywallOpen, setPaywallOpen] = useState(false);
+  const [subscribing, setSubscribing] = useState(false);
 
   // 🚨 Redirect guard: unify with Login + MagicLink
   if (!loading && user) {
@@ -76,6 +96,38 @@ export default function DashboardLayout(): JSX.Element {
       return <Navigate to="/dashboard" replace />;
     }
   }
+
+  // ✅ Auto-open AI Assistant for first timers with a 1.5s delay
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem('ai-setup-steps');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        const allDone =
+          Array.isArray(parsed) &&
+          parsed.length > 0 &&
+          parsed.every((s: any) => s.done);
+        if (!allDone) {
+          const timer = setTimeout(() => setAiOpen(true), 1500);
+          return () => clearTimeout(timer);
+        }
+      } else {
+        const timer = setTimeout(() => setAiOpen(true), 1500);
+        return () => clearTimeout(timer);
+      }
+    } catch {
+      const timer = setTimeout(() => setAiOpen(true), 1500);
+      return () => clearTimeout(timer);
+    }
+  }, []);
+
+  // Derived subscription flag from backend
+  const isSubscribed = tenant?.subscriptionStatus === 'active';
+
+  // Open paywall immediately when trial expires and user is not subscribed
+  useEffect(() => {
+    if (trial.expired && !isSubscribed && !subscribing) setPaywallOpen(true);
+  }, [trial.expired, isSubscribed, subscribing]);
 
   return (
     <ScopeProvider>
@@ -89,8 +141,8 @@ export default function DashboardLayout(): JSX.Element {
             <div
               className="h-full min-h-0 min-w-0 rounded-xl border border-[#ececec] bg-[#fcfcfc] overflow-hidden grid"
               style={{
-                gridTemplateColumns: aiOpen ? `minmax(0,1fr) ${AI_PANEL_WIDTH}px` : 'minmax(0,1fr) 0px',
-                transition: 'grid-template-columns 220ms ease',
+                gridTemplateColumns: `minmax(0,1fr) ${aiOpen ? AI_PANEL_WIDTH : 0}px`,
+                transition: 'grid-template-columns 300ms ease',
               }}
             >
               {/* Left: app content */}
@@ -110,6 +162,51 @@ export default function DashboardLayout(): JSX.Element {
           </div>
         </main>
       </div>
+
+      {/* Trial toast during trial, hidden if subscribed */}
+      <TrialToast
+        open={!trial.expired && !isSubscribed}
+        daysLeft={trial.daysLeft}
+        hoursLeft={trial.hoursLeft}
+        onUpgrade={() => setPaywallOpen(true)}
+        onCompare={() => setPaywallOpen(true)}
+      />
+
+      {/* Paywall — blocks app after trial ends and not subscribed */}
+      <PaywallModal
+        open={Boolean(paywallOpen && !tenantLoading && !isSubscribed)}
+        allowClose={false}
+        plan={{
+          id: resolvedPlan.id,
+          name: resolvedPlan.name,
+          interval: resolvedPlan.interval,
+          priceCents: resolvedPlan.priceCents,
+          currency: resolvedPlan.currency as any,
+        }}
+        lineItems={[]}
+        discountCents={0}
+        taxRate={0}
+        managePlanHref="/settings/plan/select"
+        onSubscribe={async ({ name, cardToken, planId }) => {
+          if (!token) return;
+
+          setSubscribing(true);
+          try {
+            // 1) Call backend to activate subscription and end trial
+            const updated = await subscribeTenant({ name, cardToken, planId }, token);
+
+            // 2) Optimistically update tenant cache so isSubscribed flips immediately
+            queryClient.setQueryData(['tenant', token], updated);
+
+            // 3) Close modal
+            setPaywallOpen(false);
+          } catch (e) {
+            console.error('Subscribe failed', e);
+          } finally {
+            setSubscribing(false);
+          }
+        }}
+      />
     </ScopeProvider>
   );
 }

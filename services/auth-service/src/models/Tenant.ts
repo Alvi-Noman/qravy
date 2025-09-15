@@ -1,3 +1,4 @@
+// services/auth-service/src/models/Tenant.ts
 import { ObjectId } from 'mongodb';
 
 export interface TenantDoc {
@@ -19,6 +20,11 @@ export interface TenantDoc {
   planInfo?: {
     planId: string;
   };
+
+  trialStartedAt?: Date;
+  trialEndsAt?: Date;
+
+  subscriptionStatus?: 'none' | 'active';
 
   createdAt: Date;
   updatedAt: Date;

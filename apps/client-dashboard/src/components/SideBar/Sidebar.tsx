@@ -59,11 +59,12 @@ export default function Sidebar(): JSX.Element {
     },
   ];
 
+  // Selected: neutral white card with subtle ring (non-bluish)
   const linkClass = (isActive: boolean): string =>
     `group flex items-center gap-3 rounded-md px-3 py-2.5 text-[14px] transition ${
       isActive
-        ? 'border-l-4 border-indigo-600 bg-indigo-50 text-indigo-800'
-        : 'border-l-4 border-transparent text-slate-700 hover:bg-slate-100 hover:text-slate-900'
+        ? 'bg-white text-[#2e2e30] ring-1 ring-[#e2e2e2] shadow-sm'
+        : 'text-slate-700 hover:bg-slate-50 hover:text-slate-900'
     }`;
 
   const branches: Branch[] =
@@ -83,12 +84,14 @@ export default function Sidebar(): JSX.Element {
 
   return (
     <aside className="flex h-full w-64 flex-col bg-[#f5f5f5] px-4 py-4">
+      {/* Brand */}
       <div className="mb-0 flex items-center">
         <span className="text-3xl font-semibold tracking-tight text-slate-900">
           Qravy.
         </span>
       </div>
 
+      {/* Branch selector */}
       <div className="mt-7 mb-6">
         <SidebarBranchSelect
           branches={branches}
@@ -111,7 +114,7 @@ export default function Sidebar(): JSX.Element {
                   <li key={item.to}>
                     <NavLink to={item.to} end={item.end} className={({ isActive }) => linkClass(isActive)}>
                       <Icon
-                        className="h-5 w-5 text-slate-600 group-[aria-current=page]:text-indigo-600"
+                        className="h-5 w-5 text-slate-600 group-[aria-current=page]:text-slate-700"
                         aria-hidden="true"
                       />
                       <span className="font-medium">{item.name}</span>

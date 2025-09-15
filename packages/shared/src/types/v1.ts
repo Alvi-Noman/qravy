@@ -1,3 +1,5 @@
+// packages/shared/src/types/v1.ts
+
 export interface UserDTO {
   id: string;
   email: string;
@@ -37,11 +39,34 @@ export interface CategoryDTO {
   updatedAt: string;
 }
 
+/**
+ Plan info exposed to the client so it can render prices/plan name.
+ Store planId in formats you prefer, e.g.:
+ 'starter' | 'starter_m' | 'starter_y'
+ 'pro' | 'pro_m' | 'pro_y'
+*/
+export interface TenantPlanInfoDTO {
+  planId: string;
+}
+
+export type SubscriptionStatus = 'none' | 'active';
+
 export interface TenantDTO {
   id: string;
   name: string;
   subdomain: string;
   onboardingCompleted: boolean;
+
+  // Trial info (ISO strings)
+  trialStartedAt?: string | null;
+  trialEndsAt?: string | null;
+
+  // Subscription status
+  subscriptionStatus?: SubscriptionStatus;
+
+  // Selected plan
+  planInfo?: TenantPlanInfoDTO;
+
   createdAt: string;
   updatedAt: string;
 }

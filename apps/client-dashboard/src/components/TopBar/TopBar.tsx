@@ -4,9 +4,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { BellIcon, SparklesIcon } from '@heroicons/react/24/outline';
-import TopbarSearch from './TopbarSearch.js';
-import TopbarProfileMenu from './TopbarProfileMenu.js';
-import { useProgress } from '../../context/ProgressContext';
+import TopbarSearch from './TopbarSearch';
+import TopbarProfileMenu from './TopbarProfileMenu';
+import { useProgress } from '../../context/ProgressContext.js';
 
 type NotificationItem = { id: string; title: string; desc: string; time: string; seen: boolean };
 

@@ -1,3 +1,4 @@
+// services/auth-service/src/utils/mapper.ts
 import type { ObjectId } from 'mongodb';
 import type { MenuItemDoc } from '../models/MenuItem.js';
 import type { CategoryDoc } from '../models/Category.js';
@@ -6,39 +7,29 @@ import type { UserDoc } from '../models/User.js';
 import type { v1 } from '../../../../packages/shared/src/types/index.js';
 
 /**
- * Convert a MongoDB ObjectId to a string.
- * Ensures frontend receives strings (not ObjectId objects) in DTOs.
- */
+ Convert a MongoDB ObjectId to a string.
+ Ensures frontend receives strings (not ObjectId objects) in DTOs.
+*/
 function toId(id?: ObjectId): string {
   return id ? id.toString() : '';
 }
 
 /**
- * Map a UserDoc from MongoDB into a UserDTO for external API responses.
- * 
- * @param user - User document from MongoDB
- * @param tenant - Optional tenant document context (to resolve onboarding status)
- * @returns UserDTO object safe for external consumers
- */
+ Map a UserDoc from MongoDB into a UserDTO for external API responses.
+*/
 export function toUserDTO(user: UserDoc, tenant?: TenantDoc): v1.UserDTO {
   return {
     id: toId(user._id),
     email: user.email,
     isVerified: !!user.isVerified,
     tenantId: user.tenantId ? toId(user.tenantId) : null,
-    // isOnboarded reflects the tenant’s onboardingCompleted flag
     isOnboarded: tenant?.onboardingCompleted ?? false,
   };
 }
 
 /**
- * Map a MenuItemDoc into a MenuItemDTO.
- * 
- * Ensures numeric conversions, array defaults, and consistent date serialization.
- * 
- * @param doc - MongoDB document of a menu item
- * @returns MenuItemDTO object formatted for API responses
- */
+ Map a MenuItemDoc into a MenuItemDTO.
+*/
 export function toMenuItemDTO(doc: MenuItemDoc): v1.MenuItemDTO {
   return {
     id: toId(doc._id),
@@ -59,17 +50,13 @@ export function toMenuItemDTO(doc: MenuItemDoc): v1.MenuItemDTO {
     createdAt: doc.createdAt.toISOString(),
     updatedAt: doc.updatedAt.toISOString(),
     hidden: !!doc.hidden,
-    // Normalize status - fallback ensures compatibility with older records
     status: (doc.status as 'active' | 'hidden') ?? (doc.hidden ? 'hidden' : 'active'),
   };
 }
 
 /**
- * Map a CategoryDoc into a CategoryDTO.
- *
- * @param doc - MongoDB document of a category
- * @returns CategoryDTO object safe for API consumers
- */
+ Map a CategoryDoc into a CategoryDTO.
+*/
 export function toCategoryDTO(doc: CategoryDoc): v1.CategoryDTO {
   return {
     id: toId(doc._id),
@@ -80,19 +67,26 @@ export function toCategoryDTO(doc: CategoryDoc): v1.CategoryDTO {
 }
 
 /**
- * Map a TenantDoc into a TenantDTO.
- * 
- * Supports onboarding status (used to determine which dashboard UI to render).
- * 
- * @param doc - Tenant MongoDB document
- * @returns TenantDTO object formatted for API consumption
- */
+ Map a TenantDoc into a TenantDTO.
+ Supports onboarding status, plan info, trial info, and subscription status.
+*/
 export function toTenantDTO(doc: TenantDoc): v1.TenantDTO {
   return {
     id: toId(doc._id),
     name: doc.name,
     subdomain: doc.subdomain,
     onboardingCompleted: !!doc.onboardingCompleted,
+
+    // trial info
+    trialStartedAt: doc.trialStartedAt ? doc.trialStartedAt.toISOString() : null,
+    trialEndsAt: doc.trialEndsAt ? doc.trialEndsAt.toISOString() : null,
+
+    // plan info
+    planInfo: doc.planInfo ? { planId: doc.planInfo.planId } : undefined,
+
+    // subscription status
+    subscriptionStatus: doc.subscriptionStatus ?? 'none',
+
     createdAt: doc.createdAt.toISOString(),
     updatedAt: doc.updatedAt.toISOString(),
   };
