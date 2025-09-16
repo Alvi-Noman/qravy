@@ -26,7 +26,7 @@ const CreateRestaurant = lazy(() => import('./pages/CreateRestaurant'));
 const Onboarding = lazy(() => import('./pages/Onboarding'));
 const ManageCategories = lazy(() => import('./pages/ManageCategories'));
 
-// Settings pages (keep filenames as they are in your project)
+// Settings pages
 const SettingsOverview = lazy(() => import('./pages/settings/index'));
 const SettingsBranding = lazy(() => import('./pages/settings/Branding'));
 const SettingsDomain = lazy(() => import('./pages/settings/Domain'));
@@ -41,9 +41,12 @@ const SettingsLabs = lazy(() => import('./pages/settings/Labs'));
 const SettingsPrivacy = lazy(() => import('./pages/settings/Privacy'));
 const SettingsAudit = lazy(() => import('./pages/settings/Audit'));
 
-// NEW: Plan & Billing
+// Plan & Billing
 const SettingsPlan = lazy(() => import('./pages/settings/Plan'));
 const SettingsBilling = lazy(() => import('./pages/settings/Billing'));
+
+// Single plan sheet (controls step via ?step=select|subscribe)
+const PlanSheet = lazy(() => import('./features/billing/pages/PlanSheet'));
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const { token, loading } = useAuthContext();
@@ -187,7 +190,7 @@ function App() {
               }
             />
 
-            {/* NEW: Plan & Billing */}
+            {/* Plan overview */}
             <Route
               path="plan"
               element={
@@ -196,15 +199,18 @@ function App() {
                 </Suspense>
               }
             />
-            {/* Modal route alias for plan selector (path-based modal) */}
+
+            {/* Single plan sheet (controls step via ?step=select|subscribe) */}
             <Route
               path="plan/select"
               element={
                 <Suspense fallback={null}>
-                  <SettingsPlan />
+                  <PlanSheet />
                 </Suspense>
               }
             />
+
+            {/* Billing settings */}
             <Route
               path="billing"
               element={
@@ -315,6 +321,8 @@ function App() {
             {/* Redirect uppercase paths (compat with current sidebar links) */}
             <Route path="Plan" element={<Navigate to="plan" replace />} />
             <Route path="Plan/select" element={<Navigate to="plan/select" replace />} />
+            {/* Map the old nested subscribe path to query-param version */}
+            <Route path="Plan/select/subscribe" element={<Navigate to="plan/select?step=subscribe" replace />} />
             <Route path="Billing" element={<Navigate to="billing" replace />} />
             <Route path="Branding" element={<Navigate to="branding" replace />} />
             <Route path="Domain" element={<Navigate to="domain" replace />} />

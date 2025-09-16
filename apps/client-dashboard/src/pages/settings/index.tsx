@@ -2,6 +2,7 @@ import { Link } from 'react-router-dom';
 
 export default function SettingsOverview(): JSX.Element {
   const cards = [
+    { title: 'Plan & Billing', desc: 'Choose plan, billing cycle, and manage payment.', to: '/settings/plan' },
     { title: 'Branding', desc: 'Name, logo, theme colors.', to: '/settings/branding' },
     { title: 'Domain', desc: 'Custom domain & DNS verification.', to: '/settings/domain' },
     { title: 'Security', desc: '2FA, SSO, sessions.', to: '/settings/security' },

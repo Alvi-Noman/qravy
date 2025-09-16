@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { XMarkIcon, LockClosedIcon, ShieldCheckIcon } from '@heroicons/react/24/outline';
+import { CheckCircleIcon, SparklesIcon } from '@heroicons/react/24/solid';
 
 type Interval = 'month' | 'year';
 type Currency = 'usd' | 'eur' | 'gbp' | string;
@@ -66,6 +67,11 @@ export default function PaywallModal({
   const [submitting, setSubmitting] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [brand, setBrand] = useState<CardBrand>('unknown');
+
+  // New: success step state and captured result
+  const [step, setStep] = useState<'checkout' | 'success'>('checkout');
+  const [result, setResult] = useState<{ name: string; last4?: string } | null>(null);
+
   const overlayRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const lastActiveRef = useRef<HTMLElement | null>(null);
@@ -289,6 +295,34 @@ export default function PaywallModal({
     };
   }, [open, allowClose, onClose]);
 
+  // Reset to checkout when reopened
+  useEffect(() => {
+    if (open) {
+      setStep('checkout');
+      setResult(null);
+      setErrors({});
+      setSubmitting(false);
+    }
+  }, [open]);
+
+  // Fire confetti on success
+  useEffect(() => {
+    if (step !== 'success') return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const { default: confetti } = await import('canvas-confetti');
+        if (cancelled) return;
+        confetti({ particleCount: 140, startVelocity: 38, spread: 70, origin: { y: 0.4 }, ticks: 180 });
+        setTimeout(() => confetti({ particleCount: 90, angle: 60, spread: 55, origin: { x: 0 } }), 150);
+        setTimeout(() => confetti({ particleCount: 90, angle: 120, spread: 55, origin: { x: 1 } }), 250);
+      } catch {}
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [step]);
+
   const validate = (fd: FormData) => {
     const name = String(fd.get('name') || '').trim();
     const cardDigits = String(fd.get('card') || '').replace(/\D/g, '');
@@ -314,9 +348,7 @@ export default function PaywallModal({
     }
 
     const expectedCvcLen = brand === 'amex' ? 4 : 3;
-    if (!/^\d+$/.test(cvc) || cvc.length !== expectedCvcLen) {
-      newErrors.cvc = `Enter a ${expectedCvcLen}-digit CVC`;
-    }
+    if (!/^\d+$/.test(cvc) || cvc.length !== expectedCvcLen) newErrors.cvc = `Enter a ${expectedCvcLen}-digit CVC`;
 
     if (!zip) newErrors.zip = 'ZIP/Postal is required';
     setErrors(newErrors);
@@ -332,8 +364,14 @@ export default function PaywallModal({
     setSubmitting(true);
     try {
       const name = String(fd.get('name') || '').trim();
+      const cardDigits = String(fd.get('card') || '').replace(/\D/g, '');
       const fakeToken = 'tok_' + Math.random().toString(36).slice(2, 10);
+
       await Promise.resolve(onSubscribe({ name, cardToken: fakeToken, planId: planSafe.id }));
+
+      // On success: capture and go to success step
+      setResult({ name, last4: cardDigits.slice(-4) });
+      setStep('success');
     } finally {
       setSubmitting(false);
     }
@@ -369,20 +407,37 @@ export default function PaywallModal({
               className="relative w-full max-w-5xl rounded-2xl bg-white p-0 shadow-2xl"
               style={{ willChange: 'transform' }}
             >
-              {/* Header with FA2851 */}
+              {/* Header */}
               <div
-                className="flex items-start justify-between rounded-t-2xl px-6 py-5"
-                style={{ backgroundColor: '#FA2851', color: '#fff' }}
+                className={[
+                  'flex items-start justify-between rounded-t-2xl px-6 py-5',
+                  step === 'success' ? 'bg-[#111827] text-white' : '',
+                ].join(' ')}
+                style={step === 'checkout' ? { backgroundColor: '#FA2851', color: '#fff' } : undefined}
               >
                 <div>
-                  <div className="flex items-center gap-2">
-                    <LockClosedIcon className="h-5 w-5 text-white" />
-                    <h2 className="text-lg font-semibold">Your trial period has ended</h2>
-                  </div>
-                  <p className="mt-1 text-sm opacity-95">
-                    To continue using your account, choose a plan and add your payment details. Your menu will remain
-                    offline until you subscribe.
-                  </p>
+                  {step === 'checkout' ? (
+                    <>
+                      <div className="flex items-center gap-2">
+                        <LockClosedIcon className="h-5 w-5 text-white" />
+                        <h2 className="text-lg font-semibold">Your trial period has ended</h2>
+                      </div>
+                      <p className="mt-1 text-sm opacity-95">
+                        To continue using your account, choose a plan and add your payment details. Your menu will remain
+                        offline until you subscribe.
+                      </p>
+                    </>
+                  ) : (
+                    <>
+                      <div className="flex items-center gap-2">
+                        <SparklesIcon className="h-5 w-5 text-white" />
+                        <h2 className="text-lg font-semibold">You’re all set</h2>
+                      </div>
+                      <p className="mt-1 text-sm opacity-95">
+                        Subscription confirmed{result?.last4 ? ` • Card ending ${result.last4}` : ''}.
+                      </p>
+                    </>
+                  )}
                 </div>
                 <div className="flex items-center gap-3">
                   {testMode && (
@@ -403,212 +458,273 @@ export default function PaywallModal({
                 </div>
               </div>
 
-              {/* Form grid — items-stretch ensures columns are equal height; panels use h-full */}
-              <form className="grid items-stretch gap-6 p-6 sm:grid-cols-5" onSubmit={handleSubmit}>
-                {/* Left: payment */}
-                <div className="sm:col-span-3 min-w-0 min-h-0 self-stretch">
-                  <div className="h-full rounded-lg border border-[#ececec] p-4 flex flex-col">
-                    <div className="text-sm font-medium text-slate-900">Payment details</div>
+              {step === 'checkout' ? (
+                // Checkout form
+                <form className="grid items-stretch gap-6 p-6 sm:grid-cols-5" onSubmit={handleSubmit}>
+                  {/* Left: payment */}
+                  <div className="sm:col-span-3 min-w-0 min-h-0 self-stretch">
+                    <div className="h-full rounded-lg border border-[#ececec] p-4 flex flex-col">
+                      <div className="text-sm font-medium text-slate-900">Payment details</div>
 
-                    <div className="mt-3 grid gap-3">
-                      {/* Name on card */}
-                      <div className="grid gap-1.5">
-                        <label className="text-[12px] font-medium text-slate-700">Name on card</label>
-                        <input
-                          name="name"
-                          className={fieldCls}
-                          placeholder="Jane Doe"
-                          autoComplete="cc-name"
-                          aria-invalid={Boolean(errors.name)}
-                          aria-describedby={errors.name ? 'err-name' : undefined}
-                        />
-                        {errors.name && <div id="err-name" className="text-[11px] text-rose-600">{errors.name}</div>}
-                      </div>
+                      <div className="mt-3 grid gap-3">
+                        {/* Name on card */}
+                        <div className="grid gap-1.5">
+                          <label className="text-[12px] font-medium text-slate-700">Name on card</label>
+                          <input
+                            name="name"
+                            className={fieldCls}
+                            placeholder="Jane Doe"
+                            autoComplete="cc-name"
+                            aria-invalid={Boolean(errors.name)}
+                            aria-describedby={errors.name ? 'err-name' : undefined}
+                          />
+                          {errors.name && <div id="err-name" className="text-[11px] text-rose-600">{errors.name}</div>}
+                        </div>
 
-                      {/* Card number + brand SVG inside the field */}
-                      <div className="grid gap-1.5">
-                        <label className="text-[12px] font-medium text-slate-700">Card number</label>
-                        <div className="relative">
-                          <input
-                            name="card"
-                            inputMode="numeric"
-                            autoComplete="cc-number"
-                            className={`${fieldCls} pr-14`}
-                            placeholder="4242 4242 4242 4242"
-                            onInput={handleCardInput}
-                            aria-invalid={Boolean(errors.card)}
-                            aria-describedby={errors.card ? 'err-card' : undefined}
-                          />
-                          {brandIconSrc && (
-                            <div className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2">
-                              <img
-                                src={brandIconSrc}
-                                alt={brand}
-                                className="h-6 w-auto select-none"
-                                loading="eager"
-                                draggable={false}
-                              />
-                            </div>
-                          )}
-                        </div>
-                        {errors.card && <div id="err-card" className="text-[11px] text-rose-600">{errors.card}</div>}
-                      </div>
-
-                      {/* Row: Expiry + CVC */}
-                      <div className="grid grid-cols-2 gap-3">
+                        {/* Card number + brand SVG inside the field */}
                         <div className="grid gap-1.5">
-                          <label className="text-[12px] font-medium text-slate-700">Expiry</label>
-                          <input
-                            name="exp"
-                            inputMode="numeric"
-                            autoComplete="cc-exp"
-                            className={fieldCls}
-                            placeholder="MM/YY"
-                            maxLength={5}
-                            onInput={handleExpInput}
-                            onKeyDown={handleExpKeyDown}
-                            aria-invalid={Boolean(errors.exp)}
-                            aria-describedby={errors.exp ? 'err-exp' : undefined}
-                          />
-                          {errors.exp && <div id="err-exp" className="text-[11px] text-rose-600">{errors.exp}</div>}
-                        </div>
-                        <div className="grid gap-1.5">
-                          <label className="text-[12px] font-medium text-slate-700">CVC</label>
-                          <input
-                            type="password"
-                            name="cvc"
-                            inputMode="numeric"
-                            autoComplete="cc-csc"
-                            className={fieldCls}
-                            placeholder={cvcPlaceholder}
-                            maxLength={cvcMaxLen}
-                            onInput={handleDigitsOnly(cvcMaxLen)}
-                            aria-invalid={Boolean(errors.cvc)}
-                            aria-describedby={errors.cvc ? 'err-cvc' : undefined}
-                          />
-                          {errors.cvc && <div id="err-cvc" className="text-[11px] text-rose-600">{errors.cvc}</div>}
-                        </div>
-                      </div>
-
-                      {/* Row: Country + ZIP/Postal */}
-                      <div className="grid grid-cols-2 gap-3">
-                        <div className="grid gap-1.5">
-                          <label className="text-[12px] font-medium text-slate-700">Country</label>
-                          <input
-                            name="country"
-                            className={fieldCls}
-                            placeholder="United States"
-                            autoComplete="country-name"
-                          />
-                          {/* reserve space so ZIP error doesn't shift layout */}
-                          <div className="h-[14px]" aria-hidden />
-                        </div>
-                        <div className="grid gap-1.5">
-                          <label className="text-[12px] font-medium text-slate-700">ZIP / Postal</label>
-                          <input
-                            name="zip"
-                            className={fieldCls}
-                            placeholder="94105"
-                            autoComplete="postal-code"
-                            aria-invalid={Boolean(errors.zip)}
-                            aria-describedby={errors.zip ? 'err-zip' : undefined}
-                          />
-                          <div className="min-h-[14px]">
-                            {errors.zip && (
-                              <div id="err-zip" className="text-[11px] leading-4 text-rose-600">
-                                {errors.zip}
+                          <label className="text-[12px] font-medium text-slate-700">Card number</label>
+                          <div className="relative">
+                            <input
+                              name="card"
+                              inputMode="numeric"
+                              autoComplete="cc-number"
+                              className={`${fieldCls} pr-14`}
+                              placeholder="4242 4242 4242 4242"
+                              onInput={handleCardInput}
+                              aria-invalid={Boolean(errors.card)}
+                              aria-describedby={errors.card ? 'err-card' : undefined}
+                            />
+                            {brandIconSrc && (
+                              <div className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2">
+                                <img
+                                  src={brandIconSrc}
+                                  alt={brand}
+                                  className="h-6 w-auto select-none"
+                                  loading="eager"
+                                  draggable={false}
+                                />
                               </div>
                             )}
                           </div>
+                          {errors.card && <div id="err-card" className="text-[11px] text-rose-600">{errors.card}</div>}
                         </div>
-                      </div>
 
-                      <div className="mt-1 flex items-center gap-2 text-[11px] text-slate-500">
-                        <ShieldCheckIcon className="h-4 w-4 text-slate-500" />
-                        <span>Payments are encrypted and processed securely.</span>
+                        {/* Row: Expiry + CVC */}
+                        <div className="grid grid-cols-2 gap-3">
+                          <div className="grid gap-1.5">
+                            <label className="text-[12px] font-medium text-slate-700">Expiry</label>
+                            <input
+                              name="exp"
+                              inputMode="numeric"
+                              autoComplete="cc-exp"
+                              className={fieldCls}
+                              placeholder="MM/YY"
+                              maxLength={5}
+                              onInput={handleExpInput}
+                              onKeyDown={handleExpKeyDown}
+                              aria-invalid={Boolean(errors.exp)}
+                              aria-describedby={errors.exp ? 'err-exp' : undefined}
+                            />
+                            {errors.exp && <div id="err-exp" className="text-[11px] text-rose-600">{errors.exp}</div>}
+                          </div>
+                          <div className="grid gap-1.5">
+                            <label className="text-[12px] font-medium text-slate-700">CVC</label>
+                            <input
+                              type="password"
+                              name="cvc"
+                              inputMode="numeric"
+                              autoComplete="cc-csc"
+                              className={fieldCls}
+                              placeholder={cvcPlaceholder}
+                              maxLength={cvcMaxLen}
+                              onInput={handleDigitsOnly(cvcMaxLen)}
+                              aria-invalid={Boolean(errors.cvc)}
+                              aria-describedby={errors.cvc ? 'err-cvc' : undefined}
+                            />
+                            {errors.cvc && <div id="err-cvc" className="text-[11px] leading-4 text-rose-600">{errors.cvc}</div>}
+                          </div>
+                        </div>
+
+                        {/* Row: Country + ZIP/Postal */}
+                        <div className="grid grid-cols-2 gap-3">
+                          <div className="grid gap-1.5">
+                            <label className="text-[12px] font-medium text-slate-700">Country</label>
+                            <input
+                              name="country"
+                              className={fieldCls}
+                              placeholder="United States"
+                              autoComplete="country-name"
+                            />
+                            {/* reserve space so ZIP error doesn't shift layout */}
+                            <div className="h-[14px]" aria-hidden />
+                          </div>
+                          <div className="grid gap-1.5">
+                            <label className="text-[12px] font-medium text-slate-700">ZIP / Postal</label>
+                            <input
+                              name="zip"
+                              className={fieldCls}
+                              placeholder="94105"
+                              autoComplete="postal-code"
+                              aria-invalid={Boolean(errors.zip)}
+                              aria-describedby={errors.zip ? 'err-zip' : undefined}
+                            />
+                            <div className="min-h-[14px]">
+                              {errors.zip && (
+                                <div id="err-zip" className="text-[11px] leading-4 text-rose-600">
+                                  {errors.zip}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="mt-1 flex items-center gap-2 text-[11px] text-slate-500">
+                          <ShieldCheckIcon className="h-4 w-4 text-slate-500" />
+                          <span>Payments are encrypted and processed securely.</span>
+                        </div>
                       </div>
                     </div>
                   </div>
-                </div>
 
-                {/* Right: Summary — equal height via h-full and flex */}
-                <div className="sm:col-span-2 min-w-0 min-h-0 self-stretch">
-                  <div className="h-full rounded-lg border border-[#ececec] p-4 flex flex-col">
-                    <div className="text-sm font-medium text-slate-900">Summary</div>
+                  {/* Right: Summary — equal height via h-full and flex */}
+                  <div className="sm:col-span-2 min-w-0 min-h-0 self-stretch">
+                    <div className="h-full rounded-lg border border-[#ececec] p-4 flex flex-col">
+                      <div className="text-sm font-medium text-slate-900">Summary</div>
 
-                    {/* scroll/stack content grows; CTA stays bottom */}
-                    <div className="mt-3 flex-1 flex flex-col gap-3">
-                      {/* Summary card */}
-                      <div className="rounded-md border border-[#eaeaea] bg-slate-50 px-3 py-2">
-                        <div className="flex items-center justify-between text-sm">
-                          <div className="font-semibold text-slate-900">{planSafe.name}</div>
-                          <div className="text-slate-700">{fmt(planSafe.priceCents)}</div>
+                      {/* scroll/stack content grows; CTA stays bottom */}
+                      <div className="mt-3 flex-1 flex flex-col gap-3">
+                        {/* Summary card */}
+                        <div className="rounded-md border border-[#eaeaea] bg-slate-50 px-3 py-2">
+                          <div className="flex items-center justify-between text-sm">
+                            <div className="font-semibold text-slate-900">{planSafe.name}</div>
+                            <div className="text-slate-700">{fmt(planSafe.priceCents)}</div>
+                          </div>
+                          <div className="mt-0.5 text-[12px] text-slate-600">
+                            Billed {planSafe.interval === 'year' ? 'yearly' : 'monthly'}
+                          </div>
+                          <div className="mt-2 text-[12px]">
+                            <a href={managePlanHref} className="text-slate-700 underline">
+                              Change plan
+                            </a>
+                          </div>
                         </div>
-                        <div className="mt-0.5 text-[12px] text-slate-600">
-                          Billed {planSafe.interval === 'year' ? 'yearly' : 'monthly'}
-                        </div>
-                        <div className="mt-2 text-[12px]">
-                          <a href={managePlanHref} className="text-slate-700 underline">
-                            Change plan
-                          </a>
-                        </div>
-                      </div>
 
-                      {/* Item/Amount table */}
-                      <div className="overflow-hidden rounded-md border border-[#f0f0f0]">
-                        <table className="w-full table-fixed text-left text-[13px]">
-                          <colgroup>
-                            <col className="w-[70%]" />
-                            <col className="w-[30%]" />
-                          </colgroup>
-                          <thead className="bg-slate-50 text-slate-600">
-                            <tr>
-                              <th className="px-3 py-2">Item</th>
-                              <th className="px-3 py-2 text-right">Amount</th>
-                            </tr>
-                          </thead>
-                          <tbody className="divide-y divide-slate-100">
-                            <tr>
-                              <td className="px-3 py-2 truncate">
-                                {planSafe.name} ({planSafe.interval === 'year' ? 'Yearly' : 'Monthly'})
-                              </td>
-                              <td className="px-3 py-2 text-right">{fmt(planSafe.priceCents)}</td>
-                            </tr>
-                            {lineItems.map((li) => (
-                              <tr key={li.id}>
-                                <td className="px-3 py-2 truncate">{li.label}</td>
-                                <td className="px-3 py-2 text-right">{fmt(li.amountCents)}</td>
+                        {/* Item/Amount table */}
+                        <div className="overflow-hidden rounded-md border border-[#f0f0f0]">
+                          <table className="w-full table-fixed text-left text-[13px]">
+                            <colgroup>
+                              <col className="w-[70%]" />
+                              <col className="w-[30%]" />
+                            </colgroup>
+                            <thead className="bg-slate-50 text-slate-600">
+                              <tr>
+                                <th className="px-3 py-2">Item</th>
+                                <th className="px-3 py-2 text-right">Amount</th>
                               </tr>
-                            ))}
-                            <tr>
-                              <td className="px-3 py-2 text-slate-600">Subtotal</td>
-                              <td className="px-3 py-2 text-right text-slate-700">{fmt(subtotalCents)}</td>
-                            </tr>
-                            <tr className="bg-slate-50">
-                              <td className="px-3 py-2 font-semibold text-slate-900">Total</td>
-                              <td className="px-3 py-2 text-right font-semibold text-slate-900">
-                                {fmt(totalCents)}
-                              </td>
-                            </tr>
-                          </tbody>
-                        </table>
+                            </thead>
+                            <tbody className="divide-y divide-slate-100">
+                              <tr>
+                                <td className="px-3 py-2 truncate">
+                                  {planSafe.name} ({planSafe.interval === 'year' ? 'Yearly' : 'Monthly'})
+                                </td>
+                                <td className="px-3 py-2 text-right">{fmt(planSafe.priceCents)}</td>
+                              </tr>
+                              {lineItems.map((li) => (
+                                <tr key={li.id}>
+                                  <td className="px-3 py-2 truncate">{li.label}</td>
+                                  <td className="px-3 py-2 text-right">{fmt(li.amountCents)}</td>
+                                </tr>
+                              ))}
+                              <tr>
+                                <td className="px-3 py-2 text-slate-600">Subtotal</td>
+                                <td className="px-3 py-2 text-right text-slate-700">{fmt(subtotalCents)}</td>
+                              </tr>
+                              <tr className="bg-slate-50">
+                                <td className="px-3 py-2 font-semibold text-slate-900">Total</td>
+                                <td className="px-3 py-2 text-right font-semibold text-slate-900">
+                                  {fmt(totalCents)}
+                                </td>
+                              </tr>
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+
+                      {/* Bottom CTA fixed at panel bottom */}
+                      <button
+                        type="submit"
+                        disabled={submitting}
+                        className="mt-4 inline-flex w-full items-center justify-between rounded-md bg-[#2e2e30] px-4 py-2.5 text-sm font-medium text-white hover:opacity-90 disabled:opacity-60"
+                      >
+                        <span>Subscribe</span>
+                        <span className="opacity-90">
+                          {fmt(totalCents)} {planSafe.interval === 'year' ? '/yr' : '/mo'}
+                        </span>
+                      </button>
+                    </div>
+                  </div>
+                </form>
+              ) : (
+                // Success step
+                <div className="p-8">
+                  <div className="flex flex-col items-center text-center">
+                    <motion.div
+                      initial={{ scale: 0.85, opacity: 0 }}
+                      animate={{ scale: 1, opacity: 1 }}
+                      transition={{ type: 'spring', stiffness: 280, damping: 22 }}
+                      className="relative"
+                    >
+                      <div className="flex h-20 w-20 items-center justify-center rounded-full bg-gradient-to-br from-slate-900 to-slate-700 shadow-lg ring-1 ring-black/10">
+                        <CheckCircleIcon className="h-12 w-12 text-white" />
+                      </div>
+                    </motion.div>
+
+                    <div className="mt-6">
+                      <h3 className="text-2xl font-semibold text-slate-900">Welcome to {planSafe.name}</h3>
+                      <p className="mt-2 text-sm text-slate-600">
+                        Subscription confirmed{result?.last4 ? ` • Card ending ${result.last4}` : ''}.
+                      </p>
+                    </div>
+
+                    {/* Summary card */}
+                    <div className="mt-8 w-full max-w-md rounded-xl border border-slate-200 bg-slate-50 p-5 text-left">
+                      <div className="flex items-center justify-between text-[14px]">
+                        <div className="font-medium text-slate-900">{planSafe.name}</div>
+                        <div className="font-semibold text-slate-900">
+                          {fmt(totalCents)}{planSafe.interval === 'year' ? '/yr' : '/mo'}
+                        </div>
+                      </div>
+                      <div className="mt-1 text-[12px] text-slate-600">
+                        Billed {planSafe.interval === 'year' ? 'yearly' : 'monthly'}
                       </div>
                     </div>
 
-                    {/* Bottom CTA fixed at panel bottom */}
-                    <button
-                      type="submit"
-                      disabled={submitting}
-                      className="mt-4 inline-flex w-full items-center justify-between rounded-md bg-[#2e2e30] px-4 py-2.5 text-sm font-medium text-white hover:opacity-90 disabled:opacity-60"
-                    >
-                      <span>Subscribe</span>
-                      <span className="opacity-90">
-                        {fmt(totalCents)} {planSafe.interval === 'year' ? '/yr' : '/mo'}
-                      </span>
-                    </button>
+                    {/* Buttons */}
+                    <div className="mt-8 flex w-full max-w-md flex-col gap-3 sm:flex-row">
+                      <a
+                        href="/dashboard"
+                        className="inline-flex w-full items-center justify-center rounded-md bg-[#2e2e30] px-4 py-3 text-[15px] font-medium text-white hover:opacity-90"
+                      >
+                        Continue to dashboard
+                      </a>
+                      {allowClose && (
+                        <button
+                          type="button"
+                          onClick={onClose}
+                          className="inline-flex w-full items-center justify-center rounded-md border border-slate-300 bg-white px-4 py-3 text-[15px] font-medium text-slate-900 hover:bg-slate-50"
+                        >
+                          Close
+                        </button>
+                      )}
+                    </div>
+
+                    <div className="mt-3 text-[12px] text-slate-500">
+                      We’ve emailed your receipt{result?.name ? ` to ${result.name}` : ''}.
+                    </div>
                   </div>
                 </div>
-              </form>
+              )}
             </motion.div>
           </div>
         </motion.div>
