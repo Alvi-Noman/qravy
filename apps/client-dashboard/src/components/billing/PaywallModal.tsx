@@ -49,6 +49,11 @@ type Props = {
     cardToken: string;
     planId: string;
     billing?: BillingPayload;
+    // NEW: include non-sensitive card meta so the backend can save it
+    brand?: 'visa' | 'mastercard' | 'amex' | 'discover' | 'diners' | 'jcb' | 'maestro' | 'unionpay' | 'unknown';
+    last4?: string;
+    expMonth?: number;
+    expYear?: number;
   }) => Promise<void> | void;
 
   managePlanHref?: string;
@@ -357,6 +362,13 @@ export default function PaywallModal({
       const [mmStr, yyStr] = expStr.split('/');
       const expMonth = Number(mmStr);
       const expYear = 2000 + Number(yyStr);
+      const normalizedBrand = (brand === 'visa_electron' ? 'visa' : brand) as Props['onSubscribe'] extends (
+        p: infer P
+      ) => any
+        ? P extends { brand?: infer B }
+          ? B
+          : never
+        : never;
       const fakeToken = 'tok_' + Math.random().toString(36).slice(2, 10);
 
       await Promise.resolve(
@@ -364,6 +376,11 @@ export default function PaywallModal({
           name,
           cardToken: fakeToken,
           planId: planSafe.id,
+          // NEW: pass card meta so backend can persist it
+          brand: normalizedBrand,
+          last4: cardDigits.slice(-4),
+          expMonth,
+          expYear,
         })
       );
 
@@ -725,7 +742,7 @@ export default function PaywallModal({
                       </div>
                     </motion.div>
 
-                    <h3 className="mt-6 text-2xl font-semibold text-slate-900">{successTitle}</h3>
+                    <h3 className="mt-6 text-2xl font-semibold text-slate-900">{isReactivate ? 'Subscription reactivated' : 'You’re all set'}</h3>
                     <p className="mt-2 text-sm text-slate-600">
                       Subscription confirmed{result?.last4 ? ` • Card ending ${result.last4}` : ''}.
                     </p>

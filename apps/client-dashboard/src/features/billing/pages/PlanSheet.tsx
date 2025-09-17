@@ -1,5 +1,5 @@
 // apps/client-dashboard/src/features/billing/pages/PlanSheet.tsx
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { ShieldCheckIcon } from '@heroicons/react/24/outline';
@@ -8,6 +8,8 @@ import { usePlanQuery, useUpdatePlanMutation, useSubscribePlanMutation } from '.
 import { PlanIntervalSwitch } from '../components/PlanIntervalSwitch';
 import type { PlanState, PlanTier } from '../../../api/billing';
 import { useTenant } from '../../../hooks/useTenant';
+import { useQueryClient } from '@tanstack/react-query';
+import { useAuthContext } from '../../../context/AuthContext';
 
 type PlanCardId = 'p1' | 'p2';
 const idToTier: Record<PlanCardId, Extract<PlanTier, 'Starter' | 'Pro'>> = { p1: 'Starter', p2: 'Pro' };
@@ -25,7 +27,16 @@ type SubscribeResult = {
 };
 
 type CardBrand =
-  | 'visa' | 'visa_electron' | 'mastercard' | 'amex' | 'discover' | 'diners' | 'jcb' | 'maestro' | 'unionpay' | 'unknown';
+  | 'visa'
+  | 'visa_electron'
+  | 'mastercard'
+  | 'amex'
+  | 'discover'
+  | 'diners'
+  | 'jcb'
+  | 'maestro'
+  | 'unionpay'
+  | 'unknown';
 
 const SERVICES = [
   'Customizable Digital Menu',
@@ -51,6 +62,7 @@ export default function PlanSheet(): JSX.Element {
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
   const step = (params.get('step') as SheetStep) || 'select';
+  const cameFromPaywall = (params.get('from') || '').toLowerCase() === 'paywall';
 
   const { data: plan, isLoading } = usePlanQuery();
   const { mutateAsync: savePlan } = useUpdatePlanMutation();
@@ -60,25 +72,38 @@ export default function PlanSheet(): JSX.Element {
   const [loadingPlan, setLoadingPlan] = useState<PlanCardId | null>(null);
   const [subscribeResult, setSubscribeResult] = useState<SubscribeResult | null>(null);
 
+  const qc = useQueryClient();
+  const { token } = useAuthContext();
+
+  // Close handler: if opened from Paywall, go to dashboard; otherwise back to settings
+  const close = useCallback(() => {
+    try {
+      sessionStorage.setItem('skipPaywallOnce', '1');
+    } catch {}
+    if (cameFromPaywall) {
+      navigate('/dashboard', { replace: true });
+    } else {
+      navigate('/settings/plan', { replace: true });
+    }
+  }, [cameFromPaywall, navigate]);
+
   // lock scroll + Esc close while sheet mounted
   useEffect(() => {
     const prev = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
     const onEsc = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') navigate('/settings/plan', { replace: true });
+      if (e.key === 'Escape') close();
     };
     window.addEventListener('keydown', onEsc);
     return () => {
       document.body.style.overflow = prev;
       window.removeEventListener('keydown', onEsc);
     };
-  }, [navigate]);
+  }, [close]);
 
   useEffect(() => {
     if (plan) setBillingCycle(plan.interval === 'year' ? 'yearly' : 'monthly');
   }, [plan]);
-
-  const close = () => navigate('/settings/plan', { replace: true });
 
   // Select -> Subscribe
   const onSelectPlan = async (id: PlanCardId) => {
@@ -137,6 +162,7 @@ export default function PlanSheet(): JSX.Element {
         },
       });
 
+      // Update UI to success FIRST to avoid any re-render on the subscribe step
       setSubscribeResult({
         name: payload.name,
         brand: payload.brand === 'visa_electron' ? 'visa' : (payload.brand as string | undefined),
@@ -145,12 +171,47 @@ export default function PlanSheet(): JSX.Element {
         amountCents: payload.amountCents,
         currency: payload.currency,
       });
+      const p = new URLSearchParams(params);
+      p.set('step', 'success');
+      setParams(p, { replace: true });
 
-      params.set('step', 'success');
-      setParams(params, { replace: true });
+      // Then, on the next tick, set flags and refresh tenant so dashboard is correct
+      setTimeout(async () => {
+        try {
+          sessionStorage.setItem('skipPaywallOnce', '1');
+        } catch {}
+        if (token) {
+          qc.setQueryData(['tenant', token], (prev: any) => ({
+            ...(prev || {}),
+            subscriptionStatus: 'active',
+            hasCardOnFile: true,
+            trialEndsAt: null,
+            cancelEffectiveAt: null,
+            cancelRequestedAt: null,
+            planInfo: { planId: payload.planId },
+            payment: {
+              ...(prev?.payment || {}),
+              brand: payload.brand === 'visa_electron' ? 'visa' : payload.brand,
+              last4: payload.last4,
+              expMonth: payload.expMonth,
+              expYear: payload.expYear,
+            },
+          }));
+        }
+        await qc.invalidateQueries({
+          predicate: (q) => Array.isArray(q.queryKey) && q.queryKey[0] === 'tenant',
+        });
+      }, 0);
     } catch (e) {
       console.error('Subscribe failed', e);
     }
+  };
+
+  const handleDone = () => {
+    try {
+      sessionStorage.setItem('skipPaywallOnce', '1');
+    } catch {}
+    navigate('/dashboard', { replace: true });
   };
 
   return (
@@ -166,7 +227,7 @@ export default function PlanSheet(): JSX.Element {
 
       {/* Sheet container */}
       <motion.div
-        className="absolute inset-x-0 bottom-0 flex min-h-[calc(100vh-55px)] flex-col overflow-hidden rounded-t-2xl border border-[#e5e5e5] bg-white shadow-2xl"
+        className="absolute inset-x-0 bottom-0 flex min-h:[calc(100vh-55px)] flex-col overflow-hidden rounded-t-2xl border border-[#e5e5e5] bg-white shadow-2xl"
         style={{ top: 55, willChange: 'transform' }}
         initial={{ y: '100%' }}
         animate={{ y: 0 }}
@@ -213,11 +274,7 @@ export default function PlanSheet(): JSX.Element {
           ) : step === 'subscribe' ? (
             <SubscribeCheckout plan={plan} onSubscribe={proceed} />
           ) : (
-            <SuccessStep
-              plan={plan}
-              result={subscribeResult}
-              onDone={() => navigate('/dashboard', { replace: true })}
-            />
+            <SuccessStep plan={plan} result={subscribeResult} onDone={handleDone} />
           )}
         </div>
       </motion.div>
@@ -225,7 +282,7 @@ export default function PlanSheet(): JSX.Element {
   );
 }
 
-/* Select step (unchanged) */
+/* Select step */
 function SelectStep({
   billingCycle,
   setBillingCycle,
@@ -245,8 +302,21 @@ function SelectStep({
     description: string;
     highlight?: boolean;
   }> = [
-    { id: 'p1', title: 'Starter', monthly: '$29', yearly: '$290', description: 'Everything you need to get started with your digital restaurant menu.' },
-    { id: 'p2', title: 'Pro', monthly: '$99', yearly: '$990', description: 'Unlock full potential with online ordering, integrations, and AI features.', highlight: true },
+    {
+      id: 'p1',
+      title: 'Starter',
+      monthly: '$29',
+      yearly: '$290',
+      description: 'Everything you need to get started with your digital restaurant menu.',
+    },
+    {
+      id: 'p2',
+      title: 'Pro',
+      monthly: '$99',
+      yearly: '$990',
+      description: 'Unlock full potential with online ordering, integrations, and AI features.',
+      highlight: true,
+    },
   ];
 
   return (
@@ -291,14 +361,28 @@ function SelectStep({
                     return (
                       <li
                         key={s}
-                        className={`flex items-center gap-2 ${disabled ? 'text-gray-400 line-through' : 'text-[#2e2e30]'}`}
+                        className={`flex items-center gap-2 ${
+                          disabled ? 'text-gray-400 line-through' : 'text-[#2e2e30]'
+                        }`}
                       >
                         {disabled ? (
-                          <svg className="h-4 w-4 text-rose-400" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                          <svg
+                            className="h-4 w-4 text-rose-400"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="2"
+                            viewBox="0 0 24 24"
+                          >
                             <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
                           </svg>
                         ) : (
-                          <svg className="h-4 w-4 text-[#2e2e30]" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                          <svg
+                            className="h-4 w-4 text-[#2e2e30]"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="2"
+                            viewBox="0 0 24 24"
+                          >
                             <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
                           </svg>
                         )}
@@ -320,7 +404,12 @@ function SelectStep({
               >
                 {isSaving ? (
                   <>
-                    <svg className="h-5 w-5 animate-spin text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <svg
+                      className="h-5 w-5 animate-spin text-white"
+                      xmlns="http://www.w3.org/2000/svg"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                    >
                       <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                       <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
                     </svg>
@@ -338,7 +427,7 @@ function SelectStep({
   );
 }
 
-/* Subscribe checkout — industry-grade saved-card flow + minimal card form */
+/* Subscribe checkout — freezes payment view while submitting (prevents saved-card flash) */
 function SubscribeCheckout({
   plan,
   onSubscribe,
@@ -381,12 +470,18 @@ function SubscribeCheckout({
     new Intl.NumberFormat('en-US', { style: 'currency', currency }).format((cents || 0) / 100);
 
   // Saved card from backend
+  const [submitting, setSubmitting] = useState(false);
   const saved = !tenantLoading && !!tenant?.hasCardOnFile && !!tenant?.payment?.last4;
   const savedPM = tenant?.payment ?? undefined;
 
   // Toggle: saved card or new card form
   const [useSavedCard, setUseSavedCard] = useState<boolean>(saved);
-  useEffect(() => setUseSavedCard(saved), [saved]);
+
+  // IMPORTANT: do not flip to saved-card view while submitting (prevents the flash)
+  useEffect(() => {
+    if (submitting) return;
+    setUseSavedCard(saved);
+  }, [saved, submitting]);
 
   // Brand helpers
   const brandIconMap: Record<CardBrand, string | null> = {
@@ -414,7 +509,6 @@ function SubscribeCheckout({
   };
 
   // Form state for "use different card"
-  const [submitting, setSubmitting] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [brand, setBrand] = useState<CardBrand>('unknown');
 
@@ -439,11 +533,16 @@ function SubscribeCheckout({
     return 'unknown';
   }
   function luhnCheck(num: string) {
-    let sum = 0, dbl = false;
+    let sum = 0,
+      dbl = false;
     for (let i = num.length - 1; i >= 0; i--) {
       let d = parseInt(num[i], 10);
-      if (dbl) { d *= 2; if (d > 9) d -= 9; }
-      sum += d; dbl = !dbl;
+      if (dbl) {
+        d *= 2;
+        if (d > 9) d -= 9;
+      }
+      sum += d;
+      dbl = !dbl;
     }
     return sum % 10 === 0;
   }
@@ -451,7 +550,9 @@ function SubscribeCheckout({
     if (b === 'amex') return [d.slice(0, 4), d.slice(4, 10), d.slice(10, 15)].filter(Boolean).join(' ');
     return d.match(/.{1,4}/g)?.join(' ') ?? d;
   }
-  function boundariesForBrand(b: CardBrand) { return b === 'amex' ? [4, 10] : [4, 8, 12, 16]; }
+  function boundariesForBrand(b: CardBrand) {
+    return b === 'amex' ? [4, 10] : [4, 8, 12, 16];
+  }
   function formatCardNumberAndCaret(all: string, b: CardBrand, before: number) {
     const formatted = formatCardNumber(all, b);
     const spacesBefore = boundariesForBrand(b).filter((n) => before >= n).length;
@@ -467,7 +568,11 @@ function SubscribeCheckout({
     setBrand(b);
     const { formatted, caret } = formatCardNumberAndCaret(allDigits, b, beforeDigits.length);
     el.value = formatted;
-    requestAnimationFrame(() => { try { el.setSelectionRange(caret, caret); } catch {} });
+    requestAnimationFrame(() => {
+      try {
+        el.setSelectionRange(caret, caret);
+      } catch {}
+    });
   }
   function formatExpiry(raw: string) {
     const digits = raw.replace(/\D/g, '').slice(0, 4);
@@ -483,28 +588,47 @@ function SubscribeCheckout({
     const formatted = formatExpiry(el.value);
     el.value = formatted;
     const newPos = before.length < 2 ? before.length : before.length === 2 ? 3 : before.length + 1;
-    requestAnimationFrame(() => { try { el.setSelectionRange(newPos, newPos); } catch {} });
+    requestAnimationFrame(() => {
+      try {
+        el.setSelectionRange(newPos, newPos);
+      } catch {}
+    });
   }
   function handleExpKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
-    const el = e.currentTarget; const pos = el.selectionStart ?? 0; const end = el.selectionEnd ?? pos; const sel = end > pos;
+    const el = e.currentTarget;
+    const pos = el.selectionStart ?? 0;
+    const end = el.selectionEnd ?? pos;
+    const sel = end > pos;
     if (e.key === 'Backspace' && !sel && pos === 3) {
       e.preventDefault();
-      const digits = el.value.replace(/\D/g, ''); if (digits.length >= 2) {
+      const digits = el.value.replace(/\D/g, '');
+      if (digits.length >= 2) {
         el.value = formatExpiry(digits[0] + digits.slice(2));
-        requestAnimationFrame(() => { try { el.setSelectionRange(2, 2); } catch {} });
-      } return;
+        requestAnimationFrame(() => {
+          try {
+            el.setSelectionRange(2, 2);
+          } catch {}
+        });
+      }
+      return;
     }
     if (e.key === 'Delete' && !sel && pos === 2) {
       e.preventDefault();
       const digits = el.value.replace(/\D/g, '');
       if (digits.length > 2) el.value = formatExpiry(digits.slice(0, 2) + digits.slice(3));
-      requestAnimationFrame(() => { try { el.setSelectionRange(3, 3); } catch {} }); return;
+      requestAnimationFrame(() => {
+        try {
+          el.setSelectionRange(3, 3);
+        } catch {}
+      });
+      return;
     }
     if (e.key === '/') e.preventDefault();
   }
   function handleDigitsOnly(maxLen?: number) {
     return (e: React.FormEvent<HTMLInputElement>) => {
-      const el = e.currentTarget; const digits = el.value.replace(/\D/g, '');
+      const el = e.currentTarget;
+      const digits = el.value.replace(/\D/g, '');
       el.value = maxLen ? digits.slice(0, maxLen) : digits;
     };
   }
@@ -519,10 +643,16 @@ function SubscribeCheckout({
     const zip = String(fd.get('zip') || '').trim();
     const newErrors: Record<string, string> = {};
     if (!name) newErrors.name = 'Name is required';
-    if (brand === 'amex') { if (cardDigits.length !== 15 || !luhnCheck(cardDigits)) newErrors.card = 'Enter a valid Amex number'; }
-    else if (cardDigits.length < 13 || cardDigits.length > 19 || !luhnCheck(cardDigits)) newErrors.card = 'Enter a valid card number';
+    if (brand === 'amex') {
+      if (cardDigits.length !== 15 || !luhnCheck(cardDigits)) newErrors.card = 'Enter a valid Amex number';
+    } else if (cardDigits.length < 13 || cardDigits.length > 19 || !luhnCheck(cardDigits)) {
+      newErrors.card = 'Enter a valid card number';
+    }
     if (!/^\d{2}\/\d{2}$/.test(exp)) newErrors.exp = 'Use MM/YY format';
-    else { const mm = Number(exp.split('/')[0]); if (mm < 1 || mm > 12) newErrors.exp = 'Invalid month'; }
+    else {
+      const mm = Number(exp.split('/')[0]);
+      if (mm < 1 || mm > 12) newErrors.exp = 'Invalid month';
+    }
     const expectedCvcLen = brand === 'amex' ? 4 : 3;
     if (!/^\d+$/.test(cvc) || cvc.length !== expectedCvcLen) newErrors.cvc = `Enter a ${expectedCvcLen}-digit CVC`;
     if (!country) newErrors.country = 'Country is required';
@@ -535,9 +665,11 @@ function SubscribeCheckout({
     e.preventDefault();
     if (submitting) return;
 
+    // Freeze view while submitting to avoid any "saved card" flip
+    setSubmitting(true);
+
     // Using saved card: no field validation, just proceed
     if (useSavedCard && savedPM?.last4) {
-      setSubmitting(true);
       try {
         await Promise.resolve(
           onSubscribe({
@@ -553,7 +685,9 @@ function SubscribeCheckout({
             expYear: savedPM.expYear,
           })
         );
-      } finally {
+        // Do NOT setSubmitting(false) on success — the component will unmount on success
+      } catch {
+        // On error, allow user to retry
         setSubmitting(false);
       }
       return;
@@ -561,9 +695,11 @@ function SubscribeCheckout({
 
     // New card path
     const fd = new FormData(e.currentTarget);
-    if (!validate(fd)) return;
+    if (!validate(fd)) {
+      setSubmitting(false);
+      return;
+    }
 
-    setSubmitting(true);
     try {
       const name = String(fd.get('name') || '').trim();
       const cardDigits = String(fd.get('card') || '').replace(/\D/g, '');
@@ -587,7 +723,9 @@ function SubscribeCheckout({
           expYear,
         })
       );
-    } finally {
+      // Do NOT setSubmitting(false) on success — we'll unmount on success step
+    } catch {
+      // On error, allow user to retry
       setSubmitting(false);
     }
   }
@@ -628,14 +766,17 @@ function SubscribeCheckout({
                     <div className="text-[13px] text-slate-800">
                       •••• {savedPM.last4}{' '}
                       {savedPM.expMonth && savedPM.expYear ? (
-                        <span className="text-slate-500">(Exp {pad2(savedPM.expMonth)}/{String(savedPM.expYear).slice(-2)})</span>
+                        <span className="text-slate-500">
+                          (Exp {pad2(savedPM.expMonth)}/{String(savedPM.expYear).slice(-2)})
+                        </span>
                       ) : null}
                     </div>
                   </div>
                   <button
                     type="button"
                     onClick={() => setUseSavedCard(false)}
-                    className="rounded-md border border-[#e2e2e2] bg-white px-2.5 py-1.5 text-[12px] hover:bg-slate-50"
+                    disabled={submitting}
+                    className="rounded-md border border-[#e2e2e2] bg-white px-2.5 py-1.5 text-[12px] hover:bg-slate-50 disabled:opacity-60"
                   >
                     Use a different card
                   </button>
@@ -713,7 +854,12 @@ function SubscribeCheckout({
                 {/* Address full width */}
                 <div className="grid gap-1.5">
                   <label className="text-[13px] font-medium text-slate-700">Address</label>
-                  <input name="address" className={field} placeholder="123 Market St" autoComplete="address-line1" />
+                  <input
+                    name="address"
+                    className={field}
+                    placeholder="123 Market St"
+                    autoComplete="address-line1"
+                  />
                 </div>
 
                 {/* ZIP/Postal then Country */}
@@ -725,7 +871,12 @@ function SubscribeCheckout({
                   </div>
                   <div className="grid gap-1.5">
                     <label className="text-[13px] font-medium text-slate-700">Country</label>
-                    <input name="country" className={field} placeholder="United States" autoComplete="country-name" />
+                    <input
+                      name="country"
+                      className={field}
+                      placeholder="United States"
+                      autoComplete="country-name"
+                    />
                     {errors.country && <div className="text-[12px] text-rose-600">{errors.country}</div>}
                   </div>
                 </div>
@@ -759,7 +910,8 @@ function SubscribeCheckout({
                   <button
                     type="button"
                     onClick={goToSelect}
-                    className="text-slate-700 underline underline-offset-2 hover:text-slate-900"
+                    disabled={submitting}
+                    className="text-slate-700 underline underline-offset-2 hover:text-slate-900 disabled:opacity-60"
                   >
                     Change plan
                   </button>
@@ -837,8 +989,7 @@ function SuccessStep({
 
   const interval = result?.interval ?? plan.interval;
   const totalCents =
-    result?.amountCents ??
-    (interval === 'year' ? effectiveYearCents : priceCentsMonthly);
+    result?.amountCents ?? (interval === 'year' ? effectiveYearCents : priceCentsMonthly);
   const currency = result?.currency ?? 'USD';
 
   const totalFormatted = new Intl.NumberFormat('en-US', {
@@ -857,7 +1008,9 @@ function SuccessStep({
         setTimeout(() => confetti({ particleCount: 90, angle: 120, spread: 55, origin: { x: 1 } }), 250);
       } catch {}
     })();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   return (
@@ -896,7 +1049,8 @@ function SuccessStep({
               <div className="flex items-center justify-between text-[14px]">
                 <div className="font-medium text-slate-900">{plan.tier}</div>
                 <div className="font-semibold text-slate-900">
-                  {totalFormatted}{(result?.interval ?? plan.interval) === 'year' ? '/yr' : '/mo'}
+                  {totalFormatted}
+                  {(result?.interval ?? plan.interval) === 'year' ? '/yr' : '/mo'}
                 </div>
               </div>
               <div className="mt-1 text-[12px] text-slate-600">
@@ -909,7 +1063,7 @@ function SuccessStep({
               <button
                 type="button"
                 onClick={onDone}
-                className="inline-flex w-full items-center justify-center rounded-lg bg-[#2e2e30] px-4 py-3 text-[15px] font-medium text-white hover:opacity-90"
+                className="inline-flex w/full items-center justify-center rounded-lg bg-[#2e2e30] px-4 py-3 text-[15px] font-medium text-white hover:opacity-90 whitespace-nowrap"
               >
                 Continue to dashboard
               </button>

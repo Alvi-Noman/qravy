@@ -16,13 +16,13 @@ export default function TrialToast({
   onCompare?: () => void;
 }) {
   const handleAddBilling = () => {
-    // Absolute URL as requested
+    // Absolute URL (subscribe step)
     window.location.href = 'http://localhost:5173/settings/plan/select?step=subscribe';
   };
 
   const handleChangePlan = () => {
-    // Route within the app
-    window.location.href = '/settings/plan/select';
+    // In-app route (select step)
+    window.location.href = '/settings/plan/select?step=select';
   };
 
   return (

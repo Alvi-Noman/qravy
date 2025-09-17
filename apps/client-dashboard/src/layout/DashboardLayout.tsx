@@ -1,4 +1,4 @@
-import { useState, useEffect, lazy, Suspense } from 'react';
+import { useState, useEffect, useRef, lazy, Suspense } from 'react';
 import { Outlet, Navigate, useLocation } from 'react-router-dom';
 import TopBar from '../components/topbar/TopBar';
 import AIAssistantPanel from '../components/AIAssistantPanel';
@@ -78,6 +78,16 @@ export default function DashboardLayout(): JSX.Element {
   const { user, loading, token } = useAuthContext();
   const location = useLocation();
   const queryClient = useQueryClient();
+  const prevPathRef = useRef(location.pathname);
+
+  // One-time paywall suppression (e.g., after successful subscribe)
+  const [skipPaywallOnce, setSkipPaywallOnce] = useState<boolean>(() => {
+    try {
+      return sessionStorage.getItem('skipPaywallOnce') === '1';
+    } catch {
+      return false;
+    }
+  });
 
   // Tenant + plan (from backend)
   const { data: tenant, isLoading: tenantLoading } = useTenant();
@@ -116,20 +126,51 @@ export default function DashboardLayout(): JSX.Element {
   }, []);
 
   // Derived flags
-  const isSubscribed = tenant?.subscriptionStatus === 'active';
+  const isSubscribed = (tenant?.subscriptionStatus ?? '').toLowerCase() === 'active';
   const isCanceled = !isSubscribed && !!(tenant?.cancelEffectiveAt || tenant?.cancelRequestedAt);
   const endedAt = tenant?.cancelEffectiveAt ?? tenant?.trialEndsAt ?? undefined;
   const hasCard = !!tenant?.hasCardOnFile;
 
   // Show trial toast if trial ongoing and not subscribed
-  const showTrialToast = !tenantLoading && !isSubscribed && !trial.expired;
+  const showTrialToast = !!tenant && !tenantLoading && !isSubscribed && !trial.expired;
 
   // Open paywall when trial ends OR when plan is canceled (immediate)
   useEffect(() => {
-    if (!tenantLoading && !isSubscribed && (trial.expired || isCanceled) && !subscribing) {
+    if (
+      !tenantLoading &&
+      !isSubscribed &&
+      (trial.expired || isCanceled) &&
+      !subscribing &&
+      !skipPaywallOnce
+    ) {
       setPaywallOpen(true);
     }
-  }, [tenantLoading, isSubscribed, trial.expired, isCanceled, subscribing]);
+  }, [tenantLoading, isSubscribed, trial.expired, isCanceled, subscribing, skipPaywallOnce]);
+
+  // Clear the one-time suppression shortly after landing
+  useEffect(() => {
+    if (!skipPaywallOnce) return;
+    const t = setTimeout(() => {
+      try {
+        sessionStorage.removeItem('skipPaywallOnce');
+      } catch {}
+      setSkipPaywallOnce(false);
+    }, 2000);
+    return () => clearTimeout(t);
+  }, [skipPaywallOnce]);
+
+  // If user returns from /settings/plan*, force-refresh tenant once so subscription state is fresh
+  useEffect(() => {
+    const prev = prevPathRef.current;
+    const wasPlan = prev.startsWith('/settings/plan');
+    const nowPlan = location.pathname.startsWith('/settings/plan');
+    if (wasPlan && !nowPlan) {
+      queryClient.invalidateQueries({
+        predicate: (q) => Array.isArray(q.queryKey) && q.queryKey[0] === 'tenant',
+      });
+    }
+    prevPathRef.current = location.pathname;
+  }, [location.pathname, queryClient]);
 
   return (
     <ScopeProvider>
@@ -188,16 +229,27 @@ export default function DashboardLayout(): JSX.Element {
         lineItems={[]}
         discountCents={0}
         taxRate={0}
-        managePlanHref="/settings/plan/select"
+        // Optional: keep tracking origin if you use it elsewhere
+        managePlanHref="/settings/plan/select?step=select&from=paywall"
         endedAt={endedAt}
         hasCardOnFile={hasCard}
-        onSubscribe={async ({ name, cardToken, planId, billing }) => {
+        onSubscribe={async ({ name, cardToken, planId, billing, brand, last4, expMonth, expYear }) => {
           if (!token) return;
           setSubscribing(true);
           try {
             const updated = await subscribeAndSaveBilling(
-              { name, cardToken, planId },
-              // Billing profile from modal is required by backend; pass through
+              {
+                name,
+                cardToken,
+                planId,
+                payment: {
+                  provider: 'mock',
+                  brand: (brand ?? 'unknown') as any,
+                  last4,
+                  expMonth,
+                  expYear,
+                },
+              },
               billing ?? {
                 companyName: tenant?.name || '—',
                 billingEmail: user?.email || '—',
@@ -213,6 +265,9 @@ export default function DashboardLayout(): JSX.Element {
             );
             // Update tenant cache so UI flips to active immediately
             queryClient.setQueryData(['tenant', token], updated);
+            await queryClient.invalidateQueries({
+              predicate: (q) => Array.isArray(q.queryKey) && q.queryKey[0] === 'tenant',
+            });
             setPaywallOpen(false);
           } catch (e) {
             console.error('Subscribe failed', e);

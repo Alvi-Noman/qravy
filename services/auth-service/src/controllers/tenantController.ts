@@ -1,3 +1,4 @@
+// services/auth-service/src/controllers/tenantController.ts
 import type { Request, Response, NextFunction } from 'express';
 import { ObjectId } from 'mongodb';
 import { client } from '../db.js';
@@ -38,7 +39,7 @@ function normalizePlanId(input?: unknown, intervalInput?: unknown): AllowedPlanI
   if ((ALLOWED_PLAN_IDS as readonly string[]).includes(raw)) return raw as AllowedPlanId;
 
   const isYearSuffix = /(_y|_year|:y|:year|year|yearly)$/.test(raw);
-  const isMonthSuffix = /(_m|_month|:m|:month|month|monthly)$/.test(raw);
+  const isMonthSuffix = /(_м|_m|_month|:m|:month|month|monthly)$/.test(raw);
 
   const baseRaw = raw.replace(/(_m|_y|_month|_year|:m|:y|:month|:year|month|monthly|year|yearly)$/g, '');
   const base = LEGACY_BASE_MAP[baseRaw] ?? baseRaw;
@@ -371,7 +372,15 @@ export async function cancelSubscription(req: Request, res: Response, next: Next
       updatedAt: now,
     };
 
-    const upd = await tenantsCol().updateOne({ _id: new ObjectId(tenantId) }, { $set });
+    // Clear stored card when cancel is immediate (delete card info)
+    const $unset: Record<string, any> = {};
+    if (mode !== 'period_end') {
+      $set.hasCardOnFile = false;
+      $unset.payment = '';
+    }
+
+    const update = Object.keys($unset).length ? { $set, $unset } : { $set };
+    const upd = await tenantsCol().updateOne({ _id: new ObjectId(tenantId) }, update);
     if (upd.matchedCount === 0) return res.fail(404, 'Tenant not found');
 
     const updated = await tenantsCol().findOne({ _id: new ObjectId(tenantId) });
@@ -379,7 +388,7 @@ export async function cancelSubscription(req: Request, res: Response, next: Next
 
     await auditLog({
       userId,
-      action: 'TENANT_SUBSCRIPTION_CANCEL',
+      action: mode === 'period_end' ? 'TENANT_SUBSCRIPTION_CANCEL' : 'TENANT_PAYMENT_CLEAR',
       after: toTenantDTO(updated),
       ip: req.ip || 'unknown',
       userAgent: req.headers['user-agent'] || 'unknown',
