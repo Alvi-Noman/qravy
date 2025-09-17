@@ -1,11 +1,13 @@
+// apps/client-dashboard/src/features/billing/pages/PlanSheet.tsx
 import React, { useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { ShieldCheckIcon } from '@heroicons/react/24/outline';
 import { CheckCircleIcon, SparklesIcon } from '@heroicons/react/24/solid';
-import { usePlanQuery, useUpdatePlanMutation } from '../hooks/usePlan';
+import { usePlanQuery, useUpdatePlanMutation, useSubscribePlanMutation } from '../hooks/usePlan';
 import { PlanIntervalSwitch } from '../components/PlanIntervalSwitch';
 import type { PlanState, PlanTier } from '../../../api/billing';
+import { useTenant } from '../../../hooks/useTenant';
 
 type PlanCardId = 'p1' | 'p2';
 const idToTier: Record<PlanCardId, Extract<PlanTier, 'Starter' | 'Pro'>> = { p1: 'Starter', p2: 'Pro' };
@@ -19,7 +21,7 @@ type SubscribeResult = {
   last4?: string;
   interval: 'month' | 'year';
   amountCents: number;
-  currency: string; // e.g., 'USD'
+  currency: string;
 };
 
 type CardBrand =
@@ -52,6 +54,7 @@ export default function PlanSheet(): JSX.Element {
 
   const { data: plan, isLoading } = usePlanQuery();
   const { mutateAsync: savePlan } = useUpdatePlanMutation();
+  const { mutateAsync: subscribePlan } = useSubscribePlanMutation();
 
   const [billingCycle, setBillingCycle] = useState<'monthly' | 'yearly'>('monthly');
   const [loadingPlan, setLoadingPlan] = useState<PlanCardId | null>(null);
@@ -112,21 +115,42 @@ export default function PlanSheet(): JSX.Element {
     currency: string;
     brand?: CardBrand;
     last4?: string;
+    expMonth?: number;
+    expYear?: number;
   };
 
   const proceed = async (payload: OnSubscribePayload) => {
-    // TODO: call your backend subscribe endpoint here (e.g., await api.subscribe(payload))
-    // On success:
-    setSubscribeResult({
-      name: payload.name,
-      brand: payload.brand,
-      last4: payload.last4,
-      interval: payload.interval,
-      amountCents: payload.amountCents,
-      currency: payload.currency,
-    });
-    params.set('step', 'success');
-    setParams(params, { replace: true });
+    try {
+      await subscribePlan({
+        planId: payload.planId,
+        interval: payload.interval,
+        cardToken: payload.cardToken,
+        name: payload.name,
+        amountCents: payload.amountCents,
+        currency: payload.currency,
+        payment: {
+          provider: 'mock',
+          brand: payload.brand === 'visa_electron' ? 'visa' : (payload.brand as any) ?? 'unknown',
+          last4: payload.last4,
+          expMonth: payload.expMonth,
+          expYear: payload.expYear,
+        },
+      });
+
+      setSubscribeResult({
+        name: payload.name,
+        brand: payload.brand === 'visa_electron' ? 'visa' : (payload.brand as string | undefined),
+        last4: payload.last4,
+        interval: payload.interval,
+        amountCents: payload.amountCents,
+        currency: payload.currency,
+      });
+
+      params.set('step', 'success');
+      setParams(params, { replace: true });
+    } catch (e) {
+      console.error('Subscribe failed', e);
+    }
   };
 
   return (
@@ -140,7 +164,7 @@ export default function PlanSheet(): JSX.Element {
         onMouseDown={close}
       />
 
-      {/* Sheet container — slide up once per mount; inner content re-renders */}
+      {/* Sheet container */}
       <motion.div
         className="absolute inset-x-0 bottom-0 flex min-h-[calc(100vh-55px)] flex-col overflow-hidden rounded-t-2xl border border-[#e5e5e5] bg-white shadow-2xl"
         style={{ top: 55, willChange: 'transform' }}
@@ -187,10 +211,7 @@ export default function PlanSheet(): JSX.Element {
               onSelect={onSelectPlan}
             />
           ) : step === 'subscribe' ? (
-            <SubscribeCheckout
-              plan={plan}
-              onSubscribe={proceed}
-            />
+            <SubscribeCheckout plan={plan} onSubscribe={proceed} />
           ) : (
             <SuccessStep
               plan={plan}
@@ -204,7 +225,7 @@ export default function PlanSheet(): JSX.Element {
   );
 }
 
-/* Select step */
+/* Select step (unchanged) */
 function SelectStep({
   billingCycle,
   setBillingCycle,
@@ -317,7 +338,7 @@ function SelectStep({
   );
 }
 
-/* Subscribe checkout — toggle switches month/year (no redirect), modern shadows, no inner dot */
+/* Subscribe checkout — industry-grade saved-card flow + minimal card form */
 function SubscribeCheckout({
   plan,
   onSubscribe,
@@ -332,23 +353,24 @@ function SubscribeCheckout({
     currency: string;
     brand?: CardBrand;
     last4?: string;
+    expMonth?: number;
+    expYear?: number;
   }) => Promise<void> | void;
 }) {
-  const { mutateAsync: savePlan } = useUpdatePlanMutation();
+  const { data: tenant, isLoading: tenantLoading } = useTenant();
 
-  // Local interval for instant UI; persist on toggle
+  // Interval from selected plan (no toggle here)
   const [localInterval, setLocalInterval] = useState<'month' | 'year'>(plan.interval);
   useEffect(() => setLocalInterval(plan.interval), [plan.interval]);
 
-  // Price table per tier
+  // Pricing
   const priceCentsMonthly = plan.tier === 'Starter' ? 2900 : plan.tier === 'Pro' ? 9900 : 0;
   const yearlyDiscountRate = 0.15;
-
   const rawYearCents = priceCentsMonthly * 12;
   const discountCentsYear = Math.round(rawYearCents * yearlyDiscountRate);
   const effectiveYearCents = rawYearCents - discountCentsYear;
-
   const planPriceCents = localInterval === 'year' ? effectiveYearCents : priceCentsMonthly;
+
   const planId = (() => {
     const base = plan.tier === 'Starter' ? 'p1' : plan.tier === 'Pro' ? 'p2' : 'p0';
     const suff = localInterval === 'year' ? 'y' : 'm';
@@ -358,13 +380,15 @@ function SubscribeCheckout({
   const fmt = (cents: number, currency = 'USD') =>
     new Intl.NumberFormat('en-US', { style: 'currency', currency }).format((cents || 0) / 100);
 
-  const isYearly = localInterval === 'year';
-  const savingsTotalCents = discountCentsYear;
-  const savingsMonthlyCents = Math.round(discountCentsYear / 12);
-  const savingsTextMonthly = `${fmt(savingsTotalCents)} off (${fmt(savingsMonthlyCents)}/mo)`;
-  const savingsTextYearly = `${fmt(savingsTotalCents)} discount applied`;
+  // Saved card from backend
+  const saved = !tenantLoading && !!tenant?.hasCardOnFile && !!tenant?.payment?.last4;
+  const savedPM = tenant?.payment ?? undefined;
 
-  // Form state and helpers
+  // Toggle: saved card or new card form
+  const [useSavedCard, setUseSavedCard] = useState<boolean>(saved);
+  useEffect(() => setUseSavedCard(saved), [saved]);
+
+  // Brand helpers
   const brandIconMap: Record<CardBrand, string | null> = {
     visa: '/brands/visa.svg',
     visa_electron: '/brands/visa-electron.svg',
@@ -377,20 +401,31 @@ function SubscribeCheckout({
     unionpay: null,
     unknown: null,
   };
+  const brandLabel = (b?: string) => {
+    const v = (b || 'unknown').toLowerCase();
+    if (v === 'amex') return 'American Express';
+    if (v === 'diners') return 'Diners Club';
+    if (v === 'visa_electron') return 'Visa';
+    return v.charAt(0).toUpperCase() + v.slice(1);
+  };
+  const pad2 = (n?: number) => {
+    const v = Number(n || 0);
+    return v < 10 ? `0${v}` : String(v);
+  };
 
+  // Form state for "use different card"
   const [submitting, setSubmitting] = useState(false);
-  const [toggleBusy, setToggleBusy] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [brand, setBrand] = useState<CardBrand>('unknown');
-  const [zipProvided, setZipProvided] = useState(false);
 
   const cvcMaxLen = brand === 'amex' ? 4 : 3;
   const cvcPlaceholder = brand === 'amex' ? '••••' : '•••';
 
+  // Focus style: only black border on focus
   const field =
-    'h-12 w-full rounded-lg border border-slate-300 px-3.5 text-[15px] placeholder:text-slate-500 transition-colors focus:outline-none focus:border-slate-900 focus:ring-2 focus:ring-slate-200';
+    'h-12 w-full rounded-lg border border-slate-300 px-3.5 text-[15px] placeholder:text-slate-500 focus:outline-none focus:border-black';
 
-  // Brand + Luhn + caret formatting
+  // Card helpers
   function detectBrand(d: string): CardBrand {
     if (/^(4026|417500|4508|4844|4913|4917)/.test(d)) return 'visa_electron';
     if (/^4\d{0,}$/.test(d)) return 'visa';
@@ -474,26 +509,23 @@ function SubscribeCheckout({
     };
   }
 
-  // Totals with simple tax demo
-  const taxRate = zipProvided ? 0.08 : 0;
-  const subtotalCents = planPriceCents; // reflect local interval
-  const taxCents = Math.round(subtotalCents * taxRate);
-  const totalCents = subtotalCents + taxCents;
-
+  // Submit handler (uses saved card or validates new card)
   function validate(fd: FormData) {
     const name = String(fd.get('name') || '').trim();
     const cardDigits = String(fd.get('card') || '').replace(/\D/g, '');
     const exp = String(fd.get('exp') || '').trim();
     const cvc = String(fd.get('cvc') || '').trim();
+    const country = String(fd.get('country') || '').trim();
     const zip = String(fd.get('zip') || '').trim();
     const newErrors: Record<string, string> = {};
     if (!name) newErrors.name = 'Name is required';
-    if (brand === 'amex') { if (cardDigits.length !== 15) newErrors.card = 'Enter a valid Amex number'; }
+    if (brand === 'amex') { if (cardDigits.length !== 15 || !luhnCheck(cardDigits)) newErrors.card = 'Enter a valid Amex number'; }
     else if (cardDigits.length < 13 || cardDigits.length > 19 || !luhnCheck(cardDigits)) newErrors.card = 'Enter a valid card number';
     if (!/^\d{2}\/\d{2}$/.test(exp)) newErrors.exp = 'Use MM/YY format';
     else { const mm = Number(exp.split('/')[0]); if (mm < 1 || mm > 12) newErrors.exp = 'Invalid month'; }
     const expectedCvcLen = brand === 'amex' ? 4 : 3;
     if (!/^\d+$/.test(cvc) || cvc.length !== expectedCvcLen) newErrors.cvc = `Enter a ${expectedCvcLen}-digit CVC`;
+    if (!country) newErrors.country = 'Country is required';
     if (!zip) newErrors.zip = 'ZIP/Postal is required';
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
@@ -502,12 +534,43 @@ function SubscribeCheckout({
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     if (submitting) return;
+
+    // Using saved card: no field validation, just proceed
+    if (useSavedCard && savedPM?.last4) {
+      setSubmitting(true);
+      try {
+        await Promise.resolve(
+          onSubscribe({
+            name: 'Card on file',
+            cardToken: 'pm_onfile',
+            planId,
+            interval: localInterval,
+            amountCents: planPriceCents,
+            currency: 'USD',
+            brand: (savedPM.brand as CardBrand) ?? 'unknown',
+            last4: savedPM.last4,
+            expMonth: savedPM.expMonth,
+            expYear: savedPM.expYear,
+          })
+        );
+      } finally {
+        setSubmitting(false);
+      }
+      return;
+    }
+
+    // New card path
     const fd = new FormData(e.currentTarget);
     if (!validate(fd)) return;
+
     setSubmitting(true);
     try {
       const name = String(fd.get('name') || '').trim();
       const cardDigits = String(fd.get('card') || '').replace(/\D/g, '');
+      const expStr = String(fd.get('exp') || '');
+      const [mmStr, yyStr] = expStr.split('/');
+      const expMonth = Number(mmStr);
+      const expYear = 2000 + Number(yyStr);
       const fakeToken = 'tok_' + Math.random().toString(36).slice(2, 10);
 
       await Promise.resolve(
@@ -516,10 +579,12 @@ function SubscribeCheckout({
           cardToken: fakeToken,
           planId,
           interval: localInterval,
-          amountCents: totalCents,
+          amountCents: planPriceCents,
           currency: 'USD',
           brand,
           last4: cardDigits.slice(-4),
+          expMonth,
+          expYear,
         })
       );
     } finally {
@@ -527,152 +592,150 @@ function SubscribeCheckout({
     }
   }
 
-  // Toggle month/year — no redirect, optimistic UI, persisted in background
-  const handleToggleInterval = async () => {
-    if (toggleBusy) return;
-    const next: 'month' | 'year' = localInterval === 'year' ? 'month' : 'year';
-    setToggleBusy(true);
-    setLocalInterval(next); // instant UI update
-    try {
-      await savePlan({ ...plan, interval: next });
-    } finally {
-      setToggleBusy(false);
-    }
+  // Allow switching back to plan selection from Summary
+  const [params, setParams] = useSearchParams();
+  const goToSelect = () => {
+    params.set('step', 'select');
+    setParams(params, { replace: true });
   };
 
   return (
     <div className="mx-auto w-full max-w-6xl px-2 md:px-4">
-      {/* Savings row — purely local UI; toggle switches prices; no links */}
-      <div className="mb-5 rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-md shadow-slate-200/60">
-        <div className="flex items-center justify-between">
-          <div className="text-[14px] font-medium text-slate-900">
-            Save with yearly billing
-            <span
-              className={[
-                'ml-2 rounded-full px-2.5 py-0.5 text-[12px] font-medium',
-                isYearly ? 'bg-emerald-100 text-emerald-800' : 'bg-blue-100 text-blue-800',
-              ].join(' ')}
-            >
-              {isYearly ? savingsTextYearly : savingsTextMonthly}
-            </span>
-          </div>
-
-          {/* Modern toggle — no dot inside knob, no redirect */}
-          <button
-            type="button"
-            role="switch"
-            aria-checked={isYearly}
-            aria-label="Toggle yearly billing"
-            onClick={handleToggleInterval}
-            disabled={toggleBusy}
-            className={[
-              'relative inline-flex h-[28px] w-[56px] items-center rounded-full transition-all duration-200 ease-out',
-              isYearly ? 'bg-gradient-to-r from-slate-900 to-slate-700' : 'bg-slate-300',
-              toggleBusy ? 'opacity-70 cursor-wait' : 'cursor-pointer',
-              'shadow-inner',
-            ].join(' ')}
-          >
-            <span
-              className={[
-                'absolute top-[3px] left-[3px] h-[22px] w-[22px] rounded-full bg-white shadow ring-1 ring-black/5 transform transition-transform duration-200 ease-out',
-                isYearly ? 'translate-x-[28px]' : 'translate-x-0',
-              ].join(' ')}
-            />
-          </button>
-        </div>
-      </div>
-
       <form onSubmit={handleSubmit} className="grid gap-6 lg:grid-cols-12">
-        {/* Left: Payment details */}
+        {/* Left: Saved card or Payment form */}
         <div className="lg:col-span-7">
           <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-md shadow-slate-200/60">
-            <div className="text-base font-semibold text-slate-900">Payment details</div>
+            <div className="text-base font-semibold text-slate-900">Payment method</div>
 
-            <div className="mt-5 grid gap-4">
-              <div className="grid gap-1.5">
-                <label className="text-[13px] font-medium text-slate-700">Name on card</label>
-                <input name="name" className={field} placeholder="Jane Doe" autoComplete="cc-name" />
-                {errors.name && <div className="text-[12px] text-rose-600">{errors.name}</div>}
+            {tenantLoading ? (
+              <div className="mt-5 h-40 animate-pulse rounded-xl border border-slate-200 bg-white" />
+            ) : useSavedCard && savedPM?.last4 ? (
+              <div className="mt-5 grid gap-4">
+                <div className="flex items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-3.5 py-3">
+                  <div className="flex items-center gap-3">
+                    {brandIconMap[(savedPM.brand as CardBrand) ?? 'unknown'] && (
+                      <img
+                        src={brandIconMap[(savedPM.brand as CardBrand) ?? 'unknown']!}
+                        alt=""
+                        aria-hidden="true"
+                        className="h-5 w-auto"
+                        draggable={false}
+                      />
+                    )}
+                    <span className="inline-flex items-center rounded bg-slate-100 px-2 py-1 text-[11px] font-medium text-slate-700">
+                      {brandLabel(savedPM.brand).toUpperCase()}
+                    </span>
+                    <div className="text-[13px] text-slate-800">
+                      •••• {savedPM.last4}{' '}
+                      {savedPM.expMonth && savedPM.expYear ? (
+                        <span className="text-slate-500">(Exp {pad2(savedPM.expMonth)}/{String(savedPM.expYear).slice(-2)})</span>
+                      ) : null}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setUseSavedCard(false)}
+                    className="rounded-md border border-[#e2e2e2] bg-white px-2.5 py-1.5 text-[12px] hover:bg-slate-50"
+                  >
+                    Use a different card
+                  </button>
+                </div>
+
+                <div className="mt-1 flex items-center gap-2 text-[12px] text-slate-500">
+                  <ShieldCheckIcon className="h-4 w-4 text-slate-500" />
+                  <span>Your saved card will be charged securely.</span>
+                </div>
               </div>
+            ) : (
+              <div className="mt-5 grid gap-4">
+                <div className="grid gap-1.5">
+                  <label className="text-[13px] font-medium text-slate-700">Name on card</label>
+                  <input name="name" className={field} placeholder="Jane Doe" autoComplete="cc-name" />
+                  {errors.name && <div className="text-[12px] text-rose-600">{errors.name}</div>}
+                </div>
 
-              <div className="grid gap-1.5">
-                <label className="text-[13px] font-medium text-slate-700">Card number</label>
-                <div className="relative">
-                  <input
-                    name="card"
-                    inputMode="numeric"
-                    autoComplete="cc-number"
-                    className={`${field} pr-14`}
-                    placeholder="4242 4242 4242 4242"
-                    onInput={handleCardInput}
-                  />
-                  {brandIconMap[brand] && (
-                    <img
-                      src={brandIconMap[brand]!}
-                      alt={brand}
-                      className="pointer-events-none absolute right-3 top-1/2 h-6 w-auto -translate-y-1/2 select-none"
-                      loading="eager"
-                      draggable={false}
+                <div className="grid gap-1.5">
+                  <label className="text-[13px] font-medium text-slate-700">Card number</label>
+                  <div className="relative">
+                    <input
+                      name="card"
+                      inputMode="numeric"
+                      autoComplete="cc-number"
+                      className={`${field} pr-14`}
+                      placeholder="4242 4242 4242 4242"
+                      onInput={handleCardInput}
                     />
-                  )}
+                    {brandIconMap[brand] && (
+                      <img
+                        src={brandIconMap[brand]!}
+                        alt=""
+                        aria-hidden="true"
+                        className="pointer-events-none absolute right-3 top-1/2 h-6 w-auto -translate-y-1/2 select-none"
+                        loading="eager"
+                        draggable={false}
+                      />
+                    )}
+                  </div>
+                  {errors.card && <div className="text-[12px] text-rose-600">{errors.card}</div>}
                 </div>
-                {errors.card && <div className="text-[12px] text-rose-600">{errors.card}</div>}
-              </div>
 
-              <div className="grid grid-cols-2 gap-4">
-                <div className="grid gap-1.5">
-                  <label className="text-[13px] font-medium text-slate-700">Expiry</label>
-                  <input
-                    name="exp"
-                    inputMode="numeric"
-                    autoComplete="cc-exp"
-                    className={field}
-                    placeholder="MM/YY"
-                    maxLength={5}
-                    onInput={handleExpInput}
-                    onKeyDown={handleExpKeyDown}
-                  />
-                  {errors.exp && <div className="text-[12px] text-rose-600">{errors.exp}</div>}
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="grid gap-1.5">
+                    <label className="text-[13px] font-medium text-slate-700">Expiry</label>
+                    <input
+                      name="exp"
+                      inputMode="numeric"
+                      autoComplete="cc-exp"
+                      className={field}
+                      placeholder="MM/YY"
+                      maxLength={5}
+                      onInput={handleExpInput}
+                      onKeyDown={handleExpKeyDown}
+                    />
+                    {errors.exp && <div className="text-[12px] text-rose-600">{errors.exp}</div>}
+                  </div>
+                  <div className="grid gap-1.5">
+                    <label className="text-[13px] font-medium text-slate-700">CVC</label>
+                    <input
+                      type="password"
+                      name="cvc"
+                      inputMode="numeric"
+                      autoComplete="cc-csc"
+                      className={field}
+                      placeholder={cvcPlaceholder}
+                      maxLength={cvcMaxLen}
+                      onInput={handleDigitsOnly(cvcMaxLen)}
+                    />
+                    {errors.cvc && <div className="text-[12px] text-rose-600">{errors.cvc}</div>}
+                  </div>
                 </div>
-                <div className="grid gap-1.5">
-                  <label className="text-[13px] font-medium text-slate-700">CVC</label>
-                  <input
-                    type="password"
-                    name="cvc"
-                    inputMode="numeric"
-                    autoComplete="cc-csc"
-                    className={field}
-                    placeholder={cvcPlaceholder}
-                    maxLength={cvcMaxLen}
-                    onInput={handleDigitsOnly(cvcMaxLen)}
-                  />
-                  {errors.cvc && <div className="text-[12px] text-rose-600">{errors.cvc}</div>}
-                </div>
-              </div>
 
-              <div className="grid grid-cols-2 gap-4">
+                {/* Address full width */}
                 <div className="grid gap-1.5">
-                  <label className="text-[13px] font-medium text-slate-700">Country</label>
-                  <input name="country" className={field} placeholder="United States" autoComplete="country-name" />
+                  <label className="text-[13px] font-medium text-slate-700">Address</label>
+                  <input name="address" className={field} placeholder="123 Market St" autoComplete="address-line1" />
                 </div>
-                <div className="grid gap-1.5">
-                  <label className="text-[13px] font-medium text-slate-700">ZIP / Postal</label>
-                  <input
-                    name="zip"
-                    className={field}
-                    placeholder="94105"
-                    autoComplete="postal-code"
-                    onInput={(e) => setZipProvided(!!(e.currentTarget.value || '').trim())}
-                  />
-                  {errors.zip && <div className="text-[12px] text-rose-600">{errors.zip}</div>}
-                </div>
-              </div>
 
-              <div className="mt-1 flex items-center gap-2 text-[12px] text-slate-500">
-                <ShieldCheckIcon className="h-4 w-4 text-slate-500" />
-                <span>Payments are encrypted and processed securely.</span>
+                {/* ZIP/Postal then Country */}
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="grid gap-1.5">
+                    <label className="text-[13px] font-medium text-slate-700">ZIP / Postal</label>
+                    <input name="zip" className={field} placeholder="94105" autoComplete="postal-code" />
+                    {errors.zip && <div className="text-[12px] text-rose-600">{errors.zip}</div>}
+                  </div>
+                  <div className="grid gap-1.5">
+                    <label className="text-[13px] font-medium text-slate-700">Country</label>
+                    <input name="country" className={field} placeholder="United States" autoComplete="country-name" />
+                    {errors.country && <div className="text-[12px] text-rose-600">{errors.country}</div>}
+                  </div>
+                </div>
+
+                <div className="mt-1 flex items-center gap-2 text-[12px] text-slate-500">
+                  <ShieldCheckIcon className="h-4 w-4 text-slate-500" />
+                  <span>Payments are encrypted and processed securely.</span>
+                </div>
               </div>
-            </div>
+            )}
           </div>
         </div>
 
@@ -691,6 +754,15 @@ function SubscribeCheckout({
                 </div>
                 <div className="mt-0.5 text-[12px] text-slate-600">
                   Billed {localInterval === 'year' ? 'yearly' : 'monthly'}
+                </div>
+                <div className="mt-2 text-[12px]">
+                  <button
+                    type="button"
+                    onClick={goToSelect}
+                    className="text-slate-700 underline underline-offset-2 hover:text-slate-900"
+                  >
+                    Change plan
+                  </button>
                 </div>
               </div>
 
@@ -721,15 +793,9 @@ function SubscribeCheckout({
                         <td className="px-3 py-2 text-right text-emerald-700">- {fmt(discountCentsYear)}</td>
                       </tr>
                     )}
-                    {taxRate > 0 && (
-                      <tr>
-                        <td className="px-3 py-2 text-slate-600">Estimated tax ({Math.round(taxRate * 100)}%)</td>
-                        <td className="px-3 py-2 text-right text-slate-800">{fmt(taxCents)}</td>
-                      </tr>
-                    )}
                     <tr className="bg-slate-50">
                       <td className="px-3 py-2 font-semibold text-slate-900">Total</td>
-                      <td className="px-3 py-2 text-right font-semibold text-slate-900">{fmt(totalCents)}</td>
+                      <td className="px-3 py-2 text-right font-semibold text-slate-900">{fmt(planPriceCents)}</td>
                     </tr>
                   </tbody>
                 </table>
@@ -742,7 +808,7 @@ function SubscribeCheckout({
               >
                 <span>{submitting ? 'Processing…' : 'Subscribe'}</span>
                 <span className="opacity-90">
-                  {fmt(totalCents)} {localInterval === 'year' ? '/yr' : '/mo'}
+                  {fmt(planPriceCents)} {localInterval === 'year' ? '/yr' : '/mo'}
                 </span>
               </button>
             </div>
@@ -830,11 +896,11 @@ function SuccessStep({
               <div className="flex items-center justify-between text-[14px]">
                 <div className="font-medium text-slate-900">{plan.tier}</div>
                 <div className="font-semibold text-slate-900">
-                  {totalFormatted}{interval === 'year' ? '/yr' : '/mo'}
+                  {totalFormatted}{(result?.interval ?? plan.interval) === 'year' ? '/yr' : '/mo'}
                 </div>
               </div>
               <div className="mt-1 text-[12px] text-slate-600">
-                Billed {interval === 'year' ? 'yearly' : 'monthly'}
+                Billed {(result?.interval ?? plan.interval) === 'year' ? 'yearly' : 'monthly'}
               </div>
             </div>
 

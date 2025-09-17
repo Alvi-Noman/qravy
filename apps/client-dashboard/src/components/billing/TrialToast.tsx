@@ -1,4 +1,3 @@
-// apps/client-dashboard/src/components/Billing/TrialToast.tsx
 import { motion, AnimatePresence } from 'framer-motion';
 import { ExclamationTriangleIcon } from '@heroicons/react/24/outline';
 
@@ -6,8 +5,9 @@ export default function TrialToast({
   open,
   daysLeft,
   hoursLeft,
-  onUpgrade,
-  onCompare,
+  // Keep props for compatibility; we handle navigation internally
+  // onUpgrade,
+  // onCompare,
 }: {
   open: boolean;
   daysLeft: number;
@@ -15,6 +15,16 @@ export default function TrialToast({
   onUpgrade: () => void;
   onCompare?: () => void;
 }) {
+  const handleAddBilling = () => {
+    // Absolute URL as requested
+    window.location.href = 'http://localhost:5173/settings/plan/select?step=subscribe';
+  };
+
+  const handleChangePlan = () => {
+    // Route within the app
+    window.location.href = '/settings/plan/select';
+  };
+
   return (
     <AnimatePresence>
       {open && (
@@ -47,14 +57,14 @@ export default function TrialToast({
               <div className="mt-3 flex items-center gap-2">
                 <button
                   type="button"
-                  onClick={onUpgrade}
+                  onClick={handleAddBilling}
                   className="inline-flex items-center justify-center rounded-md bg-[#2e2e30] px-3 py-1.5 text-[12px] font-medium text-white hover:opacity-90"
                 >
-                  Add Billing Info 
+                  Add Billing Info
                 </button>
                 <button
                   type="button"
-                  onClick={onCompare}
+                  onClick={handleChangePlan}
                   className="inline-flex items-center justify-center rounded-md border border-[#e5e5e5] bg-white px-3 py-1.5 text-[12px] font-medium text-slate-700 hover:bg-slate-50"
                 >
                   Change Plan

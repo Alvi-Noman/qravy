@@ -51,6 +51,60 @@ export interface TenantPlanInfoDTO {
 
 export type SubscriptionStatus = 'none' | 'active';
 
+// Payment-related enums (non-sensitive)
+export type PaymentProvider = 'none' | 'stripe' | 'adyen' | 'mock';
+export type CardBrand =
+  | 'visa'
+  | 'mastercard'
+  | 'amex'
+  | 'discover'
+  | 'diners'
+  | 'jcb'
+  | 'maestro'
+  | 'unionpay'
+  | 'unknown';
+export type FundingType = 'credit' | 'debit' | 'prepaid' | 'unknown';
+
+// Public payment metadata DTO (non-sensitive)
+export interface TenantPaymentDTO {
+  provider?: PaymentProvider;
+  customerId?: string;
+  defaultPaymentMethodId?: string;
+
+  brand?: CardBrand;
+  last4?: string;
+  expMonth?: number;
+  expYear?: number;
+  country?: string;
+  funding?: FundingType;
+
+  updatedAt?: string; // ISO string
+}
+
+/* Billing profile DTOs */
+export type TaxExemptType = 'none' | 'exempt' | 'reverse';
+
+export interface BillingAddressDTO {
+  line1: string;
+  line2?: string;
+  city: string;
+  state: string;
+  postalCode: string;
+  country: string; // ISO-2
+}
+
+export interface BillingProfileDTO {
+  companyName: string;
+  billingEmail: string;
+  extraEmails: string[];
+  address: BillingAddressDTO;
+  taxId?: string;
+  taxExempt?: TaxExemptType;
+  dunningEnabled?: boolean;
+  dunningDays?: number[];
+  updatedAt?: string; // ISO
+}
+
 export interface TenantDTO {
   id: string;
   name: string;
@@ -66,6 +120,18 @@ export interface TenantDTO {
 
   // Selected plan
   planInfo?: TenantPlanInfoDTO;
+
+  // Cancellation metadata (ISO strings)
+  cancelRequestedAt?: string | null;
+  cancelEffectiveAt?: string | null;
+  cancelAtPeriodEnd?: boolean | null;
+
+  // Payment metadata
+  hasCardOnFile?: boolean;
+  payment?: TenantPaymentDTO;
+
+  // Optional: expose profile if you want to include it in broader tenant fetches
+  billingProfile?: BillingProfileDTO;
 
   createdAt: string;
   updatedAt: string;

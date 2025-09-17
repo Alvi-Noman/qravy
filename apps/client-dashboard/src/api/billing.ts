@@ -1,6 +1,8 @@
-// Self-contained mock billing API with an internal sleep helper.
-// No external imports needed.
+// apps/client-dashboard/src/api/billing.ts
+import api from './auth';
 
+// Self-contained mock billing API with an internal sleep helper.
+// (We now also expose real backend calls for subscribing.)
 const sleep = (ms: number) => new Promise((res) => setTimeout(res, ms));
 
 export type BillingInterval = 'month' | 'year';
@@ -262,4 +264,56 @@ export function planInfoFromId(planId: string | undefined): {
     priceCents: interval === 'year' ? cat.yearlyCents : cat.monthlyCents,
     currency: cat.currency,
   };
+}
+
+/* -----------------------------------------------------------------------------
+   Backend integration (tenant subscribe)
+----------------------------------------------------------------------------- */
+
+// What the FE can send when subscribing (includes non-sensitive payment meta)
+export type SubscribeTenantRequest = {
+  planId: string;              // 'p1_m' | 'p2_y' etc.
+  interval?: 'month' | 'year'; // optional, backend normalizes if absent
+  cardToken?: string;          // optional (dummy)
+  name?: string;               // optional (cardholder)
+  amountCents?: number;        // optional
+  currency?: string;           // optional
+
+  // Save non-sensitive card meta on subscribe:
+  payment?: {
+    provider?: 'mock' | 'stripe' | 'adyen' | 'none';
+    brand?: 'visa' | 'mastercard' | 'amex' | 'discover' | 'diners' | 'jcb' | 'maestro' | 'unionpay' | 'unknown';
+    last4?: string;
+    expMonth?: number;
+    expYear?: number;
+    country?: string;
+    funding?: 'credit' | 'debit' | 'prepaid' | 'unknown';
+    paymentMethodId?: string; // optional
+    customerId?: string;      // optional
+  };
+};
+
+// What we expect back (subset of backend TenantDTO)
+export type TenantDTO = {
+  planInfo?: { planId?: string };
+  subscriptionStatus?: 'none' | 'active';
+  trialEndsAt?: string | null;
+  hasCardOnFile?: boolean;
+  payment?: {
+    provider?: 'none' | 'stripe' | 'adyen' | 'mock';
+    customerId?: string;
+    defaultPaymentMethodId?: string;
+    brand?: 'visa' | 'mastercard' | 'amex' | 'discover' | 'diners' | 'jcb' | 'maestro' | 'unionpay' | 'unknown';
+    last4?: string;
+    expMonth?: number;
+    expYear?: number;
+    country?: string;
+    funding?: 'credit' | 'debit' | 'prepaid' | 'unknown';
+    updatedAt?: string;
+  };
+};
+
+export async function subscribeTenant(body: SubscribeTenantRequest): Promise<TenantDTO> {
+  const { data } = await api.post<{ item: TenantDTO }>('/api/v1/auth/tenants/subscribe', body);
+  return data.item;
 }

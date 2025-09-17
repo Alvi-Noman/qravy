@@ -14,29 +14,11 @@ import { useTrial } from '../hooks/useTrial';
 import { useTenant } from '../hooks/useTenant';
 import { planInfoFromId } from '../api/billing';
 import { useQueryClient } from '@tanstack/react-query';
-import { subscribeTenant } from '../api/tenant'; // or '../api/tenants' if that’s your file
+import { subscribeAndSaveBilling } from '../api/tenant';
 
 const Sidebar = lazy(() => import('../components/sidebar/Sidebar'));
 
 const AI_PANEL_WIDTH = 380;
-
-function SectionSkeleton({ rows = 6, headingWidth = 'w-24' }: { rows?: number; headingWidth?: string }) {
-  return (
-    <div className="mb-6">
-      <div className={`mb-3 h-3 ${headingWidth} rounded bg-slate-200`} />
-      <ul className="space-y-2">
-        {Array.from({ length: rows }).map((_, i) => (
-          <li key={i}>
-            <div className="group flex items-center gap-3 rounded-md border-l-4 border-transparent px-3 py-2.5">
-              <div className="h-5 w-5 rounded bg-slate-200" />
-              <div className="h-4 w-40 rounded bg-slate-200" />
-            </div>
-          </li>
-        ))}
-      </ul>
-    </div>
-  );
-}
 
 function SidebarFallback() {
   return (
@@ -45,12 +27,9 @@ function SidebarFallback() {
       aria-busy="true"
       aria-label="Loading sidebar"
     >
-      {/* Brand */}
       <div className="mb-0 flex items-center">
         <div className="h-8 w-28 rounded bg-slate-200" />
       </div>
-
-      {/* Branch selector */}
       <div className="mt-7 mb-6">
         <div className="flex w-full items-center justify-between rounded-md border border-[#dbdbdb] bg-[#fcfcfc] px-3 py-2.5">
           <span className="flex min-w-0 items-center gap-3">
@@ -62,11 +41,33 @@ function SidebarFallback() {
           </span>
         </div>
       </div>
-
-      {/* Sections */}
       <nav className="flex-1 overflow-y-auto">
-        <SectionSkeleton headingWidth="w-16" rows={10} />
-        <SectionSkeleton headingWidth="w-20" rows={2} />
+        <div className="mb-6">
+          <div className="mb-3 h-3 w-16 rounded bg-slate-200" />
+          <ul className="space-y-2">
+            {Array.from({ length: 10 }).map((_, i) => (
+              <li key={i}>
+                <div className="group flex items-center gap-3 rounded-md border-l-4 border-transparent px-3 py-2.5">
+                  <div className="h-5 w-5 rounded bg-slate-200" />
+                  <div className="h-4 w-40 rounded bg-slate-200" />
+                </div>
+              </li>
+            ))}
+          </ul>
+        </div>
+        <div className="mb-6">
+          <div className="mb-3 h-3 w-20 rounded bg-slate-200" />
+          <ul className="space-y-2">
+            {Array.from({ length: 2 }).map((_, i) => (
+              <li key={i}>
+                <div className="group flex items-center gap-3 rounded-md border-l-4 border-transparent px-3 py-2.5">
+                  <div className="h-5 w-5 rounded bg-slate-200" />
+                  <div className="h-4 w-40 rounded bg-slate-200" />
+                </div>
+              </li>
+            ))}
+          </ul>
+        </div>
       </nav>
     </aside>
   );
@@ -87,7 +88,7 @@ export default function DashboardLayout(): JSX.Element {
   const [paywallOpen, setPaywallOpen] = useState(false);
   const [subscribing, setSubscribing] = useState(false);
 
-  // 🚨 Redirect guard: unify with Login + MagicLink
+  // Redirects
   if (!loading && user) {
     if (!user.tenantId && location.pathname !== '/create-restaurant') {
       return <Navigate to="/create-restaurant" replace />;
@@ -97,37 +98,38 @@ export default function DashboardLayout(): JSX.Element {
     }
   }
 
-  // ✅ Auto-open AI Assistant for first timers with a 1.5s delay
+  // Auto-open AI panel for new users
   useEffect(() => {
     try {
       const saved = localStorage.getItem('ai-setup-steps');
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        const allDone =
-          Array.isArray(parsed) &&
-          parsed.length > 0 &&
-          parsed.every((s: any) => s.done);
-        if (!allDone) {
-          const timer = setTimeout(() => setAiOpen(true), 1500);
-          return () => clearTimeout(timer);
-        }
-      } else {
-        const timer = setTimeout(() => setAiOpen(true), 1500);
-        return () => clearTimeout(timer);
+      const parsed = saved ? JSON.parse(saved) : null;
+      const allDone =
+        Array.isArray(parsed) && parsed.length > 0 && parsed.every((s: any) => s.done);
+      if (!allDone) {
+        const t = setTimeout(() => setAiOpen(true), 1500);
+        return () => clearTimeout(t);
       }
     } catch {
-      const timer = setTimeout(() => setAiOpen(true), 1500);
-      return () => clearTimeout(timer);
+      const t = setTimeout(() => setAiOpen(true), 1500);
+      return () => clearTimeout(t);
     }
   }, []);
 
-  // Derived subscription flag from backend
+  // Derived flags
   const isSubscribed = tenant?.subscriptionStatus === 'active';
+  const isCanceled = !isSubscribed && !!(tenant?.cancelEffectiveAt || tenant?.cancelRequestedAt);
+  const endedAt = tenant?.cancelEffectiveAt ?? tenant?.trialEndsAt ?? undefined;
+  const hasCard = !!tenant?.hasCardOnFile;
 
-  // Open paywall immediately when trial expires and user is not subscribed
+  // Show trial toast if trial ongoing and not subscribed
+  const showTrialToast = !tenantLoading && !isSubscribed && !trial.expired;
+
+  // Open paywall when trial ends OR when plan is canceled (immediate)
   useEffect(() => {
-    if (trial.expired && !isSubscribed && !subscribing) setPaywallOpen(true);
-  }, [trial.expired, isSubscribed, subscribing]);
+    if (!tenantLoading && !isSubscribed && (trial.expired || isCanceled) && !subscribing) {
+      setPaywallOpen(true);
+    }
+  }, [tenantLoading, isSubscribed, trial.expired, isCanceled, subscribing]);
 
   return (
     <ScopeProvider>
@@ -145,7 +147,7 @@ export default function DashboardLayout(): JSX.Element {
                 transition: 'grid-template-columns 300ms ease',
               }}
             >
-              {/* Left: app content */}
+              {/* Left */}
               <div
                 className="flex h-full min-h-0 flex-col overflow-y-auto overscroll-contain"
                 style={{ scrollbarGutter: 'stable' }}
@@ -156,23 +158,23 @@ export default function DashboardLayout(): JSX.Element {
                 </div>
               </div>
 
-              {/* Right: AI panel */}
+              {/* Right */}
               <AIAssistantPanel open={aiOpen} onClose={() => setAiOpen(false)} width={AI_PANEL_WIDTH} />
             </div>
           </div>
         </main>
       </div>
 
-      {/* Trial toast during trial, hidden if subscribed */}
+      {/* Trial toast */}
       <TrialToast
-        open={!trial.expired && !isSubscribed}
-        daysLeft={trial.daysLeft}
-        hoursLeft={trial.hoursLeft}
+        open={showTrialToast}
+        daysLeft={trial.daysLeft ?? 0}
+        hoursLeft={trial.hoursLeft ?? 0}
         onUpgrade={() => setPaywallOpen(true)}
         onCompare={() => setPaywallOpen(true)}
       />
 
-      {/* Paywall — blocks app after trial ends and not subscribed */}
+      {/* Paywall */}
       <PaywallModal
         open={Boolean(paywallOpen && !tenantLoading && !isSubscribed)}
         allowClose={false}
@@ -187,18 +189,30 @@ export default function DashboardLayout(): JSX.Element {
         discountCents={0}
         taxRate={0}
         managePlanHref="/settings/plan/select"
-        onSubscribe={async ({ name, cardToken, planId }) => {
+        endedAt={endedAt}
+        hasCardOnFile={hasCard}
+        onSubscribe={async ({ name, cardToken, planId, billing }) => {
           if (!token) return;
-
           setSubscribing(true);
           try {
-            // 1) Call backend to activate subscription and end trial
-            const updated = await subscribeTenant({ name, cardToken, planId }, token);
-
-            // 2) Optimistically update tenant cache so isSubscribed flips immediately
+            const updated = await subscribeAndSaveBilling(
+              { name, cardToken, planId },
+              // Billing profile from modal is required by backend; pass through
+              billing ?? {
+                companyName: tenant?.name || '—',
+                billingEmail: user?.email || '—',
+                address: {
+                  line1: '',
+                  city: '',
+                  state: '',
+                  postalCode: '',
+                  country: 'US',
+                },
+              },
+              token
+            );
+            // Update tenant cache so UI flips to active immediately
             queryClient.setQueryData(['tenant', token], updated);
-
-            // 3) Close modal
             setPaywallOpen(false);
           } catch (e) {
             console.error('Subscribe failed', e);

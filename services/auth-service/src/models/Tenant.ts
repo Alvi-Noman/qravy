@@ -1,4 +1,3 @@
-// services/auth-service/src/models/Tenant.ts
 import { ObjectId } from 'mongodb';
 
 export interface TenantDoc {
@@ -21,10 +20,53 @@ export interface TenantDoc {
     planId: string;
   };
 
+  billingProfile?: {
+    companyName: string;
+    billingEmail: string;
+    extraEmails?: string[];
+    address: {
+      line1: string;
+      line2?: string;
+      city: string;
+      state: string;
+      postalCode: string;
+      country: string;
+    };
+    taxId?: string;
+    taxExempt?: 'none' | 'exempt' | 'reverse';
+    dunningEnabled?: boolean;
+    dunningDays?: number[];
+    createdAt?: Date;
+    updatedAt?: Date;
+  };
+
   trialStartedAt?: Date;
   trialEndsAt?: Date;
 
   subscriptionStatus?: 'none' | 'active';
+
+  cancelRequestedAt?: Date;
+  cancelEffectiveAt?: Date;
+  cancelAtPeriodEnd?: boolean;
+
+  // Payment metadata (non-sensitive)
+  payment?: {
+    provider?: 'stripe' | 'adyen' | 'mock' | 'none';
+    customerId?: string;
+    defaultPaymentMethodId?: string;
+
+    brand?: 'visa' | 'mastercard' | 'amex' | 'discover' | 'diners' | 'jcb' | 'maestro' | 'unionpay' | 'unknown';
+    last4?: string;
+    expMonth?: number;
+    expYear?: number;
+    country?: string;
+    funding?: 'credit' | 'debit' | 'prepaid' | 'unknown';
+
+    createdAt?: Date;
+    updatedAt?: Date;
+  };
+
+  hasCardOnFile?: boolean;
 
   createdAt: Date;
   updatedAt: Date;

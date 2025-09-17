@@ -68,9 +68,17 @@ export function toCategoryDTO(doc: CategoryDoc): v1.CategoryDTO {
 
 /**
  Map a TenantDoc into a TenantDTO.
- Supports onboarding status, plan info, trial info, and subscription status.
+ Supports onboarding status, plan info, trial info, subscription status,
+ plus optional cancellation and payment metadata (non-sensitive).
 */
 export function toTenantDTO(doc: TenantDoc): v1.TenantDTO {
+  const paymentUpdatedAt =
+    doc.payment?.updatedAt instanceof Date
+      ? doc.payment.updatedAt.toISOString()
+      : doc.payment?.updatedAt
+      ? String(doc.payment.updatedAt)
+      : undefined;
+
   return {
     id: toId(doc._id),
     name: doc.name,
@@ -86,6 +94,28 @@ export function toTenantDTO(doc: TenantDoc): v1.TenantDTO {
 
     // subscription status
     subscriptionStatus: doc.subscriptionStatus ?? 'none',
+
+    // optional cancellation metadata
+    cancelRequestedAt: doc.cancelRequestedAt ? doc.cancelRequestedAt.toISOString() : null,
+    cancelEffectiveAt: doc.cancelEffectiveAt ? doc.cancelEffectiveAt.toISOString() : null,
+    cancelAtPeriodEnd: typeof doc.cancelAtPeriodEnd === 'boolean' ? doc.cancelAtPeriodEnd : null,
+
+    // payment metadata (non-sensitive)
+    hasCardOnFile: !!doc.hasCardOnFile,
+    payment: doc.payment
+      ? {
+          provider: doc.payment.provider ?? 'mock',
+          customerId: doc.payment.customerId,
+          defaultPaymentMethodId: doc.payment.defaultPaymentMethodId,
+          brand: doc.payment.brand ?? 'unknown',
+          last4: doc.payment.last4,
+          expMonth: doc.payment.expMonth,
+          expYear: doc.payment.expYear,
+          country: doc.payment.country,
+          funding: doc.payment.funding ?? 'unknown',
+          updatedAt: paymentUpdatedAt,
+        }
+      : undefined,
 
     createdAt: doc.createdAt.toISOString(),
     updatedAt: doc.updatedAt.toISOString(),

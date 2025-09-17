@@ -1,3 +1,4 @@
+// apps/client-dashboard/src/components/billing/PaywallModal.tsx
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { XMarkIcon, LockClosedIcon, ShieldCheckIcon } from '@heroicons/react/24/outline';
@@ -20,6 +21,21 @@ export type LineItem = {
   amountCents: number;
 };
 
+type BillingAddress = {
+  line1: string;
+  line2?: string;
+  city: string;
+  state: string;
+  postalCode: string;
+  country: string;
+};
+
+type BillingPayload = {
+  companyName: string;
+  billingEmail: string;
+  address: BillingAddress;
+};
+
 type Props = {
   open: boolean;
 
@@ -32,12 +48,18 @@ type Props = {
     name: string;
     cardToken: string;
     planId: string;
+    billing?: BillingPayload;
   }) => Promise<void> | void;
 
   managePlanHref?: string;
   allowClose?: boolean;
   onClose?: () => void;
   testMode?: boolean;
+
+  // Reactivation support
+  variant?: 'trial' | 'reactivate';
+  endedAt?: string;
+  hasCardOnFile?: boolean;
 };
 
 type CardBrand =
@@ -63,18 +85,30 @@ export default function PaywallModal({
   allowClose = false,
   onClose,
   testMode = false,
+  variant,
+  endedAt,
+  hasCardOnFile = false,
 }: Props) {
   const [submitting, setSubmitting] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [brand, setBrand] = useState<CardBrand>('unknown');
-
-  // New: success step state and captured result
   const [step, setStep] = useState<'checkout' | 'success'>('checkout');
   const [result, setResult] = useState<{ name: string; last4?: string } | null>(null);
 
   const overlayRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const lastActiveRef = useRef<HTMLElement | null>(null);
+
+  // Auto-detect variant if not explicitly passed
+  const derivedVariant: 'trial' | 'reactivate' = useMemo(() => {
+    if (variant === 'reactivate' || variant === 'trial') return variant;
+    if (hasCardOnFile) return 'reactivate';
+    if (endedAt) {
+      const ts = new Date(endedAt).getTime();
+      if (!Number.isNaN(ts) && ts <= Date.now()) return 'reactivate';
+    }
+    return 'trial';
+  }, [variant, hasCardOnFile, endedAt]);
 
   const planSafe: PlanInfo = plan ?? {
     id: 'unknown',
@@ -97,10 +131,6 @@ export default function PaywallModal({
   const taxCents = Math.round(taxedBase * (taxRate || 0));
   const totalCents = taxedBase + taxCents;
 
-  const fieldCls =
-    'w-full rounded-md border border-[#dbdbdb] px-3 py-2 text-sm transition-colors focus:outline-none focus:border-[#111827] placeholder:text-slate-400';
-
-  // Map detected brand to your public/brands/*.svg files
   const brandIconMap: Record<CardBrand, string | null> = {
     visa: '/brands/visa.svg',
     visa_electron: '/brands/visa-electron.svg',
@@ -109,144 +139,82 @@ export default function PaywallModal({
     discover: '/brands/discover.svg',
     jcb: '/brands/jcb.svg',
     maestro: '/brands/maestro.svg',
-    diners: '/brands/cb.svg', // replace if you add diners.svg
+    diners: '/brands/cb.svg',
     unionpay: null,
     unknown: null,
   };
 
   // ---------- Card helpers ----------
-  function detectBrand(digits: string): CardBrand {
-    if (/^(4026|417500|4508|4844|4913|4917)/.test(digits)) return 'visa_electron';
-    if (/^4\d{0,}$/.test(digits)) return 'visa';
-    if (/^(5[1-5]|2(2[2-9]\d|[3-6]\d{2}|7[01]\d|720))\d{0,}$/.test(digits)) return 'mastercard';
-    if (/^3[47]\d{0,}$/.test(digits)) return 'amex';
-    if (/^6(?:011|5|4[4-9])\d{0,}$/.test(digits)) return 'discover';
-    if (/^3(?:0[0-5]|[68]\d)\d{0,}$/.test(digits)) return 'diners';
-    if (/^(?:2131|1800|35)\d{0,}$/.test(digits)) return 'jcb';
-    if (/^(50|5[6-9]|6)\d{0,}$/.test(digits)) return 'maestro';
-    if (/^62\d{0,}$/.test(digits)) return 'unionpay';
+  function detectBrand(d: string): CardBrand {
+    if (/^(4026|417500|4508|4844|4913|4917)/.test(d)) return 'visa_electron';
+    if (/^4\d{0,}$/.test(d)) return 'visa';
+    if (/^(5[1-5]|2(2[2-9]\d|[3-6]\d{2}|7[01]\d|720))\d{0,}$/.test(d)) return 'mastercard';
+    if (/^3[47]\d{0,}$/.test(d)) return 'amex';
+    if (/^6(?:011|5|4[4-9])\d{0,}$/.test(d)) return 'discover';
+    if (/^3(?:0[0-5]|[68]\d)\d{0,}$/.test(d)) return 'diners';
+    if (/^(?:2131|1800|35)\d{0,}$/.test(d)) return 'jcb';
+    if (/^(50|5[6-9]|6)\d{0,}$/.test(d)) return 'maestro';
+    if (/^62\d{0,}$/.test(d)) return 'unionpay';
     return 'unknown';
   }
-
-  function formatCardNumber(digits: string, b: CardBrand): string {
-    if (b === 'amex') {
-      const p1 = digits.slice(0, 4);
-      const p2 = digits.slice(4, 10);
-      const p3 = digits.slice(10, 15);
-      return [p1, p2, p3].filter(Boolean).join(' ');
-    }
-    return digits.match(/.{1,4}/g)?.join(' ') ?? digits;
+  function formatCardNumber(d: string, b: CardBrand): string {
+    if (b === 'amex') return [d.slice(0, 4), d.slice(4, 10), d.slice(10, 15)].filter(Boolean).join(' ');
+    return d.match(/.{1,4}/g)?.join(' ') ?? d;
   }
-
-  function boundariesForBrand(b: CardBrand): number[] {
-    return b === 'amex' ? [4, 10] : [4, 8, 12, 16];
-  }
-
-  function formatCardNumberAndCaret(allDigits: string, b: CardBrand, digitsBeforeCaret: number) {
-    const formatted = formatCardNumber(allDigits, b);
-    const boundaries = boundariesForBrand(b);
-    const spacesBefore = boundaries.filter((n) => digitsBeforeCaret >= n).length;
-    const caret = Math.min(formatted.length, digitsBeforeCaret + spacesBefore);
+  function boundariesForBrand(b: CardBrand) { return b === 'amex' ? [4, 10] : [4, 8, 12, 16]; }
+  function formatCardNumberAndCaret(all: string, b: CardBrand, before: number) {
+    const formatted = formatCardNumber(all, b);
+    const spacesBefore = boundariesForBrand(b).filter((n) => before >= n).length;
+    const caret = Math.min(formatted.length, before + spacesBefore);
     return { formatted, caret };
   }
-
   function handleCardInput(e: React.FormEvent<HTMLInputElement>) {
     const el = e.currentTarget;
-    const prevCursor = el.selectionStart ?? el.value.length;
-    const digitsBefore = el.value.slice(0, prevCursor).replace(/\D/g, '').slice(0, 19);
+    const prev = el.selectionStart ?? el.value.length;
+    const beforeDigits = el.value.slice(0, prev).replace(/\D/g, '').slice(0, 19);
     const allDigits = el.value.replace(/\D/g, '').slice(0, 19);
-
     const b = detectBrand(allDigits);
     setBrand(b);
-
-    const { formatted, caret } = formatCardNumberAndCaret(allDigits, b, digitsBefore.length);
+    const { formatted, caret } = formatCardNumberAndCaret(allDigits, b, beforeDigits.length);
     el.value = formatted;
-
-    requestAnimationFrame(() => {
-      try {
-        el.setSelectionRange(caret, caret);
-      } catch {}
-    });
+    requestAnimationFrame(() => { try { el.setSelectionRange(caret, caret); } catch {} });
   }
-
-  // ---------- Expiry helpers (MM/YY with locked slash) ----------
-  function formatExpiry(raw: string): string {
+  function formatExpiry(raw: string) {
     const digits = raw.replace(/\D/g, '').slice(0, 4);
     if (digits.length === 0) return '';
     if (digits.length < 2) return digits;
     if (digits.length === 2) return `${digits}/`;
     return `${digits.slice(0, 2)}/${digits.slice(2)}`;
   }
-
   function handleExpInput(e: React.FormEvent<HTMLInputElement>) {
     const el = e.currentTarget;
-    const prevCursor = el.selectionStart ?? el.value.length;
-    const digitsBefore = el.value.slice(0, prevCursor).replace(/\D/g, '').slice(0, 4);
+    const prev = el.selectionStart ?? el.value.length;
+    const before = el.value.slice(0, prev).replace(/\D/g, '').slice(0, 4);
     const formatted = formatExpiry(el.value);
     el.value = formatted;
-
-    let newPos: number;
-    if (digitsBefore.length < 2) newPos = digitsBefore.length;
-    else if (digitsBefore.length === 2) newPos = 3;
-    else newPos = digitsBefore.length + 1;
-
-    requestAnimationFrame(() => {
-      try {
-        el.setSelectionRange(newPos, newPos);
-      } catch {}
-    });
+    const newPos = before.length < 2 ? before.length : before.length === 2 ? 3 : before.length + 1;
+    requestAnimationFrame(() => { try { el.setSelectionRange(newPos, newPos); } catch {} });
   }
-
   function handleExpKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
-    const el = e.currentTarget;
-    const pos = el.selectionStart ?? 0;
-    const end = el.selectionEnd ?? pos;
-    const hasSel = end > pos;
-
-    if (e.key === 'Backspace' && !hasSel && pos === 3) {
+    const el = e.currentTarget; const pos = el.selectionStart ?? 0; const end = el.selectionEnd ?? pos; const sel = end > pos;
+    if (e.key === 'Backspace' && !sel && pos === 3) {
+      e.preventDefault();
+      const digits = el.value.replace(/\D/g, ''); if (digits.length >= 2) {
+        el.value = formatExpiry(digits[0] + digits.slice(2));
+        requestAnimationFrame(() => { try { el.setSelectionRange(2, 2); } catch {} });
+      } return;
+    }
+    if (e.key === 'Delete' && !sel && pos === 2) {
       e.preventDefault();
       const digits = el.value.replace(/\D/g, '');
-      if (digits.length >= 2) {
-        const newDigits = digits[0] + digits.slice(2);
-        const formatted = formatExpiry(newDigits);
-        el.value = formatted;
-        requestAnimationFrame(() => {
-          try {
-            const p = Math.min(2, formatted.length);
-            el.setSelectionRange(p, p);
-          } catch {}
-        });
-      }
-      return;
+      if (digits.length > 2) el.value = formatExpiry(digits.slice(0, 2) + digits.slice(3));
+      requestAnimationFrame(() => { try { el.setSelectionRange(3, 3); } catch {} }); return;
     }
-
-    if (e.key === 'Delete' && !hasSel && pos === 2) {
-      e.preventDefault();
-      const digits = el.value.replace(/\D/g, '');
-      if (digits.length > 2) {
-        const newDigits = digits.slice(0, 2) + digits.slice(3);
-        const formatted = formatExpiry(newDigits);
-        el.value = formatted;
-      }
-      requestAnimationFrame(() => {
-        try {
-          el.setSelectionRange(3, 3);
-        } catch {}
-      });
-      return;
-    }
-
-    if (e.key === '/') {
-      e.preventDefault();
-      return;
-    }
+    if (e.key === '/') e.preventDefault();
   }
-
-  // ---------- Digits-only helper (CVC) ----------
   function handleDigitsOnly(maxLen?: number) {
     return (e: React.FormEvent<HTMLInputElement>) => {
-      const el = e.currentTarget;
-      const digits = el.value.replace(/\D/g, '');
+      const el = e.currentTarget; const digits = el.value.replace(/\D/g, '');
       el.value = maxLen ? digits.slice(0, maxLen) : digits;
     };
   }
@@ -295,7 +263,7 @@ export default function PaywallModal({
     };
   }, [open, allowClose, onClose]);
 
-  // Reset to checkout when reopened
+  // Reset state on open
   useEffect(() => {
     if (open) {
       setStep('checkout');
@@ -305,7 +273,7 @@ export default function PaywallModal({
     }
   }, [open]);
 
-  // Fire confetti on success
+  // Confetti on success
   useEffect(() => {
     if (step !== 'success') return;
     let cancelled = false;
@@ -318,27 +286,28 @@ export default function PaywallModal({
         setTimeout(() => confetti({ particleCount: 90, angle: 120, spread: 55, origin: { x: 1 } }), 250);
       } catch {}
     })();
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, [step]);
 
-  const validate = (fd: FormData) => {
+  // Validators
+  const field =
+    'h-11 w-full rounded-md border border-slate-300 px-3 text-[14px] placeholder:text-slate-500 focus:outline-none focus:border-slate-900 focus:ring-2 focus:ring-slate-200';
+
+  function validate(fd: FormData) {
     const name = String(fd.get('name') || '').trim();
     const cardDigits = String(fd.get('card') || '').replace(/\D/g, '');
     const exp = String(fd.get('exp') || '').trim();
     const cvc = String(fd.get('cvc') || '').trim();
+    const country = String(fd.get('country') || '').trim();
     const zip = String(fd.get('zip') || '').trim();
 
     const newErrors: Record<string, string> = {};
     if (!name) newErrors.name = 'Name is required';
-
     if (brand === 'amex') {
       if (cardDigits.length !== 15) newErrors.card = 'Enter a valid Amex number';
     } else if (cardDigits.length < 13 || cardDigits.length > 19) {
       newErrors.card = 'Enter a valid card number';
     }
-
     if (!/^\d{2}\/\d{2}$/.test(exp)) {
       newErrors.exp = 'Use MM/YY format';
     } else {
@@ -346,18 +315,37 @@ export default function PaywallModal({
       const mm = Number(mmStr);
       if (mm < 1 || mm > 12) newErrors.exp = 'Invalid month';
     }
-
     const expectedCvcLen = brand === 'amex' ? 4 : 3;
     if (!/^\d+$/.test(cvc) || cvc.length !== expectedCvcLen) newErrors.cvc = `Enter a ${expectedCvcLen}-digit CVC`;
-
     if (!zip) newErrors.zip = 'ZIP/Postal is required';
+    if (!country) newErrors.country = 'Country is required';
+
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
-  };
+  }
 
+  // Submit handlers
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     if (submitting) return;
+
+    // Reactivate-with-card-on-file path stays the same
+    const isReactivate = derivedVariant === 'reactivate';
+    if (isReactivate && hasCardOnFile) {
+      setSubmitting(true);
+      try {
+        await Promise.resolve(
+          onSubscribe({ name: 'Card on file', cardToken: 'pm_onfile', planId: planSafe.id })
+        );
+        setResult({ name: 'Card on file' });
+        setStep('success');
+      } finally {
+        setSubmitting(false);
+      }
+      return;
+    }
+
+    // Trial/new subscribe or reactivate without card — require payment details
     const fd = new FormData(e.currentTarget);
     if (!validate(fd)) return;
 
@@ -365,11 +353,20 @@ export default function PaywallModal({
     try {
       const name = String(fd.get('name') || '').trim();
       const cardDigits = String(fd.get('card') || '').replace(/\D/g, '');
+      const expStr = String(fd.get('exp') || '');
+      const [mmStr, yyStr] = expStr.split('/');
+      const expMonth = Number(mmStr);
+      const expYear = 2000 + Number(yyStr);
       const fakeToken = 'tok_' + Math.random().toString(36).slice(2, 10);
 
-      await Promise.resolve(onSubscribe({ name, cardToken: fakeToken, planId: planSafe.id }));
+      await Promise.resolve(
+        onSubscribe({
+          name,
+          cardToken: fakeToken,
+          planId: planSafe.id,
+        })
+      );
 
-      // On success: capture and go to success step
       setResult({ name, last4: cardDigits.slice(-4) });
       setStep('success');
     } finally {
@@ -377,11 +374,13 @@ export default function PaywallModal({
     }
   };
 
-  const stop = (e: React.MouseEvent) => e.stopPropagation();
-
-  const cvcMaxLen = brand === 'amex' ? 4 : 3;
-  const cvcPlaceholder = brand === 'amex' ? '••••' : '•••';
-  const brandIconSrc = brandIconMap[brand];
+  const isReactivate = derivedVariant === 'reactivate';
+  const endedOn = endedAt ? (() => { try { return new Date(endedAt).toLocaleDateString(); } catch { return endedAt; } })() : null;
+  const checkoutTitle = isReactivate ? 'Access paused — reactivate to continue' : 'Your trial period has ended';
+  const checkoutSub = isReactivate
+    ? `Your plan ended on ${endedOn ?? '—'}. Your data is safe, but you can’t create or edit until you reactivate.`
+    : 'To continue using your account, add your payment method. Your menu will remain offline until you subscribe.';
+  const successTitle = isReactivate ? 'Subscription reactivated' : 'You’re all set';
 
   return (
     <AnimatePresence>
@@ -391,304 +390,347 @@ export default function PaywallModal({
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
-          className="fixed inset-0 z-[1000] bg-black/40 backdrop-blur-sm"
+          className="fixed inset-0 z-[1000] bg-black/50 backdrop-blur-sm"
           aria-modal="true"
           role="dialog"
           aria-label="Checkout"
           onMouseDown={() => allowClose && onClose?.()}
         >
-          <div className="grid h-full place-items-center p-4" onMouseDown={stop}>
+          <div className="grid h-full place-items-center p-3 sm:p-4" onMouseDown={(e) => e.stopPropagation()}>
+            {/* Panel */}
             <motion.div
               ref={panelRef}
-              initial={{ opacity: 0, y: 18, scale: 0.98 }}
+              initial={{ opacity: 0, y: 18, scale: 0.99 }}
               animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={{ opacity: 0, y: 18, scale: 0.98 }}
+              exit={{ opacity: 0, y: 18, scale: 0.99 }}
               transition={{ duration: 0.22, ease: 'easeOut' }}
-              className="relative w-full max-w-5xl rounded-2xl bg-white p-0 shadow-2xl"
+              className="relative w-full max-w-[880px] overflow-hidden rounded-2xl bg-white shadow-2xl ring-1 ring-black/10"
               style={{ willChange: 'transform' }}
             >
               {/* Header */}
-              <div
-                className={[
-                  'flex items-start justify-between rounded-t-2xl px-6 py-5',
-                  step === 'success' ? 'bg-[#111827] text-white' : '',
-                ].join(' ')}
-                style={step === 'checkout' ? { backgroundColor: '#FA2851', color: '#fff' } : undefined}
-              >
+              <div className="flex items-start justify-between bg-[#111827] px-5 py-4 text-white">
                 <div>
                   {step === 'checkout' ? (
                     <>
                       <div className="flex items-center gap-2">
                         <LockClosedIcon className="h-5 w-5 text-white" />
-                        <h2 className="text-lg font-semibold">Your trial period has ended</h2>
+                        <h2 className="text-[16px] sm:text-[18px] font-semibold">{checkoutTitle}</h2>
                       </div>
-                      <p className="mt-1 text-sm opacity-95">
-                        To continue using your account, choose a plan and add your payment details. Your menu will remain
-                        offline until you subscribe.
-                      </p>
+                      <p className="mt-1 text-[12px] sm:text-[13px] opacity-95">{checkoutSub}</p>
                     </>
                   ) : (
                     <>
                       <div className="flex items-center gap-2">
                         <SparklesIcon className="h-5 w-5 text-white" />
-                        <h2 className="text-lg font-semibold">You’re all set</h2>
+                        <h2 className="text-[16px] sm:text-[18px] font-semibold">{successTitle}</h2>
                       </div>
-                      <p className="mt-1 text-sm opacity-95">
+                      <p className="mt-1 text-[12px] sm:text-[13px] opacity-95">
                         Subscription confirmed{result?.last4 ? ` • Card ending ${result.last4}` : ''}.
                       </p>
                     </>
                   )}
                 </div>
-                <div className="flex items-center gap-3">
+                <div className="flex items-center gap-2">
                   {testMode && (
                     <span className="rounded-full bg-white/10 px-2 py-0.5 text-[11px] font-medium text-white ring-1 ring-white/30">
                       Test mode
                     </span>
                   )}
                   {allowClose && (
-                    <button
-                      type="button"
-                      onClick={onClose}
-                      className="rounded-md p-2 hover:bg-white/10"
-                      aria-label="Close"
-                    >
+                    <button type="button" onClick={onClose} aria-label="Close" className="rounded-md p-1.5 hover:bg-white/10">
                       <XMarkIcon className="h-5 w-5 text-white" />
                     </button>
                   )}
                 </div>
               </div>
 
+              {/* Body */}
               {step === 'checkout' ? (
-                // Checkout form
-                <form className="grid items-stretch gap-6 p-6 sm:grid-cols-5" onSubmit={handleSubmit}>
-                  {/* Left: payment */}
-                  <div className="sm:col-span-3 min-w-0 min-h-0 self-stretch">
-                    <div className="h-full rounded-lg border border-[#ececec] p-4 flex flex-col">
-                      <div className="text-sm font-medium text-slate-900">Payment details</div>
+                // Reactivate with saved card — simple summary path
+                isReactivate && hasCardOnFile ? (
+                  <div className="px-4 py-5 sm:px-6 sm:py-6">
+                    <div className="mx-auto w-full max-w-[640px] rounded-xl border border-slate-200 bg-white p-5 sm:p-6 shadow-sm">
+                      <div className="text-[15px] font-semibold text-slate-900">Summary</div>
 
-                      <div className="mt-3 grid gap-3">
-                        {/* Name on card */}
-                        <div className="grid gap-1.5">
-                          <label className="text-[12px] font-medium text-slate-700">Name on card</label>
-                          <input
-                            name="name"
-                            className={fieldCls}
-                            placeholder="Jane Doe"
-                            autoComplete="cc-name"
-                            aria-invalid={Boolean(errors.name)}
-                            aria-describedby={errors.name ? 'err-name' : undefined}
-                          />
-                          {errors.name && <div id="err-name" className="text-[11px] text-rose-600">{errors.name}</div>}
+                      <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 px-4 py-3">
+                        <div className="flex items-center justify-between text-[14px]">
+                          <div className="font-semibold text-slate-900">{planSafe.name}</div>
+                          <div className="text-slate-800">{fmt(planSafe.priceCents)}</div>
                         </div>
-
-                        {/* Card number + brand SVG inside the field */}
-                        <div className="grid gap-1.5">
-                          <label className="text-[12px] font-medium text-slate-700">Card number</label>
-                          <div className="relative">
-                            <input
-                              name="card"
-                              inputMode="numeric"
-                              autoComplete="cc-number"
-                              className={`${fieldCls} pr-14`}
-                              placeholder="4242 4242 4242 4242"
-                              onInput={handleCardInput}
-                              aria-invalid={Boolean(errors.card)}
-                              aria-describedby={errors.card ? 'err-card' : undefined}
-                            />
-                            {brandIconSrc && (
-                              <div className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2">
-                                <img
-                                  src={brandIconSrc}
-                                  alt={brand}
-                                  className="h-6 w-auto select-none"
-                                  loading="eager"
-                                  draggable={false}
-                                />
-                              </div>
-                            )}
-                          </div>
-                          {errors.card && <div id="err-card" className="text-[11px] text-rose-600">{errors.card}</div>}
+                        <div className="mt-0.5 text-[12px] text-slate-600">
+                          Billed {planSafe.interval === 'year' ? 'yearly' : 'monthly'}
                         </div>
-
-                        {/* Row: Expiry + CVC */}
-                        <div className="grid grid-cols-2 gap-3">
-                          <div className="grid gap-1.5">
-                            <label className="text-[12px] font-medium text-slate-700">Expiry</label>
-                            <input
-                              name="exp"
-                              inputMode="numeric"
-                              autoComplete="cc-exp"
-                              className={fieldCls}
-                              placeholder="MM/YY"
-                              maxLength={5}
-                              onInput={handleExpInput}
-                              onKeyDown={handleExpKeyDown}
-                              aria-invalid={Boolean(errors.exp)}
-                              aria-describedby={errors.exp ? 'err-exp' : undefined}
-                            />
-                            {errors.exp && <div id="err-exp" className="text-[11px] text-rose-600">{errors.exp}</div>}
-                          </div>
-                          <div className="grid gap-1.5">
-                            <label className="text-[12px] font-medium text-slate-700">CVC</label>
-                            <input
-                              type="password"
-                              name="cvc"
-                              inputMode="numeric"
-                              autoComplete="cc-csc"
-                              className={fieldCls}
-                              placeholder={cvcPlaceholder}
-                              maxLength={cvcMaxLen}
-                              onInput={handleDigitsOnly(cvcMaxLen)}
-                              aria-invalid={Boolean(errors.cvc)}
-                              aria-describedby={errors.cvc ? 'err-cvc' : undefined}
-                            />
-                            {errors.cvc && <div id="err-cvc" className="text-[11px] leading-4 text-rose-600">{errors.cvc}</div>}
-                          </div>
-                        </div>
-
-                        {/* Row: Country + ZIP/Postal */}
-                        <div className="grid grid-cols-2 gap-3">
-                          <div className="grid gap-1.5">
-                            <label className="text-[12px] font-medium text-slate-700">Country</label>
-                            <input
-                              name="country"
-                              className={fieldCls}
-                              placeholder="United States"
-                              autoComplete="country-name"
-                            />
-                            {/* reserve space so ZIP error doesn't shift layout */}
-                            <div className="h-[14px]" aria-hidden />
-                          </div>
-                          <div className="grid gap-1.5">
-                            <label className="text-[12px] font-medium text-slate-700">ZIP / Postal</label>
-                            <input
-                              name="zip"
-                              className={fieldCls}
-                              placeholder="94105"
-                              autoComplete="postal-code"
-                              aria-invalid={Boolean(errors.zip)}
-                              aria-describedby={errors.zip ? 'err-zip' : undefined}
-                            />
-                            <div className="min-h-[14px]">
-                              {errors.zip && (
-                                <div id="err-zip" className="text-[11px] leading-4 text-rose-600">
-                                  {errors.zip}
-                                </div>
-                              )}
-                            </div>
-                          </div>
-                        </div>
-
-                        <div className="mt-1 flex items-center gap-2 text-[11px] text-slate-500">
-                          <ShieldCheckIcon className="h-4 w-4 text-slate-500" />
-                          <span>Payments are encrypted and processed securely.</span>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Right: Summary — equal height via h-full and flex */}
-                  <div className="sm:col-span-2 min-w-0 min-h-0 self-stretch">
-                    <div className="h-full rounded-lg border border-[#ececec] p-4 flex flex-col">
-                      <div className="text-sm font-medium text-slate-900">Summary</div>
-
-                      {/* scroll/stack content grows; CTA stays bottom */}
-                      <div className="mt-3 flex-1 flex flex-col gap-3">
-                        {/* Summary card */}
-                        <div className="rounded-md border border-[#eaeaea] bg-slate-50 px-3 py-2">
-                          <div className="flex items-center justify-between text-sm">
-                            <div className="font-semibold text-slate-900">{planSafe.name}</div>
-                            <div className="text-slate-700">{fmt(planSafe.priceCents)}</div>
-                          </div>
-                          <div className="mt-0.5 text-[12px] text-slate-600">
-                            Billed {planSafe.interval === 'year' ? 'yearly' : 'monthly'}
-                          </div>
-                          <div className="mt-2 text-[12px]">
-                            <a href={managePlanHref} className="text-slate-700 underline">
-                              Change plan
-                            </a>
-                          </div>
-                        </div>
-
-                        {/* Item/Amount table */}
-                        <div className="overflow-hidden rounded-md border border-[#f0f0f0]">
-                          <table className="w-full table-fixed text-left text-[13px]">
-                            <colgroup>
-                              <col className="w-[70%]" />
-                              <col className="w-[30%]" />
-                            </colgroup>
-                            <thead className="bg-slate-50 text-slate-600">
-                              <tr>
-                                <th className="px-3 py-2">Item</th>
-                                <th className="px-3 py-2 text-right">Amount</th>
-                              </tr>
-                            </thead>
-                            <tbody className="divide-y divide-slate-100">
-                              <tr>
-                                <td className="px-3 py-2 truncate">
-                                  {planSafe.name} ({planSafe.interval === 'year' ? 'Yearly' : 'Monthly'})
-                                </td>
-                                <td className="px-3 py-2 text-right">{fmt(planSafe.priceCents)}</td>
-                              </tr>
-                              {lineItems.map((li) => (
-                                <tr key={li.id}>
-                                  <td className="px-3 py-2 truncate">{li.label}</td>
-                                  <td className="px-3 py-2 text-right">{fmt(li.amountCents)}</td>
-                                </tr>
-                              ))}
-                              <tr>
-                                <td className="px-3 py-2 text-slate-600">Subtotal</td>
-                                <td className="px-3 py-2 text-right text-slate-700">{fmt(subtotalCents)}</td>
-                              </tr>
-                              <tr className="bg-slate-50">
-                                <td className="px-3 py-2 font-semibold text-slate-900">Total</td>
-                                <td className="px-3 py-2 text-right font-semibold text-slate-900">
-                                  {fmt(totalCents)}
-                                </td>
-                              </tr>
-                            </tbody>
-                          </table>
+                        <div className="mt-2 text-[12px]">
+                          <a href={managePlanHref} className="text-slate-700 underline">
+                            Change plan
+                          </a>
                         </div>
                       </div>
 
-                      {/* Bottom CTA fixed at panel bottom */}
+                      <div className="mt-3 overflow-hidden rounded-lg border border-slate-200">
+                        <table className="w-full table-fixed text-left text-[14px]">
+                          <colgroup>
+                            <col className="w-[70%]" />
+                            <col className="w-[30%]" />
+                          </colgroup>
+                          <thead className="bg-slate-50 text-slate-600">
+                            <tr>
+                              <th className="px-3 py-2">Item</th>
+                              <th className="px-3 py-2 text-right">Amount</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100">
+                            <tr>
+                              <td className="px-3 py-2 truncate">
+                                {planSafe.name} ({planSafe.interval === 'year' ? 'Yearly' : 'Monthly'})
+                              </td>
+                              <td className="px-3 py-2 text-right">{fmt(planSafe.priceCents)}</td>
+                            </tr>
+                            {lineItems.map((li) => (
+                              <tr key={li.id}>
+                                <td className="px-3 py-2 truncate">{li.label}</td>
+                                <td className="px-3 py-2 text-right">{fmt(li.amountCents)}</td>
+                              </tr>
+                            ))}
+                            <tr className="bg-slate-50">
+                              <td className="px-3 py-2 font-semibold text-slate-900">Total</td>
+                              <td className="px-3 py-2 text-right font-semibold text-slate-900">{fmt(totalCents)}</td>
+                            </tr>
+                          </tbody>
+                        </table>
+                      </div>
+
                       <button
-                        type="submit"
+                        type="button"
                         disabled={submitting}
-                        className="mt-4 inline-flex w-full items-center justify-between rounded-md bg-[#2e2e30] px-4 py-2.5 text-sm font-medium text-white hover:opacity-90 disabled:opacity-60"
+                        onClick={async () => {
+                          if (submitting) return;
+                          setSubmitting(true);
+                          try {
+                            await Promise.resolve(onSubscribe({ name: 'Card on file', cardToken: 'pm_onfile', planId: planSafe.id }));
+                            setResult({ name: 'Card on file' });
+                            setStep('success');
+                          } finally {
+                            setSubmitting(false);
+                          }
+                        }}
+                        className="mt-4 inline-flex w-full items-center justify-between rounded-lg bg-[#2e2e30] px-4 py-3 text-[14px] font-medium text-white hover:opacity-90 disabled:opacity-60"
                       >
-                        <span>Subscribe</span>
+                        <span>Reactivate subscription</span>
                         <span className="opacity-90">
                           {fmt(totalCents)} {planSafe.interval === 'year' ? '/yr' : '/mo'}
                         </span>
                       </button>
                     </div>
                   </div>
-                </form>
+                ) : (
+                  // Trial/new subscribe OR reactivate w/o card — two-column: Payment details + Summary
+                  <form className="px-4 py-5 sm:px-6 sm:py-6" onSubmit={handleSubmit}>
+                    <div className="mx-auto grid w-full max-w-[860px] gap-6 lg:grid-cols-12">
+                      {/* Left: Payment details */}
+                      <div className="lg:col-span-7">
+                        <div className="rounded-xl border border-slate-200 bg-white p-5 sm:p-6 shadow-sm">
+                          <div className="text-[15px] font-semibold text-slate-900">Payment details</div>
+
+                          <div className="mt-4 grid gap-4">
+                            <div className="grid gap-1.5">
+                              <label className="text-[12px] font-medium text-slate-700">Name on card</label>
+                              <input name="name" className={field} placeholder="Jane Doe" autoComplete="cc-name" />
+                              {errors.name && <div className="text-[12px] text-rose-600">{errors.name}</div>}
+                            </div>
+
+                            <div className="grid gap-1.5">
+                              <label className="text-[12px] font-medium text-slate-700">Card number</label>
+                              <div className="relative">
+                                <input
+                                  name="card"
+                                  inputMode="numeric"
+                                  autoComplete="cc-number"
+                                  className={`${field} pr-14`}
+                                  placeholder="4242 4242 4242 4242"
+                                  onInput={handleCardInput}
+                                />
+                                {brandIconMap[brand] && (
+                                  <img
+                                    src={brandIconMap[brand]!}
+                                    alt=""
+                                    aria-hidden="true"
+                                    className="pointer-events-none absolute right-3 top-1/2 h-6 w-auto -translate-y-1/2 select-none"
+                                    loading="eager"
+                                    draggable={false}
+                                  />
+                                )}
+                              </div>
+                              {errors.card && <div className="text-[12px] text-rose-600">{errors.card}</div>}
+                            </div>
+
+                            <div className="grid grid-cols-2 gap-4">
+                              <div className="grid gap-1.5">
+                                <label className="text-[12px] font-medium text-slate-700">Expiry</label>
+                                <input
+                                  name="exp"
+                                  inputMode="numeric"
+                                  autoComplete="cc-exp"
+                                  className={field}
+                                  placeholder="MM/YY"
+                                  maxLength={5}
+                                  onInput={handleExpInput}
+                                  onKeyDown={handleExpKeyDown}
+                                />
+                                {errors.exp && <div className="text-[12px] text-rose-600">{errors.exp}</div>}
+                              </div>
+                              <div className="grid gap-1.5">
+                                <label className="text-[12px] font-medium text-slate-700">CVC</label>
+                                <input
+                                  type="password"
+                                  name="cvc"
+                                  inputMode="numeric"
+                                  autoComplete="cc-csc"
+                                  className={field}
+                                  placeholder={brand === 'amex' ? '••••' : '•••'}
+                                  maxLength={brand === 'amex' ? 4 : 3}
+                                  onInput={handleDigitsOnly(brand === 'amex' ? 4 : 3)}
+                                />
+                                {errors.cvc && <div className="text-[12px] text-rose-600">{errors.cvc}</div>}
+                              </div>
+                            </div>
+
+                            {/* Address full width */}
+                            <div className="grid gap-1.5">
+                              <label className="text-[12px] font-medium text-slate-700">Address</label>
+                              <input
+                                name="address"
+                                className={field}
+                                placeholder="123 Market St"
+                                autoComplete="address-line1"
+                              />
+                            </div>
+
+                            {/* Next row: ZIP/Postal + Country */}
+                            <div className="grid grid-cols-2 gap-4">
+                              <div className="grid gap-1.5">
+                                <label className="text-[12px] font-medium text-slate-700">ZIP / Postal</label>
+                                <input name="zip" className={field} placeholder="94105" autoComplete="postal-code" />
+                                {errors.zip && <div className="text-[12px] text-rose-600">{errors.zip}</div>}
+                              </div>
+                              <div className="grid gap-1.5">
+                                <label className="text-[12px] font-medium text-slate-700">Country</label>
+                                <input name="country" className={field} placeholder="United States" autoComplete="country-name" />
+                                {errors.country && <div className="text-[12px] text-rose-600">{errors.country}</div>}
+                              </div>
+                            </div>
+
+                            <div className="mt-1 flex items-center gap-2 text-[12px] text-slate-500">
+                              <ShieldCheckIcon className="h-4 w-4 text-slate-500" />
+                              <span>Payments are encrypted and processed securely.</span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Right: Summary */}
+                      <div className="lg:col-span-5">
+                        <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-md shadow-slate-200/60">
+                          <div className="text-base font-semibold text-slate-900">Summary</div>
+
+                          <div className="mt-4 space-y-4">
+                            <div className="rounded-md border border-slate-200 bg-slate-50 px-3.5 py-3">
+                              <div className="flex items-center justify-between text-[14px]">
+                                <div className="font-semibold text-slate-900">{planSafe.name}</div>
+                                <div className="text-slate-800">{fmt(planSafe.priceCents)}</div>
+                              </div>
+                              <div className="mt-0.5 text-[12px] text-slate-600">
+                                Billed {planSafe.interval === 'year' ? 'yearly' : 'monthly'}
+                              </div>
+                              <div className="mt-2 text-[12px]">
+                                <a href={managePlanHref} className="text-slate-700 underline underline-offset-2 hover:text-slate-900">
+                                  Change plan
+                                </a>
+                              </div>
+                            </div>
+
+                            <div className="overflow-hidden rounded-md border border-slate-200">
+                              <table className="w-full table-fixed text-left text-[14px]">
+                                <colgroup>
+                                  <col className="w-[70%]" />
+                                  <col className="w-[30%]" />
+                                </colgroup>
+                                <thead className="bg-slate-50 text-slate-600">
+                                  <tr>
+                                    <th className="px-3 py-2">Item</th>
+                                    <th className="px-3 py-2 text-right">Amount</th>
+                                  </tr>
+                                </thead>
+                                <tbody className="divide-y divide-slate-100">
+                                  <tr>
+                                    <td className="px-3 py-2 truncate">
+                                      {planSafe.name} ({planSafe.interval === 'year' ? 'Yearly' : 'Monthly'})
+                                    </td>
+                                    <td className="px-3 py-2 text-right">{fmt(planSafe.priceCents)}</td>
+                                  </tr>
+                                  {lineItems.map((li) => (
+                                    <tr key={li.id}>
+                                      <td className="px-3 py-2">{li.label}</td>
+                                      <td className="px-3 py-2 text-right">{fmt(li.amountCents)}</td>
+                                    </tr>
+                                  ))}
+                                  {discountCents > 0 && (
+                                    <tr>
+                                      <td className="px-3 py-2 text-emerald-700">Discount</td>
+                                      <td className="px-3 py-2 text-right text-emerald-700">- {fmt(discountCents)}</td>
+                                    </tr>
+                                  )}
+                                  {taxRate > 0 && (
+                                    <tr>
+                                      <td className="px-3 py-2 text-slate-600">Estimated tax ({Math.round((taxRate || 0) * 100)}%)</td>
+                                      <td className="px-3 py-2 text-right text-slate-800">{fmt(taxCents)}</td>
+                                    </tr>
+                                  )}
+                                  <tr className="bg-slate-50">
+                                    <td className="px-3 py-2 font-semibold text-slate-900">Total</td>
+                                    <td className="px-3 py-2 text-right font-semibold text-slate-900">{fmt(totalCents)}</td>
+                                  </tr>
+                                </tbody>
+                              </table>
+                            </div>
+
+                            <button
+                              type="submit"
+                              disabled={submitting}
+                              className="mt-3 inline-flex w-full items-center justify-between rounded-lg bg-[#2e2e30] px-4 py-3 text-[15px] font-medium text-white hover:opacity-90 disabled:opacity-60"
+                            >
+                              <span>{submitting ? 'Processing…' : 'Subscribe'}</span>
+                              <span className="opacity-90">
+                                {fmt(totalCents)} {planSafe.interval === 'year' ? '/yr' : '/mo'}
+                              </span>
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </form>
+                )
               ) : (
                 // Success step
-                <div className="p-8">
-                  <div className="flex flex-col items-center text-center">
+                <div className="px-5 py-8 sm:px-6">
+                  <div className="mx-auto w-full max-w-[560px] text-center">
                     <motion.div
                       initial={{ scale: 0.85, opacity: 0 }}
                       animate={{ scale: 1, opacity: 1 }}
                       transition={{ type: 'spring', stiffness: 280, damping: 22 }}
-                      className="relative"
+                      className="mx-auto"
                     >
-                      <div className="flex h-20 w-20 items-center justify-center rounded-full bg-gradient-to-br from-slate-900 to-slate-700 shadow-lg ring-1 ring-black/10">
+                      <div className="mx-auto flex h-20 w-20 items-center justify-center rounded-full bg-gradient-to-br from-slate-900 to-slate-700 shadow-lg ring-1 ring-black/10">
                         <CheckCircleIcon className="h-12 w-12 text-white" />
                       </div>
                     </motion.div>
 
-                    <div className="mt-6">
-                      <h3 className="text-2xl font-semibold text-slate-900">Welcome to {planSafe.name}</h3>
-                      <p className="mt-2 text-sm text-slate-600">
-                        Subscription confirmed{result?.last4 ? ` • Card ending ${result.last4}` : ''}.
-                      </p>
-                    </div>
+                    <h3 className="mt-6 text-2xl font-semibold text-slate-900">{successTitle}</h3>
+                    <p className="mt-2 text-sm text-slate-600">
+                      Subscription confirmed{result?.last4 ? ` • Card ending ${result.last4}` : ''}.
+                    </p>
 
-                    {/* Summary card */}
-                    <div className="mt-8 w-full max-w-md rounded-xl border border-slate-200 bg-slate-50 p-5 text-left">
+                    <div className="mx-auto mt-6 w-full max-w-[560px] rounded-xl border border-slate-200 bg-slate-50 p-5 text-left">
                       <div className="flex items-center justify-between text-[14px]">
                         <div className="font-medium text-slate-900">{planSafe.name}</div>
                         <div className="font-semibold text-slate-900">
@@ -700,8 +742,7 @@ export default function PaywallModal({
                       </div>
                     </div>
 
-                    {/* Buttons */}
-                    <div className="mt-8 flex w-full max-w-md flex-col gap-3 sm:flex-row">
+                    <div className="mx-auto mt-6 flex w-full max-w-[560px] flex-col gap-3 sm:flex-row">
                       <a
                         href="/dashboard"
                         className="inline-flex w-full items-center justify-center rounded-md bg-[#2e2e30] px-4 py-3 text-[15px] font-medium text-white hover:opacity-90"
