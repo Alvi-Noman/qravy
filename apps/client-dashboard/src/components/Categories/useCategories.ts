@@ -15,7 +15,8 @@ import {
   type NewMenuItem,
 } from '../../api/menu';
 import { useAuthContext } from '../../context/AuthContext';
-import { toastSuccess, toastError } from '../Toaster'; // NEW
+import { toastSuccess, toastError } from '../Toaster';
+import type { TenantDTO } from '../../../../../packages/shared/src/types/v1'; // FIX: explicit type import
 
 function broadcast() {
   try {
@@ -69,11 +70,28 @@ export function useCategories() {
       queryClient.setQueryData<Category[]>(['categories', token], (prev) =>
         [...(prev ?? []), created].sort((a, b) => a.name.localeCompare(b.name))
       );
-      toastSuccess('Category added'); // NEW
+
+      // FIX: ensure both flags exist
+      queryClient.setQueryData<TenantDTO>(['tenant', token], (prev) =>
+        prev
+          ? {
+              ...prev,
+              onboardingProgress: {
+                hasCategory: true,
+                hasMenuItem: prev.onboardingProgress?.hasMenuItem ?? false,
+                checklist: prev.onboardingProgress?.checklist,
+              },
+            }
+          : prev
+      );
+
+      queryClient.invalidateQueries({ queryKey: ['tenant', token] });
+
+      toastSuccess('Category added');
       broadcast();
     },
     onError: (e: any) => {
-      toastError(e?.message || 'Failed to add category'); // NEW
+      toastError(e?.message || 'Failed to add category');
     },
   });
 
@@ -110,12 +128,12 @@ export function useCategories() {
           .map((c) => (c.id === updated.id ? updated : c))
           .sort((a, b) => a.name.localeCompare(b.name))
       );
-      toastSuccess('Category renamed'); // NEW
+      toastSuccess('Category renamed');
       broadcast();
     },
     onError: (e) => {
       queryClient.invalidateQueries({ queryKey: ['menu-items', token] });
-      toastError((e as any)?.message || 'Failed to rename category'); // NEW
+      toastError((e as any)?.message || 'Failed to rename category');
     },
   });
 
@@ -156,15 +174,35 @@ export function useCategories() {
       return { id };
     },
     onSuccess: ({ id }) => {
-      queryClient.setQueryData<Category[]>(['categories', token], (prev) =>
+      const next = queryClient.setQueryData<Category[]>(['categories', token], (prev) =>
         (prev ?? []).filter((c) => c.id !== id)
-      );
+      ) as Category[] | undefined;
+
+      const noneLeft = !next || next.length === 0;
+      if (noneLeft) {
+        // FIX: ensure both flags exist
+        queryClient.setQueryData<TenantDTO>(['tenant', token], (prev) =>
+          prev
+            ? {
+                ...prev,
+                onboardingProgress: {
+                  hasCategory: false,
+                  hasMenuItem: prev.onboardingProgress?.hasMenuItem ?? false,
+                  checklist: prev.onboardingProgress?.checklist,
+                },
+              }
+            : prev
+        );
+      }
+
       queryClient.invalidateQueries({ queryKey: ['menu-items', token] });
-      toastSuccess('Category deleted'); // NEW
+      queryClient.invalidateQueries({ queryKey: ['tenant', token] });
+
+      toastSuccess('Category deleted');
       broadcast();
     },
     onError: (e: any) => {
-      toastError(e?.message || 'Failed to delete category'); // NEW
+      toastError(e?.message || 'Failed to delete category');
     },
   });
 
@@ -202,14 +240,31 @@ export function useCategories() {
       queryClient.setQueryData<Category[]>(['categories', token], (prev) =>
         (prev ?? []).filter((c) => !removedIds.includes(c.id))
       );
+
+      // FIX: ensure both flags exist
+      queryClient.setQueryData<TenantDTO>(['tenant', token], (prev) =>
+        prev
+          ? {
+              ...prev,
+              onboardingProgress: {
+                hasCategory: true,
+                hasMenuItem: prev.onboardingProgress?.hasMenuItem ?? false,
+                checklist: prev.onboardingProgress?.checklist,
+              },
+            }
+          : prev
+      );
+
       queryClient.invalidateQueries({ queryKey: ['menu-items', token] });
-      toastSuccess('Categories merged'); // NEW
+      queryClient.invalidateQueries({ queryKey: ['tenant', token] });
+
+      toastSuccess('Categories merged');
       broadcast();
     },
     onError: (e: any) => {
       queryClient.invalidateQueries({ queryKey: ['menu-items', token] });
       queryClient.invalidateQueries({ queryKey: ['categories', token] });
-      toastError(e?.message || 'Failed to merge categories'); // NEW
+      toastError(e?.message || 'Failed to merge categories');
     },
   });
 

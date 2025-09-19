@@ -95,6 +95,15 @@ export function toTenantDTO(doc: TenantDoc): v1.TenantDTO {
     // subscription status
     subscriptionStatus: doc.subscriptionStatus ?? 'none',
 
+    // ADD: persisted onboarding progress (checklist etc.)
+    onboardingProgress: doc.onboardingProgress
+      ? {
+          hasCategory: !!doc.onboardingProgress.hasCategory,
+          hasMenuItem: !!doc.onboardingProgress.hasMenuItem,
+          checklist: doc.onboardingProgress.checklist,
+        }
+      : undefined,
+
     // optional cancellation metadata
     cancelRequestedAt: doc.cancelRequestedAt ? doc.cancelRequestedAt.toISOString() : null,
     cancelEffectiveAt: doc.cancelEffectiveAt ? doc.cancelEffectiveAt.toISOString() : null,

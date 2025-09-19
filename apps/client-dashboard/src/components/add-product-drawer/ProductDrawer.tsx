@@ -17,6 +17,7 @@ import { QuestionMarkCircleIcon } from '@heroicons/react/24/outline';
 import Variations from './Variations';
 import ImageUploadZone from './ImageUploadZone';
 import Tags from './Tags';
+import type { TenantDTO } from '../../../../../packages/shared/src/types/v1';
 
 type UiVariation = { label: string; price?: string; imagePreview?: string | null; imageUrl?: string | null };
 
@@ -134,6 +135,22 @@ export default function ProductDrawer({
       setLocalCats((prev) => (prev.includes(cat.name) ? prev : [...prev, cat.name]));
       try {
         queryClient.invalidateQueries({ queryKey: ['categories'] });
+      } catch {}
+      try {
+        if (token) {
+          queryClient.setQueryData(['tenant', token], (prev: TenantDTO | undefined) =>
+            prev
+              ? {
+                  ...prev,
+                  onboardingProgress: {
+                    ...(prev.onboardingProgress ?? {}),
+                    hasCategory: true,
+                  },
+                }
+              : prev
+          );
+          queryClient.invalidateQueries({ queryKey: ['tenant', token] });
+        }
       } catch {}
     },
   });
@@ -500,6 +517,11 @@ export default function ProductDrawer({
       const maybe = onSubmit(payload);
       if (isPromise(maybe)) {
         await Promise.all([maybe, minDelay]); // wait for success + min duration
+        try {
+          await queryClient.invalidateQueries({
+            predicate: (q) => Array.isArray(q.queryKey) && q.queryKey[0] === 'tenant',
+          });
+        } catch {}
         setSaving(false);
         onClose(); // trigger slide-out
       } else {

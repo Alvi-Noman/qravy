@@ -11,6 +11,7 @@ import { getMenuItems } from '../api/menu';
 import { getCategories } from '../api/categories';
 import { getTenant } from '../api/tenant';
 import type { TenantDTO } from '../../../../packages/shared/src/types/v1';
+import { Link } from 'react-router-dom';
 
 // Lazy load panels
 const OrdersActivity = lazy(() => import('../components/dashboard/OrdersActivity'));
@@ -107,18 +108,18 @@ export default function Dashboard(): JSX.Element {
           Add your first category and menu item to start managing your restaurant.
         </p>
         <div className="flex gap-4">
-          <a
-            href="/categories"
+          <Link
+            to="/categories?new=category"
             className="rounded-md bg-[#2e2e30] text-white px-5 py-2 hover:opacity-90"
           >
             Add Category
-          </a>
-          <a
-            href="/menu-items"
+          </Link>
+          <Link
+            to="/menu-items?new=product"
             className="rounded-md border border-[#2e2e30] text-[#2e2e30] px-5 py-2 hover:bg-slate-50"
           >
             Add Menu Item
-          </a>
+          </Link>
         </div>
       </div>
     );

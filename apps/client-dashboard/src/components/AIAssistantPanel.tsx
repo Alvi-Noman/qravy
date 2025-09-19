@@ -1,13 +1,18 @@
 /**
  * AIAssistantPanel.tsx
  *
- * Accepts `open` (boolean) from parent to control visibility.
- * Shows Setup Guide until all steps in localStorage are completed.
- * (delay is handled by DashboardLayout)
+ * Reads server-computed progress from tenant.onboardingProgress:
+ * - created-account: always done (disabled)
+ * - add-category: done if tenant.onboardingProgress.hasCategory (disabled)
+ * - add-menu-item: done if tenant.onboardingProgress.hasMenuItem (disabled)
+ * Other steps remain locally tracked (localStorage) and toggleable.
  *
- * Changes:
- * - "Created Restaurant Account" is always completed (cannot be unchecked).
- * - Unchecked indicator is a dotted circle.
+ * Also listens to the categories/menu-items query caches to flip "add-category"
+ * and "add-menu-item" instantly right after create (no page refresh needed).
+ *
+ * Additionally: the top-most unchecked step auto-expands by default,
+ * but can be collapsed by the user. When the first incomplete step changes
+ * (because previous becomes done), the new first incomplete will auto-expand.
  */
 
 import { useEffect, useRef, useState } from 'react';
@@ -20,6 +25,10 @@ import {
   PaperAirplaneIcon,
   CheckIcon,
 } from '@heroicons/react/24/outline';
+import { useTenant } from '../hooks/useTenant';
+import { useQueryClient } from '@tanstack/react-query';
+import { useAuthContext } from '../context/AuthContext';
+import { Link } from 'react-router-dom';
 
 type Step = {
   id: string;
@@ -42,8 +51,70 @@ export default function AIAssistantPanel({
   const ref = useRef<HTMLDivElement>(null);
 
   const ALWAYS_DONE_ID = 'created-account';
+  const SERVER_DRIVEN_IDS = new Set(['add-category', 'add-menu-item']);
 
-  // Full setup definition with descriptions + CTAs
+  // Server progress
+  const { data: tenant, isFetching } = useTenant();
+  const serverHasCategoryRaw = !!tenant?.onboardingProgress?.hasCategory;
+  const serverHasMenuItemRaw = !!tenant?.onboardingProgress?.hasMenuItem;
+
+  // Sticky flags to avoid flicker while refetching
+  const [hasCategory, setHasCategory] = useState<boolean>(serverHasCategoryRaw);
+  const [hasMenuItem, setHasMenuItem] = useState<boolean>(serverHasMenuItemRaw);
+
+  useEffect(() => {
+    if (isFetching) {
+      // While fetching, allow only upgrades to true (prevent momentary false)
+      if (serverHasCategoryRaw) setHasCategory(true);
+      if (serverHasMenuItemRaw) setHasMenuItem(true);
+    } else {
+      // When settled, adopt server truth
+      setHasCategory(serverHasCategoryRaw);
+      setHasMenuItem(serverHasMenuItemRaw);
+    }
+  }, [isFetching, serverHasCategoryRaw, serverHasMenuItemRaw]);
+
+  // Also listen to categories/menu-items query caches for instant flip
+  const queryClient = useQueryClient();
+  const { token } = useAuthContext();
+
+  useEffect(() => {
+    const updateFromCache = () => {
+      try {
+        const cats = queryClient.getQueryData(['categories', token]) as unknown[] | undefined;
+        if (Array.isArray(cats) && cats.length > 0) {
+          setHasCategory(true); // only upgrade via cache; downgrades handled by server
+        }
+      } catch {}
+      try {
+        const items = queryClient.getQueryData(['menu-items', token]) as unknown[] | undefined;
+        if (Array.isArray(items) && items.length > 0) {
+          setHasMenuItem(true); // only upgrade via cache; downgrades handled by server
+        }
+      } catch {}
+    };
+
+    updateFromCache();
+
+    const unsub = queryClient.getQueryCache().subscribe((event) => {
+      const q: any = (event as any)?.query;
+      if (!q || !Array.isArray(q.queryKey)) return;
+      const [key, kToken] = q.queryKey;
+      if ((key === 'categories' || key === 'menu-items') && kToken === token) {
+        updateFromCache();
+      }
+    });
+
+    return () => {
+      if (typeof unsub === 'function') unsub();
+    };
+  }, [queryClient, token]);
+
+  // Effective server-driven flags used by the UI
+  const serverHasCategory = hasCategory;
+  const serverHasMenuItem = hasMenuItem;
+
+  // Full setup definition
   const FULL_STEPS: Step[] = [
     {
       id: 'created-account',
@@ -51,7 +122,7 @@ export default function AIAssistantPanel({
       description: 'Your Qravy account is set up. Next steps will help you publish your menu.',
       cta: 'Review Account',
       href: '/dashboard',
-      done: true, // always completed
+      done: true,
     },
     {
       id: 'add-category',
@@ -95,7 +166,7 @@ export default function AIAssistantPanel({
     },
   ];
 
-  // Load steps and merge with defaults (migration-safe)
+  // Load locally-tracked steps, then merge server-driven flags
   const [steps, setSteps] = useState<Step[]>(() => {
     try {
       const raw = localStorage.getItem('ai-setup-steps');
@@ -106,31 +177,64 @@ export default function AIAssistantPanel({
           for (const s of parsed) {
             if (s && typeof s.id === 'string') doneMap.set(s.id, !!s.done);
           }
-          return FULL_STEPS.map((s) => ({
-            ...s,
-            // Force "created-account" to always be done
-            done: s.id === ALWAYS_DONE_ID ? true : doneMap.has(s.id) ? !!doneMap.get(s.id) : s.done,
-          }));
+          return FULL_STEPS.map((s) => {
+            let done = s.done;
+            if (s.id === ALWAYS_DONE_ID) done = true;
+            else if (s.id === 'add-category') done = serverHasCategory;
+            else if (s.id === 'add-menu-item') done = serverHasMenuItem;
+            else done = doneMap.has(s.id) ? !!doneMap.get(s.id) : s.done;
+            return { ...s, done };
+          });
         }
       }
     } catch {}
-    // default: ensure "created-account" is done
     return FULL_STEPS.map((s) => (s.id === ALWAYS_DONE_ID ? { ...s, done: true } : s));
   });
 
-  // Only one expanded at a time
+  // Re-sync server-driven steps whenever flags change
+  useEffect(() => {
+    setSteps((prev) =>
+      prev.map((s) => {
+        if (s.id === ALWAYS_DONE_ID) return { ...s, done: true };
+        if (s.id === 'add-category') return { ...s, done: serverHasCategory };
+        if (s.id === 'add-menu-item') return { ...s, done: serverHasMenuItem };
+        return s;
+      })
+    );
+  }, [serverHasCategory, serverHasMenuItem]);
+
+  // Expanded management: top-most unchecked auto-expands by default,
+  // but the user can collapse it. When the first incomplete step changes,
+  // auto-expand the new one exactly once.
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [lastAutoExpandedId, setLastAutoExpandedId] = useState<string | null>(null);
+
+  const firstIncompleteId = steps.find((s) => !s.done)?.id ?? null;
+
+  useEffect(() => {
+    if (firstIncompleteId && firstIncompleteId !== lastAutoExpandedId) {
+      setExpandedId(firstIncompleteId);
+      setLastAutoExpandedId(firstIncompleteId);
+    }
+  }, [firstIncompleteId, lastAutoExpandedId]);
 
   const allDone = steps.length > 0 && steps.every((s) => s.done);
 
-  // Persist only id/done pairs (keep always-done enforced)
+  // Persist only id/done pairs
   useEffect(() => {
     const compact = steps.map((s) => ({
       id: s.id,
-      done: s.id === ALWAYS_DONE_ID ? true : s.done,
+      done:
+        s.id === ALWAYS_DONE_ID
+          ? true
+          : s.id === 'add-category'
+          ? serverHasCategory
+          : s.id === 'add-menu-item'
+          ? serverHasMenuItem
+          : s.done,
     }));
     localStorage.setItem('ai-setup-steps', JSON.stringify(compact));
-  }, [steps]);
+  }, [steps, serverHasCategory, serverHasMenuItem]);
 
   // ESC to close
   useEffect(() => {
@@ -141,7 +245,8 @@ export default function AIAssistantPanel({
   }, [open, onClose]);
 
   const toggleDone = (id: string) => {
-    if (id === ALWAYS_DONE_ID) return; // cannot toggle always-done step
+    if (id === ALWAYS_DONE_ID) return;
+    if (SERVER_DRIVEN_IDS.has(id)) return;
     setSteps((prev) => prev.map((s) => (s.id === id ? { ...s, done: !s.done } : s)));
   };
 
@@ -187,6 +292,15 @@ export default function AIAssistantPanel({
                   const isExpanded = expandedId === step.id;
                   const isDone = step.done;
                   const isAlwaysDone = step.id === ALWAYS_DONE_ID;
+                  const isServerDriven = SERVER_DRIVEN_IDS.has(step.id);
+
+                  // Build CTA target; add query param for add-category/add-menu-item to auto-open dialogs
+                  const href =
+                    step.id === 'add-category' && step.href
+                      ? `${step.href}?new=category`
+                      : step.id === 'add-menu-item' && step.href
+                      ? `${step.href}?new=product`
+                      : step.href;
 
                   return (
                     <li
@@ -195,28 +309,34 @@ export default function AIAssistantPanel({
                         isDone ? 'bg-emerald-50/70 border-emerald-200' : 'bg-white border-[#ececec]'
                       }`}
                     >
-                      {/* Step header row: left circle toggles done; title area toggles expand */}
+                      {/* Step header row */}
                       <div className="flex items-start gap-3 p-3">
-                        {/* Modern circular control:
-                           - Checked: solid emerald with check
-                           - Unchecked: dotted circle */}
+                        {/* Check control */}
                         <button
                           type="button"
                           onClick={() => toggleDone(step.id)}
                           aria-pressed={isDone}
                           aria-label={isDone ? 'Mark incomplete' : 'Mark complete'}
-                          disabled={isAlwaysDone}
+                          disabled={isAlwaysDone || isServerDriven}
                           className={`mt-0.5 inline-flex h-5 w-5 items-center justify-center rounded-full border-2 transition-colors ${
                             isDone
                               ? 'bg-emerald-600 border-emerald-600 text-white'
                               : 'border-slate-300 border-dotted text-transparent'
-                          } ${isAlwaysDone ? 'cursor-default pointer-events-none' : ''}`}
-                          title={isAlwaysDone ? 'Completed' : isDone ? 'Mark incomplete' : 'Mark complete'}
+                          } ${isAlwaysDone || isServerDriven ? 'cursor-default pointer-events-none' : ''}`}
+                          title={
+                            isAlwaysDone
+                              ? 'Completed'
+                              : isServerDriven
+                              ? 'Auto-completed from your data'
+                              : isDone
+                              ? 'Mark incomplete'
+                              : 'Mark complete'
+                          }
                         >
                           {isDone ? <CheckIcon className="h-3.5 w-3.5" /> : null}
                         </button>
 
-                        {/* Title area (click to expand/collapse details) */}
+                        {/* Title area */}
                         <button
                           type="button"
                           onClick={() => toggleExpand(step.id)}
@@ -229,7 +349,7 @@ export default function AIAssistantPanel({
                         </button>
                       </div>
 
-                      {/* Details + CTA (only when expanded) */}
+                      {/* Details + CTA */}
                       <AnimatePresence initial={false} mode="wait">
                         {isExpanded && (
                           <motion.div
@@ -242,15 +362,26 @@ export default function AIAssistantPanel({
                           >
                             <p className="text-[12px] text-slate-600">{step.description}</p>
                             <div className="mt-3">
-                              {step.href ? (
-                                <a
-                                  href={step.href}
-                                  className={`inline-flex items-center gap-1 rounded-md border border-[#e5e5e5] bg-white px-3 py-1.5 text-[12px] font-medium ${
-                                    isDone ? 'text-slate-400 cursor-default pointer-events-none' : 'text-slate-700 hover:bg-slate-50'
-                                  }`}
-                                >
-                                  {step.cta}
-                                </a>
+                              {href ? (
+                                step.id === 'add-category' || step.id === 'add-menu-item' ? (
+                                  <Link
+                                    to={href}
+                                    className={`inline-flex items-center gap-1 rounded-md border border-[#e5e5e5] bg-white px-3 py-1.5 text-[12px] font-medium ${
+                                      isDone ? 'text-slate-400 cursor-default pointer-events-none' : 'text-slate-700 hover:bg-slate-50'
+                                    }`}
+                                  >
+                                    {step.cta}
+                                  </Link>
+                                ) : (
+                                  <a
+                                    href={href}
+                                    className={`inline-flex items-center gap-1 rounded-md border border-[#e5e5e5] bg-white px-3 py-1.5 text-[12px] font-medium ${
+                                      isDone ? 'text-slate-400 cursor-default pointer-events-none' : 'text-slate-700 hover:bg-slate-50'
+                                    }`}
+                                  >
+                                    {step.cta}
+                                  </a>
+                                )
                               ) : (
                                 <button
                                   type="button"

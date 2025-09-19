@@ -108,22 +108,16 @@ export default function DashboardLayout(): JSX.Element {
     }
   }
 
-  // Auto-open AI panel for new users
+  // Auto-open AI panel for new users (based on server progress)
   useEffect(() => {
-    try {
-      const saved = localStorage.getItem('ai-setup-steps');
-      const parsed = saved ? JSON.parse(saved) : null;
-      const allDone =
-        Array.isArray(parsed) && parsed.length > 0 && parsed.every((s: any) => s.done);
-      if (!allDone) {
-        const t = setTimeout(() => setAiOpen(true), 1500);
-        return () => clearTimeout(t);
-      }
-    } catch {
+    if (tenantLoading) return;
+    const hasCat = !!tenant?.onboardingProgress?.hasCategory;
+    const hasItem = !!tenant?.onboardingProgress?.hasMenuItem;
+    if (!hasCat || !hasItem) {
       const t = setTimeout(() => setAiOpen(true), 1500);
       return () => clearTimeout(t);
     }
-  }, []);
+  }, [tenantLoading, tenant?.onboardingProgress?.hasCategory, tenant?.onboardingProgress?.hasMenuItem]);
 
   // Derived flags
   const isSubscribed = (tenant?.subscriptionStatus ?? '').toLowerCase() === 'active';
@@ -206,13 +200,14 @@ export default function DashboardLayout(): JSX.Element {
         </main>
       </div>
 
-      {/* Trial toast */}
+      {/* Trial toast (shifts left when AI panel is open) */}
       <TrialToast
         open={showTrialToast}
         daysLeft={trial.daysLeft ?? 0}
         hoursLeft={trial.hoursLeft ?? 0}
         onUpgrade={() => setPaywallOpen(true)}
         onCompare={() => setPaywallOpen(true)}
+        offsetRight={aiOpen ? AI_PANEL_WIDTH + 20 : 20}
       />
 
       {/* Paywall */}

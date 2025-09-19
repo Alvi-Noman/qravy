@@ -5,9 +5,16 @@ import logger from '../utils/logger.js';
 import type { MenuItemDoc, Variation } from '../models/MenuItem.js';
 import { toMenuItemDTO } from '../utils/mapper.js';
 import { auditLog } from '../utils/audit.js';
+// ADD:
+import type { TenantDoc } from '../models/Tenant.js';
 
 function col() {
   return client.db('authDB').collection<MenuItemDoc>('menuItems');
+}
+
+// ADD:
+function tenantsCol() {
+  return client.db('authDB').collection<TenantDoc>('tenants');
 }
 
 function canWrite(role?: string): boolean {
@@ -131,6 +138,12 @@ export async function createMenuItem(req: Request, res: Response, next: NextFunc
       ip: req.ip || 'unknown',
       userAgent: req.headers['user-agent'] || 'unknown',
     });
+
+    // ADD: mark onboarding progress for menu item
+    await tenantsCol().updateOne(
+      { _id: new ObjectId(tenantId) },
+      { $set: { 'onboardingProgress.hasMenuItem': true, updatedAt: now } }
+    );
 
     return res.ok({ item: toMenuItemDTO(created) }, 201);
   } catch (err: any) {
@@ -275,6 +288,13 @@ export async function deleteMenuItem(req: Request, res: Response, next: NextFunc
       userAgent: req.headers['user-agent'] || 'unknown',
     });
 
+    // ADD: recompute menu item flag after delete
+    const remaining = await col().countDocuments({ tenantId: new ObjectId(tenantId) });
+    await tenantsCol().updateOne(
+      { _id: new ObjectId(tenantId) },
+      { $set: { 'onboardingProgress.hasMenuItem': remaining > 0, updatedAt: new Date() } }
+    );
+
     return res.ok({ deleted: true });
   } catch (err) {
     logger.error(`deleteMenuItem error: ${(err as Error).message}`);
@@ -345,6 +365,13 @@ export async function bulkDeleteMenuItems(req: Request, res: Response, next: Nex
       ip: req.ip || 'unknown',
       userAgent: req.headers['user-agent'] || 'unknown',
     });
+
+    // ADD: recompute menu item flag after bulk delete
+    const remaining = await col().countDocuments({ tenantId: new ObjectId(tenantId) });
+    await tenantsCol().updateOne(
+      { _id: new ObjectId(tenantId) },
+      { $set: { 'onboardingProgress.hasMenuItem': remaining > 0, updatedAt: new Date() } }
+    );
 
     return res.ok({ deletedCount: del.deletedCount, ids });
   } catch (err) {

@@ -18,7 +18,7 @@ export default function CategoryFormDialog({
   initialName?: string;
   existingNames?: string[];
   onClose: () => void;
-  onSubmit: (name: string) => void;
+  onSubmit: (name: string) => void | Promise<void>;
   isSubmitting?: boolean;
 }) {
   const {

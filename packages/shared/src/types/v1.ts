@@ -105,6 +105,14 @@ export interface BillingProfileDTO {
   updatedAt?: string; // ISO
 }
 
+/** New: server-computed onboarding progress flags */
+export interface TenantOnboardingProgressDTO {
+  hasCategory: boolean;
+  hasMenuItem: boolean;
+  // ADD: persisted custom checklist flags for future steps
+  checklist?: Record<string, boolean>;
+}
+
 export interface TenantDTO {
   id: string;
   name: string;
@@ -132,6 +140,9 @@ export interface TenantDTO {
 
   // Optional: expose profile if you want to include it in broader tenant fetches
   billingProfile?: BillingProfileDTO;
+
+  //Onboarding progress (server-computed, no schema change) */
+  onboardingProgress?: TenantOnboardingProgressDTO;
 
   createdAt: string;
   updatedAt: string;

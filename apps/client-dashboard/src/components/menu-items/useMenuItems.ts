@@ -20,6 +20,7 @@ import {
 import { getCategories, type Category } from '../../api/categories';
 import { useProgress } from '../../context/ProgressContext';
 import { toastSuccess, toastError } from '../Toaster';
+import type { TenantDTO } from '../../../../../packages/shared/src/types/v1';
 
 /** Broadcast storage flags for tabs syncing */
 function broadcast() {
@@ -82,6 +83,22 @@ export function useMenuItems() {
     },
     onSuccess: (created) => {
       queryClient.setQueryData<TMenuItem[]>(['menu-items', token], (prev) => [...(prev ?? []), created]);
+
+      // Optimistically set hasMenuItem = true (ensure both flags are present)
+      queryClient.setQueryData<TenantDTO>(['tenant', token], (prev) =>
+        prev
+          ? {
+              ...prev,
+              onboardingProgress: {
+                hasCategory: prev.onboardingProgress?.hasCategory ?? false,
+                hasMenuItem: true,
+                checklist: prev.onboardingProgress?.checklist,
+              },
+            }
+          : prev
+      );
+      queryClient.invalidateQueries({ queryKey: ['tenant', token] });
+
       toastSuccess('Product added');
       broadcast();
     },
@@ -169,6 +186,24 @@ export function useMenuItems() {
       toastError((e as any)?.message || 'Failed to delete product');
     },
     onSuccess: () => {
+      // If no items remain, flip hasMenuItem = false (ensure both flags are present)
+      const remaining = queryClient.getQueryData<TMenuItem[]>(['menu-items', token]) ?? [];
+      if (remaining.length === 0) {
+        queryClient.setQueryData<TenantDTO>(['tenant', token], (prev) =>
+          prev
+            ? {
+                ...prev,
+                onboardingProgress: {
+                  hasCategory: prev.onboardingProgress?.hasCategory ?? false,
+                  hasMenuItem: false,
+                  checklist: prev.onboardingProgress?.checklist,
+                },
+              }
+            : prev
+        );
+      }
+      queryClient.invalidateQueries({ queryKey: ['tenant', token] });
+
       toastSuccess('Product deleted');
       broadcast();
     },
@@ -252,6 +287,24 @@ export function useMenuItems() {
       if (ctx?.snapshot) queryClient.setQueryData(['menu-items', token], ctx.snapshot);
     },
     onSuccess: () => {
+      // If no items remain, flip hasMenuItem = false (ensure both flags are present)
+      const remaining = queryClient.getQueryData<TMenuItem[]>(['menu-items', token]) ?? [];
+      if (remaining.length === 0) {
+        queryClient.setQueryData<TenantDTO>(['tenant', token], (prev) =>
+          prev
+            ? {
+                ...prev,
+                onboardingProgress: {
+                  hasCategory: prev.onboardingProgress?.hasCategory ?? false,
+                  hasMenuItem: false,
+                  checklist: prev.onboardingProgress?.checklist,
+                },
+              }
+            : prev
+        );
+      }
+      queryClient.invalidateQueries({ queryKey: ['tenant', token] });
+
       broadcast();
     },
     onSettled: () => {

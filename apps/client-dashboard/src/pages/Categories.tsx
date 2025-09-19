@@ -15,7 +15,7 @@ import {
   useRef,
   useState,
 } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import type { Category } from '../api/categories';
 import { useCategories } from '../components/categories/useCategories';
 import { BulkActionsBar } from '../components/categories';
@@ -102,6 +102,10 @@ export default function CategoriesPage() {
     availabilityMut,
   } = useCategories();
 
+  // Read/write URL query to drive Add Category dialog
+  const [searchParams, setSearchParams] = useSearchParams();
+  const routeWantsNew = searchParams.get('new') === 'category';
+
   // Storage listener for cross-tab updates
   useEffect(() => {
     const onStorage = (e: StorageEvent) => {
@@ -117,11 +121,19 @@ export default function CategoriesPage() {
   const [channels, setChannels] = useState<Set<'dine-in' | 'online'>>(new Set());
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
-  const [openForm, setOpenForm] = useState(false);
+  const [openForm, setOpenForm] = useState(routeWantsNew);
   const [editing, setEditing] = useState<Category | null>(null);
   const [openDelete, setOpenDelete] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<Category | null>(null);
   const [openMerge, setOpenMerge] = useState(false);
+
+  // Auto-open dialog when URL says so
+  useEffect(() => {
+    if (routeWantsNew) {
+      setEditing(null);
+      setOpenForm(true);
+    }
+  }, [routeWantsNew]);
 
   // Freeze + highlight states (for editing/adding)
   const [frozenCategories, setFrozenCategories] = useState<Category[] | null>(
@@ -316,6 +328,9 @@ export default function CategoriesPage() {
               className="rounded-md bg-[#2e2e30] px-4 py-2 text-sm text-white hover:opacity-90"
               onClick={() => {
                 setEditing(null);
+                const sp = new URLSearchParams(searchParams);
+                sp.set('new', 'category');
+                setSearchParams(sp, { replace: false });
                 setOpenForm(true);
               }}
             >
@@ -359,7 +374,12 @@ export default function CategoriesPage() {
                       they'll appear here.
                     </p>
                     <button
-                      onClick={() => setOpenForm(true)}
+                      onClick={() => {
+                        const sp = new URLSearchParams(searchParams);
+                        sp.set('new', 'category');
+                        setSearchParams(sp, { replace: false });
+                        setOpenForm(true);
+                      }}
                       className="rounded-md bg-[#2e2e30] text-white px-5 py-2 hover:opacity-90"
                     >
                       Add Category
@@ -424,7 +444,12 @@ export default function CategoriesPage() {
                   isSubmitting={
                     createMut.isPending || renameMut.isPending
                   }
-                  onClose={() => setOpenForm(false)}
+                  onClose={() => {
+                    setOpenForm(false);
+                    const sp = new URLSearchParams(searchParams);
+                    sp.delete('new');
+                    setSearchParams(sp, { replace: true });
+                  }}
                   onSubmit={async (name) => {
                     if (editing) {
                       const updated = await renameMut.mutateAsync({
@@ -432,10 +457,16 @@ export default function CategoriesPage() {
                         newName: name,
                       });
                       setOpenForm(false);
+                      const sp = new URLSearchParams(searchParams);
+                      sp.delete('new');
+                      setSearchParams(sp, { replace: true });
                       setQueuedHighlightId(updated.id);
                     } else {
                       const created = await createMut.mutateAsync(name);
                       setOpenForm(false);
+                      const sp = new URLSearchParams(searchParams);
+                      sp.delete('new');
+                      setSearchParams(sp, { replace: true });
                       setPendingHighlightId(created.id);
                     }
                   }}

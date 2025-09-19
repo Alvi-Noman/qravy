@@ -5,6 +5,8 @@ import logger from '../utils/logger.js';
 import type { CategoryDoc } from '../models/Category.js';
 import { toCategoryDTO } from '../utils/mapper.js';
 import { auditLog } from '../utils/audit.js';
+// ADD:
+import type { TenantDoc } from '../models/Tenant.js';
 
 function categoriesCol() {
   return client.db('authDB').collection<CategoryDoc>('categories');
@@ -12,6 +14,11 @@ function categoriesCol() {
 
 function menuItemsCol() {
   return client.db('authDB').collection('menuItems');
+}
+
+// ADD:
+function tenantsCol() {
+  return client.db('authDB').collection<TenantDoc>('tenants');
 }
 
 function canWrite(role?: string): boolean {
@@ -64,6 +71,12 @@ export async function createCategory(req: Request, res: Response, next: NextFunc
       ip: req.ip || 'unknown',
       userAgent: req.headers['user-agent'] || 'unknown',
     });
+
+    // ADD: mark onboarding progress for category
+    await tenantsCol().updateOne(
+      { _id: new ObjectId(tenantId) },
+      { $set: { 'onboardingProgress.hasCategory': true, updatedAt: now } }
+    );
 
     return res.ok({ item: toCategoryDTO(created) }, 201);
   } catch (err) {
@@ -141,6 +154,23 @@ export async function deleteCategory(req: Request, res: Response, next: NextFunc
     });
 
     await categoriesCol().deleteOne(filter);
+
+    // ADD: recompute flags after deletion
+    const [remainingCategories, remainingItems] = await Promise.all([
+      categoriesCol().countDocuments({ tenantId: new ObjectId(tenantId) }),
+      menuItemsCol().countDocuments({ tenantId: new ObjectId(tenantId) }),
+    ]);
+
+    await tenantsCol().updateOne(
+      { _id: new ObjectId(tenantId) },
+      {
+        $set: {
+          'onboardingProgress.hasCategory': remainingCategories > 0,
+          'onboardingProgress.hasMenuItem': remainingItems > 0,
+          updatedAt: new Date(),
+        },
+      }
+    );
 
     await auditLog({
       userId,

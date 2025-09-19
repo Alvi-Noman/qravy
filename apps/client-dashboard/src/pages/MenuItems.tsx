@@ -15,6 +15,7 @@ import MenuToolbarSkeleton from '../components/menu-items/MenuToolbarSkeleton';
 import MenuTableSkeleton from '../components/menu-items/MenuTableSkeleton';
 import BulkActionsBar from '../components/menu-items/BulkActionsBar';
 import type { MenuItem as TMenuItem, NewMenuItem } from '../api/menu';
+import { useSearchParams } from 'react-router-dom';
 
 const MenuTable = lazy(() => import('../components/menu-items/MenuTable'));
 const BulkChangeCategoryDialog = lazy(() => import('../components/menu-items/BulkChangeCategoryDialog'));
@@ -111,6 +112,14 @@ export default function MenuItemsPage(): JSX.Element {
     bulkCategoryMut,
   } = useMenuItems();
 
+  // Read/write URL query to drive Add Product drawer
+  const [searchParams, setSearchParams] = useSearchParams();
+  const routeWantsNew = searchParams.get('new') === 'product';
+
+  useEffect(() => {
+    if (routeWantsNew) setOpenAdd(true);
+  }, [routeWantsNew]);
+
   // Refetch on storage events (multi-tab)
   useEffect(() => {
     const onStorage = (e: StorageEvent) => e.key === 'menu:updated' && itemsQuery.refetch();
@@ -127,7 +136,7 @@ export default function MenuItemsPage(): JSX.Element {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
   // Drawer & dialog states
-  const [openAdd, setOpenAdd] = useState(false);
+  const [openAdd, setOpenAdd] = useState(routeWantsNew);
   const [openEdit, setOpenEdit] = useState<TMenuItem | null>(null);
   const [openBulkCategory, setOpenBulkCategory] = useState(false);
   const [openDeleteMany, setOpenDeleteMany] = useState(false);
@@ -295,7 +304,12 @@ export default function MenuItemsPage(): JSX.Element {
               transformOrigin: 'right center',
               willChange: 'transform',
             }}
-            onClick={() => setOpenAdd(true)}
+            onClick={() => {
+              const sp = new URLSearchParams(searchParams);
+              sp.set('new', 'product');
+              setSearchParams(sp, { replace: false });
+              setOpenAdd(true);
+            }}
           >
             Add Product
           </button>
@@ -338,7 +352,12 @@ export default function MenuItemsPage(): JSX.Element {
                       Get started by adding your first product. Menu items will appear here once created.
                     </p>
                     <button
-                      onClick={() => setOpenAdd(true)}
+                      onClick={() => {
+                        const sp = new URLSearchParams(searchParams);
+                        sp.set('new', 'product');
+                        setSearchParams(sp, { replace: false });
+                        setOpenAdd(true);
+                      }}
                       className="rounded-md bg-[#2e2e30] text-white px-5 py-2 hover:opacity-90"
                     >
                       Add Product
@@ -383,7 +402,8 @@ export default function MenuItemsPage(): JSX.Element {
 
               {/* Drawers & Dialogs */}
               <Suspense fallback={null}>
-                <AnimatePresence initial={false} mode="wait">
+                {/* IMPORTANT: allow first-mount animations */}
+                <AnimatePresence mode="wait">
                   {openAdd && (
                     <ProductDrawer
                       key="add"
@@ -398,7 +418,12 @@ export default function MenuItemsPage(): JSX.Element {
                         tags: [],
                         variations: [],
                       }}
-                      onClose={() => setOpenAdd(false)}
+                      onClose={() => {
+                        setOpenAdd(false);
+                        const sp = new URLSearchParams(searchParams);
+                        sp.delete('new');
+                        setSearchParams(sp, { replace: true });
+                      }}
                       persistKey="add"
                       onSubmit={async (values: DrawerSubmitValues) => {
                         const payload: NewMenuItem = {
@@ -412,6 +437,9 @@ export default function MenuItemsPage(): JSX.Element {
                         };
                         if (typeof values.price === 'number') payload.price = values.price;
                         const created = await createMut.mutateAsync(payload);
+                        const sp = new URLSearchParams(searchParams);
+                        sp.delete('new');
+                        setSearchParams(sp, { replace: true });
                         setPendingHighlightId((created as any).id);
                       }}
                     />

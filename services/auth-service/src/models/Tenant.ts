@@ -49,6 +49,13 @@ export interface TenantDoc {
   cancelEffectiveAt?: Date;
   cancelAtPeriodEnd?: boolean;
 
+  // ADD: Onboarding progress (persisted flags + future checklist)
+  onboardingProgress?: {
+    hasCategory?: boolean;
+    hasMenuItem?: boolean;
+    checklist?: Record<string, boolean>;
+  };
+
   // Payment metadata (non-sensitive)
   payment?: {
     provider?: 'stripe' | 'adyen' | 'mock' | 'none';

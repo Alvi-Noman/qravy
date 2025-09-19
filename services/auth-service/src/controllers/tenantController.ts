@@ -195,7 +195,9 @@ export async function getMyTenant(req: Request, res: Response, next: NextFunctio
       Object.assign(tenant, updates);
     }
 
-    return res.ok({ item: toTenantDTO(tenant) });
+    // Do NOT compute onboarding flags here; rely on stored values only
+    const dto = toTenantDTO(tenant);
+    return res.ok({ item: dto });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     logger.error(`getMyTenant error: ${msg}`);
