@@ -105,12 +105,19 @@ export interface BillingProfileDTO {
   updatedAt?: string; // ISO
 }
 
-/** New: server-computed onboarding progress flags */
+/** Server-computed onboarding progress flags */
 export interface TenantOnboardingProgressDTO {
   hasCategory: boolean;
   hasMenuItem: boolean;
-  // ADD: persisted custom checklist flags for future steps
   checklist?: Record<string, boolean>;
+}
+
+/** Restaurant info DTO (counts are derived from /locations, not here) */
+export interface RestaurantInfoDTO {
+  restaurantType: string;
+  country: string;
+  address: string;
+  locationMode?: 'single' | 'multiple';
 }
 
 export interface TenantDTO {
@@ -141,8 +148,11 @@ export interface TenantDTO {
   // Optional: expose profile if you want to include it in broader tenant fetches
   billingProfile?: BillingProfileDTO;
 
-  //Onboarding progress (server-computed, no schema change) */
+  // Onboarding progress (server-computed)
   onboardingProgress?: TenantOnboardingProgressDTO;
+
+  // Restaurant info (no counts here)
+  restaurantInfo?: RestaurantInfoDTO;
 
   createdAt: string;
   updatedAt: string;

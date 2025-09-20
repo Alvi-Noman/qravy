@@ -9,6 +9,7 @@ export interface RestaurantInfo {
   restaurantType: string;
   country: string;
   address: string;
+  locationMode?: 'single' | 'multiple';  
 }
 
 export interface PlanInfo {

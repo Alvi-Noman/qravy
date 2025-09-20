@@ -56,7 +56,7 @@ export default function TopBar({ onAIClick }: { onAIClick?: () => void }): JSX.E
           <DigitalMenuStatus
             isLive={isLive}
             onChange={(next) => setIsLive(next)}
-            scopeLabel="Main Branch"
+            scopeLabel="Main Location"
             viewMenuHref="/menu"
           />
 

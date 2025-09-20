@@ -3,10 +3,10 @@ import { createContext, useContext, useMemo, useState } from 'react';
 /** Channel filter values across the app. */
 export type ChannelScope = 'all' | 'dine-in' | 'online';
 
-/** Branch selection model for global scope. */
-export type BranchScope =
+/** Location selection model for global scope. */
+export type LocationScope =
   | { mode: 'all' }
-  | { mode: 'specific'; branches: string[] };
+  | { mode: 'specific'; locations: string[] };
 
 /** Sort options for the current page. */
 export type SortOption = 'az' | 'recent' | 'most-used';
@@ -21,8 +21,8 @@ export type PageFilters = {
 
 /** Public API of the global scope context. */
 export type ScopeContextValue = {
-  branch: BranchScope;
-  setBranch: (next: BranchScope) => void;
+  location: LocationScope;
+  setLocation: (next: LocationScope) => void;
   channel: ChannelScope;
   setChannel: (next: ChannelScope) => void;
   searchQuery: string;
@@ -36,17 +36,17 @@ export type ScopeContextValue = {
 /** React context for global scope. */
 const ScopeContext = createContext<ScopeContextValue | undefined>(undefined);
 
-/** Provider for global scope values (branch, channel, search, sort, filters). */
+/** Provider for global scope values (location, channel, search, sort, filters). */
 export function ScopeProvider({ children }: { children: React.ReactNode }) {
-  const [branch, setBranch] = useState<BranchScope>({ mode: 'all' });
+  const [location, setLocation] = useState<LocationScope>({ mode: 'all' });
   const [channel, setChannel] = useState<ChannelScope>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [sort, setSort] = useState<SortOption>('az');
   const [filters, setFilters] = useState<PageFilters>({});
 
   const value = useMemo<ScopeContextValue>(
-    () => ({ branch, setBranch, channel, setChannel, searchQuery, setSearchQuery, sort, setSort, filters, setFilters }),
-    [branch, channel, searchQuery, sort, filters]
+    () => ({ location, setLocation, channel, setChannel, searchQuery, setSearchQuery, sort, setSort, filters, setFilters }),
+    [location, channel, searchQuery, sort, filters]
   );
 
   return <ScopeContext.Provider value={value}>{children}</ScopeContext.Provider>;

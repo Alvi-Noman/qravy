@@ -9,6 +9,7 @@ import type { MembershipDoc } from '../models/Membership.js';
 import { auditLog } from '../utils/audit.js';
 import { toTenantDTO } from '../utils/mapper.js';
 import type { v1 } from '../../../../packages/shared/src/types/index.js';
+import { restaurantOnboardingSchema } from '../validation/schemas.js'; // ADDED
 
 function tenantsCol() {
   return client.db('authDB').collection<TenantDoc>('tenants');
@@ -214,7 +215,18 @@ export async function saveOnboardingStep(req: Request, res: Response, next: Next
 
     const update: Partial<TenantDoc> = {};
     if (step === 'owner') update.ownerInfo = data;
-    if (step === 'restaurant') update.restaurantInfo = data;
+
+    if (step === 'restaurant') {
+      // Validate (no count here, only mode)
+      const parsed = restaurantOnboardingSchema.parse(data);
+
+      update.restaurantInfo = {
+        restaurantType: parsed.restaurantType,
+        country: parsed.country,
+        address: parsed.address,
+        locationMode: parsed.locationMode, // 'single' | 'multiple' | undefined
+      };
+    }
 
     if (step === 'plan') {
       const normalized = normalizePlanId(data?.planId, data?.interval);

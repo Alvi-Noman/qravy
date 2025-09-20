@@ -62,6 +62,9 @@ function tenantJsonSchema() {
             restaurantType: { bsonType: 'string' },
             country: { bsonType: 'string' },
             address: { bsonType: 'string' },
+            locationMode: { enum: ['single', 'multiple', null] },
+            locationCount: { bsonType: ['int', 'long', 'double', 'decimal', 'null'] },
+            hasLocations: { bsonType: ['bool', 'null'] },
           },
         },
         planInfo: {
@@ -175,6 +178,28 @@ function auditJsonSchema() {
   };
 }
 
+// NEW
+function locationJsonSchema() {
+  return {
+    $jsonSchema: {
+      bsonType: 'object',
+      required: ['tenantId', 'name', 'createdAt', 'updatedAt'],
+      additionalProperties: true,
+      properties: {
+        _id: { bsonType: 'objectId' },
+        tenantId: { bsonType: 'objectId' },
+        createdBy: { bsonType: ['objectId', 'null'] },
+        name: { bsonType: 'string' },
+        address: { bsonType: ['string', 'null'] },
+        zip: { bsonType: ['string', 'null'] },
+        country: { bsonType: ['string', 'null'] },
+        createdAt: { bsonType: 'date' },
+        updatedAt: { bsonType: 'date' },
+      },
+    },
+  };
+}
+
 type MongoErrorLike = { code?: number; codeName?: string; message?: string };
 
 function isNamespaceNotFound(e: unknown): e is MongoErrorLike {
@@ -245,10 +270,22 @@ export async function ensureUserIndexes(client: MongoClient): Promise<void> {
   await audits.createIndex({ userId: 1, createdAt: -1 });
   logger.info('Ensured index on audits.userId,createdAt');
 
+  // NEW: Locations
+  const locations = db.collection('locations');
+  await locations.createIndex(
+    { tenantId: 1, name: 1 },
+    { unique: true, name: 'ux_locations_tenant_name', collation: { locale: 'en', strength: 2 } }
+  );
+  logger.info('Ensured unique index on locations.tenantId,name');
+  await locations.createIndex({ tenantId: 1, createdAt: -1 });
+  logger.info('Ensured compound index on locations.tenantId,createdAt');
+
+  // Validators
   await ensureValidator(client, 'users', userJsonSchema());
   await ensureValidator(client, 'tenants', tenantJsonSchema());
   await ensureValidator(client, 'memberships', membershipJsonSchema());
   await ensureValidator(client, 'menuItems', menuItemJsonSchema());
   await ensureValidator(client, 'categories', categoryJsonSchema());
   await ensureValidator(client, 'audits', auditJsonSchema());
+  await ensureValidator(client, 'locations', locationJsonSchema());
 }

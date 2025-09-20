@@ -13,6 +13,10 @@
  * Additionally: the top-most unchecked step auto-expands by default,
  * but can be collapsed by the user. When the first incomplete step changes
  * (because previous becomes done), the new first incomplete will auto-expand.
+ *
+ * NEW:
+ * - If tenant.restaurantInfo.locationMode === 'multiple', show "Add Locations"
+ *   step above "Add Category". This step is locally tracked (toggleable).
  */
 
 import { useEffect, useRef, useState } from 'react';
@@ -57,6 +61,9 @@ export default function AIAssistantPanel({
   const { data: tenant, isFetching } = useTenant();
   const serverHasCategoryRaw = !!tenant?.onboardingProgress?.hasCategory;
   const serverHasMenuItemRaw = !!tenant?.onboardingProgress?.hasMenuItem;
+
+  // Whether to show "Add Locations" step (only when multiple locations selected in onboarding)
+  const showLocationsStep = tenant?.restaurantInfo?.locationMode === 'multiple';
 
   // Sticky flags to avoid flicker while refetching
   const [hasCategory, setHasCategory] = useState<boolean>(serverHasCategoryRaw);
@@ -114,7 +121,7 @@ export default function AIAssistantPanel({
   const serverHasCategory = hasCategory;
   const serverHasMenuItem = hasMenuItem;
 
-  // Full setup definition
+  // Build steps (conditionally include "Add Locations" above "Add Category")
   const FULL_STEPS: Step[] = [
     {
       id: 'created-account',
@@ -124,6 +131,18 @@ export default function AIAssistantPanel({
       href: '/dashboard',
       done: true,
     },
+    ...(showLocationsStep
+      ? ([
+          {
+            id: 'add-locations',
+            label: 'Add your locations',
+            description: 'Add each location so you can assign menus and staff per location.',
+            cta: 'Add Locations',
+            href: '/locations',
+            done: false,
+          },
+        ] as Step[])
+      : []),
     {
       id: 'add-category',
       label: 'Add your first category',
@@ -191,17 +210,30 @@ export default function AIAssistantPanel({
     return FULL_STEPS.map((s) => (s.id === ALWAYS_DONE_ID ? { ...s, done: true } : s));
   });
 
-  // Re-sync server-driven steps whenever flags change
+  // Re-sync steps whenever server flags or visibility of locations step changes
   useEffect(() => {
-    setSteps((prev) =>
-      prev.map((s) => {
+    setSteps(() => {
+      // Read local completion for non-server-driven steps
+      const doneMap = new Map<string, boolean>();
+      try {
+        const raw = localStorage.getItem('ai-setup-steps');
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed)) {
+            for (const s of parsed) {
+              if (s && typeof s.id === 'string') doneMap.set(s.id, !!s.done);
+            }
+          }
+        }
+      } catch {}
+      return FULL_STEPS.map((s) => {
         if (s.id === ALWAYS_DONE_ID) return { ...s, done: true };
         if (s.id === 'add-category') return { ...s, done: serverHasCategory };
         if (s.id === 'add-menu-item') return { ...s, done: serverHasMenuItem };
-        return s;
-      })
-    );
-  }, [serverHasCategory, serverHasMenuItem]);
+        return { ...s, done: doneMap.has(s.id) ? !!doneMap.get(s.id) : s.done };
+      });
+    });
+  }, [showLocationsStep, serverHasCategory, serverHasMenuItem]); // re-evaluate when visibility or server flags change
 
   // Expanded management: top-most unchecked auto-expands by default,
   // but the user can collapse it. When the first incomplete step changes,
@@ -219,6 +251,20 @@ export default function AIAssistantPanel({
   }, [firstIncompleteId, lastAutoExpandedId]);
 
   const allDone = steps.length > 0 && steps.every((s) => s.done);
+
+  // Auto-close when all steps become done while the panel is open
+  const prevAllDoneRef = useRef<boolean>(allDone);
+  useEffect(() => {
+    if (!open) {
+      prevAllDoneRef.current = allDone;
+      return;
+    }
+    if (allDone && !prevAllDoneRef.current) {
+      const t = setTimeout(() => onClose?.(), 200);
+      return () => clearTimeout(t);
+    }
+    prevAllDoneRef.current = allDone;
+  }, [allDone, open, onClose]);
 
   // Persist only id/done pairs
   useEffect(() => {
@@ -294,12 +340,14 @@ export default function AIAssistantPanel({
                   const isAlwaysDone = step.id === ALWAYS_DONE_ID;
                   const isServerDriven = SERVER_DRIVEN_IDS.has(step.id);
 
-                  // Build CTA target; add query param for add-category/add-menu-item to auto-open dialogs
+                  // Build CTA target; add query param for specific steps to auto-open dialogs
                   const href =
                     step.id === 'add-category' && step.href
                       ? `${step.href}?new=category`
                       : step.id === 'add-menu-item' && step.href
                       ? `${step.href}?new=product`
+                      : step.id === 'add-locations' && step.href
+                      ? `${step.href}?new=location`
                       : step.href;
 
                   return (
@@ -363,7 +411,9 @@ export default function AIAssistantPanel({
                             <p className="text-[12px] text-slate-600">{step.description}</p>
                             <div className="mt-3">
                               {href ? (
-                                step.id === 'add-category' || step.id === 'add-menu-item' ? (
+                                step.id === 'add-category' ||
+                                step.id === 'add-menu-item' ||
+                                step.id === 'add-locations' ? (
                                   <Link
                                     to={href}
                                     className={`inline-flex items-center gap-1 rounded-md border border-[#e5e5e5] bg-white px-3 py-1.5 text-[12px] font-medium ${

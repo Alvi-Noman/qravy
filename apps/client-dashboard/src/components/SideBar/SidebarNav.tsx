@@ -13,6 +13,7 @@ const sections: {
       { name: 'Service Requests', to: '/service-requests' },
       { name: 'Menu Items', to: '/menu-items' },
       { name: 'Categories', to: '/categories' },
+      { name: 'Locations', to: '/locations' }, // NEW
     ],
   },
   {

@@ -1,4 +1,3 @@
-// services/auth-service/src/validation/schemas.ts
 /**
  * Validation schemas for auth-service
  */
@@ -139,4 +138,15 @@ export const categorySchema = z.object({
 
 export const categoryUpdateSchema = z.object({
   name: z.string().min(1, 'Name is required'),
+});
+
+/**
+ * Restaurant onboarding: just restaurantType, country, address, and the mode.
+ * No quantity is collected or required here.
+ */
+export const restaurantOnboardingSchema = z.object({
+  restaurantType: z.string().min(1, 'restaurantType is required'),
+  country: z.string().min(1, 'country is required'),
+  address: z.string().min(1, 'address is required'),
+  locationMode: z.enum(['single', 'multiple']).optional(),
 });

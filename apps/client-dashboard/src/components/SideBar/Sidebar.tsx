@@ -31,7 +31,8 @@ type Section = {
   items: NavItem[];
 };
 
-type Branch = { id: string; name: string };
+// ✅ Renamed to avoid conflict with the built-in browser Location type
+type StoreLocation = { id: string; name: string };
 
 export default function Sidebar(): JSX.Element {
   const sections: Section[] = [
@@ -46,7 +47,7 @@ export default function Sidebar(): JSX.Element {
         { name: 'Digital Menu', to: '/digital-menu', icon: DocumentTextIcon },
         { name: 'Offers', to: '/offers', icon: GiftIcon },
         { name: 'Customers', to: '/customers', icon: UserGroupIcon },
-        { name: 'Branches', to: '/branches', icon: BuildingStorefrontIcon },
+        { name: 'Locations', to: '/locations', icon: BuildingStorefrontIcon },
         { name: 'Qravy Store', to: '/qravy-store', icon: GlobeAltIcon },
       ],
     },
@@ -59,7 +60,6 @@ export default function Sidebar(): JSX.Element {
     },
   ];
 
-  // Selected: neutral white card with subtle ring (non-bluish)
   const linkClass = (isActive: boolean): string =>
     `group flex items-center gap-3 rounded-md px-3 py-2.5 text-[14px] transition ${
       isActive
@@ -67,20 +67,20 @@ export default function Sidebar(): JSX.Element {
         : 'text-slate-700 hover:bg-slate-50 hover:text-slate-900'
     }`;
 
-  const branches: Branch[] =
-    JSON.parse(localStorage.getItem('branches:list') || 'null') ||
-    [{ id: 'main', name: 'Main Branch' }];
+  const locations: StoreLocation[] =
+    JSON.parse(localStorage.getItem('locations:list') || 'null') ||
+    [{ id: 'main', name: 'Main Location' }];
 
-  const [activeBranchId, setActiveBranchId] = useState<string>(() => {
-    return localStorage.getItem('branches:activeId') || branches[0]?.id || '';
+  const [activeLocationId, setActiveLocationId] = useState<string>(() => {
+    return localStorage.getItem('locations:activeId') || locations[0]?.id || '';
   });
 
   useEffect(() => {
-    localStorage.setItem('branches:activeId', activeBranchId);
-  }, [activeBranchId]);
+    localStorage.setItem('locations:activeId', activeLocationId);
+  }, [activeLocationId]);
 
-  const activeBranch = branches.find((b) => b.id === activeBranchId);
-  const displayName = activeBranch?.name || 'All Branches';
+  const activeLocation = locations.find((b) => b.id === activeLocationId);
+  const displayName = activeLocation?.name || 'All Locations';
 
   return (
     <aside className="flex h-full w-64 flex-col bg-[#f5f5f5] px-4 py-4">
@@ -91,12 +91,12 @@ export default function Sidebar(): JSX.Element {
         </span>
       </div>
 
-      {/* Branch selector */}
+      {/* Location selector */}
       <div className="mt-7 mb-6">
-        <SidebarBranchSelect
-          branches={branches}
-          value={activeBranchId}
-          onChange={setActiveBranchId}
+        <SidebarLocationSelect
+          locations={locations}
+          value={activeLocationId}
+          onChange={setActiveLocationId}
           displayName={displayName}
         />
       </div>
@@ -112,7 +112,11 @@ export default function Sidebar(): JSX.Element {
                 const Icon = item.icon;
                 return (
                   <li key={item.to}>
-                    <NavLink to={item.to} end={item.end} className={({ isActive }) => linkClass(isActive)}>
+                    <NavLink
+                      to={item.to}
+                      end={item.end}
+                      className={({ isActive }) => linkClass(isActive)}
+                    >
                       <Icon
                         className="h-5 w-5 text-slate-600 group-[aria-current=page]:text-slate-700"
                         aria-hidden="true"
@@ -130,13 +134,13 @@ export default function Sidebar(): JSX.Element {
   );
 }
 
-function SidebarBranchSelect({
-  branches,
+function SidebarLocationSelect({
+  locations,
   value,
   onChange,
   displayName,
 }: {
-  branches: Branch[];
+  locations: StoreLocation[];
   value: string;
   onChange: (id: string) => void;
   displayName: string;
@@ -160,7 +164,7 @@ function SidebarBranchSelect({
     };
   }, []);
 
-  const filtered = useMemo(() => branches, [branches]);
+  const filtered = useMemo(() => locations, [locations]);
   const isAllSelected = value === '';
 
   return (
@@ -168,7 +172,7 @@ function SidebarBranchSelect({
       <button
         type="button"
         aria-expanded={open}
-        onClick={() => setOpen((v: boolean) => !v)}
+        onClick={() => setOpen((v) => !v)}
         className="flex w-full items-center justify-between rounded-md border border-[#dbdbdb] bg-[#fcfcfc] px-3 py-2.5 text-left text-[14px] text-slate-700 transition-colors hover:bg-[#f6f6f6]"
       >
         <span className="flex min-w-0 items-center gap-3">
@@ -190,22 +194,22 @@ function SidebarBranchSelect({
             transition={{ duration: 0.15, ease: 'easeOut' }}
             className="absolute left-0 right-0 top-full z-50 mt-2 overflow-hidden rounded-lg border border-[#ececec] bg-white shadow-lg"
           >
-            {/* Header: "Branches" left, Manage button right */}
+            {/* Header */}
             <div className="flex items-center justify-between border-b border-slate-100 px-3 py-2">
-              <div className="text-[13px] font-medium text-slate-700">Branches</div>
+              <div className="text-[13px] font-medium text-slate-700">Locations</div>
               <Link
-                to="/branches"
+                to="/locations"
                 onClick={() => setOpen(false)}
                 className="inline-flex h-8 items-center gap-1.5 rounded-md border border-[#dbdbdb] bg-white px-2.5 text-[12px] font-medium text-slate-700 hover:bg-[#f3f4f6]"
-                aria-label="Manage branches"
-                title="Manage branches"
+                aria-label="Manage locations"
+                title="Manage locations"
               >
                 <Cog6ToothIcon className="h-4 w-4" />
                 <span>Manage</span>
               </Link>
             </div>
 
-            {/* Options — no extra gap (like before) and no border-radius on items */}
+            {/* Options */}
             <ul role="menu" className="max-h-72 overflow-y-auto py-1">
               <li key="all">
                 <button
@@ -222,7 +226,7 @@ function SidebarBranchSelect({
                 >
                   <span className="flex items-center gap-2">
                     <MapPinIcon className="h-5 w-5 text-slate-600" />
-                    All Branches
+                    All locations
                   </span>
                   {isAllSelected ? (
                     <span className="inline-flex items-center rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-600">
@@ -262,7 +266,7 @@ function SidebarBranchSelect({
                 );
               })}
               {filtered.length === 0 && (
-                <li className="px-3 py-2 text-[13px] text-slate-500">No branches found</li>
+                <li className="px-3 py-2 text-[13px] text-slate-500">No locations found</li>
               )}
             </ul>
           </motion.div>

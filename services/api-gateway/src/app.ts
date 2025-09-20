@@ -44,9 +44,8 @@ app.use(express.json({ limit: '2mb' }));
 // Targets from .env
 const AUTH_TARGET = process.env.AUTH_SERVICE_URL || 'http://auth-service:3001';
 
-// Auth-service proxy: forwards /api/v1/auth/* to auth-service
-app.use(
-  '/api/v1/auth',
+// Helper: proxy with JSON body forwarding and basic error logging
+const jsonProxyToAuth = () =>
   createProxyMiddleware({
     target: AUTH_TARGET,
     changeOrigin: true,
@@ -54,7 +53,7 @@ app.use(
     ws: false,
     cookieDomainRewrite: 'localhost',
     onProxyReq: (proxyReq: ClientRequest, req: Request & { body?: unknown }) => {
-      // Forward JSON body (only for methods that can have a body)
+      // Forward JSON body for methods that can have a body
       const method = (req.method || 'GET').toUpperCase();
       if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) return;
       if (!req.body || !Object.keys(req.body as object).length) return;
@@ -74,16 +73,23 @@ app.use(
         (res as Response).status(502).json({ message: 'Bad gateway (auth-service unavailable)' });
       }
     },
-  })
-);
+  });
 
-// Uploads proxy (your existing module)
+// Uploads proxy (mount this BEFORE the catch-all /api/v1 proxy)
 registerUploadsProxy(app);
+
+// Proxies to auth-service
+// 1) Explicit important paths
+app.use('/api/v1/auth', jsonProxyToAuth());
+app.use('/api/v1/locations', jsonProxyToAuth());
+
+// 2) Catch-all for any other /api/v1/* endpoints served by auth-service
+app.use('/api/v1', jsonProxyToAuth());
 
 // Health
 app.get('/health', (_req: Request, res: Response) => res.status(200).json({ status: 'ok' }));
 
-// Dev 404 tracer for unhandled API routes
+// Dev 404 tracer for unhandled API routes (outside /api/v1)
 if (process.env.NODE_ENV !== 'production') {
   app.use('/api', (req: Request, res: Response) => {
     logger.warn(`[GATEWAY 404] ${req.method} ${req.originalUrl}`);

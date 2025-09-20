@@ -104,6 +104,16 @@ export function toTenantDTO(doc: TenantDoc): v1.TenantDTO {
         }
       : undefined,
 
+    // NEW: expose restaurantInfo if present (only locationMode)
+    restaurantInfo: doc.restaurantInfo
+      ? {
+          restaurantType: doc.restaurantInfo.restaurantType,
+          country: doc.restaurantInfo.country,
+          address: doc.restaurantInfo.address,
+          locationMode: doc.restaurantInfo.locationMode,
+        }
+      : undefined,
+
     // optional cancellation metadata
     cancelRequestedAt: doc.cancelRequestedAt ? doc.cancelRequestedAt.toISOString() : null,
     cancelEffectiveAt: doc.cancelEffectiveAt ? doc.cancelEffectiveAt.toISOString() : null,

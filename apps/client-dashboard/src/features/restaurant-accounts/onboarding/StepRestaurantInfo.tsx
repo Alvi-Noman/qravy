@@ -43,6 +43,9 @@ export default function StepRestaurantInfo({ value, onChange, onNext }: Props) {
   const [countryQuery, setCountryQuery] = useState('');
   const countryRef = useRef<HTMLDivElement | null>(null);
 
+  // Do NOT default; leave undefined until user picks one
+  const locationMode = value.locationMode;
+
   const filteredCountries = useMemo(() => {
     const q = countryQuery.trim().toLowerCase();
     if (!q) return COUNTRIES;
@@ -87,6 +90,7 @@ export default function StepRestaurantInfo({ value, onChange, onNext }: Props) {
     if (!value.country.trim()) return setError('Please select your country.');
     if (!value.address.trim()) return setError('Please enter your address.');
 
+    // Send as-is; locationMode may be undefined if not selected.
     await api.post('/api/v1/auth/tenants/onboarding-step', {
       step: 'restaurant',
       data: value,
@@ -227,6 +231,48 @@ export default function StepRestaurantInfo({ value, onChange, onNext }: Props) {
             </motion.div>
           )}
         </AnimatePresence>
+      </div>
+
+      {/* Multiple locations question (no counts here) */}
+      <div className="w-full mb-4" role="radiogroup" aria-labelledby="location-mode-label">
+        <label id="location-mode-label" className="block text-base text-[#2e2e30] mb-1">
+          Do you have multiple restaurant locations?
+        </label>
+        <div className="mt-2 flex flex-wrap gap-3">
+          <label
+            className={[
+              'inline-flex items-center gap-2 cursor-pointer rounded-md border px-3 py-2 transition-colors',
+              locationMode === 'single' ? 'border-[#2e2e30] bg-[#efeff2]' : 'border-[#cecece] hover:border-[#b0b0b5]'
+            ].join(' ')}
+          >
+            <input
+              type="radio"
+              name="location-mode"
+              value="single"
+              className="sr-only"
+              checked={locationMode === 'single'}
+              onChange={() => { onChange({ ...value, locationMode: 'single' }); setError(null); }}
+            />
+            <span className="text-sm text-[#2e2e30]">Single location</span>
+          </label>
+
+          <label
+            className={[
+              'inline-flex items-center gap-2 cursor-pointer rounded-md border px-3 py-2 transition-colors',
+              locationMode === 'multiple' ? 'border-[#2e2e30] bg-[#efeff2]' : 'border-[#cecece] hover:border-[#b0b0b5]'
+            ].join(' ')}
+          >
+            <input
+              type="radio"
+              name="location-mode"
+              value="multiple"
+              className="sr-only"
+              checked={locationMode === 'multiple'}
+              onChange={() => { onChange({ ...value, locationMode: 'multiple' }); setError(null); }}
+            />
+            <span className="text-sm text-[#2e2e30]">Multiple locations</span>
+          </label>
+        </div>
       </div>
 
       <div className="w-full mb-4">

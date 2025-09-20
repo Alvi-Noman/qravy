@@ -8,7 +8,7 @@ export default function SidebarSkeleton(): JSX.Element {
         <div className="h-8 w-28 rounded bg-slate-200" />
       </div>
 
-      {/* Branch selector */}
+      {/* Location selector */}
       <div className="mt-7 mb-6">
         <div className="flex w-full items-center justify-between rounded-md border border-[#dbdbdb] bg-[#fcfcfc] px-3 py-2.5">
           <span className="flex min-w-0 items-center gap-3">

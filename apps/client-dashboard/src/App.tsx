@@ -17,6 +17,7 @@ const Dashboard = lazy(() => import('./pages/Dashboard'));
 const Orders = lazy(() => import('./pages/Orders'));
 const Categories = lazy(() => import('./pages/Categories'));
 const MenuItemsPage = lazy(() => import('./pages/MenuItems'));
+const LocationsPage = lazy(() => import('./pages/Locations')); 
 const Login = lazy(() => import('./pages/Login'));
 const Signup = lazy(() => import('./pages/Signup'));
 const MagicLink = lazy(() => import('./pages/MagicLink'));
@@ -163,11 +164,20 @@ function App() {
               }
             />
 
+            {/* Real Locations route (replaces stub) */}
+            <Route
+              path="/locations"
+              element={
+                <Suspense fallback={null}>
+                  <LocationsPage />
+                </Suspense>
+              }
+            />
+
             {/* Add stubs for routes so the layout persists (no blank pages) */}
             <Route path="/service-requests" element={<div className="p-6 text-sm text-slate-700">Service Requests coming soon</div>} />
             <Route path="/offers" element={<div className="p-6 text-sm text-slate-700">Offers coming soon</div>} />
             <Route path="/customers" element={<div className="p-6 text-sm text-slate-700">Customers coming soon</div>} />
-            <Route path="/branches" element={<div className="p-6 text-sm text-slate-700">Branches coming soon</div>} />
             <Route path="/digital-menu" element={<div className="p-6 text-sm text-slate-700">Digital Menu coming soon</div>} />
             <Route path="/qravy-store" element={<div className="p-6 text-sm text-slate-700">Qravy Store coming soon</div>} />
           </Route>
@@ -343,6 +353,7 @@ function App() {
           <Route path="/dashboard/menu-items" element={<Navigate to="/menu-items" replace />} />
           <Route path="/dashboard/categories" element={<Navigate to="/categories" replace />} />
           <Route path="/dashboard/categories/manage" element={<Navigate to="/categories/manage" replace />} />
+          <Route path="/dashboard/locations" element={<Navigate to="/locations" replace />} /> {/* NEW */}
           <Route path="/dashboard/settings" element={<Navigate to="/settings" replace />} />
 
           {/* Auth + public routes */}
