@@ -95,22 +95,24 @@ export function toTenantDTO(doc: TenantDoc): v1.TenantDTO {
     // subscription status
     subscriptionStatus: doc.subscriptionStatus ?? 'none',
 
-    // ADD: persisted onboarding progress (checklist etc.)
+    // Server-computed onboarding progress
     onboardingProgress: doc.onboardingProgress
       ? {
           hasCategory: !!doc.onboardingProgress.hasCategory,
           hasMenuItem: !!doc.onboardingProgress.hasMenuItem,
+          hasLocations: !!doc.onboardingProgress.hasLocations, // ADDED
           checklist: doc.onboardingProgress.checklist,
         }
       : undefined,
 
-    // NEW: expose restaurantInfo if present (only locationMode)
+    // Restaurant info
     restaurantInfo: doc.restaurantInfo
       ? {
           restaurantType: doc.restaurantInfo.restaurantType,
           country: doc.restaurantInfo.country,
           address: doc.restaurantInfo.address,
           locationMode: doc.restaurantInfo.locationMode,
+          hasLocations: !!doc.restaurantInfo.hasLocations, // ADDED
         }
       : undefined,
 

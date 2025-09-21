@@ -8,15 +8,49 @@ import {
   type LocationInput,
 } from '../../api/locations';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useAuthContext } from '../../context/AuthContext';
+import { toastSuccess, toastError } from '../Toaster';
+import type { TenantDTO } from '../../../../../packages/shared/src/types/v1';
 
+const STEP_KEY = 'ai-setup-steps';
 const QK = ['locations'] as const;
 
-export function useLocations() {
-  const qc = useQueryClient();
+function broadcast() {
+  try {
+    localStorage.setItem('locations:updated', String(Date.now()));
+  } catch {}
+}
 
-  const locationsQuery = useQuery<Location[], Error>({
-    queryKey: QK,
-    queryFn: fetchLocations,
+function setLocalStep(id: string, done: boolean) {
+  try {
+    const raw = localStorage.getItem(STEP_KEY);
+    const list: Array<{ id: string; done: boolean }> = raw ? JSON.parse(raw) : [];
+    const map = new Map(list.map((s) => [s.id, s.done]));
+    map.set(id, done);
+    const compact = Array.from(map.entries()).map(([sid, d]) => ({ id: sid, done: d }));
+    localStorage.setItem(STEP_KEY, JSON.stringify(compact));
+  } catch {}
+}
+
+function errMsg(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  if (typeof err === 'string') return err;
+  try {
+    return JSON.stringify(err);
+  } catch {
+    return 'Something went wrong';
+  }
+}
+
+export function useLocations() {
+  const { token } = useAuthContext();
+  const queryClient = useQueryClient();
+  const enabled = !!token;
+
+  const locationsQuery = useQuery<Location[]>({
+    queryKey: [QK[0], token],
+    queryFn: fetchLocations, // axios client carries Authorization
+    enabled,
     retry: 1,
   });
 
@@ -28,40 +62,92 @@ export function useLocations() {
   const createMut = useMutation({
     mutationFn: (values: LocationInput) => createLocation(values),
     onSuccess: (created) => {
-      qc.setQueryData<Location[]>(QK, (prev) => (Array.isArray(prev) ? [...prev, created] : [created]));
-      localStorage.setItem('locations:updated', String(Date.now()));
+      // Update list
+      queryClient.setQueryData<Location[]>([QK[0], token], (prev) =>
+        Array.isArray(prev) ? [...prev, created] : [created]
+      );
+
+      // Optimistically set hasLocations = true on tenant (preserving other flags)
+      queryClient.setQueryData<TenantDTO>(['tenant', token], (prev) =>
+        prev
+          ? {
+              ...prev,
+              onboardingProgress: {
+                hasCategory: prev.onboardingProgress?.hasCategory ?? false,
+                hasMenuItem: prev.onboardingProgress?.hasMenuItem ?? false,
+                hasLocations: true,
+                checklist: prev.onboardingProgress?.checklist,
+              },
+            }
+          : prev
+      );
+
+      // Instant visual: mark the local checklist step as done
+      setLocalStep('add-locations', true);
+
+      // Pull server truth
+      queryClient.invalidateQueries({ queryKey: ['tenant', token] });
+
+      toastSuccess('Location added');
+      broadcast();
     },
     onError: (err: unknown) => {
-      console.error('[locations] create error:', err);
-      qc.invalidateQueries({ queryKey: QK });
+      toastError(`Failed to add location: ${errMsg(err)}`);
+      queryClient.invalidateQueries({ queryKey: [QK[0], token] });
     },
   });
 
   const updateMut = useMutation({
     mutationFn: (payload: { id: string } & LocationInput) => updateLocation(payload.id, payload),
     onSuccess: (updated) => {
-      qc.setQueryData<Location[]>(QK, (prev) =>
-        (Array.isArray(prev) ? prev.map((l) => (l.id === updated.id ? updated : l)) : [updated])
+      queryClient.setQueryData<Location[]>([QK[0], token], (prev) =>
+        (prev ?? []).map((l) => (l.id === updated.id ? updated : l))
       );
-      localStorage.setItem('locations:updated', String(Date.now()));
+      toastSuccess('Location updated');
+      broadcast();
     },
     onError: (err: unknown) => {
-      console.error('[locations] update error:', err);
-      qc.invalidateQueries({ queryKey: QK });
+      toastError(`Failed to update location: ${errMsg(err)}`);
+      queryClient.invalidateQueries({ queryKey: [QK[0], token] });
     },
   });
 
   const deleteMut = useMutation({
     mutationFn: (payload: { id: string }) => deleteLocation(payload.id),
     onSuccess: (res) => {
-      qc.setQueryData<Location[]>(QK, (prev) =>
-        (Array.isArray(prev) ? prev.filter((l) => l.id !== res.id) : [])
-      );
-      localStorage.setItem('locations:updated', String(Date.now()));
+      // Remove from list
+      const next = queryClient.setQueryData<Location[]>([QK[0], token], (prev) =>
+        (prev ?? []).filter((l) => l.id !== res.id)
+      ) as Location[] | undefined;
+
+      // If none left, optimistically flip hasLocations = false and local step off
+      const noneLeft = !next || next.length === 0;
+      if (noneLeft) {
+        queryClient.setQueryData<TenantDTO>(['tenant', token], (prev) =>
+          prev
+            ? {
+                ...prev,
+                onboardingProgress: {
+                  hasCategory: prev.onboardingProgress?.hasCategory ?? false,
+                  hasMenuItem: prev.onboardingProgress?.hasMenuItem ?? false,
+                  hasLocations: false,
+                  checklist: prev.onboardingProgress?.checklist,
+                },
+              }
+            : prev
+        );
+        setLocalStep('add-locations', false);
+      }
+
+      // Pull server truth
+      queryClient.invalidateQueries({ queryKey: ['tenant', token] });
+
+      toastSuccess('Location deleted');
+      broadcast();
     },
     onError: (err: unknown) => {
-      console.error('[locations] delete error:', err);
-      qc.invalidateQueries({ queryKey: QK });
+      toastError(`Failed to delete location: ${errMsg(err)}`);
+      queryClient.invalidateQueries({ queryKey: [QK[0], token] });
     },
   });
 

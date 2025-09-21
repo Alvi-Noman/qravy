@@ -1,24 +1,3 @@
-/**
- * AIAssistantPanel.tsx
- *
- * Reads server-computed progress from tenant.onboardingProgress:
- * - created-account: always done (disabled)
- * - add-category: done if tenant.onboardingProgress.hasCategory (disabled)
- * - add-menu-item: done if tenant.onboardingProgress.hasMenuItem (disabled)
- * Other steps remain locally tracked (localStorage) and toggleable.
- *
- * Also listens to the categories/menu-items query caches to flip "add-category"
- * and "add-menu-item" instantly right after create (no page refresh needed).
- *
- * Additionally: the top-most unchecked step auto-expands by default,
- * but can be collapsed by the user. When the first incomplete step changes
- * (because previous becomes done), the new first incomplete will auto-expand.
- *
- * NEW:
- * - If tenant.restaurantInfo.locationMode === 'multiple', show "Add Locations"
- *   step above "Add Category". This step is locally tracked (toggleable).
- */
-
 import { useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
@@ -46,58 +25,86 @@ type Step = {
 export default function AIAssistantPanel({
   open,
   onClose,
+  onRequestOpen, // when provided, panel can ask parent to open itself
   width = 380,
 }: {
   open: boolean;
   onClose?: () => void;
+  onRequestOpen?: () => void;
   width?: number;
 }) {
   const ref = useRef<HTMLDivElement>(null);
 
   const ALWAYS_DONE_ID = 'created-account';
-  const SERVER_DRIVEN_IDS = new Set(['add-category', 'add-menu-item']);
+  // Treat locations as server-driven (cannot be manually toggled)
+  const SERVER_DRIVEN_IDS = new Set(['add-category', 'add-menu-item', 'add-locations']);
 
   // Server progress
   const { data: tenant, isFetching } = useTenant();
   const serverHasCategoryRaw = !!tenant?.onboardingProgress?.hasCategory;
   const serverHasMenuItemRaw = !!tenant?.onboardingProgress?.hasMenuItem;
+  const serverHasLocationsRaw = !!tenant?.onboardingProgress?.hasLocations;
 
   // Whether to show "Add Locations" step (only when multiple locations selected in onboarding)
   const showLocationsStep = tenant?.restaurantInfo?.locationMode === 'multiple';
 
-  // Sticky flags to avoid flicker while refetching
-  const [hasCategory, setHasCategory] = useState<boolean>(serverHasCategoryRaw);
-  const [hasMenuItem, setHasMenuItem] = useState<boolean>(serverHasMenuItemRaw);
-
-  useEffect(() => {
-    if (isFetching) {
-      // While fetching, allow only upgrades to true (prevent momentary false)
-      if (serverHasCategoryRaw) setHasCategory(true);
-      if (serverHasMenuItemRaw) setHasMenuItem(true);
-    } else {
-      // When settled, adopt server truth
-      setHasCategory(serverHasCategoryRaw);
-      setHasMenuItem(serverHasMenuItemRaw);
-    }
-  }, [isFetching, serverHasCategoryRaw, serverHasMenuItemRaw]);
-
-  // Also listen to categories/menu-items query caches for instant flip
+  // Query client + token (used to read caches)
   const queryClient = useQueryClient();
   const { token } = useAuthContext();
 
+  // Helper: do we have any locations in cache right now?
+  const hasLocationsFromCache = (() => {
+    try {
+      const locs = queryClient.getQueryData(['locations', token]) as unknown[] | undefined;
+      return Array.isArray(locs) && locs.length > 0;
+    } catch {
+      return false;
+    }
+  })();
+
+  // Sticky flags to avoid flicker while refetching
+  const [hasCategory, setHasCategory] = useState<boolean>(serverHasCategoryRaw);
+  const [hasMenuItem, setHasMenuItem] = useState<boolean>(serverHasMenuItemRaw);
+  // Initialize locations from server OR cache so it renders as done immediately after creation
+  const [hasLocations, setHasLocations] = useState<boolean>(serverHasLocationsRaw || hasLocationsFromCache);
+
+  useEffect(() => {
+    // Always allow upgrades to true; only downgrade when server explicitly says false and cache has none
+    const cacheHasLocs = (() => {
+      try {
+        const locs = queryClient.getQueryData(['locations', token]) as unknown[] | undefined;
+        return Array.isArray(locs) && locs.length > 0;
+      } catch {
+        return false;
+      }
+    })();
+
+    if (isFetching) {
+      if (serverHasCategoryRaw) setHasCategory(true);
+      if (serverHasMenuItemRaw) setHasMenuItem(true);
+      if (serverHasLocationsRaw || cacheHasLocs) setHasLocations(true);
+    } else {
+      // Adopt server truth but never downgrade below what cache proves
+      setHasCategory(serverHasCategoryRaw);
+      setHasMenuItem(serverHasMenuItemRaw);
+      setHasLocations(serverHasLocationsRaw || cacheHasLocs);
+    }
+  }, [isFetching, serverHasCategoryRaw, serverHasMenuItemRaw, serverHasLocationsRaw, queryClient, token]);
+
+  // Also listen to categories/menu-items/locations query caches for instant upgrade
   useEffect(() => {
     const updateFromCache = () => {
       try {
         const cats = queryClient.getQueryData(['categories', token]) as unknown[] | undefined;
-        if (Array.isArray(cats) && cats.length > 0) {
-          setHasCategory(true); // only upgrade via cache; downgrades handled by server
-        }
+        if (Array.isArray(cats) && cats.length > 0) setHasCategory(true);
       } catch {}
       try {
         const items = queryClient.getQueryData(['menu-items', token]) as unknown[] | undefined;
-        if (Array.isArray(items) && items.length > 0) {
-          setHasMenuItem(true); // only upgrade via cache; downgrades handled by server
-        }
+        if (Array.isArray(items) && items.length > 0) setHasMenuItem(true);
+      } catch {}
+      try {
+        const locs = queryClient.getQueryData(['locations', token]) as unknown[] | undefined;
+        if (Array.isArray(locs) && locs.length > 0) setHasLocations(true);
       } catch {}
     };
 
@@ -107,7 +114,7 @@ export default function AIAssistantPanel({
       const q: any = (event as any)?.query;
       if (!q || !Array.isArray(q.queryKey)) return;
       const [key, kToken] = q.queryKey;
-      if ((key === 'categories' || key === 'menu-items') && kToken === token) {
+      if ((key === 'categories' || key === 'menu-items' || key === 'locations') && kToken === token) {
         updateFromCache();
       }
     });
@@ -116,10 +123,6 @@ export default function AIAssistantPanel({
       if (typeof unsub === 'function') unsub();
     };
   }, [queryClient, token]);
-
-  // Effective server-driven flags used by the UI
-  const serverHasCategory = hasCategory;
-  const serverHasMenuItem = hasMenuItem;
 
   // Build steps (conditionally include "Add Locations" above "Add Category")
   const FULL_STEPS: Step[] = [
@@ -199,8 +202,9 @@ export default function AIAssistantPanel({
           return FULL_STEPS.map((s) => {
             let done = s.done;
             if (s.id === ALWAYS_DONE_ID) done = true;
-            else if (s.id === 'add-category') done = serverHasCategory;
-            else if (s.id === 'add-menu-item') done = serverHasMenuItem;
+            else if (s.id === 'add-category') done = hasCategory;
+            else if (s.id === 'add-menu-item') done = hasMenuItem;
+            else if (s.id === 'add-locations') done = hasLocations;
             else done = doneMap.has(s.id) ? !!doneMap.get(s.id) : s.done;
             return { ...s, done };
           });
@@ -228,16 +232,15 @@ export default function AIAssistantPanel({
       } catch {}
       return FULL_STEPS.map((s) => {
         if (s.id === ALWAYS_DONE_ID) return { ...s, done: true };
-        if (s.id === 'add-category') return { ...s, done: serverHasCategory };
-        if (s.id === 'add-menu-item') return { ...s, done: serverHasMenuItem };
+        if (s.id === 'add-category') return { ...s, done: hasCategory };
+        if (s.id === 'add-menu-item') return { ...s, done: hasMenuItem };
+        if (s.id === 'add-locations') return { ...s, done: hasLocations };
         return { ...s, done: doneMap.has(s.id) ? !!doneMap.get(s.id) : s.done };
       });
     });
-  }, [showLocationsStep, serverHasCategory, serverHasMenuItem]); // re-evaluate when visibility or server flags change
+  }, [showLocationsStep, hasCategory, hasMenuItem, hasLocations]);
 
-  // Expanded management: top-most unchecked auto-expands by default,
-  // but the user can collapse it. When the first incomplete step changes,
-  // auto-expand the new one exactly once.
+  // Expanded management
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [lastAutoExpandedId, setLastAutoExpandedId] = useState<string | null>(null);
 
@@ -251,6 +254,20 @@ export default function AIAssistantPanel({
   }, [firstIncompleteId, lastAutoExpandedId]);
 
   const allDone = steps.length > 0 && steps.every((s) => s.done);
+
+  // Delay auto-open by 1.5s after mount, then allow auto-open while closed when steps are incomplete
+  const [autoOpenReady, setAutoOpenReady] = useState(false);
+  useEffect(() => {
+    const t = setTimeout(() => setAutoOpenReady(true), 1500);
+    return () => clearTimeout(t);
+  }, []);
+
+  useEffect(() => {
+    const anyIncomplete = steps.some((s) => !s.done);
+    if (autoOpenReady && !open && anyIncomplete) {
+      onRequestOpen?.();
+    }
+  }, [open, steps, onRequestOpen, autoOpenReady]);
 
   // Auto-close when all steps become done while the panel is open
   const prevAllDoneRef = useRef<boolean>(allDone);
@@ -266,7 +283,7 @@ export default function AIAssistantPanel({
     prevAllDoneRef.current = allDone;
   }, [allDone, open, onClose]);
 
-  // Persist only id/done pairs
+  // Persist only id/done pairs (server-driven steps persist server/cached truth)
   useEffect(() => {
     const compact = steps.map((s) => ({
       id: s.id,
@@ -274,13 +291,15 @@ export default function AIAssistantPanel({
         s.id === ALWAYS_DONE_ID
           ? true
           : s.id === 'add-category'
-          ? serverHasCategory
+          ? hasCategory
           : s.id === 'add-menu-item'
-          ? serverHasMenuItem
+          ? hasMenuItem
+          : s.id === 'add-locations'
+          ? hasLocations
           : s.done,
     }));
     localStorage.setItem('ai-setup-steps', JSON.stringify(compact));
-  }, [steps, serverHasCategory, serverHasMenuItem]);
+  }, [steps, hasCategory, hasMenuItem, hasLocations]);
 
   // ESC to close
   useEffect(() => {
@@ -292,7 +311,7 @@ export default function AIAssistantPanel({
 
   const toggleDone = (id: string) => {
     if (id === ALWAYS_DONE_ID) return;
-    if (SERVER_DRIVEN_IDS.has(id)) return;
+    if (SERVER_DRIVEN_IDS.has(id)) return; // prevent manual toggle for server-driven steps (includes locations)
     setSteps((prev) => prev.map((s) => (s.id === id ? { ...s, done: !s.done } : s)));
   };
 

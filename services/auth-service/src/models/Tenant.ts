@@ -17,6 +17,7 @@ export interface TenantDoc {
     country: string;
     address: string;
     locationMode?: 'single' | 'multiple';
+    hasLocations?: boolean; // ADD
   };
 
   planInfo?: {
@@ -55,6 +56,7 @@ export interface TenantDoc {
   onboardingProgress?: {
     hasCategory?: boolean;
     hasMenuItem?: boolean;
+    hasLocations?: boolean; 
     checklist?: Record<string, boolean>;
   };
 

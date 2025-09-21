@@ -109,6 +109,7 @@ export interface BillingProfileDTO {
 export interface TenantOnboardingProgressDTO {
   hasCategory: boolean;
   hasMenuItem: boolean;
+  hasLocations?: boolean; 
   checklist?: Record<string, boolean>;
 }
 
@@ -118,6 +119,7 @@ export interface RestaurantInfoDTO {
   country: string;
   address: string;
   locationMode?: 'single' | 'multiple';
+  hasLocations?: boolean; 
 }
 
 export interface TenantDTO {

@@ -36,9 +36,11 @@ export default function LocationFormDialog({
     mode: 'onChange',
   });
 
+  // IMPORTANT: reset only when the dialog opens, not on every render of initialValues
   useEffect(() => {
     if (open) reset(initialValues);
-  }, [open, initialValues, reset]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
 
   const validateName = (value: string) => {
     const trimmed = value.trim();
@@ -69,7 +71,10 @@ export default function LocationFormDialog({
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
         >
+          {/* Backdrop */}
           <div className="absolute inset-0 bg-black/30" onClick={onClose} />
+
+          {/* Modal */}
           <motion.form
             onSubmit={handleSubmit(submit)}
             initial={{ scale: 0.98, opacity: 0, y: 8 }}

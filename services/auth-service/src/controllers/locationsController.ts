@@ -1,3 +1,4 @@
+// services/auth-service/src/controllers/locationsController.ts
 import type { Request, Response } from 'express';
 import { ObjectId } from 'mongodb';
 import { z } from 'zod';
@@ -63,6 +64,20 @@ export async function createLocation(req: Request, res: Response) {
   };
   try {
     await col().insertOne(doc);
+
+    // Update tenant flags: hasLocations (onboarding + restaurantInfo)
+    const tcol = client.db('authDB').collection('tenants');
+    await tcol.updateOne(
+      { _id: new ObjectId(tenantId) },
+      {
+        $set: {
+          'onboardingProgress.hasLocations': true,
+          'restaurantInfo.hasLocations': true,
+          updatedAt: now,
+        },
+      }
+    );
+
     return res.ok({ item: toDTO(doc) }, 201);
   } catch (e: any) {
     if (e?.code === 11000) return res.fail(409, 'Location name already exists');
@@ -112,5 +127,21 @@ export async function deleteLocation(req: Request, res: Response) {
   );
 
   if (!doc) return res.fail(404, 'Location not found');
+
+  // After deletion, recompute presence of any locations to update tenant flags
+  const remaining = await col().countDocuments({ tenantId: new ObjectId(tenantId) });
+  const hasAny = remaining > 0;
+  const tcol = client.db('authDB').collection('tenants');
+  await tcol.updateOne(
+    { _id: new ObjectId(tenantId) },
+    {
+      $set: {
+        'onboardingProgress.hasLocations': hasAny,
+        'restaurantInfo.hasLocations': hasAny,
+        updatedAt: new Date(),
+      },
+    }
+  );
+
   return res.ok({ item: { id: (doc._id as ObjectId).toString() } });
 }

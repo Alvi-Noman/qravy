@@ -1,3 +1,4 @@
+// apps/client-dashboard/src/layout/DashboardLayout.tsx
 import { useState, useEffect, useRef, lazy, Suspense } from 'react';
 import { Outlet, Navigate, useLocation } from 'react-router-dom';
 import TopBar from '../components/topbar/TopBar';
@@ -75,6 +76,7 @@ function SidebarFallback() {
 
 export default function DashboardLayout(): JSX.Element {
   const [aiOpen, setAiOpen] = useState(false);
+  const [aiDismissed, setAiDismissed] = useState(false); // remember user closed the panel
   const { user, loading, token } = useAuthContext();
   const location = useLocation();
   const queryClient = useQueryClient();
@@ -108,16 +110,21 @@ export default function DashboardLayout(): JSX.Element {
     }
   }
 
-  // Auto-open AI panel for new users (based on server progress)
+  // Auto-open AI panel for new users (based on server progress) after 1.5s.
   useEffect(() => {
-    if (tenantLoading) return;
+    if (tenantLoading || aiDismissed) return; // don't reopen if user dismissed
     const hasCat = !!tenant?.onboardingProgress?.hasCategory;
     const hasItem = !!tenant?.onboardingProgress?.hasMenuItem;
     if (!hasCat || !hasItem) {
       const t = setTimeout(() => setAiOpen(true), 1500);
       return () => clearTimeout(t);
     }
-  }, [tenantLoading, tenant?.onboardingProgress?.hasCategory, tenant?.onboardingProgress?.hasMenuItem]);
+  }, [
+    tenantLoading,
+    tenant?.onboardingProgress?.hasCategory,
+    tenant?.onboardingProgress?.hasMenuItem,
+    aiDismissed,
+  ]);
 
   // Derived flags
   const isSubscribed = (tenant?.subscriptionStatus ?? '').toLowerCase() === 'active';
@@ -187,14 +194,19 @@ export default function DashboardLayout(): JSX.Element {
                 className="flex h-full min-h-0 flex-col overflow-y-auto overscroll-contain"
                 style={{ scrollbarGutter: 'stable' }}
               >
-                <TopBar onAIClick={() => setAiOpen(true)} />
+                <TopBar onAIClick={() => { setAiDismissed(false); setAiOpen(true); }} />
                 <div className="flex-1 min-h-0 min-w-0">
                   <Outlet />
                 </div>
               </div>
 
               {/* Right */}
-              <AIAssistantPanel open={aiOpen} onClose={() => setAiOpen(false)} width={AI_PANEL_WIDTH} />
+              <AIAssistantPanel
+                open={aiOpen}
+                onClose={() => { setAiDismissed(true); setAiOpen(false); }}
+                onRequestOpen={() => { if (!aiDismissed) setAiOpen(true); }} // allow auto-open unless dismissed
+                width={AI_PANEL_WIDTH}
+              />
             </div>
           </div>
         </main>

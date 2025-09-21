@@ -180,6 +180,48 @@ export async function getMyTenant(req: Request, res: Response, next: NextFunctio
     const tenant = await tenantsCol().findOne({ _id: new ObjectId(tenantId) });
     if (!tenant) return res.fail(404, 'Tenant not found');
 
+    // BACKFILL: keep hasLocations flags consistent with actual locations count
+    try {
+      const locCount = await client
+        .db('authDB')
+        .collection('locations')
+        .countDocuments({ tenantId: new ObjectId(tenantId) });
+
+      const hasAny = locCount > 0;
+      let needsWrite = false;
+
+      if ((tenant.onboardingProgress?.hasLocations ?? false) !== hasAny) {
+        tenant.onboardingProgress = {
+          ...(tenant.onboardingProgress ?? {}),
+          hasLocations: hasAny,
+        };
+        needsWrite = true;
+      }
+
+      if ((tenant.restaurantInfo?.hasLocations ?? false) !== hasAny) {
+        tenant.restaurantInfo = {
+          ...(tenant.restaurantInfo ?? ({} as any)),
+          hasLocations: hasAny,
+        } as TenantDoc['restaurantInfo'];
+        needsWrite = true;
+      }
+
+      if (needsWrite) {
+        await tenantsCol().updateOne(
+          { _id: new ObjectId(tenantId) },
+          {
+            $set: {
+              'onboardingProgress.hasLocations': hasAny,
+              'restaurantInfo.hasLocations': hasAny,
+              updatedAt: new Date(),
+            },
+          }
+        );
+      }
+    } catch {
+      // ignore backfill errors to avoid blocking getMyTenant
+    }
+
     // Backfills
     const updates: Partial<TenantDoc> = {};
     const start = tenant.trialStartedAt ?? tenant.createdAt ?? new Date();
