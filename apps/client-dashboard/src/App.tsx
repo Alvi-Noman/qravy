@@ -41,6 +41,7 @@ const SettingsAccessibility = lazy(() => import('./pages/settings/Accessibility'
 const SettingsLabs = lazy(() => import('./pages/settings/Labs'));
 const SettingsPrivacy = lazy(() => import('./pages/settings/Privacy'));
 const SettingsAudit = lazy(() => import('./pages/settings/Audit'));
+const SettingsAccess = lazy(() => import('./pages/settings/RestaurantAccess')); // NEW
 
 // Plan & Billing
 const SettingsPlan = lazy(() => import('./pages/settings/Plan'));
@@ -288,6 +289,14 @@ function App() {
               }
             />
             <Route
+              path="access"
+              element={
+                <Suspense fallback={null}>
+                  <SettingsAccess />
+                </Suspense>
+              }
+            />
+            <Route
               path="localization"
               element={
                 <Suspense fallback={null}>
@@ -341,6 +350,7 @@ function App() {
             <Route path="Integrations" element={<Navigate to="integrations" replace />} />
             <Route path="Developer" element={<Navigate to="developer" replace />} />
             <Route path="Team" element={<Navigate to="team" replace />} />
+            <Route path="Access" element={<Navigate to="access" replace />} /> {/* NEW */}
             <Route path="Localization" element={<Navigate to="localization" replace />} />
             <Route path="Accessibility" element={<Navigate to="accessibility" replace />} />
             <Route path="Labs" element={<Navigate to="labs" replace />} />

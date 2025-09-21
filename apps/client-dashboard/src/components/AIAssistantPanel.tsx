@@ -179,6 +179,14 @@ export default function AIAssistantPanel({
       done: false,
     },
     {
+      id: 'setup-access',
+      label: 'Set Up Restaurant Access',
+      description: 'Give your team access so they can manage your menu and orders from each location.',
+      cta: 'Set Up Access',
+      href: '/settings/team',
+      done: false,
+    },
+    {
       id: 'custom-domain',
       label: 'Customize your Domain',
       description: 'Connect a custom subdomain (e.g., menu.yourbrand.com) for your menu.',

@@ -10,6 +10,7 @@ export default function SettingsOverview(): JSX.Element {
     { title: 'Integrations', desc: 'Stripe, Slack, Google Analytics.', to: '/settings/integrations' },
     { title: 'API & Webhooks', desc: 'Keys, rotate & test webhooks.', to: '/settings/developer' },
     { title: 'Team & Roles', desc: 'Invite users and assign roles.', to: '/settings/team' },
+    { title: 'Restaurant Access', desc: 'One email login. Bind devices to locations automatically.', to: '/settings/access' }, // NEW
     { title: 'Localization', desc: 'Currency, timezone & formats.', to: '/settings/localization' },
     { title: 'Accessibility', desc: 'Motion, contrast & font scale.', to: '/settings/accessibility' },
     { title: 'Labs', desc: 'Experimental features toggle.', to: '/settings/labs' },

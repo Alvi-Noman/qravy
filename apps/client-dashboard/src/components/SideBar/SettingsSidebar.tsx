@@ -15,9 +15,9 @@ import {
   BeakerIcon,
   FingerPrintIcon,
   QueueListIcon,
-  // NEW
   CurrencyDollarIcon,
   CreditCardIcon,
+  HomeModernIcon, // NEW: for Restaurant Access
 } from '@heroicons/react/24/outline';
 
 type NavItem = {
@@ -39,7 +39,11 @@ const items: NavItem[] = [
   { name: 'Notifications', to: '/settings/Notifications', icon: BellIcon },
   { name: 'Integrations', to: '/settings/Integrations', icon: LinkIcon },
   { name: 'API & Webhooks', to: '/settings/Developer', icon: KeyIcon },
+
+  // Access section
   { name: 'Team & Roles', to: '/settings/Team', icon: UserGroupIcon },
+  { name: 'Restaurant Access', to: '/settings/Access', icon: HomeModernIcon }, // NEW
+
   { name: 'Localization & Regional', to: '/settings/Localization', icon: LanguageIcon },
   { name: 'Accessibility', to: '/settings/Accessibility', icon: EyeDropperIcon },
   { name: 'Experimental / Labs', to: '/settings/Labs', icon: BeakerIcon },
