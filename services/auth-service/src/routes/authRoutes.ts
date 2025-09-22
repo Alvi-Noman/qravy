@@ -32,13 +32,15 @@ import {
 } from '../validation/schemas.js';
 import { ObjectId } from 'mongodb';
 import { client } from '../db.js';
-import type { UserDoc } from '../models/User.js';
 
 const router: Router = Router();
 
 // Magic link
 router.post('/magic-link', validateRequest(magicLinkSchema), sendMagicLink);
+// Keep existing path…
 router.get('/magic-link/verify', verifyMagicLink);
+// …and add alias for clients calling /verify-magic-link
+router.get('/verify-magic-link', verifyMagicLink);
 
 // Tokens/logout
 router.options('/refresh-token', (req, res) => {
@@ -88,20 +90,30 @@ router.get('/sessions', authenticateJWT, async (req: Request, res: Response) => 
   return res.ok({ sessions });
 });
 
-// Me (derived isOnboarded)
+// Me (derived isOnboarded) - uses DB tenantId or falls back to JWT tenantId
 router.get('/me', authenticateJWT, async (req: Request, res: Response) => {
   const userId = req.user?.id;
   if (!userId) return res.fail(401, 'Unauthorized');
 
   const collection = await getUsersCollection();
-  const user = await collection.findOne({ _id: new ObjectId(userId) }) as UserDoc | null;
+  const user = await collection.findOne({ _id: new ObjectId(userId) });
   if (!user) return res.status(404).json({ message: 'User not found' });
 
-  let isOnboarded = false;
-  let tenantId: string | null = null;
+  let effectiveTenantId: ObjectId | null = null;
+
   if (user.tenantId) {
-    tenantId = user.tenantId.toString();
-    const tenant = await client.db('authDB').collection('tenants').findOne({ _id: user.tenantId });
+    effectiveTenantId = user.tenantId;
+  } else if (req.user?.tenantId && ObjectId.isValid(req.user.tenantId)) {
+    // fallback for central-email flow using tenant-bound JWT
+    effectiveTenantId = new ObjectId(req.user.tenantId);
+  }
+
+  let isOnboarded = false;
+  let tenantIdStr: string | null = null;
+
+  if (effectiveTenantId) {
+    tenantIdStr = effectiveTenantId.toString();
+    const tenant = await client.db('authDB').collection('tenants').findOne({ _id: effectiveTenantId });
     if (tenant?.onboardingCompleted) isOnboarded = true;
   }
 
@@ -110,7 +122,7 @@ router.get('/me', authenticateJWT, async (req: Request, res: Response) => {
       id: user._id?.toString() || '',
       email: user.email,
       isVerified: !!user.isVerified,
-      tenantId,
+      tenantId: tenantIdStr,
       isOnboarded,
     },
   });

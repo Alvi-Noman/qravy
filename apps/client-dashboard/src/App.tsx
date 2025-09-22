@@ -26,6 +26,7 @@ const HomeRedirect = lazy(() => import('./pages/HomeRedirect'));
 const CreateRestaurant = lazy(() => import('./pages/CreateRestaurant'));
 const Onboarding = lazy(() => import('./pages/Onboarding'));
 const ManageCategories = lazy(() => import('./pages/ManageCategories'));
+const SelectLocation = lazy(() => import('./pages/SelectLocation')); // ADD
 
 // Settings pages
 const SettingsOverview = lazy(() => import('./pages/settings/index'));
@@ -397,6 +398,17 @@ function App() {
               <Suspense fallback={<LoadingScreen />}>
                 <Verify />
               </Suspense>
+            }
+          />
+
+          <Route
+            path="/access/select-location"
+            element={
+              <RequireAuth>
+                <Suspense fallback={<LoadingScreen />}>
+                  <SelectLocation />
+                </Suspense>
+              </RequireAuth>
             }
           />
 

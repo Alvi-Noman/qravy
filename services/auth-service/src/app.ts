@@ -16,6 +16,7 @@ import menuRoutes from './routes/menuRoutes.js';
 import tenantRoutes from './routes/tenantRoutes.js';
 import userRoutes from './routes/userRoutes.js';
 import locationRoutes from './routes/locationRoutes.js';
+import accessRoutes from './routes/accessRoutes.js'; // ADD
 
 import logger from './utils/logger.js';
 import { responseFormatter } from './middleware/response.js';
@@ -62,6 +63,7 @@ app.use('/api/v1/menu', menuRoutes);
 app.use('/api/v1/tenant', tenantRoutes);
 app.use('/api/v1/users', userRoutes);
 app.use('/api/v1/locations', locationRoutes);
+app.use('/api/v1/access', accessRoutes); // ADD
 
 /**
  * …and add legacy aliases under /api/v1/auth for backward compatibility

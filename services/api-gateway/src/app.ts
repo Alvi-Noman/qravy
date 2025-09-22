@@ -82,6 +82,7 @@ registerUploadsProxy(app);
 // 1) Explicit important paths
 app.use('/api/v1/auth', jsonProxyToAuth());
 app.use('/api/v1/locations', jsonProxyToAuth());
+app.use('/api/v1/access', jsonProxyToAuth()); // ADD
 
 // 2) Catch-all for any other /api/v1/* endpoints served by auth-service
 app.use('/api/v1', jsonProxyToAuth());

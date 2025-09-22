@@ -20,6 +20,18 @@ export interface TenantDoc {
     hasLocations?: boolean; // ADD
   };
 
+  // Access settings for central email/device enrollment
+  accessSettings?: {
+    centralEmail: string;
+    emailVerified: boolean;
+    enrollment: {
+      requireOtpForNewDevice: boolean;
+      requireManagerPinOnAssign: boolean;
+      sessionDays: number;
+      autoApproveAssignment: boolean;
+    };
+  };
+
   planInfo?: {
     planId: string;
   };

@@ -159,3 +159,32 @@ export interface TenantDTO {
   createdAt: string;
   updatedAt: string;
 }
+
+/* Added for access feature */
+export interface AccessSettingsDTO {
+  centralEmail: string;
+  emailVerified: boolean;
+  enrollment: {
+    requireOtpForNewDevice: boolean;
+    requireManagerPinOnAssign: boolean;
+    sessionDays: number;
+    autoApproveAssignment: boolean;
+  };
+}
+
+export type DeviceStatus = 'active' | 'pending' | 'revoked';
+export type DeviceTrust = 'high' | 'medium' | 'low';
+
+export interface DeviceDTO {
+  id: string;
+  label?: string | null;
+  os?: string | null;
+  browser?: string | null;
+  lastSeenAt: string;
+  createdAt: string;
+  locationId: string | null;
+  locationName?: string | null;
+  status: DeviceStatus;
+  trust: DeviceTrust;
+  ipCountry?: string | null;
+}

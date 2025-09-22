@@ -21,7 +21,7 @@ declare global {
   }
 }
 
-async function resolveTenantAndRole(userId: string, headerTenantId?: string) {
+async function resolveTenantAndRole(userId: string, hintTenantId?: string) {
   const db = client.db('authDB');
   const users = db.collection<UserDoc>('users');
   const memberships = db.collection<MembershipDoc>('memberships');
@@ -32,8 +32,8 @@ async function resolveTenantAndRole(userId: string, headerTenantId?: string) {
   const user = await users.findOne({ _id: new ObjectId(userId) });
 
   const tryTenantIds: ObjectId[] = [];
-  if (headerTenantId && ObjectId.isValid(headerTenantId)) {
-    tryTenantIds.push(new ObjectId(headerTenantId));
+  if (hintTenantId && ObjectId.isValid(hintTenantId)) {
+    tryTenantIds.push(new ObjectId(hintTenantId));
   }
   if (user?.tenantId) {
     tryTenantIds.push(user.tenantId);
@@ -73,7 +73,7 @@ export async function authenticateJWT(req: Request, res: Response, next: NextFun
       return;
     }
 
-    const payload = decoded as JwtPayload;
+    const payload = decoded as JwtPayload & { tenantId?: string };
     const id = typeof payload.id === 'string' ? payload.id : undefined;
     const email = typeof payload.email === 'string' ? payload.email : undefined;
 
@@ -83,10 +83,25 @@ export async function authenticateJWT(req: Request, res: Response, next: NextFun
       return;
     }
 
-    const headerTenantId = req.header('x-tenant-id') || undefined;
-    const { tenantId, role } = await resolveTenantAndRole(id, headerTenantId);
+    // Prefer header override, then token tenantId
+    const headerTenantId = (req.header('x-tenant-id') || undefined) as string | undefined;
+    const tokenTenantId = typeof payload.tenantId === 'string' ? payload.tenantId : undefined;
 
-    req.user = { ...payload, id, email, tenantId, role };
+    // Try to resolve via membership; if none, keep the tenantId from token/header (central email flow)
+    const { tenantId: resolvedTenantId, role } = await resolveTenantAndRole(
+      id,
+      headerTenantId || tokenTenantId
+    );
+
+    const finalTenantId = resolvedTenantId || tokenTenantId || headerTenantId;
+
+    req.user = {
+      ...(payload as any),
+      id,
+      email,
+      tenantId: finalTenantId,
+      role,
+    };
     next();
   } catch {
     logger.warn(`[AUTH] Invalid or expired token for ${req.method} ${req.originalUrl}`);

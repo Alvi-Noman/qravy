@@ -175,12 +175,26 @@ export const verifyMagicLink = async (req: Request, res: Response, next: NextFun
       maxAge: 30 * 24 * 60 * 60 * 1000,
     });
 
+    // Compute tenantId and isOnboarded from tenant doc (not from user.isOnboarded)
+    let tenantIdStr: string | null = null;
+    let isOnboarded = false;
+    if (user.tenantId) {
+      tenantIdStr = (user.tenantId as ObjectId).toString();
+      const tenant = await client
+        .db('authDB')
+        .collection('tenants')
+        .findOne({ _id: user.tenantId as ObjectId });
+      isOnboarded = Boolean(tenant?.onboardingCompleted);
+    }
+
     res.ok({
       token: accessToken,
       user: {
         id: (user._id as ObjectId).toString(),
         email: user.email,
         isVerified: true,
+        tenantId: tenantIdStr,
+        isOnboarded,
       },
     });
   } catch (error) {
@@ -235,27 +249,31 @@ export const refreshToken = async (req: Request, res: Response, next: NextFuncti
       return;
     }
 
+    const tenantIdFromRefresh: string | undefined =
+      typeof (payload as any).tenantId === 'string' ? (payload as any).tenantId : undefined;
+
     const collection = await getUsersCollection();
-    const user = await collection.findOne({ _id: new ObjectId(payload.id) });
+    const user = await collection.findOne({ _id: new ObjectId((payload as any).id) });
     if (!user) {
       res.fail(401, 'User not found');
       return;
     }
 
+    // Recognize only stored refresh tokens
     const cleanedTokens = cleanupTokens(user.refreshTokens);
-
     const providedTokenHash = hashToken(token);
     const existingTokenIndex = cleanedTokens.findIndex((t) => t.tokenHash === providedTokenHash);
     if (existingTokenIndex === -1) {
       res.fail(401, 'Refresh token not recognized');
       return;
     }
-
     cleanedTokens.splice(existingTokenIndex, 1);
 
+    // Issue a new refresh token and keep tenantId sticky
     const newRefreshToken = generateRefreshToken({
       id: (user._id as ObjectId).toString(),
       email: user.email,
+      ...(tenantIdFromRefresh ? { tenantId: tenantIdFromRefresh } : {}),
     });
     const tokenId = crypto.randomUUID();
     const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
@@ -279,8 +297,13 @@ export const refreshToken = async (req: Request, res: Response, next: NextFuncti
       { $set: { refreshTokens: cleanedTokens } }
     );
 
+    // Access token also carries tenantId from refresh payload (fallback to DB if set)
     const newAccessToken = jwt.sign(
-      { id: (user._id as ObjectId).toString(), email: user.email },
+      {
+        id: (user._id as ObjectId).toString(),
+        email: user.email,
+        tenantId: tenantIdFromRefresh ?? (user.tenantId ? (user.tenantId as ObjectId).toString() : undefined),
+      },
       process.env.JWT_SECRET!,
       { expiresIn: '15m' }
     );
@@ -327,7 +350,7 @@ export const logout = async (req: Request, res: Response, next: NextFunction): P
     }
 
     const collection = await getUsersCollection();
-    const user = await collection.findOne({ _id: new ObjectId(payload.id) });
+    const user = await collection.findOne({ _id: new ObjectId((payload as any).id) });
     if (!user) {
       res.clearCookie('refreshToken');
       res.ok({ message: 'Logged out' });
