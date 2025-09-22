@@ -15,6 +15,10 @@ import LocationsToolbarSkeleton from '../components/locations/LocationsToolbarSk
 import LocationListSkeleton from '../components/locations/LocationListSkeleton';
 import LocationFormDialog, { type LocationFormValues } from '../components/locations/LocationFormDialog';
 import { MapPinIcon } from '@heroicons/react/24/outline';
+import { getDefaultLocationId, setDefaultLocationId } from '../api/locations';
+import DefaultLocationDialog from '../components/locations/DefaultLocationDialog';
+import RemoveDefaultDialog from '../components/locations/RemoveDefaultDialog';
+import api from '../api/auth';
 
 const LocationList = lazy(() => import('../components/locations/LocationList'));
 const DeleteLocationDialog = lazy(
@@ -23,6 +27,7 @@ const DeleteLocationDialog = lazy(
 
 const HIGHLIGHT_HOLD_MS = 2500;
 const SHRINK_DISTANCE = 80;
+const DEFAULT_LOCATION_KEY = 'defaultLocationId';
 
 function getScrollContainer(el: HTMLElement): HTMLElement | Window {
   let node: HTMLElement | null = el.parentElement;
@@ -89,6 +94,9 @@ export default function LocationsPage() {
   useEffect(() => {
     const onStorage = (e: StorageEvent) => {
       if (e.key === 'locations:updated') locationsQuery.refetch();
+      if (e.key === DEFAULT_LOCATION_KEY) {
+        setDefaultLocationIdState(e.newValue || null);
+      }
     };
     window.addEventListener('storage', onStorage);
     return () => window.removeEventListener('storage', onStorage);
@@ -145,34 +153,139 @@ export default function LocationsPage() {
     };
   }, []);
 
-  // Derived view
- // Derived view
-const viewLocations: Location[] = useMemo(() => {
-  const base: Location[] = Array.isArray(sourceLocations) ? sourceLocations : [];
-  let list: Location[] = base.slice();
+  // Default (pinned) location state
+  const [defaultLocationId, setDefaultLocationIdState] = useState<string | null>(() => {
+    try {
+      return localStorage.getItem(DEFAULT_LOCATION_KEY) || null;
+    } catch {
+      return null;
+    }
+  });
+  const [defaultFetched, setDefaultFetched] = useState(false);
 
-  const qnorm = q.trim().toLowerCase();
-  if (qnorm) {
-    list = list.filter((l: Location) => {
-      const name = l.name?.toLowerCase() ?? '';
-      const address = l.address?.toLowerCase() ?? '';
-      const zip = l.zip?.toLowerCase() ?? '';
-      const country = l.country?.toLowerCase() ?? '';
-      return (
-        name.includes(qnorm) ||
-        address.includes(qnorm) ||
-        zip.includes(qnorm) ||
-        country.includes(qnorm)
+  // Set default dialog state
+  const [setOpen, setSetOpen] = useState(false);
+  const [setName, setSetName] = useState('');
+  const [setId, setSetId] = useState<string | null>(null);
+  const [setSaving, setSetSaving] = useState(false);
+
+  // Remove default dialog state
+  const [removeOpen, setRemoveOpen] = useState(false);
+  const [removeName, setRemoveName] = useState('');
+  const [removeSaving, setRemoveSaving] = useState(false);
+
+  // Fetch default location from backend on mount (no fallback to earliest)
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      try {
+        const defId = await getDefaultLocationId();
+        if (!mounted) return;
+        if (defId) {
+          setDefaultLocationIdState(defId);
+          try {
+            localStorage.setItem(DEFAULT_LOCATION_KEY, defId);
+          } catch {}
+        }
+      } catch {
+        // ignore; keep local cached default (can be null)
+      } finally {
+        setDefaultFetched(true);
+      }
+    })();
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  // Toggle handler for pin button
+  const handleToggleDefault = (loc: Location) => {
+    if (!defaultLocationId) {
+      // No default yet -> propose to set this as default
+      setSetId(loc.id);
+      setSetName(loc.name);
+      setSetOpen(true);
+      return;
+    }
+    if (String(defaultLocationId) === String(loc.id)) {
+      // Clicking the pinned one -> remove default
+      setRemoveName(loc.name);
+      setRemoveOpen(true);
+      return;
+    }
+    // Switching from one default to another -> confirm set
+    setSetId(loc.id);
+    setSetName(loc.name);
+    setSetOpen(true);
+  };
+
+  // Confirm set default
+  const confirmSetDefault = async () => {
+    if (!setId) return;
+    setSetSaving(true);
+    try {
+      await setDefaultLocationId(setId);
+      setDefaultLocationIdState(setId);
+      try {
+        localStorage.setItem(DEFAULT_LOCATION_KEY, setId);
+        localStorage.setItem('locations:activeId', setId);
+        localStorage.setItem('locations:updated', Date.now().toString());
+      } catch {}
+      setSetOpen(false);
+      window.location.replace('/dashboard');
+    } catch {
+      // leave dialog open
+    } finally {
+      setSetSaving(false);
+    }
+  };
+
+  // Confirm remove default
+  const confirmRemoveDefault = async () => {
+    setRemoveSaving(true);
+    try {
+      await api.delete('/api/v1/locations/default');
+      setDefaultLocationIdState(null);
+      try {
+        localStorage.removeItem(DEFAULT_LOCATION_KEY);
+        localStorage.setItem('locations:activeId', ''); // All locations
+        localStorage.setItem('locations:updated', Date.now().toString());
+      } catch {}
+      setRemoveOpen(false);
+    } catch {
+      // keep dialog open
+    } finally {
+      setRemoveSaving(false);
+    }
+  };
+
+  // Derived view
+  const viewLocations: Location[] = useMemo(() => {
+    const base: Location[] = Array.isArray(sourceLocations) ? sourceLocations : [];
+    let list: Location[] = base.slice();
+
+    const qnorm = q.trim().toLowerCase();
+    if (qnorm) {
+      list = list.filter((l: Location) => {
+        const name = l.name?.toLowerCase() ?? '';
+        const address = l.address?.toLowerCase() ?? '';
+        const zip = l.zip?.toLowerCase() ?? '';
+        const country = l.country?.toLowerCase() ?? '';
+        return (
+          name.includes(qnorm) ||
+          address.includes(qnorm) ||
+          zip.includes(qnorm) ||
+          country.includes(qnorm)
+        );
+      });
+    }
+    if (sortBy === 'name-asc') list.sort((a, b) => a.name.localeCompare(b.name));
+    if (sortBy === 'created-desc')
+      list.sort(
+        (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
       );
-    });
-  }
-  if (sortBy === 'name-asc') list.sort((a, b) => a.name.localeCompare(b.name));
-  if (sortBy === 'created-desc')
-    list.sort(
-      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-    );
-  return list;
-}, [sourceLocations, q, sortBy]);
+    return list;
+  }, [sourceLocations, q, sortBy]);
 
   // Scroll-to + highlight
   useEffect(() => {
@@ -312,7 +425,6 @@ const viewLocations: Location[] = useMemo(() => {
                     <button
                       onClick={() => {
                         const sp = new URLSearchParams(searchParams);
-                        sp.set('new', 'location');
                         setSearchParams(sp, { replace: false });
                         setOpenForm(true);
                       }}
@@ -326,6 +438,8 @@ const viewLocations: Location[] = useMemo(() => {
                     <LocationList
                       locations={viewLocations}
                       highlightId={highlightId}
+                      defaultLocationId={defaultLocationId}
+                      onToggleDefault={handleToggleDefault}
                       onEdit={(l: Location) => {
                         setEditing(l);
                         setOpenForm(true);
@@ -383,6 +497,7 @@ const viewLocations: Location[] = useMemo(() => {
                     sp.delete('new');
                     setSearchParams(sp, { replace: true });
                     setPendingHighlightId(created.id);
+                    // Pins are optional; do not auto-pin the first location
                   }
                 }}
               />
@@ -396,9 +511,22 @@ const viewLocations: Location[] = useMemo(() => {
                   onClose={() => setOpenDelete(false)}
                   onConfirm={() => {
                     if (!deleteTarget) return;
+                    const deletingId = deleteTarget.id;
                     deleteMut.mutate(
-                      { id: deleteTarget.id },
-                      { onSuccess: () => setOpenDelete(false) }
+                      { id: deletingId },
+                      {
+                        onSuccess: () => {
+                          setOpenDelete(false);
+                          if (defaultLocationId === deletingId) {
+                            setDefaultLocationIdState(null);
+                            try {
+                              localStorage.removeItem(DEFAULT_LOCATION_KEY);
+                              localStorage.setItem('locations:activeId', ''); // All locations after deletion
+                              localStorage.setItem('locations:updated', Date.now().toString());
+                            } catch {}
+                          }
+                        },
+                      }
                     );
                   }}
                 />
@@ -407,6 +535,24 @@ const viewLocations: Location[] = useMemo(() => {
           )}
         </div>
       </div>
+
+      {/* Set default dialog */}
+      <DefaultLocationDialog
+        open={setOpen}
+        locationName={setName}
+        isSubmitting={setSaving}
+        onCancel={() => setSetOpen(false)}
+        onConfirm={confirmSetDefault}
+      />
+
+      {/* Remove default dialog */}
+      <RemoveDefaultDialog
+        open={removeOpen}
+        locationName={removeName}
+        isSubmitting={removeSaving}
+        onCancel={() => setRemoveOpen(false)}
+        onConfirm={confirmRemoveDefault}
+      />
     </div>
   );
 }

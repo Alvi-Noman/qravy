@@ -15,7 +15,10 @@ export interface UserDoc {
   isVerified?: boolean;
 
   tenantId?: ObjectId;
-  isOnboarded?: boolean;  
+  isOnboarded?: boolean;
+
+  // Per-user default location (admin/owner preference)
+  defaultLocationId?: ObjectId;
 
   refreshTokens?: RefreshToken[];
   failedLoginAttempts?: number;

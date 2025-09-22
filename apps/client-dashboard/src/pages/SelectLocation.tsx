@@ -70,6 +70,11 @@ export default function SelectLocation() {
         browser,
         deviceKey: getOrCreateDeviceKey(),
       });
+
+      // Persist default branch so the sidebar shows it by default
+      localStorage.setItem('muv_device_location', selected);
+      localStorage.setItem('locations:activeId', selected);
+
       navigate('/dashboard', { replace: true });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);

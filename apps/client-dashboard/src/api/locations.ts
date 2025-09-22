@@ -49,3 +49,18 @@ export async function deleteLocation(id: string): Promise<{ id: string }> {
   });
   return unwrap<{ id: string }>(res.data);
 }
+
+/* New: per-user default location (admin/owner) */
+export async function getDefaultLocationId(): Promise<string | null> {
+  const res = await api.get('/api/v1/locations/default', { withCredentials: true });
+  return (res.data?.defaultLocationId as string | null) ?? null;
+}
+
+export async function setDefaultLocationId(locationId: string): Promise<string> {
+  const res = await api.put(
+    '/api/v1/locations/default',
+    { locationId },
+    { withCredentials: true }
+  );
+  return res.data?.defaultLocationId as string;
+}

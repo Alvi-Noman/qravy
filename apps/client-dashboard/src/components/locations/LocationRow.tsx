@@ -6,17 +6,23 @@ import {
   PencilSquareIcon,
   TrashIcon,
   EllipsisHorizontalIcon,
+  MapPinIcon as MapPinOutline,
 } from '@heroicons/react/24/outline';
+import { MapPinIcon as MapPinSolid } from '@heroicons/react/24/solid';
 import type { Location } from '../../api/locations';
 
 export default function LocationRow({
   location,
   isNew = false,
+  isDefault = false,
+  onToggleDefault,
   onEdit,
   onDelete,
 }: {
   location: Location;
   isNew?: boolean;
+  isDefault?: boolean;
+  onToggleDefault: (location: Location) => void;
   onEdit: (location: Location) => void;
   onDelete: (location: Location) => void;
 }) {
@@ -69,6 +75,32 @@ export default function LocationRow({
         transition: 'background-color 700ms ease',
       }}
     >
+      {/* Default pin */}
+      <td className="px-3 py-3 align-middle text-center">
+        <button
+          type="button"
+          aria-pressed={isDefault}
+          aria-label={isDefault ? 'Remove default' : 'Set as default'}
+          onClick={(e) => {
+            e.stopPropagation();
+            // Always delegate to parent; it decides whether to show Set or Remove dialog
+            onToggleDefault(location);
+          }}
+          className={[
+            'inline-flex items-center justify-center rounded p-1.5 transition',
+            'hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-slate-300',
+            isDefault ? 'text-[#111827]' : 'text-slate-400 hover:text-slate-600',
+          ].join(' ')}
+          title={isDefault ? 'Remove default' : 'Set as default'}
+        >
+          {isDefault ? (
+            <MapPinSolid className="h-5 w-5" />
+          ) : (
+            <MapPinOutline className="h-5 w-5" />
+          )}
+        </button>
+      </td>
+
       {/* Name */}
       <td className="px-3 py-3 align-middle">
         <Link
@@ -82,7 +114,7 @@ export default function LocationRow({
         </Link>
       </td>
 
-      {/* Address (truncate to a reasonable length) */}
+      {/* Address */}
       <td className="px-3 py-3 align-middle">
         <div
           className="max-w-[28ch] md:max-w-[40ch] overflow-hidden text-ellipsis whitespace-nowrap text-[#2e2e30]"

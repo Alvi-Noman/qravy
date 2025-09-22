@@ -1,7 +1,6 @@
 import type { Request, Response, NextFunction } from 'express';
 import { client } from '../db.js';
 import { Collection, Db, ObjectId } from 'mongodb';
-import logger from '../utils/logger.js';
 import type { DeviceDoc } from '../models/Device.js';
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
@@ -29,7 +28,6 @@ const DEFAULT_ACCESS_SETTINGS = {
   },
 };
 
-// helpers for refresh token storage
 function hashToken(token: string): string {
   return crypto.createHash('sha256').update(token).digest('hex');
 }
@@ -92,7 +90,6 @@ export const listDevices = async (req: Request, res: Response, next: NextFunctio
       .sort({ updatedAt: -1 })
       .toArray();
 
-    // Map location names in one fetch
     const locIds = Array.from(new Set(list.map((d) => d.locationId).filter(Boolean) as ObjectId[]));
     const locMap =
       locIds.length > 0
@@ -142,8 +139,7 @@ export const registerOrAssignDevice = async (req: Request, res: Response, next: 
     const tenantObjectId = new ObjectId(tenantId);
     const locationObjectId = new ObjectId(locationId);
 
-    const ip =
-      (req.ip as string | undefined) || (req.socket?.remoteAddress as string | undefined) || undefined;
+    const ip = (req.ip as string | undefined) || (req.socket?.remoteAddress as string | undefined) || undefined;
     const ua = (req.headers['user-agent'] as string | undefined) || undefined;
 
     const now = new Date();
@@ -194,25 +190,35 @@ export const registerOrAssignDevice = async (req: Request, res: Response, next: 
 };
 
 /**
- * For magic-link users: list tenants where this email is authorized
- * by matching tenant.accessSettings.centralEmail.
+ * One-time login fast path: look up assignment by deviceKey across tenants.
+ * Returns { found, tenantId, locationId, locationName } only if this email is authorized for that tenant.
  */
-export const listAccessibleWorkspaces = async (
-  req: Request,
-  res: Response,
-  next: NextFunction
-): Promise<void> => {
+export const lookupDeviceByKey = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
+    const deviceKey = String((req.query.deviceKey as string) || '').trim();
     const email = (req.user?.email || '').toLowerCase();
+    if (!deviceKey) return void res.fail(400, 'deviceKey is required');
     if (!email) return void res.fail(401, 'Unauthorized');
 
-    const cursor = tenants().find({ 'accessSettings.centralEmail': email }).project({ name: 1 });
-    const items = (await cursor.toArray()).map((t) => ({
-      id: String(t._id),
-      name: t.name as string,
-    }));
+    const d = await devices().findOne({ deviceKey });
+    if (!d) return void res.ok({ found: false });
 
-    res.ok({ items });
+    const t = await tenants().findOne({ _id: d.tenantId });
+    const central = String((t as any)?.accessSettings?.centralEmail || '').toLowerCase();
+    if (!central || central !== email) return void res.ok({ found: false });
+
+    let locationName: string | null = null;
+    if (d.locationId) {
+      const loc = await locations().findOne({ _id: d.locationId });
+      locationName = (loc?.name as string) || null;
+    }
+
+    return void res.ok({
+      found: true,
+      tenantId: String(d.tenantId),
+      locationId: d.locationId ? String(d.locationId) : null,
+      locationName,
+    });
   } catch (err) {
     next(err);
   }
@@ -236,14 +242,10 @@ export const selectTenant = async (req: Request, res: Response, next: NextFuncti
     const centralEmail = ((t as any)?.accessSettings?.centralEmail || '').toLowerCase();
     if (!centralEmail || centralEmail !== email) return void res.fail(403, 'Not authorized for this tenant');
 
-    // Access token bound to tenant
-    const accessToken = jwt.sign(
-      { id: userId, email, tenantId },
-      process.env.JWT_SECRET as string,
-      { expiresIn: '15m' }
-    );
+    const accessToken = jwt.sign({ id: userId, email, tenantId }, process.env.JWT_SECRET as string, {
+      expiresIn: '15m',
+    });
 
-    // Create a new tenant-bound refresh token, store hash, and set cookie
     const db = getDb();
     const users = db.collection('users');
 
@@ -257,18 +259,9 @@ export const selectTenant = async (req: Request, res: Response, next: NextFuncti
 
     const cleanedTokens = cleanupTokens(user.refreshTokens);
     const userAgent = (req.headers['user-agent'] as string | undefined) || 'unknown';
-    const ip =
-      (req.ip as string | undefined) || (req.socket?.remoteAddress as string | undefined) || 'unknown';
+    const ip = (req.ip as string | undefined) || (req.socket?.remoteAddress as string | undefined) || 'unknown';
 
-    cleanedTokens.push({
-      tokenId,
-      tokenHash,
-      createdAt: new Date(),
-      expiresAt,
-      userAgent,
-      ip,
-    });
-
+    cleanedTokens.push({ tokenId, tokenHash, createdAt: new Date(), expiresAt, userAgent, ip });
     while (cleanedTokens.length > 5) cleanedTokens.shift();
 
     await users.updateOne({ _id: new ObjectId(userId) }, { $set: { refreshTokens: cleanedTokens } });
@@ -286,12 +279,25 @@ export const selectTenant = async (req: Request, res: Response, next: NextFuncti
   }
 };
 
-// Default export to satisfy router imports
 export default {
   getAccessSettings,
   updateAccessSettings,
   listDevices,
   registerOrAssignDevice,
-  listAccessibleWorkspaces,
+  listAccessibleWorkspaces: async (req: Request, res: Response, next: NextFunction) =>
+    listAccessibleWorkspaces(req, res, next),
   selectTenant,
+  lookupDeviceByKey,
 };
+
+async function listAccessibleWorkspaces(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const email = (req.user?.email || '').toLowerCase();
+    if (!email) return void res.fail(401, 'Unauthorized');
+    const cursor = tenants().find({ 'accessSettings.centralEmail': email }).project({ name: 1 });
+    const items = (await cursor.toArray()).map((t) => ({ id: String(t._id), name: t.name as string }));
+    res.ok({ items });
+  } catch (err) {
+    next(err);
+  }
+}

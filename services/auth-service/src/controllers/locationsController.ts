@@ -8,6 +8,9 @@ import type { LocationDoc } from '../models/Location.js';
 function col() {
   return client.db('authDB').collection<LocationDoc>('locations');
 }
+function usersCol() {
+  return client.db('authDB').collection('users');
+}
 
 const createSchema = z.object({
   name: z.string().trim().min(1, 'Name is required'),
@@ -25,6 +28,26 @@ function getTenantId(req: Request): string {
     (req as any).auth?.tenantId;
   if (!t) throw Object.assign(new Error('Unauthorized'), { status: 401 });
   return String(t);
+}
+
+function getUserId(req: Request): string {
+  const u = (req as any).user?.id;
+  if (!u) throw Object.assign(new Error('Unauthorized'), { status: 401 });
+  return String(u);
+}
+
+// New: safely derive the user's ObjectId from several possible fields
+function getUserObjectId(req: Request): ObjectId {
+  const u = (req as any).user || {};
+  const candidates = [u.id, u._id, u.sub, (req as any).userId, (req as any).auth?.userId]
+    .filter(Boolean)
+    .map(String);
+
+  const valid = candidates.find((v) => ObjectId.isValid(v));
+  if (!valid) {
+    throw Object.assign(new Error('Invalid user id'), { status: 401 });
+  }
+  return new ObjectId(valid);
 }
 
 function toDTO(doc: LocationDoc) {
@@ -144,4 +167,62 @@ export async function deleteLocation(req: Request, res: Response) {
   );
 
   return res.ok({ item: { id: (doc._id as ObjectId).toString() } });
+}
+
+/**
+ * Per-user default location (admin/owner). Does not affect other users.
+ */
+export async function getDefaultLocation(req: Request, res: Response) {
+  const tenantId = getTenantId(req);
+  const userObjectId = getUserObjectId(req);
+
+  const user = await usersCol().findOne(
+    { _id: userObjectId },
+    { projection: { defaultLocationId: 1 } as any }
+  );
+
+  let defId: ObjectId | null = (user as any)?.defaultLocationId || null;
+
+  // Validate that the default belongs to this tenant; otherwise discard
+  if (defId) {
+    const exists = await col().findOne({ _id: defId, tenantId: new ObjectId(tenantId) });
+    if (!exists) defId = null;
+  }
+
+  // If none, return null (All locations) — do NOT auto-pick earliest
+  return res.ok({ defaultLocationId: defId ? defId.toHexString() : null });
+}
+
+export async function setDefaultLocation(req: Request, res: Response) {
+  const tenantId = getTenantId(req);
+  const userObjectId = getUserObjectId(req);
+  const { locationId } = (req.body || {}) as { locationId?: string };
+
+  if (!locationId || !ObjectId.isValid(locationId)) {
+    return res.fail(400, 'locationId is required');
+  }
+
+  const exists = await col().findOne({
+    _id: new ObjectId(locationId),
+    tenantId: new ObjectId(tenantId),
+  });
+  if (!exists) return res.fail(404, 'Location not found');
+
+  await usersCol().updateOne(
+    { _id: userObjectId },
+    { $set: { defaultLocationId: new ObjectId(locationId) } }
+  );
+
+  return res.ok({ defaultLocationId: locationId });
+}
+
+/** Clear per-user default location -> next open shows "All locations" */
+export async function clearDefaultLocation(req: Request, res: Response) {
+  const userObjectId = getUserObjectId(req);
+  await usersCol().updateOne(
+    { _id: userObjectId },
+    { $unset: { defaultLocationId: '' } }
+  );
+  // 200 OK for consistency with other controllers (could also be 204)
+  return res.ok({ defaultLocationId: null });
 }

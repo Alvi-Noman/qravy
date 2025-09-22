@@ -4,7 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import api, { verifyMagicLink } from '../api/auth';
 import { useAuthContext } from '../context/AuthContext';
 import AuthErrorScreen from '../components/AuthErrorScreen';
-import { listAccessibleWorkspaces } from '../api/access';
+import { listAccessibleWorkspaces, lookupDeviceAssignment, getOrCreateDeviceKey } from '../api/access';
 
 type AuthUser = {
   id: string;
@@ -46,26 +46,45 @@ export default function MagicLink() {
       login(data.token, data.user);
       setVerifiedUser(data.user);
 
-      // Load workspaces the central email can access
-      listAccessibleWorkspaces()
-        .then((items) => {
+      // Fast path: if this device is already assigned, auto-join and go to dashboard
+      (async () => {
+        try {
+          const lookup = await lookupDeviceAssignment(getOrCreateDeviceKey());
+          if (lookup && 'found' in lookup && lookup.found) {
+            const res = await api.post('/api/v1/access/select-tenant', { tenantId: lookup.tenantId });
+            const nextToken = res.data?.token as string | undefined;
+            if (nextToken) {
+              if (lookup.locationId) {
+                // Persist current branch for default selection in sidebar
+                localStorage.setItem('muv_device_location', lookup.locationId);
+                localStorage.setItem('locations:activeId', lookup.locationId);
+              }
+              await login(nextToken, { ...data.user, tenantId: lookup.tenantId, isOnboarded: true });
+              await reloadUser();
+              navigate('/dashboard', { replace: true });
+              return;
+            }
+          }
+
+          // Otherwise show workspaces (or fallback to owner create/dashboard)
+          const items = await listAccessibleWorkspaces();
           if (!items || items.length === 0) {
             const u = data.user;
             navigate(u.tenantId ? '/dashboard' : '/create-restaurant', { replace: true });
           } else {
             setWorkspaces(items);
           }
-        })
-        .catch(() => {
+        } catch {
           const u = data.user;
           navigate(u.tenantId ? '/dashboard' : '/create-restaurant', { replace: true });
-        });
+        }
+      })();
     }
 
     return () => {
       if (timeoutRef.current) clearTimeout(timeoutRef.current);
     };
-  }, [isSuccess, data, login, navigate]);
+  }, [isSuccess, data, login, reloadUser, navigate]);
 
   const onJoin = async (tenantId: string) => {
     try {

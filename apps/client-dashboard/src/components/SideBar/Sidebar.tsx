@@ -18,21 +18,18 @@ import {
   MapPinIcon,
   Cog6ToothIcon,
 } from '@heroicons/react/24/outline';
+import api from '../../api/auth';
 
-type NavItem = {
-  name: string;
-  to: string;
-  icon: ElementType;
-  end?: boolean;
-};
-
-type Section = {
-  heading: string;
-  items: NavItem[];
-};
-
-// ✅ Renamed to avoid conflict with the built-in browser Location type
+type NavItem = { name: string; to: string; icon: ElementType; end?: boolean };
+type Section = { heading: string; items: NavItem[] };
+// Avoid conflict with window.Location
 type StoreLocation = { id: string; name: string };
+
+const DEFAULT_LOCATION_KEY = 'defaultLocationId';
+const CENTRAL_FLAG_KEY = 'session:central';
+const DEVICE_LOCATION_KEY = 'muv_device_location';
+const LOCATIONS_CACHE_KEY = 'locations:list';
+const ACTIVE_KEY = 'locations:activeId';
 
 export default function Sidebar(): JSX.Element {
   const sections: Section[] = [
@@ -67,31 +64,92 @@ export default function Sidebar(): JSX.Element {
         : 'text-slate-700 hover:bg-slate-50 hover:text-slate-900'
     }`;
 
-  const locations: StoreLocation[] =
-    JSON.parse(localStorage.getItem('locations:list') || 'null') ||
-    [{ id: 'main', name: 'Main Location' }];
-
-  const [activeLocationId, setActiveLocationId] = useState<string>(() => {
-    return localStorage.getItem('locations:activeId') || locations[0]?.id || '';
+  // Load cached list first; refresh names from API
+  const [locations, setLocations] = useState<StoreLocation[]>(() => {
+    try {
+      return JSON.parse(localStorage.getItem(LOCATIONS_CACHE_KEY) || '[]') as StoreLocation[];
+    } catch {
+      return [];
+    }
   });
 
+  const isCentralSession = useMemo(() => localStorage.getItem(CENTRAL_FLAG_KEY) === 'true', []);
+
+  // Initial active:
+  // - central session: device-assigned
+  // - admin/owner: defaultLocationId from localStorage if present; else '' (All locations)
+  const [activeLocationId, setActiveLocationId] = useState<string>(() => {
+    const deviceAssigned = isCentralSession ? localStorage.getItem(DEVICE_LOCATION_KEY) : null;
+    if (deviceAssigned) return deviceAssigned;
+    const savedDefault = !isCentralSession ? localStorage.getItem(DEFAULT_LOCATION_KEY) : null;
+    return savedDefault || '';
+  });
+
+  // Fetch locations; ensure "active" is valid; no fallback to first; default to '' if invalid
   useEffect(() => {
-    localStorage.setItem('locations:activeId', activeLocationId);
+    let mounted = true;
+    (async () => {
+      try {
+        const res = await api.get('/api/v1/locations');
+        const items: StoreLocation[] = res.data?.items || [];
+        if (!mounted) return;
+        setLocations(items);
+        try {
+          localStorage.setItem(LOCATIONS_CACHE_KEY, JSON.stringify(items));
+        } catch {}
+
+        const ids = new Set(items.map((l) => l.id));
+        let chosen = activeLocationId;
+
+        if (isCentralSession) {
+          const deviceAssigned = localStorage.getItem(DEVICE_LOCATION_KEY);
+          if (deviceAssigned && ids.has(deviceAssigned)) {
+            chosen = deviceAssigned;
+          } else if (chosen && !ids.has(chosen)) {
+            chosen = '';
+          }
+        } else {
+          const savedDefault = localStorage.getItem(DEFAULT_LOCATION_KEY);
+          if (chosen && !ids.has(chosen)) {
+            chosen = savedDefault && ids.has(savedDefault) ? savedDefault : '';
+          } else if (!chosen) {
+            chosen = savedDefault && ids.has(savedDefault) ? savedDefault : '';
+          }
+        }
+
+        setActiveLocationId(chosen);
+        try {
+          localStorage.setItem(ACTIVE_KEY, chosen);
+        } catch {}
+      } catch {
+        // ignore; use cache
+      }
+    })();
+    return () => {
+      mounted = false;
+    };
+  }, []); // run once
+
+  // Persist selection for app-wide filtering (also when selecting All -> '')
+  useEffect(() => {
+    try {
+      localStorage.setItem(ACTIVE_KEY, activeLocationId);
+      localStorage.setItem('locations:updated', Date.now().toString());
+    } catch {}
   }, [activeLocationId]);
 
   const activeLocation = locations.find((b) => b.id === activeLocationId);
-  const displayName = activeLocation?.name || 'All Locations';
+  const displayName =
+    activeLocationId === '' ? 'All locations' : activeLocation?.name || 'Current location';
 
   return (
     <aside className="flex h-full w-64 flex-col bg-[#f5f5f5] px-4 py-4">
       {/* Brand */}
       <div className="mb-0 flex items-center">
-        <span className="text-3xl font-semibold tracking-tight text-slate-900">
-          Qravy.
-        </span>
+        <span className="text-3xl font-semibold tracking-tight text-slate-900">Qravy.</span>
       </div>
 
-      {/* Location selector */}
+      {/* Location selector (no backend writes, includes "All locations") */}
       <div className="mt-7 mb-6">
         <SidebarLocationSelect
           locations={locations}
@@ -112,15 +170,8 @@ export default function Sidebar(): JSX.Element {
                 const Icon = item.icon;
                 return (
                   <li key={item.to}>
-                    <NavLink
-                      to={item.to}
-                      end={item.end}
-                      className={({ isActive }) => linkClass(isActive)}
-                    >
-                      <Icon
-                        className="h-5 w-5 text-slate-600 group-[aria-current=page]:text-slate-700"
-                        aria-hidden="true"
-                      />
+                    <NavLink to={item.to} end={item.end} className={({ isActive }) => linkClass(isActive)}>
+                      <Icon className="h-5 w-5 text-slate-600 group-[aria-current=page]:text-slate-700" aria-hidden="true" />
                       <span className="font-medium">{item.name}</span>
                     </NavLink>
                   </li>
@@ -164,8 +215,10 @@ function SidebarLocationSelect({
     };
   }, []);
 
-  const filtered = useMemo(() => locations, [locations]);
-  const isAllSelected = value === '';
+  const options = useMemo(
+    () => [{ id: '', name: 'All locations' }, ...locations],
+    [locations]
+  );
 
   return (
     <div ref={rootRef} className="relative">
@@ -209,43 +262,18 @@ function SidebarLocationSelect({
               </Link>
             </div>
 
-            {/* Options */}
+            {/* Options (includes "All locations") */}
             <ul role="menu" className="max-h-72 overflow-y-auto py-1">
-              <li key="all">
-                <button
-                  type="button"
-                  role="menuitemradio"
-                  aria-checked={isAllSelected}
-                  onClick={() => {
-                    onChange('');
-                    setOpen(false);
-                  }}
-                  className={`flex w-full items-center justify-between px-3 py-2 text-left text-[13px] transition ${
-                    isAllSelected ? 'bg-slate-100 text-slate-900' : 'text-slate-700 hover:bg-slate-50'
-                  }`}
-                >
-                  <span className="flex items-center gap-2">
-                    <MapPinIcon className="h-5 w-5 text-slate-600" />
-                    All locations
-                  </span>
-                  {isAllSelected ? (
-                    <span className="inline-flex items-center rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-600">
-                      Current
-                    </span>
-                  ) : null}
-                </button>
-              </li>
-
-              {filtered.map((b) => {
+              {options.map((b) => {
                 const selected = value === b.id;
                 return (
-                  <li key={b.id}>
+                  <li key={b.id || 'all'}>
                     <button
                       type="button"
                       role="menuitemradio"
                       aria-checked={selected}
                       onClick={() => {
-                        onChange(b.id);
+                        onChange(b.id); // only updates local state/storage; no backend call
                         setOpen(false);
                       }}
                       className={`flex w-full items-center justify-between px-3 py-2 text-left text-[13px] transition ${
@@ -265,7 +293,7 @@ function SidebarLocationSelect({
                   </li>
                 );
               })}
-              {filtered.length === 0 && (
+              {options.length === 1 && (
                 <li className="px-3 py-2 text-[13px] text-slate-500">No locations found</li>
               )}
             </ul>
