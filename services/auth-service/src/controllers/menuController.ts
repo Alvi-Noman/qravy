@@ -5,20 +5,20 @@ import logger from '../utils/logger.js';
 import type { MenuItemDoc, Variation } from '../models/MenuItem.js';
 import { toMenuItemDTO } from '../utils/mapper.js';
 import { auditLog } from '../utils/audit.js';
-// ADD:
 import type { TenantDoc } from '../models/Tenant.js';
 
 function col() {
   return client.db('authDB').collection<MenuItemDoc>('menuItems');
 }
-
-// ADD:
 function tenantsCol() {
   return client.db('authDB').collection<TenantDoc>('tenants');
 }
 
 function canWrite(role?: string): boolean {
   return role === 'owner' || role === 'admin' || role === 'editor';
+}
+function isBranch(req: Request): boolean {
+  return !req.user?.role; // central device/branch session has no membership role
 }
 
 function num(v: unknown): number | undefined {
@@ -70,6 +70,8 @@ export async function listMenuItems(req: Request, res: Response, next: NextFunct
 
 export async function createMenuItem(req: Request, res: Response, next: NextFunction) {
   try {
+    if (isBranch(req)) return res.fail(403, 'Not allowed for branch session');
+
     const userId = req.user?.id;
     const tenantId = req.user?.tenantId;
     if (!userId) return res.fail(401, 'Unauthorized');
@@ -139,7 +141,6 @@ export async function createMenuItem(req: Request, res: Response, next: NextFunc
       userAgent: req.headers['user-agent'] || 'unknown',
     });
 
-    // ADD: mark onboarding progress for menu item
     await tenantsCol().updateOne(
       { _id: new ObjectId(tenantId) },
       { $set: { 'onboardingProgress.hasMenuItem': true, updatedAt: now } }
@@ -155,6 +156,8 @@ export async function createMenuItem(req: Request, res: Response, next: NextFunc
 
 export async function updateMenuItem(req: Request, res: Response, next: NextFunction) {
   try {
+    if (isBranch(req)) return res.fail(403, 'Not allowed for branch session');
+
     const userId = req.user?.id;
     const tenantId = req.user?.tenantId;
     if (!userId) return res.fail(401, 'Unauthorized');
@@ -207,7 +210,7 @@ export async function updateMenuItem(req: Request, res: Response, next: NextFunc
     if (body.categoryId !== undefined) {
       setOps.categoryId =
         body.categoryId && ObjectId.isValid(body.categoryId) ? new ObjectId(body.categoryId) : undefined;
-      }
+    }
 
     if (body.media !== undefined) {
       const media = Array.isArray(body.media) ? body.media.filter((u) => typeof u === 'string' && u) : [];
@@ -265,6 +268,8 @@ export async function updateMenuItem(req: Request, res: Response, next: NextFunc
 
 export async function deleteMenuItem(req: Request, res: Response, next: NextFunction) {
   try {
+    if (isBranch(req)) return res.fail(403, 'Not allowed for branch session');
+
     const userId = req.user?.id;
     const tenantId = req.user?.tenantId;
     if (!userId) return res.fail(401, 'Unauthorized');
@@ -288,7 +293,6 @@ export async function deleteMenuItem(req: Request, res: Response, next: NextFunc
       userAgent: req.headers['user-agent'] || 'unknown',
     });
 
-    // ADD: recompute menu item flag after delete
     const remaining = await col().countDocuments({ tenantId: new ObjectId(tenantId) });
     await tenantsCol().updateOne(
       { _id: new ObjectId(tenantId) },
@@ -308,7 +312,9 @@ export async function bulkSetAvailability(req: Request, res: Response, next: Nex
     const tenantId = req.user?.tenantId;
     if (!userId) return res.fail(401, 'Unauthorized');
     if (!tenantId) return res.fail(409, 'Tenant not set');
-    if (!canWrite(req.user?.role)) return res.fail(403, 'Forbidden');
+
+    // Allow if editor/admin/owner OR branch session
+    if (!(canWrite(req.user?.role) || isBranch(req))) return res.fail(403, 'Forbidden');
 
     const { ids, active } = req.body as { ids: string[]; active: boolean };
     const oids = (ids || []).filter((s) => ObjectId.isValid(s)).map((s) => new ObjectId(s));
@@ -344,6 +350,8 @@ export async function bulkSetAvailability(req: Request, res: Response, next: Nex
 
 export async function bulkDeleteMenuItems(req: Request, res: Response, next: NextFunction) {
   try {
+    if (isBranch(req)) return res.fail(403, 'Not allowed for branch session');
+
     const userId = req.user?.id;
     const tenantId = req.user?.tenantId;
     if (!userId) return res.fail(401, 'Unauthorized');
@@ -366,7 +374,6 @@ export async function bulkDeleteMenuItems(req: Request, res: Response, next: Nex
       userAgent: req.headers['user-agent'] || 'unknown',
     });
 
-    // ADD: recompute menu item flag after bulk delete
     const remaining = await col().countDocuments({ tenantId: new ObjectId(tenantId) });
     await tenantsCol().updateOne(
       { _id: new ObjectId(tenantId) },
@@ -382,6 +389,8 @@ export async function bulkDeleteMenuItems(req: Request, res: Response, next: Nex
 
 export async function bulkChangeCategory(req: Request, res: Response, next: NextFunction) {
   try {
+    if (isBranch(req)) return res.fail(403, 'Not allowed for branch session');
+
     const userId = req.user?.id;
     const tenantId = req.user?.tenantId;
     if (!userId) return res.fail(401, 'Unauthorized');

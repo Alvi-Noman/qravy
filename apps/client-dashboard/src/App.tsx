@@ -4,6 +4,7 @@
 import { Routes, Route, useLocation, useNavigate, Navigate } from 'react-router-dom';
 import { useEffect, lazy, Suspense } from 'react';
 import { AuthProvider, useAuthContext } from './context/AuthContext';
+import { PermissionsProvider } from './context/PermissionsContext';
 import LoadingScreen from './components/LoadingScreen';
 import { ProgressProvider } from './context/ProgressContext';
 import { Toaster } from './components/Toaster';
@@ -17,7 +18,7 @@ const Dashboard = lazy(() => import('./pages/Dashboard'));
 const Orders = lazy(() => import('./pages/Orders'));
 const Categories = lazy(() => import('./pages/Categories'));
 const MenuItemsPage = lazy(() => import('./pages/MenuItems'));
-const LocationsPage = lazy(() => import('./pages/Locations')); 
+const LocationsPage = lazy(() => import('./pages/Locations'));
 const Login = lazy(() => import('./pages/Login'));
 const Signup = lazy(() => import('./pages/Signup'));
 const MagicLink = lazy(() => import('./pages/MagicLink'));
@@ -103,351 +104,352 @@ function RequireOnboarding({ children }: { children: React.ReactNode }) {
 function App() {
   return (
     <AuthProvider>
-      <ProgressProvider>
-        {/* No global Suspense around all Routes — avoids layout disappearing on first visit */}
-        <Routes>
-          {/* Dashboard shell with index route */}
-          <Route
-            path="/dashboard"
-            element={
-              <RequireVerifiedAndOnboarded>
-                <DashboardLayout />
-              </RequireVerifiedAndOnboarded>
-            }
-          >
+      <PermissionsProvider>
+        <ProgressProvider>
+          {/* No global Suspense around all Routes — avoids layout disappearing on first visit */}
+          <Routes>
+            {/* Dashboard shell with index route */}
             <Route
-              index
+              path="/dashboard"
               element={
-                <Suspense fallback={null}>
-                  <Dashboard />
-                </Suspense>
+                <RequireVerifiedAndOnboarded>
+                  <DashboardLayout />
+                </RequireVerifiedAndOnboarded>
               }
-            />
-          </Route>
-
-          {/* Protected app routes under DashboardLayout (standard sidebar/topbar) */}
-          <Route
-            element={
-              <RequireVerifiedAndOnboarded>
-                <DashboardLayout />
-              </RequireVerifiedAndOnboarded>
-            }
-          >
-            <Route
-              path="/orders"
-              element={
-                <Suspense fallback={null}>
-                  <Orders />
-                </Suspense>
-              }
-            />
-            <Route
-              path="/menu-items"
-              element={
-                <Suspense fallback={null}>
-                  <MenuItemsPage />
-                </Suspense>
-              }
-            />
-            <Route
-              path="/categories"
-              element={
-                <Suspense fallback={null}>
-                  <Categories />
-                </Suspense>
-              }
-            />
-            <Route
-              path="/categories/manage"
-              element={
-                <Suspense fallback={null}>
-                  <ManageCategories />
-                </Suspense>
-              }
-            />
-
-            {/* Real Locations route (replaces stub) */}
-            <Route
-              path="/locations"
-              element={
-                <Suspense fallback={null}>
-                  <LocationsPage />
-                </Suspense>
-              }
-            />
-
-            {/* Add stubs for routes so the layout persists (no blank pages) */}
-            <Route path="/service-requests" element={<div className="p-6 text-sm text-slate-700">Service Requests coming soon</div>} />
-            <Route path="/offers" element={<div className="p-6 text-sm text-slate-700">Offers coming soon</div>} />
-            <Route path="/customers" element={<div className="p-6 text-sm text-slate-700">Customers coming soon</div>} />
-            <Route path="/digital-menu" element={<div className="p-6 text-sm text-slate-700">Digital Menu coming soon</div>} />
-            <Route path="/qravy-store" element={<div className="p-6 text-sm text-slate-700">Qravy Store coming soon</div>} />
-          </Route>
-
-          {/* Settings routes OUTSIDE DashboardLayout to replace the main navbar with Settings navbar */}
-          <Route
-            path="/settings"
-            element={
-              <RequireVerifiedAndOnboarded>
-                <SettingsLayout />
-              </RequireVerifiedAndOnboarded>
-            }
-          >
-            <Route
-              index
-              element={
-                <Suspense fallback={null}>
-                  <SettingsOverview />
-                </Suspense>
-              }
-            />
-
-            {/* Plan overview */}
-            <Route
-              path="plan"
-              element={
-                <Suspense fallback={null}>
-                  <SettingsPlan />
-                </Suspense>
-              }
-            />
-
-            {/* Single plan sheet (controls step via ?step=select|subscribe) */}
-            <Route
-              path="plan/select"
-              element={
-                <Suspense fallback={null}>
-                  <PlanSheet />
-                </Suspense>
-              }
-            />
-
-            {/* Billing settings */}
-            <Route
-              path="billing"
-              element={
-                <Suspense fallback={null}>
-                  <SettingsBilling />
-                </Suspense>
-              }
-            />
-
-            {/* Existing settings */}
-            <Route
-              path="branding"
-              element={
-                <Suspense fallback={null}>
-                  <SettingsBranding />
-                </Suspense>
-              }
-            />
-            <Route
-              path="domain"
-              element={
-                <Suspense fallback={null}>
-                  <SettingsDomain />
-                </Suspense>
-              }
-            />
-            <Route
-              path="security"
-              element={
-                <Suspense fallback={null}>
-                  <SettingsSecurity />
-                </Suspense>
-              }
-            />
-            <Route
-              path="notifications"
-              element={
-                <Suspense fallback={null}>
-                  <SettingsNotifications />
-                </Suspense>
-              }
-            />
-            <Route
-              path="integrations"
-              element={
-                <Suspense fallback={null}>
-                  <SettingsIntegrations />
-                </Suspense>
-              }
-            />
-            <Route
-              path="developer"
-              element={
-                <Suspense fallback={null}>
-                  <SettingsDeveloper />
-                </Suspense>
-              }
-            />
-            <Route
-              path="team"
-              element={
-                <Suspense fallback={null}>
-                  <SettingsTeam />
-                </Suspense>
-              }
-            />
-            <Route
-              path="access"
-              element={
-                <Suspense fallback={null}>
-                  <SettingsAccess />
-                </Suspense>
-              }
-            />
-            <Route
-              path="localization"
-              element={
-                <Suspense fallback={null}>
-                  <SettingsLocalization />
-                </Suspense>
-              }
-            />
-            <Route
-              path="accessibility"
-              element={
-                <Suspense fallback={null}>
-                  <SettingsAccessibility />
-                </Suspense>
-              }
-            />
-            <Route
-              path="labs"
-              element={
-                <Suspense fallback={null}>
-                  <SettingsLabs />
-                </Suspense>
-              }
-            />
-            <Route
-              path="privacy"
-              element={
-                <Suspense fallback={null}>
-                  <SettingsPrivacy />
-                </Suspense>
-              }
-            />
-            <Route
-              path="audit"
-              element={
-                <Suspense fallback={null}>
-                  <SettingsAudit />
-                </Suspense>
-              }
-            />
-
-            {/* Redirect uppercase paths (compat with current sidebar links) */}
-            <Route path="Plan" element={<Navigate to="plan" replace />} />
-            <Route path="Plan/select" element={<Navigate to="plan/select" replace />} />
-            {/* Map the old nested subscribe path to query-param version */}
-            <Route path="Plan/select/subscribe" element={<Navigate to="plan/select?step=subscribe" replace />} />
-            <Route path="Billing" element={<Navigate to="billing" replace />} />
-            <Route path="Branding" element={<Navigate to="branding" replace />} />
-            <Route path="Domain" element={<Navigate to="domain" replace />} />
-            <Route path="Security" element={<Navigate to="security" replace />} />
-            <Route path="Notifications" element={<Navigate to="notifications" replace />} />
-            <Route path="Integrations" element={<Navigate to="integrations" replace />} />
-            <Route path="Developer" element={<Navigate to="developer" replace />} />
-            <Route path="Team" element={<Navigate to="team" replace />} />
-            <Route path="Access" element={<Navigate to="access" replace />} /> {/* NEW */}
-            <Route path="Localization" element={<Navigate to="localization" replace />} />
-            <Route path="Accessibility" element={<Navigate to="accessibility" replace />} />
-            <Route path="Labs" element={<Navigate to="labs" replace />} />
-            <Route path="Privacy" element={<Navigate to="privacy" replace />} />
-            <Route path="Audit" element={<Navigate to="audit" replace />} />
-          </Route>
-
-          {/* Redirect legacy /dashboard/* paths */}
-          <Route path="/dashboard/orders" element={<Navigate to="/orders" replace />} />
-          <Route path="/dashboard/menu-items" element={<Navigate to="/menu-items" replace />} />
-          <Route path="/dashboard/categories" element={<Navigate to="/categories" replace />} />
-          <Route path="/dashboard/categories/manage" element={<Navigate to="/categories/manage" replace />} />
-          <Route path="/dashboard/locations" element={<Navigate to="/locations" replace />} /> {/* NEW */}
-          <Route path="/dashboard/settings" element={<Navigate to="/settings" replace />} />
-
-          {/* Auth + public routes */}
-          <Route
-            path="/login"
-            element={
-              <Suspense fallback={<LoadingScreen />}>
-                <Login />
-              </Suspense>
-            }
-          />
-          <Route
-            path="/signup"
-            element={
-              <Suspense fallback={<LoadingScreen />}>
-                <Signup />
-              </Suspense>
-            }
-          />
-          <Route
-            path="/magic-link"
-            element={
-              <Suspense fallback={<LoadingScreen />}>
-                <MagicLink />
-              </Suspense>
-            }
-          />
-          <Route
-            path="/verify"
-            element={
-              <Suspense fallback={<LoadingScreen />}>
-                <Verify />
-              </Suspense>
-            }
-          />
-
-          <Route
-            path="/access/select-location"
-            element={
-              <RequireAuth>
-                <Suspense fallback={<LoadingScreen />}>
-                  <SelectLocation />
-                </Suspense>
-              </RequireAuth>
-            }
-          />
-
-          <Route
-            path="/create-restaurant"
-            element={
-              <RequireAuth>
-                <Suspense fallback={<LoadingScreen />}>
-                  <CreateRestaurant />
-                </Suspense>
-              </RequireAuth>
-            }
-          />
-
-          <Route
-            path="/onboarding"
-            element={
-              <RequireAuth>
-                <RequireOnboarding>
-                  <Suspense fallback={<LoadingScreen />}>
-                    <Onboarding />
+            >
+              <Route
+                index
+                element={
+                  <Suspense fallback={null}>
+                    <Dashboard />
                   </Suspense>
-                </RequireOnboarding>
-              </RequireAuth>
-            }
-          />
+                }
+              />
+            </Route>
 
-          {/* Home redirect */}
-          <Route
-            path="/"
-            element={
-              <Suspense fallback={<LoadingScreen />}>
-                <HomeRedirect />
-              </Suspense>
-            }
-          />
-        </Routes>
-        <Toaster />
-      </ProgressProvider>
+            {/* Protected app routes under DashboardLayout (standard sidebar/topbar) */}
+            <Route
+              element={
+                <RequireVerifiedAndOnboarded>
+                  <DashboardLayout />
+                </RequireVerifiedAndOnboarded>
+              }
+            >
+              <Route
+                path="/orders"
+                element={
+                  <Suspense fallback={null}>
+                    <Orders />
+                  </Suspense>
+                }
+              />
+              <Route
+                path="/menu-items"
+                element={
+                  <Suspense fallback={null}>
+                    <MenuItemsPage />
+                  </Suspense>
+                }
+              />
+              <Route
+                path="/categories"
+                element={
+                  <Suspense fallback={null}>
+                    <Categories />
+                  </Suspense>
+                }
+              />
+              <Route
+                path="/categories/manage"
+                element={
+                  <Suspense fallback={null}>
+                    <ManageCategories />
+                  </Suspense>
+                }
+              />
+
+              {/* Real Locations route (replaces stub) */}
+              <Route
+                path="/locations"
+                element={
+                  <Suspense fallback={null}>
+                    <LocationsPage />
+                  </Suspense>
+                }
+              />
+
+              {/* Add stubs for routes so the layout persists (no blank pages) */}
+              <Route path="/service-requests" element={<div className="p-6 text-sm text-slate-700">Service Requests coming soon</div>} />
+              <Route path="/offers" element={<div className="p-6 text-sm text-slate-700">Offers coming soon</div>} />
+              <Route path="/customers" element={<div className="p-6 text-sm text-slate-700">Customers coming soon</div>} />
+              <Route path="/digital-menu" element={<div className="p-6 text-sm text-slate-700">Digital Menu coming soon</div>} />
+              <Route path="/qravy-store" element={<div className="p-6 text-sm text-slate-700">Qravy Store coming soon</div>} />
+            </Route>
+
+            {/* Settings routes OUTSIDE DashboardLayout to replace the main navbar with Settings navbar */}
+            <Route
+              path="/settings"
+              element={
+                <RequireVerifiedAndOnboarded>
+                  <SettingsLayout />
+                </RequireVerifiedAndOnboarded>
+              }
+            >
+              <Route
+                index
+                element={
+                  <Suspense fallback={null}>
+                    <SettingsOverview />
+                  </Suspense>
+                }
+              />
+
+              {/* Plan overview */}
+              <Route
+                path="plan"
+                element={
+                  <Suspense fallback={null}>
+                    <SettingsPlan />
+                  </Suspense>
+                }
+              />
+
+              {/* Single plan sheet (controls step via ?step=select|subscribe) */}
+              <Route
+                path="plan/select"
+                element={
+                  <Suspense fallback={null}>
+                    <PlanSheet />
+                  </Suspense>
+                }
+              />
+
+              {/* Billing settings */}
+              <Route
+                path="billing"
+                element={
+                  <Suspense fallback={null}>
+                    <SettingsBilling />
+                  </Suspense>
+                }
+              />
+
+              {/* Existing settings */}
+              <Route
+                path="branding"
+                element={
+                  <Suspense fallback={null}>
+                    <SettingsBranding />
+                  </Suspense>
+                }
+              />
+              <Route
+                path="domain"
+                element={
+                  <Suspense fallback={null}>
+                    <SettingsDomain />
+                  </Suspense>
+                }
+              />
+              <Route
+                path="security"
+                element={
+                  <Suspense fallback={null}>
+                    <SettingsSecurity />
+                  </Suspense>
+                }
+              />
+              <Route
+                path="notifications"
+                element={
+                  <Suspense fallback={null}>
+                    <SettingsNotifications />
+                  </Suspense>
+                }
+              />
+              <Route
+                path="integrations"
+                element={
+                  <Suspense fallback={null}>
+                    <SettingsIntegrations />
+                  </Suspense>
+                }
+              />
+              <Route
+                path="developer"
+                element={
+                  <Suspense fallback={null}>
+                    <SettingsDeveloper />
+                  </Suspense>
+                }
+              />
+              <Route
+                path="team"
+                element={
+                  <Suspense fallback={null}>
+                    <SettingsTeam />
+                  </Suspense>
+                }
+              />
+              <Route
+                path="access"
+                element={
+                  <Suspense fallback={null}>
+                    <SettingsAccess />
+                  </Suspense>
+                }
+              />
+              <Route
+                path="localization"
+                element={
+                  <Suspense fallback={null}>
+                    <SettingsLocalization />
+                  </Suspense>
+                }
+              />
+              <Route
+                path="accessibility"
+                element={
+                  <Suspense fallback={null}>
+                    <SettingsAccessibility />
+                  </Suspense>
+                }
+              />
+              <Route
+                path="labs"
+                element={
+                  <Suspense fallback={null}>
+                    <SettingsLabs />
+                  </Suspense>
+                }
+              />
+              <Route
+                path="privacy"
+                element={
+                  <Suspense fallback={null}>
+                    <SettingsPrivacy />
+                  </Suspense>
+                }
+              />
+              <Route
+                path="audit"
+                element={
+                  <Suspense fallback={null}>
+                    <SettingsAudit />
+                  </Suspense>
+                }
+              />
+
+              {/* Redirect uppercase paths (compat with current sidebar links) */}
+              <Route path="Plan" element={<Navigate to="plan" replace />} />
+              <Route path="Plan/select" element={<Navigate to="plan/select" replace />} />
+              <Route path="Plan/select/subscribe" element={<Navigate to="plan/select?step=subscribe" replace />} />
+              <Route path="Billing" element={<Navigate to="billing" replace />} />
+              <Route path="Branding" element={<Navigate to="branding" replace />} />
+              <Route path="Domain" element={<Navigate to="domain" replace />} />
+              <Route path="Security" element={<Navigate to="security" replace />} />
+              <Route path="Notifications" element={<Navigate to="notifications" replace />} />
+              <Route path="Integrations" element={<Navigate to="integrations" replace />} />
+              <Route path="Developer" element={<Navigate to="developer" replace />} />
+              <Route path="Team" element={<Navigate to="team" replace />} />
+              <Route path="Access" element={<Navigate to="access" replace />} />
+              <Route path="Localization" element={<Navigate to="localization" replace />} />
+              <Route path="Accessibility" element={<Navigate to="accessibility" replace />} />
+              <Route path="Labs" element={<Navigate to="labs" replace />} />
+              <Route path="Privacy" element={<Navigate to="privacy" replace />} />
+              <Route path="Audit" element={<Navigate to="audit" replace />} />
+            </Route>
+
+            {/* Redirect legacy /dashboard/* paths */}
+            <Route path="/dashboard/orders" element={<Navigate to="/orders" replace />} />
+            <Route path="/dashboard/menu-items" element={<Navigate to="/menu-items" replace />} />
+            <Route path="/dashboard/categories" element={<Navigate to="/categories" replace />} />
+            <Route path="/dashboard/categories/manage" element={<Navigate to="/categories/manage" replace />} />
+            <Route path="/dashboard/locations" element={<Navigate to="/locations" replace />} />
+            <Route path="/dashboard/settings" element={<Navigate to="/settings" replace />} />
+
+            {/* Auth + public routes */}
+            <Route
+              path="/login"
+              element={
+                <Suspense fallback={<LoadingScreen />}>
+                  <Login />
+                </Suspense>
+              }
+            />
+            <Route
+              path="/signup"
+              element={
+                <Suspense fallback={<LoadingScreen />}>
+                  <Signup />
+                </Suspense>
+              }
+            />
+            <Route
+              path="/magic-link"
+              element={
+                <Suspense fallback={<LoadingScreen />}>
+                  <MagicLink />
+                </Suspense>
+              }
+            />
+            <Route
+              path="/verify"
+              element={
+                <Suspense fallback={<LoadingScreen />}>
+                  <Verify />
+                </Suspense>
+              }
+            />
+
+            <Route
+              path="/access/select-location"
+              element={
+                <RequireAuth>
+                  <Suspense fallback={<LoadingScreen />}>
+                    <SelectLocation />
+                  </Suspense>
+                </RequireAuth>
+              }
+            />
+
+            <Route
+              path="/create-restaurant"
+              element={
+                <RequireAuth>
+                  <Suspense fallback={<LoadingScreen />}>
+                    <CreateRestaurant />
+                  </Suspense>
+                </RequireAuth>
+              }
+            />
+
+            <Route
+              path="/onboarding"
+              element={
+                <RequireAuth>
+                  <RequireOnboarding>
+                    <Suspense fallback={<LoadingScreen />}>
+                      <Onboarding />
+                    </Suspense>
+                  </RequireOnboarding>
+                </RequireAuth>
+              }
+            />
+
+            {/* Home redirect */}
+            <Route
+              path="/"
+              element={
+                <Suspense fallback={<LoadingScreen />}>
+                  <HomeRedirect />
+                </Suspense>
+              }
+            />
+          </Routes>
+          <Toaster />
+        </ProgressProvider>
+      </PermissionsProvider>
     </AuthProvider>
   );
 }

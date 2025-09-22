@@ -16,6 +16,8 @@ import MenuTableSkeleton from '../components/menu-items/MenuTableSkeleton';
 import BulkActionsBar from '../components/menu-items/BulkActionsBar';
 import type { MenuItem as TMenuItem, NewMenuItem } from '../api/menu';
 import { useSearchParams } from 'react-router-dom';
+import Can from '../components/Can';
+import { usePermissions } from '../context/PermissionsContext';
 
 const MenuTable = lazy(() => import('../components/menu-items/MenuTable'));
 const BulkChangeCategoryDialog = lazy(() => import('../components/menu-items/BulkChangeCategoryDialog'));
@@ -25,9 +27,6 @@ const ProductDrawer = lazy(() => import('../components/add-product-drawer/Produc
 type Status = 'active' | 'hidden';
 type Channel = 'dine-in' | 'online';
 
-/**
- * Drawer values for creating or editing menu items
- */
 type DrawerSubmitValues = {
   name: string;
   price?: number;
@@ -42,9 +41,6 @@ type DrawerSubmitValues = {
 const HIGHLIGHT_HOLD_MS = 2500;
 const SHRINK_DISTANCE = 80;
 
-/**
- * Util: Recursively finds the scroll container for an element.
- */
 function getScrollContainer(el: HTMLElement): HTMLElement | Window {
   let node: HTMLElement | null = el.parentElement;
   while (node) {
@@ -57,20 +53,12 @@ function getScrollContainer(el: HTMLElement): HTMLElement | Window {
   }
   return window;
 }
-
-/**
- * Util: Returns the current scrollTop for a scroller (HTMLElement or window).
- */
 function getScrollTop(scroller: HTMLElement | Window): number {
   if (scroller === window) {
     return window.scrollY || document.documentElement.scrollTop || (document.body ? document.body.scrollTop : 0);
   }
   return (scroller as HTMLElement).scrollTop;
 }
-
-/**
- * Util: Waits for scroll to remain idle for a given duration.
- */
 function waitForScrollIdle(scroller: HTMLElement | Window, idleMs = 140, maxWaitMs = 2500): Promise<void> {
   return new Promise((resolve) => {
     let lastTop = getScrollTop(scroller);
@@ -93,11 +81,7 @@ function waitForScrollIdle(scroller: HTMLElement | Window, idleMs = 140, maxWait
   });
 }
 
-/**
- * Main Menu Items page component
- */
 export default function MenuItemsPage(): JSX.Element {
-  // Hook providing menu queries and mutations
   const {
     itemsQuery,
     categoriesQuery,
@@ -112,22 +96,33 @@ export default function MenuItemsPage(): JSX.Element {
     bulkCategoryMut,
   } = useMenuItems();
 
-  // Read/write URL query to drive Add Product drawer
+  const { has } = usePermissions();
+  const canCreate = has('menuItems:create');
+  const canUpdate = has('menuItems:update');
+  const canDelete = has('menuItems:delete');
+  const canToggleAvailability = has('menuItems:toggleAvailability');
+
   const [searchParams, setSearchParams] = useSearchParams();
   const routeWantsNew = searchParams.get('new') === 'product';
 
+  // Respect capability for route-driven "Add Product"
   useEffect(() => {
-    if (routeWantsNew) setOpenAdd(true);
-  }, [routeWantsNew]);
+    if (routeWantsNew) {
+      if (canCreate) setOpenAdd(true);
+      else {
+        const sp = new URLSearchParams(searchParams);
+        sp.delete('new');
+        setSearchParams(sp, { replace: true });
+      }
+    }
+  }, [routeWantsNew, canCreate, searchParams, setSearchParams]);
 
-  // Refetch on storage events (multi-tab)
   useEffect(() => {
     const onStorage = (e: StorageEvent) => e.key === 'menu:updated' && itemsQuery.refetch();
     window.addEventListener('storage', onStorage);
     return () => window.removeEventListener('storage', onStorage);
   }, [itemsQuery]);
 
-  // Filter and UI states
   const [q, setQ] = useState('');
   const [status, setStatus] = useState<Set<Status>>(new Set());
   const [channels, setChannels] = useState<Set<Channel>>(new Set());
@@ -135,19 +130,16 @@ export default function MenuItemsPage(): JSX.Element {
   const [sortBy, setSortBy] = useState<SortBy>('name-asc');
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
-  // Drawer & dialog states
-  const [openAdd, setOpenAdd] = useState(routeWantsNew);
+  const [openAdd, setOpenAdd] = useState(routeWantsNew && canCreate);
   const [openEdit, setOpenEdit] = useState<TMenuItem | null>(null);
   const [openBulkCategory, setOpenBulkCategory] = useState(false);
   const [openDeleteMany, setOpenDeleteMany] = useState(false);
 
-  // Highlight and freeze states
   const [frozenItems, setFrozenItems] = useState<TMenuItem[] | null>(null);
   const [pendingHighlightId, setPendingHighlightId] = useState<string | null>(null);
   const [highlightId, setHighlightId] = useState<string | null>(null);
   const [queuedHighlightId, setQueuedHighlightId] = useState<string | null>(null);
 
-  // Header shrink effect
   const contentRef = useRef<HTMLDivElement | null>(null);
   const [shrink, setShrink] = useState(0);
 
@@ -175,9 +167,6 @@ export default function MenuItemsPage(): JSX.Element {
   const loading = itemsQuery.isLoading || categoriesQuery.isLoading;
   const sourceItems = frozenItems ?? items;
 
-  /**
-   * Derived filtered + sorted items view
-   */
   const viewItems = useMemo(() => {
     const qnorm = q.trim().toLowerCase();
     let list = sourceItems.filter((it) => {
@@ -210,9 +199,6 @@ export default function MenuItemsPage(): JSX.Element {
     return list;
   }, [sourceItems, q, status, channels, selectedCategory, sortBy]);
 
-  /**
-   * Highlighting and refetch logic for edits/adds
-   */
   useEffect(() => {
     if (!pendingHighlightId) return;
     const exists = viewItems.some((it) => it.id === pendingHighlightId);
@@ -262,19 +248,64 @@ export default function MenuItemsPage(): JSX.Element {
       next.has(id) ? next.delete(id) : next.add(id);
       return next;
     });
-
   const toggleSelectAll = () => {
     if (!viewItems.length) return;
     const all = viewItems.every((it) => selectedIds.has(it.id));
     setSelectedIds(all ? new Set() : new Set(viewItems.map((it) => it.id)));
   };
-
   const clearSelection = () => setSelectedIds(new Set());
+
+  // Handlers (always pass functions; guard inside by capability)
+  const handleAddClick = () => {
+    if (!canCreate) return;
+    const sp = new URLSearchParams(searchParams);
+    sp.set('new', 'product');
+    setSearchParams(sp, { replace: false });
+    setOpenAdd(true);
+  };
+  const handleToggleAvailability = (id: string, active: boolean) => {
+    if (!canToggleAvailability) return;
+    availabilityMut.mutate({ id, active });
+  };
+  const handleEdit = (item: TMenuItem) => {
+    if (!canUpdate) return;
+    setOpenEdit(item);
+  };
+  const handleDuplicate = (id: string) => {
+    if (!canCreate) return;
+    duplicateMut.mutate(id);
+  };
+  const handleDelete = (id: string) => {
+    if (!canDelete) return;
+    if (confirm('Delete this item?')) deleteMut.mutate({ id });
+  };
+
+  // Bulk handlers (always functions; no-ops if not allowed)
+  const onSetAvailable = () => {
+    if (!canToggleAvailability) return;
+    const ids = Array.from(selectedIds);
+    if (ids.length) bulkAvailabilityMut.mutate({ ids, active: true });
+  };
+  const onSetUnavailable = () => {
+    if (!canToggleAvailability) return;
+    const ids = Array.from(selectedIds);
+    if (ids.length) bulkAvailabilityMut.mutate({ ids, active: false });
+  };
+  const onAssignCategory = () => {
+    if (!canUpdate) return;
+    setOpenBulkCategory(true);
+  };
+  const onBulkDelete = () => {
+    if (!canDelete) return;
+    setOpenDeleteMany(true);
+  };
+
+  const showBulkBar = viewItems.length > 0;
 
   return (
     <div className="flex h-full flex-col min-h-0">
       <div ref={contentRef} className="flex-1 min-h-0 overflow-y-auto p-0 text-[#2e2e30] text-sm">
-        {/* Header with shrink effect */}
+        {/* Header */}
         <div
           className="sticky top-0 z-20 flex items-center justify-between border-b border-[#ececec] px-6"
           style={{
@@ -297,25 +328,22 @@ export default function MenuItemsPage(): JSX.Element {
           >
             Menu Items
           </h2>
-          <button
-            className="rounded-md bg-[#2e2e30] px-4 py-2 text-white hover:opacity-90 transition-transform"
-            style={{
-              transform: `scale(${1 - 0.05 * shrink})`,
-              transformOrigin: 'right center',
-              willChange: 'transform',
-            }}
-            onClick={() => {
-              const sp = new URLSearchParams(searchParams);
-              sp.set('new', 'product');
-              setSearchParams(sp, { replace: false });
-              setOpenAdd(true);
-            }}
-          >
-            Add Product
-          </button>
+
+          <Can capability="menuItems:create">
+            <button
+              className="rounded-md bg-[#2e2e30] px-4 py-2 text-white hover:opacity-90 transition-transform"
+              style={{
+                transform: `scale(${1 - 0.05 * shrink})`,
+                transformOrigin: 'right center',
+                willChange: 'transform',
+              }}
+              onClick={handleAddClick}
+            >
+              Add Product
+            </button>
+          </Can>
         </div>
 
-        {/* Body */}
         <div className="px-6 pt-4">
           {loading ? (
             <>
@@ -343,7 +371,6 @@ export default function MenuItemsPage(): JSX.Element {
               />
 
               <div className="mt-4 space-y-4">
-                {/* Empty State (Dashboard style) */}
                 {!viewItems.length ? (
                   <div className="flex h-[60vh] flex-col items-center justify-center text-center p-8">
                     <Squares2X2Icon className="h-12 w-12 text-slate-400 mb-3" />
@@ -351,17 +378,14 @@ export default function MenuItemsPage(): JSX.Element {
                     <p className="text-sm text-[#6b6b70] mt-2 mb-6 max-w-md">
                       Get started by adding your first product. Menu items will appear here once created.
                     </p>
-                    <button
-                      onClick={() => {
-                        const sp = new URLSearchParams(searchParams);
-                        sp.set('new', 'product');
-                        setSearchParams(sp, { replace: false });
-                        setOpenAdd(true);
-                      }}
-                      className="rounded-md bg-[#2e2e30] text-white px-5 py-2 hover:opacity-90"
-                    >
-                      Add Product
-                    </button>
+                    <Can capability="menuItems:create">
+                      <button
+                        onClick={handleAddClick}
+                        className="rounded-md bg-[#2e2e30] text-white px-5 py-2 hover:opacity-90"
+                      >
+                        Add Product
+                      </button>
+                    </Can>
                   </div>
                 ) : (
                   <Suspense fallback={<MenuTableSkeleton rows={6} />}>
@@ -371,40 +395,29 @@ export default function MenuItemsPage(): JSX.Element {
                       selectedIds={selectedIds}
                       onToggleSelect={toggleSelect}
                       onToggleSelectAll={toggleSelectAll}
-                      onToggleAvailability={(id, active) => availabilityMut.mutate({ id, active })}
-                      onEdit={(item) => setOpenEdit(item)}
-                      onDuplicate={(id) => duplicateMut.mutate(id)}
-                      onDelete={(id) => {
-                        if (confirm('Delete this item?')) deleteMut.mutate({ id });
-                      }}
+                      onToggleAvailability={handleToggleAvailability}
+                      onEdit={handleEdit}
+                      onDuplicate={handleDuplicate}
+                      onDelete={handleDelete}
                     />
                   </Suspense>
                 )}
               </div>
 
-              {/* Bulk Actions */}
-              {viewItems.length > 0 && (
+              {showBulkBar && (
                 <BulkActionsBar
                   count={selectedIds.size}
-                  onSetAvailable={() => {
-                    const ids = Array.from(selectedIds);
-                    if (ids.length) bulkAvailabilityMut.mutate({ ids, active: true });
-                  }}
-                  onSetUnavailable={() => {
-                    const ids = Array.from(selectedIds);
-                    if (ids.length) bulkAvailabilityMut.mutate({ ids, active: false });
-                  }}
-                  onAssignCategory={() => setOpenBulkCategory(true)}
-                  onDelete={() => setOpenDeleteMany(true)}
+                  onSetAvailable={onSetAvailable}
+                  onSetUnavailable={onSetUnavailable}
+                  onAssignCategory={onAssignCategory}
+                  onDelete={onBulkDelete}
                   onClear={clearSelection}
                 />
               )}
 
-              {/* Drawers & Dialogs */}
               <Suspense fallback={null}>
-                {/* IMPORTANT: allow first-mount animations */}
                 <AnimatePresence mode="wait">
-                  {openAdd && (
+                  {openAdd && canCreate && (
                     <ProductDrawer
                       key="add"
                       title="Add Product"
@@ -445,7 +458,7 @@ export default function MenuItemsPage(): JSX.Element {
                     />
                   )}
 
-                  {openEdit && (
+                  {openEdit && canUpdate && (
                     <ProductDrawer
                       key="edit"
                       title="Edit Product"
@@ -490,39 +503,43 @@ export default function MenuItemsPage(): JSX.Element {
                   )}
                 </AnimatePresence>
 
-                <BulkChangeCategoryDialog
-                  open={openBulkCategory}
-                  categories={categoryNames}
-                  onClose={() => setOpenBulkCategory(false)}
-                  onConfirm={(category) => {
-                    const ids = Array.from(selectedIds);
-                    if (!ids.length) return setOpenBulkCategory(false);
-                    bulkCategoryMut.mutate(
-                      { ids, category },
-                      {
-                        onSuccess: () => {
-                          setOpenBulkCategory(false);
-                          clearSelection();
-                        },
-                      }
-                    );
-                  }}
-                  isSubmitting={bulkAvailabilityMut.isPending}
-                />
+                {openBulkCategory && canUpdate && (
+                  <BulkChangeCategoryDialog
+                    open={openBulkCategory}
+                    categories={categoryNames}
+                    onClose={() => setOpenBulkCategory(false)}
+                    onConfirm={(category) => {
+                      const ids = Array.from(selectedIds);
+                      if (!ids.length) return setOpenBulkCategory(false);
+                      bulkCategoryMut.mutate(
+                        { ids, category },
+                        {
+                          onSuccess: () => {
+                            setOpenBulkCategory(false);
+                            clearSelection();
+                          },
+                        }
+                      );
+                    }}
+                    isSubmitting={bulkAvailabilityMut.isPending}
+                  />
+                )}
 
-                <ConfirmDeleteItemsDialog
-                  open={openDeleteMany}
-                  count={selectedIds.size}
-                  onClose={() => setOpenDeleteMany(false)}
-                  onConfirm={() => {
-                    const ids = Array.from(selectedIds);
-                    Promise.allSettled(ids.map((id) => deleteMut.mutateAsync({ id }))).finally(() => {
-                      clearSelection();
-                      setOpenDeleteMany(false);
-                    });
-                  }}
-                  isSubmitting={deleteMut.isPending}
-                />
+                {openDeleteMany && canDelete && (
+                  <ConfirmDeleteItemsDialog
+                    open={openDeleteMany}
+                    count={selectedIds.size}
+                    onClose={() => setOpenDeleteMany(false)}
+                    onConfirm={() => {
+                      const ids = Array.from(selectedIds);
+                      Promise.allSettled(ids.map((id) => deleteMut.mutateAsync({ id }))).finally(() => {
+                        clearSelection();
+                        setOpenDeleteMany(false);
+                      });
+                    }}
+                    isSubmitting={deleteMut.isPending}
+                  />
+                )}
               </Suspense>
             </>
           )}

@@ -26,7 +26,10 @@ declare global {
 async function resolveTenantAndRole(userId: string, hintTenantId?: string) {
   const db = client.db('authDB');
   const users = db.collection<UserDoc>('users');
+
+  // Check both collections
   const memberships = db.collection<MembershipDoc>('memberships');
+  const members = db.collection<MembershipDoc>('members');
 
   let activeTenantId: ObjectId | undefined;
   let role: MembershipDoc['role'] | undefined;
@@ -42,11 +45,12 @@ async function resolveTenantAndRole(userId: string, hintTenantId?: string) {
   }
 
   for (const tid of tryTenantIds) {
-    const m = await memberships.findOne({
-      tenantId: tid,
-      userId: new ObjectId(userId),
-      status: 'active',
-    });
+    const query = { tenantId: tid, userId: new ObjectId(userId), status: 'active' } as const;
+
+    let m =
+      (await memberships.findOne(query)) ||
+      (await members.findOne(query));
+
     if (m) {
       activeTenantId = tid;
       role = m.role;

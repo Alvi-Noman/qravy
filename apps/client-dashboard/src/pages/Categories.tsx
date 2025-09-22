@@ -23,6 +23,8 @@ import CategoriesToolbar from '../components/categories/CategoriesToolbar';
 import CategoriesToolbarSkeleton from '../components/categories/CategoriesToolbarSkeleton';
 import CategoryListSkeleton from '../components/categories/CategoryListSkeleton';
 import { TagIcon } from '@heroicons/react/24/outline';
+import Can from '../components/Can';
+import { usePermissions } from '../context/PermissionsContext';
 
 const CategoryList = lazy(() => import('../components/categories/CategoryList'));
 const CategoryFormDialog = lazy(() => import('../components/categories/CategoryFormDialog'));
@@ -102,9 +104,29 @@ export default function CategoriesPage() {
     availabilityMut,
   } = useCategories();
 
+  const { has } = usePermissions();
+  const canCreate = has('categories:create');
+  const canUpdate = has('categories:update');
+  const canDelete = has('categories:delete');
+  const canToggleVisibility = has('categories:toggleVisibility');
+
   // Read/write URL query to drive Add Category dialog
   const [searchParams, setSearchParams] = useSearchParams();
   const routeWantsNew = searchParams.get('new') === 'category';
+
+  // Auto-open dialog when URL says so (respect capability)
+  useEffect(() => {
+    if (routeWantsNew) {
+      if (canCreate) {
+        setEditing(null);
+        setOpenForm(true);
+      } else {
+        const sp = new URLSearchParams(searchParams);
+        sp.delete('new');
+        setSearchParams(sp, { replace: true });
+      }
+    }
+  }, [routeWantsNew, canCreate, searchParams, setSearchParams]);
 
   // Storage listener for cross-tab updates
   useEffect(() => {
@@ -121,19 +143,11 @@ export default function CategoriesPage() {
   const [channels, setChannels] = useState<Set<'dine-in' | 'online'>>(new Set());
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
-  const [openForm, setOpenForm] = useState(routeWantsNew);
+  const [openForm, setOpenForm] = useState(routeWantsNew && canCreate);
   const [editing, setEditing] = useState<Category | null>(null);
   const [openDelete, setOpenDelete] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<Category | null>(null);
   const [openMerge, setOpenMerge] = useState(false);
-
-  // Auto-open dialog when URL says so
-  useEffect(() => {
-    if (routeWantsNew) {
-      setEditing(null);
-      setOpenForm(true);
-    }
-  }, [routeWantsNew]);
 
   // Freeze + highlight states (for editing/adding)
   const [frozenCategories, setFrozenCategories] = useState<Category[] | null>(
@@ -247,7 +261,7 @@ export default function CategoriesPage() {
     if (openForm && editing && !frozenCategories) {
       setFrozenCategories(categories);
     }
-  }, [openForm, editing]);
+  }, [openForm, editing, categories, frozenCategories]);
 
   useEffect(() => {
     if (!openForm && (frozenCategories || queuedHighlightId)) {
@@ -263,7 +277,7 @@ export default function CategoriesPage() {
           setFrozenCategories(null);
         });
     }
-  }, [openForm]);
+  }, [openForm, frozenCategories, queuedHighlightId, categoriesQuery]);
 
   // Selection helpers
   const toggleSelect = (id: string) =>
@@ -281,6 +295,44 @@ export default function CategoriesPage() {
   };
 
   const loading = categoriesQuery.isLoading;
+
+  // Handlers (always pass functions; guard inside by capability)
+  const onClickAdd = () => {
+    if (!canCreate) return;
+    setEditing(null);
+    const sp = new URLSearchParams(searchParams);
+    sp.set('new', 'category');
+    setSearchParams(sp, { replace: false });
+    setOpenForm(true);
+  };
+  const handleToggleAvailability = (category: Category, active: boolean) => {
+    if (!canToggleVisibility) return;
+    availabilityMut.mutate({ name: category.name, active });
+  };
+  const handleEdit = (c: Category) => {
+    if (!canUpdate) return;
+    setEditing(c);
+    setOpenForm(true);
+  };
+  const handleDelete = (c: Category) => {
+    if (!canDelete) return;
+    setDeleteTarget(c);
+    setOpenDelete(true);
+  };
+  const handleMerge = () => {
+    if (!canUpdate) return;
+    setOpenMerge(true);
+  };
+  const handleBulkDelete = () => {
+    if (!canDelete) return;
+    const firstId = Array.from(selectedIds)[0];
+    const target = categories.find((c) => c.id === firstId) || null;
+    if (!target) return;
+    setDeleteTarget(target);
+    setOpenDelete(true);
+  };
+
+  const allowBulk = canUpdate || canDelete;
 
   return (
     <div className="flex h-full flex-col min-h-0">
@@ -318,24 +370,22 @@ export default function CategoriesPage() {
               transition: 'transform 160ms ease',
             }}
           >
-            <Link
-              to="/categories/manage"
-              className="rounded-md border border-[#cecece] px-4 py-2 text-sm text-[#2e2e30] hover:bg-[#f5f5f5]"
-            >
-              Manage Category
-            </Link>
-            <button
-              className="rounded-md bg-[#2e2e30] px-4 py-2 text-sm text-white hover:opacity-90"
-              onClick={() => {
-                setEditing(null);
-                const sp = new URLSearchParams(searchParams);
-                sp.set('new', 'category');
-                setSearchParams(sp, { replace: false });
-                setOpenForm(true);
-              }}
-            >
-              Add Category
-            </button>
+            <Can capability="categories:update">
+              <Link
+                to="/categories/manage"
+                className="rounded-md border border-[#cecece] px-4 py-2 text-sm text-[#2e2e30] hover:bg-[#f5f5f5]"
+              >
+                Manage Category
+              </Link>
+            </Can>
+            <Can capability="categories:create">
+              <button
+                className="rounded-md bg-[#2e2e30] px-4 py-2 text-sm text-white hover:opacity-90"
+                onClick={onClickAdd}
+              >
+                Add Category
+              </button>
+            </Can>
           </div>
         </div>
 
@@ -373,17 +423,14 @@ export default function CategoriesPage() {
                       Organize your menu by creating categories. Once added,
                       they'll appear here.
                     </p>
-                    <button
-                      onClick={() => {
-                        const sp = new URLSearchParams(searchParams);
-                        sp.set('new', 'category');
-                        setSearchParams(sp, { replace: false });
-                        setOpenForm(true);
-                      }}
-                      className="rounded-md bg-[#2e2e30] text-white px-5 py-2 hover:opacity-90"
-                    >
-                      Add Category
-                    </button>
+                    <Can capability="categories:create">
+                      <button
+                        onClick={onClickAdd}
+                        className="rounded-md bg-[#2e2e30] text-white px-5 py-2 hover:opacity-90"
+                      >
+                        Add Category
+                      </button>
+                    </Can>
                   </div>
                 ) : (
                   <Suspense fallback={<CategoryListSkeleton rows={6} />}>
@@ -395,17 +442,9 @@ export default function CategoriesPage() {
                       selectedIds={selectedIds}
                       onToggleSelect={toggleSelect}
                       onToggleSelectAll={toggleSelectAll}
-                      onToggleAvailability={(category, active) =>
-                        availabilityMut.mutate({ name: category.name, active })
-                      }
-                      onEdit={(c) => {
-                        setEditing(c);
-                        setOpenForm(true);
-                      }}
-                      onDelete={(c) => {
-                        setDeleteTarget(c);
-                        setOpenDelete(true);
-                      }}
+                      onToggleAvailability={handleToggleAvailability}
+                      onEdit={handleEdit}
+                      onDelete={handleDelete}
                       highlightId={highlightId}
                     />
                   </Suspense>
@@ -413,93 +452,90 @@ export default function CategoriesPage() {
               </div>
 
               {/* Bulk actions + dialogs */}
-              {viewCategories.length > 0 && (
+              {viewCategories.length > 0 && allowBulk && (
                 <BulkActionsBar
                   count={selectedIds.size}
                   onClear={() => setSelectedIds(new Set())}
-                  onMerge={() => setOpenMerge(true)}
-                  onDelete={() => {
-                    const firstId = Array.from(selectedIds)[0];
-                    const target =
-                      categories.find((c) => c.id === firstId) || null;
-                    if (!target) return;
-                    setDeleteTarget(target);
-                    setOpenDelete(true);
-                  }}
+                  onMerge={handleMerge}
+                  onDelete={handleBulkDelete}
                 />
               )}
+
               <Suspense fallback={null}>
-                <CategoryFormDialog
-                  open={openForm}
-                  title={editing ? 'Rename Category' : 'Add Category'}
-                  initialName={editing?.name || ''}
-                  existingNames={
-                    editing
-                      ? existingNames.filter(
-                          (n) =>
-                            n.toLowerCase() !== editing.name.toLowerCase()
-                        )
-                      : existingNames
-                  }
-                  isSubmitting={
-                    createMut.isPending || renameMut.isPending
-                  }
-                  onClose={() => {
-                    setOpenForm(false);
-                    const sp = new URLSearchParams(searchParams);
-                    sp.delete('new');
-                    setSearchParams(sp, { replace: true });
-                  }}
-                  onSubmit={async (name) => {
-                    if (editing) {
-                      const updated = await renameMut.mutateAsync({
-                        id: editing.id,
-                        newName: name,
-                      });
-                      setOpenForm(false);
-                      const sp = new URLSearchParams(searchParams);
-                      sp.delete('new');
-                      setSearchParams(sp, { replace: true });
-                      setQueuedHighlightId(updated.id);
-                    } else {
-                      const created = await createMut.mutateAsync(name);
-                      setOpenForm(false);
-                      const sp = new URLSearchParams(searchParams);
-                      sp.delete('new');
-                      setSearchParams(sp, { replace: true });
-                      setPendingHighlightId(created.id);
+                {openForm && (editing ? canUpdate : canCreate) && (
+                  <CategoryFormDialog
+                    open={openForm}
+                    title={editing ? 'Rename Category' : 'Add Category'}
+                    initialName={editing?.name || ''}
+                    existingNames={
+                      editing
+                        ? existingNames.filter(
+                            (n) => n.toLowerCase() !== editing.name.toLowerCase()
+                          )
+                        : existingNames
                     }
-                  }}
-                />
-                <DeleteReassignDialog
-                  open={openDelete}
-                  category={deleteTarget}
-                  categories={categories}
-                  usageCount={
-                    deleteTarget ? usageMap.get(deleteTarget.name) ?? 0 : 0
-                  }
-                  isSubmitting={deleteMut.isPending}
-                  onClose={() => setOpenDelete(false)}
-                  onConfirm={({ mode, reassignToId }) => {
-                    if (!deleteTarget) return;
-                    deleteMut.mutate(
-                      { id: deleteTarget.id, mode, reassignToId },
-                      { onSuccess: () => setOpenDelete(false) }
-                    );
-                  }}
-                />
-                <MergeCategoriesDialog
-                  open={openMerge}
-                  selectedIds={Array.from(selectedIds)}
-                  categories={categories}
-                  isSubmitting={mergeMut.isPending}
-                  onClose={() => setOpenMerge(false)}
-                  onConfirm={({ fromIds, toId }) => {
-                    setOpenMerge(false);
-                    setSelectedIds(new Set());
-                    mergeMut.mutate({ fromIds, toId });
-                  }}
-                />
+                    isSubmitting={createMut.isPending || renameMut.isPending}
+                    onClose={() => {
+                      setOpenForm(false);
+                      const sp = new URLSearchParams(searchParams);
+                      sp.delete('new');
+                      setSearchParams(sp, { replace: true });
+                    }}
+                    onSubmit={async (name) => {
+                      if (editing) {
+                        const updated = await renameMut.mutateAsync({
+                          id: editing.id,
+                          newName: name,
+                        });
+                        setOpenForm(false);
+                        const sp = new URLSearchParams(searchParams);
+                        sp.delete('new');
+                        setSearchParams(sp, { replace: true });
+                        setQueuedHighlightId(updated.id);
+                      } else {
+                        const created = await createMut.mutateAsync(name);
+                        setOpenForm(false);
+                        const sp = new URLSearchParams(searchParams);
+                        sp.delete('new');
+                        setSearchParams(sp, { replace: true });
+                        setPendingHighlightId(created.id);
+                      }
+                    }}
+                  />
+                )}
+
+                {openDelete && canDelete && (
+                  <DeleteReassignDialog
+                    open={openDelete}
+                    category={deleteTarget}
+                    categories={categories}
+                    usageCount={deleteTarget ? usageMap.get(deleteTarget.name) ?? 0 : 0}
+                    isSubmitting={deleteMut.isPending}
+                    onClose={() => setOpenDelete(false)}
+                    onConfirm={({ mode, reassignToId }) => {
+                      if (!deleteTarget) return;
+                      deleteMut.mutate(
+                        { id: deleteTarget.id, mode, reassignToId },
+                        { onSuccess: () => setOpenDelete(false) }
+                      );
+                    }}
+                  />
+                )}
+
+                {openMerge && canUpdate && (
+                  <MergeCategoriesDialog
+                    open={openMerge}
+                    selectedIds={Array.from(selectedIds)}
+                    categories={categories}
+                    isSubmitting={mergeMut.isPending}
+                    onClose={() => setOpenMerge(false)}
+                    onConfirm={({ fromIds, toId }) => {
+                      setOpenMerge(false);
+                      setSelectedIds(new Set());
+                      mergeMut.mutate({ fromIds, toId });
+                    }}
+                  />
+                )}
               </Suspense>
             </>
           )}

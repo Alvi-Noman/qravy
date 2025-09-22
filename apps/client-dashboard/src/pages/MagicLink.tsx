@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import api, { verifyMagicLink } from '../api/auth';
+import { verifyMagicLink } from '../api/auth';
 import { useAuthContext } from '../context/AuthContext';
 import AuthErrorScreen from '../components/AuthErrorScreen';
-import { listAccessibleWorkspaces, lookupDeviceAssignment } from '../api/access';
+
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string) || '';
 
 type AuthUser = {
   id: string;
@@ -21,6 +22,9 @@ type VerifyResponse = {
 };
 
 type Workspace = { id: string; name: string };
+type DeviceLookup =
+  | { found: false }
+  | { found: true; tenantId: string; locationId: string | null; locationName: string | null };
 
 export default function MagicLink() {
   const [searchParams] = useSearchParams();
@@ -32,6 +36,7 @@ export default function MagicLink() {
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [joining, setJoining] = useState<string | null>(null);
   const [verifiedUser, setVerifiedUser] = useState<AuthUser | null>(null);
+  const [verifiedToken, setVerifiedToken] = useState<string>('');
 
   const { data, isPending, isSuccess, isError } = useQuery<VerifyResponse, Error>({
     queryKey: ['verify-magic-link', token],
@@ -42,34 +47,65 @@ export default function MagicLink() {
 
   useEffect(() => {
     if (isSuccess && data?.token && data.user) {
-      // Store session; do NOT navigate yet
-      login(data.token, data.user);
+      // Save the freshly verified token/user and set session (for UI)
+      setVerifiedToken(data.token);
       setVerifiedUser(data.user);
+      login(data.token, data.user);
 
-      // Fast path: if this device is already assigned, auto-join and go to dashboard
       (async () => {
         try {
-          const lookup = await lookupDeviceAssignment();
-          if (lookup && 'found' in lookup && lookup.found) {
-            const res = await api.post('/api/v1/access/select-tenant', { tenantId: lookup.tenantId });
-            const nextToken = res.data?.token as string | undefined;
-            if (nextToken) {
-              await login(nextToken, { ...data.user, tenantId: lookup.tenantId, isOnboarded: true });
-              await reloadUser();
-              navigate('/dashboard', { replace: true });
-              return;
+          // 1) Fast path: recognized device (central) -> select tenant -> dashboard
+          const lookupRes = await fetch(`${API_BASE_URL}/api/v1/access/devices/lookup`, {
+            method: 'GET',
+            headers: { Authorization: `Bearer ${data.token}` },
+            credentials: 'include',
+          });
+          if (lookupRes.ok) {
+            const lookup: DeviceLookup = await lookupRes.json();
+            if (lookup && 'found' in lookup && lookup.found) {
+              const sel = await fetch(`${API_BASE_URL}/api/v1/access/select-tenant`, {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  Authorization: `Bearer ${data.token}`,
+                },
+                credentials: 'include',
+                body: JSON.stringify({ tenantId: lookup.tenantId }),
+              });
+              if (sel.ok) {
+                const selJson = await sel.json();
+                const nextToken = selJson?.token as string | undefined;
+                if (nextToken) {
+                  await login(nextToken, { ...data.user, tenantId: lookup.tenantId, isOnboarded: true });
+                  await reloadUser();
+                  navigate('/dashboard', { replace: true });
+                  return;
+                }
+              }
             }
           }
 
-          // Otherwise show workspaces (or fallback to owner create/dashboard)
-          const items = await listAccessibleWorkspaces();
-          if (!items || items.length === 0) {
-            const u = data.user;
-            navigate(u.tenantId ? '/dashboard' : '/create-restaurant', { replace: true });
-          } else {
+          // 2) Central-email list: use the same freshly verified token (no interceptor/refresh)
+          const wsRes = await fetch(`${API_BASE_URL}/api/v1/access/workspaces`, {
+            method: 'GET',
+            headers: { Authorization: `Bearer ${data.token}` },
+            credentials: 'include',
+          });
+          if (!wsRes.ok) throw new Error('workspaces failed');
+          const wsJson = await wsRes.json();
+          const items: Workspace[] = wsJson?.items || [];
+
+          if (items.length > 0) {
+            // Central flow: show Workspaces [Join] -> Select Location
             setWorkspaces(items);
+            return;
           }
+
+          // 3) Owner/admin flow: no central workspaces
+          const u = data.user;
+          navigate(u.tenantId ? '/dashboard' : '/create-restaurant', { replace: true });
         } catch {
+          // Owner/admin fallback
           const u = data.user;
           navigate(u.tenantId ? '/dashboard' : '/create-restaurant', { replace: true });
         }
@@ -83,17 +119,32 @@ export default function MagicLink() {
 
   const onJoin = async (tenantId: string) => {
     try {
+      if (!verifiedUser || !verifiedToken) return;
       setJoining(tenantId);
-      const res = await api.post('/api/v1/access/select-tenant', { tenantId });
-      const nextToken = res.data?.token as string | undefined;
-      if (!nextToken || !verifiedUser) throw new Error('Failed to join workspace');
+
+      // Use freshly verified token to bind session to the selected tenant
+      const sel = await fetch(`${API_BASE_URL}/api/v1/access/select-tenant`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${verifiedToken}`,
+        },
+        credentials: 'include',
+        body: JSON.stringify({ tenantId }),
+      });
+      if (!sel.ok) throw new Error('Failed to join workspace');
+
+      const selJson = await sel.json();
+      const nextToken = selJson?.token as string | undefined;
+      if (!nextToken) throw new Error('No token returned');
 
       await login(nextToken, { ...verifiedUser, tenantId, isOnboarded: true });
       await reloadUser();
 
+      // Next step: select branch for this device
       navigate('/access/select-location', { replace: true });
-    } catch (e) {
-      navigate('/login', { replace: true });
+    } catch {
+      setJoining(null);
     } finally {
       setJoining(null);
     }

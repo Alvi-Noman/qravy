@@ -5,24 +5,23 @@ import logger from '../utils/logger.js';
 import type { CategoryDoc } from '../models/Category.js';
 import { toCategoryDTO } from '../utils/mapper.js';
 import { auditLog } from '../utils/audit.js';
-// ADD:
 import type { TenantDoc } from '../models/Tenant.js';
 
 function categoriesCol() {
   return client.db('authDB').collection<CategoryDoc>('categories');
 }
-
 function menuItemsCol() {
   return client.db('authDB').collection('menuItems');
 }
-
-// ADD:
 function tenantsCol() {
   return client.db('authDB').collection<TenantDoc>('tenants');
 }
 
 function canWrite(role?: string): boolean {
   return role === 'owner' || role === 'admin' || role === 'editor';
+}
+function isBranch(req: Request): boolean {
+  return !req.user?.role; // central device/branch session has no membership role
 }
 
 export async function listCategories(req: Request, res: Response, next: NextFunction) {
@@ -44,6 +43,8 @@ export async function listCategories(req: Request, res: Response, next: NextFunc
 
 export async function createCategory(req: Request, res: Response, next: NextFunction) {
   try {
+    if (isBranch(req)) return res.fail(403, 'Not allowed for branch session');
+
     const userId = req.user?.id;
     const tenantId = req.user?.tenantId;
     if (!userId) return res.fail(401, 'Unauthorized');
@@ -72,7 +73,6 @@ export async function createCategory(req: Request, res: Response, next: NextFunc
       userAgent: req.headers['user-agent'] || 'unknown',
     });
 
-    // ADD: mark onboarding progress for category
     await tenantsCol().updateOne(
       { _id: new ObjectId(tenantId) },
       { $set: { 'onboardingProgress.hasCategory': true, updatedAt: now } }
@@ -91,6 +91,8 @@ export async function createCategory(req: Request, res: Response, next: NextFunc
 
 export async function updateCategory(req: Request, res: Response, next: NextFunction) {
   try {
+    if (isBranch(req)) return res.fail(403, 'Not allowed for branch session');
+
     const userId = req.user?.id;
     const tenantId = req.user?.tenantId;
     if (!userId) return res.fail(401, 'Unauthorized');
@@ -135,6 +137,8 @@ export async function updateCategory(req: Request, res: Response, next: NextFunc
 
 export async function deleteCategory(req: Request, res: Response, next: NextFunction) {
   try {
+    if (isBranch(req)) return res.fail(403, 'Not allowed for branch session');
+
     const userId = req.user?.id;
     const tenantId = req.user?.tenantId;
     if (!userId) return res.fail(401, 'Unauthorized');
@@ -155,7 +159,6 @@ export async function deleteCategory(req: Request, res: Response, next: NextFunc
 
     await categoriesCol().deleteOne(filter);
 
-    // ADD: recompute flags after deletion
     const [remainingCategories, remainingItems] = await Promise.all([
       categoriesCol().countDocuments({ tenantId: new ObjectId(tenantId) }),
       menuItemsCol().countDocuments({ tenantId: new ObjectId(tenantId) }),

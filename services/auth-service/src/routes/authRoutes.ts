@@ -22,6 +22,8 @@ import {
   deleteCategory,
 } from '../controllers/categoriesController.js';
 import { authenticateJWT } from '../middleware/auth.js';
+import { applyScope } from '../middleware/scope.js';
+import { authorize } from '../middleware/authorize.js';
 import { validateRequest } from '../middleware/validateRequest.js';
 import {
   magicLinkSchema,
@@ -54,17 +56,45 @@ router.post('/logout', logout);
 // Complete onboarding (protected)
 router.post('/onboarding/complete', authenticateJWT, completeOnboarding);
 
-// Menu items
-router.get('/menu-items', authenticateJWT, listMenuItems);
-router.post('/menu-items', authenticateJWT, validateRequest(menuItemSchema), createMenuItem);
-router.post('/menu-items/:id/update', authenticateJWT, validateRequest(menuItemUpdateSchema), updateMenuItem);
-router.post('/menu-items/:id/delete', authenticateJWT, deleteMenuItem);
+// Menu items (legacy alias under /auth) with scope + authz
+router.get('/menu-items', authenticateJWT, applyScope, authorize('menuItems:read'), listMenuItems);
+router.post(
+  '/menu-items',
+  authenticateJWT,
+  applyScope,
+  authorize('menuItems:create'),
+  validateRequest(menuItemSchema),
+  createMenuItem
+);
+router.post(
+  '/menu-items/:id/update',
+  authenticateJWT,
+  applyScope,
+  authorize('menuItems:update'),
+  validateRequest(menuItemUpdateSchema),
+  updateMenuItem
+);
+router.post('/menu-items/:id/delete', authenticateJWT, applyScope, authorize('menuItems:delete'), deleteMenuItem);
 
-// Categories
-router.get('/categories', authenticateJWT, listCategories);
-router.post('/categories', authenticateJWT, validateRequest(categorySchema), createCategory);
-router.post('/categories/:id/update', authenticateJWT, validateRequest(categoryUpdateSchema), updateCategory);
-router.post('/categories/:id/delete', authenticateJWT, deleteCategory);
+// Categories (legacy alias under /auth) with scope + authz
+router.get('/categories', authenticateJWT, applyScope, authorize('categories:read'), listCategories);
+router.post(
+  '/categories',
+  authenticateJWT,
+  applyScope,
+  authorize('categories:create'),
+  validateRequest(categorySchema),
+  createCategory
+);
+router.post(
+  '/categories/:id/update',
+  authenticateJWT,
+  applyScope,
+  authorize('categories:update'),
+  validateRequest(categoryUpdateSchema),
+  updateCategory
+);
+router.post('/categories/:id/delete', authenticateJWT, applyScope, authorize('categories:delete'), deleteCategory);
 
 // Sessions
 router.post('/logout-all', authenticateJWT, logoutAll);
@@ -88,7 +118,7 @@ router.get('/sessions', authenticateJWT, async (req: Request, res: Response) => 
   return res.ok({ sessions });
 });
 
-// Me (derived isOnboarded) - uses DB tenantId or falls back to JWT tenantId
+// Me
 router.get('/me', authenticateJWT, async (req: Request, res: Response) => {
   const userId = req.user?.id;
   if (!userId) return res.fail(401, 'Unauthorized');
