@@ -125,7 +125,7 @@ export const registerOrAssignDevice = async (req: Request, res: Response, next: 
     const tenantId = req.user?.tenantId;
     if (!tenantId) return void res.fail(409, 'Tenant not set');
 
-    const { deviceKey, locationId, label, os, browser } = req.body as {
+    const { deviceKey: bodyDeviceKey, locationId, label, os, browser } = (req.body || {}) as {
       deviceKey?: string;
       locationId?: string;
       label?: string;
@@ -133,8 +133,30 @@ export const registerOrAssignDevice = async (req: Request, res: Response, next: 
       browser?: string;
     };
 
-    if (!deviceKey || typeof deviceKey !== 'string') return void res.fail(400, 'deviceKey is required');
     if (!locationId || typeof locationId !== 'string') return void res.fail(400, 'locationId is required');
+
+    const cookies = (req as any).cookies as Record<string, string> | undefined;
+    const cookieDeviceKey = (cookies?.deviceKey || '').trim();
+    let deviceKey = cookieDeviceKey || (typeof bodyDeviceKey === 'string' ? bodyDeviceKey.trim() : '');
+
+    // If still missing, generate and set cookie
+    if (!deviceKey) {
+      deviceKey = crypto.randomUUID();
+      res.cookie('deviceKey', deviceKey, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: 'strict',
+        maxAge: 365 * 24 * 60 * 60 * 1000, // 1 year
+      });
+    } else if (!cookieDeviceKey) {
+      // ensure cookie is set for future requests
+      res.cookie('deviceKey', deviceKey, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: 'strict',
+        maxAge: 365 * 24 * 60 * 60 * 1000,
+      });
+    }
 
     const tenantObjectId = new ObjectId(tenantId);
     const locationObjectId = new ObjectId(locationId);
@@ -195,7 +217,11 @@ export const registerOrAssignDevice = async (req: Request, res: Response, next: 
  */
 export const lookupDeviceByKey = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
-    const deviceKey = String((req.query.deviceKey as string) || '').trim();
+    const cookies = (req as any).cookies as Record<string, string> | undefined;
+    const cookieDeviceKey = (cookies?.deviceKey || '').trim();
+    const queryDeviceKey = String((req.query.deviceKey as string) || '').trim();
+    const deviceKey = cookieDeviceKey || queryDeviceKey;
+
     const email = (req.user?.email || '').toLowerCase();
     if (!deviceKey) return void res.fail(400, 'deviceKey is required');
     if (!email) return void res.fail(401, 'Unauthorized');

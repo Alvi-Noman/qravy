@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import api from '../api/auth';
-import { registerDevice, getOrCreateDeviceKey } from '../api/access';
+import { registerDevice } from '../api/access';
 
 type Location = { id: string; name: string };
 
@@ -68,12 +68,7 @@ export default function SelectLocation() {
         label: 'POS Device',
         os,
         browser,
-        deviceKey: getOrCreateDeviceKey(),
       });
-
-      // Persist default branch so the sidebar shows it by default
-      localStorage.setItem('muv_device_location', selected);
-      localStorage.setItem('locations:activeId', selected);
 
       navigate('/dashboard', { replace: true });
     } catch (e) {

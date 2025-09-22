@@ -37,9 +37,7 @@ const router: Router = Router();
 
 // Magic link
 router.post('/magic-link', validateRequest(magicLinkSchema), sendMagicLink);
-// Keep existing path…
 router.get('/magic-link/verify', verifyMagicLink);
-// …and add alias for clients calling /verify-magic-link
 router.get('/verify-magic-link', verifyMagicLink);
 
 // Tokens/logout
@@ -104,7 +102,6 @@ router.get('/me', authenticateJWT, async (req: Request, res: Response) => {
   if (user.tenantId) {
     effectiveTenantId = user.tenantId;
   } else if (req.user?.tenantId && ObjectId.isValid(req.user.tenantId)) {
-    // fallback for central-email flow using tenant-bound JWT
     effectiveTenantId = new ObjectId(req.user.tenantId);
   }
 
@@ -117,6 +114,9 @@ router.get('/me', authenticateJWT, async (req: Request, res: Response) => {
     if (tenant?.onboardingCompleted) isOnboarded = true;
   }
 
+  const isCentral = !req.user?.role;
+  const locationId = req.user?.locationId ?? null;
+
   return res.ok({
     user: {
       id: user._id?.toString() || '',
@@ -124,6 +124,10 @@ router.get('/me', authenticateJWT, async (req: Request, res: Response) => {
       isVerified: !!user.isVerified,
       tenantId: tenantIdStr,
       isOnboarded,
+    },
+    session: {
+      type: isCentral ? 'central' : 'member',
+      locationId,
     },
   });
 });

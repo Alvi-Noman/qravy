@@ -19,19 +19,15 @@ import {
   Cog6ToothIcon,
 } from '@heroicons/react/24/outline';
 import api from '../../api/auth';
+import { useAuthContext } from '../../context/AuthContext';
 
 type NavItem = { name: string; to: string; icon: ElementType; end?: boolean };
 type Section = { heading: string; items: NavItem[] };
-// Avoid conflict with window.Location
 type StoreLocation = { id: string; name: string };
 
-const DEFAULT_LOCATION_KEY = 'defaultLocationId';
-const CENTRAL_FLAG_KEY = 'session:central';
-const DEVICE_LOCATION_KEY = 'muv_device_location';
-const LOCATIONS_CACHE_KEY = 'locations:list';
-const ACTIVE_KEY = 'locations:activeId';
-
 export default function Sidebar(): JSX.Element {
+  const { session } = useAuthContext();
+
   const sections: Section[] = [
     {
       heading: 'Manage',
@@ -64,83 +60,62 @@ export default function Sidebar(): JSX.Element {
         : 'text-slate-700 hover:bg-slate-50 hover:text-slate-900'
     }`;
 
-  // Load cached list first; refresh names from API
-  const [locations, setLocations] = useState<StoreLocation[]>(() => {
-    try {
-      return JSON.parse(localStorage.getItem(LOCATIONS_CACHE_KEY) || '[]') as StoreLocation[];
-    } catch {
-      return [];
-    }
-  });
+  const [locations, setLocations] = useState<StoreLocation[]>([]);
+  const [loadingSelect, setLoadingSelect] = useState(true); // NEW
+  const isCentralSession = session?.type === 'central';
 
-  const isCentralSession = useMemo(() => localStorage.getItem(CENTRAL_FLAG_KEY) === 'true', []);
+  // Active location id
+  const [activeLocationId, setActiveLocationId] = useState<string>('');
 
-  // Initial active:
-  // - central session: device-assigned
-  // - admin/owner: defaultLocationId from localStorage if present; else '' (All locations)
-  const [activeLocationId, setActiveLocationId] = useState<string>(() => {
-    const deviceAssigned = isCentralSession ? localStorage.getItem(DEVICE_LOCATION_KEY) : null;
-    if (deviceAssigned) return deviceAssigned;
-    const savedDefault = !isCentralSession ? localStorage.getItem(DEFAULT_LOCATION_KEY) : null;
-    return savedDefault || '';
-  });
-
-  // Fetch locations; ensure "active" is valid; no fallback to first; default to '' if invalid
+  // Fetch locations (and default for admins)
   useEffect(() => {
     let mounted = true;
+    setLoadingSelect(true);
     (async () => {
       try {
-        const res = await api.get('/api/v1/locations');
-        const items: StoreLocation[] = res.data?.items || [];
-        if (!mounted) return;
-        setLocations(items);
-        try {
-          localStorage.setItem(LOCATIONS_CACHE_KEY, JSON.stringify(items));
-        } catch {}
-
-        const ids = new Set(items.map((l) => l.id));
-        let chosen = activeLocationId;
-
         if (isCentralSession) {
-          const deviceAssigned = localStorage.getItem(DEVICE_LOCATION_KEY);
-          if (deviceAssigned && ids.has(deviceAssigned)) {
-            chosen = deviceAssigned;
-          } else if (chosen && !ids.has(chosen)) {
-            chosen = '';
-          }
+          // Central: server already scopes to the assigned location
+          const res = await api.get('/api/v1/locations');
+          const items: StoreLocation[] = res.data?.items || [];
+          if (!mounted) return;
+          setLocations(items);
+          setActiveLocationId(items[0]?.id || '');
         } else {
-          const savedDefault = localStorage.getItem(DEFAULT_LOCATION_KEY);
-          if (chosen && !ids.has(chosen)) {
-            chosen = savedDefault && ids.has(savedDefault) ? savedDefault : '';
-          } else if (!chosen) {
-            chosen = savedDefault && ids.has(savedDefault) ? savedDefault : '';
+          // Member (owner/admin): fetch list + default and select it; else "All locations"
+          const [locRes, defRes] = await Promise.all([
+            api.get('/api/v1/locations'),
+            api.get('/api/v1/locations/default'),
+          ]);
+          const items: StoreLocation[] = locRes.data?.items || [];
+          const defaultLocationId = defRes.data?.defaultLocationId as string | null | undefined;
+          if (!mounted) return;
+          setLocations(items);
+
+          const ids = new Set(items.map((l) => l.id));
+          if (defaultLocationId && ids.has(defaultLocationId)) {
+            setActiveLocationId(defaultLocationId);
+          } else {
+            setActiveLocationId(''); // All locations
           }
         }
-
-        setActiveLocationId(chosen);
-        try {
-          localStorage.setItem(ACTIVE_KEY, chosen);
-        } catch {}
       } catch {
-        // ignore; use cache
+        // ignore for sidebar
+      } finally {
+        if (mounted) setLoadingSelect(false);
       }
     })();
     return () => {
       mounted = false;
     };
-  }, []); // run once
-
-  // Persist selection for app-wide filtering (also when selecting All -> '')
-  useEffect(() => {
-    try {
-      localStorage.setItem(ACTIVE_KEY, activeLocationId);
-      localStorage.setItem('locations:updated', Date.now().toString());
-    } catch {}
-  }, [activeLocationId]);
+  }, [isCentralSession]);
 
   const activeLocation = locations.find((b) => b.id === activeLocationId);
   const displayName =
-    activeLocationId === '' ? 'All locations' : activeLocation?.name || 'Current location';
+    isCentralSession
+      ? activeLocation?.name || 'Current location'
+      : activeLocationId === ''
+      ? 'All locations'
+      : activeLocation?.name || 'Current location';
 
   return (
     <aside className="flex h-full w-64 flex-col bg-[#f5f5f5] px-4 py-4">
@@ -149,14 +124,22 @@ export default function Sidebar(): JSX.Element {
         <span className="text-3xl font-semibold tracking-tight text-slate-900">Qravy.</span>
       </div>
 
-      {/* Location selector (no backend writes, includes "All locations") */}
+      {/* Location selector */}
       <div className="mt-7 mb-6">
-        <SidebarLocationSelect
-          locations={locations}
-          value={activeLocationId}
-          onChange={setActiveLocationId}
-          displayName={displayName}
-        />
+        {loadingSelect ? (
+          <div className="h-11 w-full rounded-md border border-[#dbdbdb] bg-slate-100 animate-pulse" />
+        ) : (
+          <SidebarLocationSelect
+            locations={locations}
+            value={activeLocationId}
+            onChange={(id) => {
+              if (isCentralSession) return; // lock for central sessions
+              setActiveLocationId(id);
+            }}
+            displayName={displayName}
+            isCentralSession={isCentralSession}
+          />
+        )}
       </div>
 
       <nav className="flex-1 overflow-y-auto">
@@ -190,11 +173,13 @@ function SidebarLocationSelect({
   value,
   onChange,
   displayName,
+  isCentralSession = false,
 }: {
   locations: StoreLocation[];
   value: string;
   onChange: (id: string) => void;
   displayName: string;
+  isCentralSession?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -215,10 +200,12 @@ function SidebarLocationSelect({
     };
   }, []);
 
-  const options = useMemo(
-    () => [{ id: '', name: 'All locations' }, ...locations],
-    [locations]
-  );
+  const options = useMemo(() => {
+    if (isCentralSession) {
+      return locations;
+    }
+    return [{ id: '', name: 'All locations' }, ...locations];
+  }, [locations, isCentralSession]);
 
   return (
     <div ref={rootRef} className="relative">
@@ -226,7 +213,10 @@ function SidebarLocationSelect({
         type="button"
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center justify-between rounded-md border border-[#dbdbdb] bg-[#fcfcfc] px-3 py-2.5 text-left text-[14px] text-slate-700 transition-colors hover:bg-[#f6f6f6]"
+        className={`flex w-full items-center justify-between rounded-md border border-[#dbdbdb] px-3 py-2.5 text-left text-[14px] transition-colors ${
+          isCentralSession ? 'bg-[#f6f6f6] text-slate-800 cursor-default' : 'bg-[#fcfcfc] text-slate-700 hover:bg-[#f6f6f6]'
+        }`}
+        disabled={isCentralSession}
       >
         <span className="flex min-w-0 items-center gap-3">
           <MapPinIcon className="h-5 w-5 text-slate-600" />
@@ -239,7 +229,7 @@ function SidebarLocationSelect({
       </button>
 
       <AnimatePresence>
-        {open && (
+        {open && !isCentralSession && (
           <motion.div
             initial={{ opacity: 0, y: 8 }}
             animate={{ opacity: 1, y: 0 }}
@@ -250,19 +240,21 @@ function SidebarLocationSelect({
             {/* Header */}
             <div className="flex items-center justify-between border-b border-slate-100 px-3 py-2">
               <div className="text-[13px] font-medium text-slate-700">Locations</div>
-              <Link
-                to="/locations"
-                onClick={() => setOpen(false)}
-                className="inline-flex h-8 items-center gap-1.5 rounded-md border border-[#dbdbdb] bg-white px-2.5 text-[12px] font-medium text-slate-700 hover:bg-[#f3f4f6]"
-                aria-label="Manage locations"
-                title="Manage locations"
-              >
-                <Cog6ToothIcon className="h-4 w-4" />
-                <span>Manage</span>
-              </Link>
+              {!isCentralSession && (
+                <Link
+                  to="/locations"
+                  onClick={() => setOpen(false)}
+                  className="inline-flex h-8 items-center gap-1.5 rounded-md border border-[#dbdbdb] bg-white px-2.5 text-[12px] font-medium text-slate-700 hover:bg-[#f3f4f6]"
+                  aria-label="Manage locations"
+                  title="Manage locations"
+                >
+                  <Cog6ToothIcon className="h-4 w-4" />
+                  <span>Manage</span>
+                </Link>
+              )}
             </div>
 
-            {/* Options (includes "All locations") */}
+            {/* Options */}
             <ul role="menu" className="max-h-72 overflow-y-auto py-1">
               {options.map((b) => {
                 const selected = value === b.id;
@@ -273,7 +265,7 @@ function SidebarLocationSelect({
                       role="menuitemradio"
                       aria-checked={selected}
                       onClick={() => {
-                        onChange(b.id); // only updates local state/storage; no backend call
+                        onChange(b.id);
                         setOpen(false);
                       }}
                       className={`flex w-full items-center justify-between px-3 py-2 text-left text-[13px] transition ${
@@ -293,7 +285,7 @@ function SidebarLocationSelect({
                   </li>
                 );
               })}
-              {options.length === 1 && (
+              {options.length === 0 && (
                 <li className="px-3 py-2 text-[13px] text-slate-500">No locations found</li>
               )}
             </ul>

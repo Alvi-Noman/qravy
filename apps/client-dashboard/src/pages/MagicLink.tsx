@@ -4,7 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import api, { verifyMagicLink } from '../api/auth';
 import { useAuthContext } from '../context/AuthContext';
 import AuthErrorScreen from '../components/AuthErrorScreen';
-import { listAccessibleWorkspaces, lookupDeviceAssignment, getOrCreateDeviceKey } from '../api/access';
+import { listAccessibleWorkspaces, lookupDeviceAssignment } from '../api/access';
 
 type AuthUser = {
   id: string;
@@ -49,16 +49,11 @@ export default function MagicLink() {
       // Fast path: if this device is already assigned, auto-join and go to dashboard
       (async () => {
         try {
-          const lookup = await lookupDeviceAssignment(getOrCreateDeviceKey());
+          const lookup = await lookupDeviceAssignment();
           if (lookup && 'found' in lookup && lookup.found) {
             const res = await api.post('/api/v1/access/select-tenant', { tenantId: lookup.tenantId });
             const nextToken = res.data?.token as string | undefined;
             if (nextToken) {
-              if (lookup.locationId) {
-                // Persist current branch for default selection in sidebar
-                localStorage.setItem('muv_device_location', lookup.locationId);
-                localStorage.setItem('locations:activeId', lookup.locationId);
-              }
               await login(nextToken, { ...data.user, tenantId: lookup.tenantId, isOnboarded: true });
               await reloadUser();
               navigate('/dashboard', { replace: true });
@@ -93,14 +88,11 @@ export default function MagicLink() {
       const nextToken = res.data?.token as string | undefined;
       if (!nextToken || !verifiedUser) throw new Error('Failed to join workspace');
 
-      // Replace token with tenant-bound token and carry user + tenantId
-      // Optimistically set isOnboarded true, then refresh from /me
       await login(nextToken, { ...verifiedUser, tenantId, isOnboarded: true });
       await reloadUser();
 
       navigate('/access/select-location', { replace: true });
     } catch (e) {
-      // Fall back to error screen if anything fails
       navigate('/login', { replace: true });
     } finally {
       setJoining(null);

@@ -1,4 +1,3 @@
-// services/auth-service/src/controllers/locationsController.ts
 import type { Request, Response } from 'express';
 import { ObjectId } from 'mongodb';
 import { z } from 'zod';
@@ -36,7 +35,7 @@ function getUserId(req: Request): string {
   return String(u);
 }
 
-// New: safely derive the user's ObjectId from several possible fields
+// Safely derive the user's ObjectId
 function getUserObjectId(req: Request): ObjectId {
   const u = (req as any).user || {};
   const candidates = [u.id, u._id, u.sub, (req as any).userId, (req as any).auth?.userId]
@@ -62,8 +61,23 @@ function toDTO(doc: LocationDoc) {
   };
 }
 
+function isCentral(req: Request): boolean {
+  return !Boolean((req as any).user?.role);
+}
+
 export async function listLocations(req: Request, res: Response) {
   const tenantId = getTenantId(req);
+
+  // Central device-scoped session -> only return assigned location
+  if (isCentral(req) && (req as any).user?.locationId) {
+    const loc = await col().findOne({
+      _id: new ObjectId((req as any).user.locationId),
+      tenantId: new ObjectId(tenantId),
+    });
+    const items = loc ? [toDTO(loc)] : [];
+    return res.ok({ items });
+  }
+
   const items = await col()
     .find({ tenantId: new ObjectId(tenantId) })
     .sort({ createdAt: -1 })
@@ -72,6 +86,8 @@ export async function listLocations(req: Request, res: Response) {
 }
 
 export async function createLocation(req: Request, res: Response) {
+  if (isCentral(req)) return res.fail(403, 'Not allowed for device-scoped session');
+
   const tenantId = getTenantId(req);
   const body = createSchema.parse(req.body);
   const now = new Date();
@@ -109,6 +125,8 @@ export async function createLocation(req: Request, res: Response) {
 }
 
 export async function updateLocation(req: Request, res: Response) {
+  if (isCentral(req)) return res.fail(403, 'Not allowed for device-scoped session');
+
   const tenantId = getTenantId(req);
   const { id } = req.params;
   const patch = updateSchema.parse(req.body);
@@ -120,7 +138,6 @@ export async function updateLocation(req: Request, res: Response) {
   if (patch.country !== undefined) $set.country = patch.country || '';
 
   try {
-    // MongoDB driver v6: includeResultMetadata=false returns the doc (or null).
     const doc = await col().findOneAndUpdate(
       { _id: new ObjectId(id), tenantId: new ObjectId(tenantId) },
       { $set },
@@ -140,10 +157,11 @@ export async function updateLocation(req: Request, res: Response) {
 }
 
 export async function deleteLocation(req: Request, res: Response) {
+  if (isCentral(req)) return res.fail(403, 'Not allowed for device-scoped session');
+
   const tenantId = getTenantId(req);
   const { id } = req.params;
 
-  // MongoDB driver v6: includeResultMetadata=false returns the doc (or null).
   const doc = await col().findOneAndDelete(
     { _id: new ObjectId(id), tenantId: new ObjectId(tenantId) },
     { includeResultMetadata: false }
@@ -173,6 +191,8 @@ export async function deleteLocation(req: Request, res: Response) {
  * Per-user default location (admin/owner). Does not affect other users.
  */
 export async function getDefaultLocation(req: Request, res: Response) {
+  if (isCentral(req)) return res.fail(403, 'Not allowed for device-scoped session');
+
   const tenantId = getTenantId(req);
   const userObjectId = getUserObjectId(req);
 
@@ -189,11 +209,12 @@ export async function getDefaultLocation(req: Request, res: Response) {
     if (!exists) defId = null;
   }
 
-  // If none, return null (All locations) — do NOT auto-pick earliest
   return res.ok({ defaultLocationId: defId ? defId.toHexString() : null });
 }
 
 export async function setDefaultLocation(req: Request, res: Response) {
+  if (isCentral(req)) return res.fail(403, 'Not allowed for device-scoped session');
+
   const tenantId = getTenantId(req);
   const userObjectId = getUserObjectId(req);
   const { locationId } = (req.body || {}) as { locationId?: string };
@@ -218,11 +239,12 @@ export async function setDefaultLocation(req: Request, res: Response) {
 
 /** Clear per-user default location -> next open shows "All locations" */
 export async function clearDefaultLocation(req: Request, res: Response) {
+  if (isCentral(req)) return res.fail(403, 'Not allowed for device-scoped session');
+
   const userObjectId = getUserObjectId(req);
   await usersCol().updateOne(
     { _id: userObjectId },
     { $unset: { defaultLocationId: '' } }
   );
-  // 200 OK for consistency with other controllers (could also be 204)
   return res.ok({ defaultLocationId: null });
 }

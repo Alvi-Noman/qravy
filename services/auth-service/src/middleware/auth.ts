@@ -4,6 +4,7 @@ import { ObjectId } from 'mongodb';
 import { client } from '../db.js';
 import type { UserDoc } from '../models/User.js';
 import type { MembershipDoc } from '../models/Membership.js';
+import type { DeviceDoc } from '../models/Device.js';
 import logger from '../utils/logger.js';
 
 type JwtUserPayload = JwtPayload & {
@@ -11,6 +12,7 @@ type JwtUserPayload = JwtPayload & {
   email: string;
   tenantId?: string;
   role?: 'owner' | 'admin' | 'editor' | 'viewer';
+  locationId?: string;
 };
 
 declare global {
@@ -95,12 +97,35 @@ export async function authenticateJWT(req: Request, res: Response, next: NextFun
 
     const finalTenantId = resolvedTenantId || tokenTenantId || headerTenantId;
 
+    // If this is a central session (no role) and we have a tenant, try to bind device -> location via cookie
+    let locationIdFromDevice: string | undefined;
+    try {
+      const cookies = (req as any).cookies as Record<string, string> | undefined;
+      const cookieDeviceKey = (cookies?.deviceKey || '').trim();
+      if (!role && finalTenantId && cookieDeviceKey) {
+        const db = client.db('authDB');
+        const dev = await db
+          .collection<DeviceDoc>('devices')
+          .findOne({
+            tenantId: new ObjectId(finalTenantId),
+            deviceKey: cookieDeviceKey,
+            status: 'active',
+          });
+        if (dev?.locationId) {
+          locationIdFromDevice = (dev.locationId as ObjectId).toHexString();
+        }
+      }
+    } catch {
+      // ignore device lookup errors
+    }
+
     req.user = {
       ...(payload as any),
       id,
       email,
       tenantId: finalTenantId,
       role,
+      locationId: locationIdFromDevice,
     };
     next();
   } catch {
