@@ -1,4 +1,4 @@
-import type { MenuItem as TMenuItem } from '../../api/menu';
+import type { MenuItem as TMenuItem } from '../../api/menuItemsItems';
 import MenuRow from './MenuRow';
 
 export default function MenuTable({

@@ -9,11 +9,32 @@ import { authenticateJWT } from '../middleware/auth.js';
 import { applyScope } from '../middleware/scope.js';
 import { authorize } from '../middleware/authorize.js';
 import { validateRequest } from '../middleware/validateRequest.js';
-import { categorySchema, categoryUpdateSchema } from '../validation/schemas.js';
+import {
+  categorySchema,
+  categoryUpdateSchema,
+  listCategoriesQuerySchema, // ⬅️ add
+} from '../validation/schemas.js';
 
 const router: express.Router = express.Router();
 
-router.get('/categories', authenticateJWT, applyScope, authorize('categories:read'), listCategories);
+// Inline query validator since validateRequest expects one (body) schema
+const validateListQuery: express.RequestHandler = (req, res, next) => {
+  const parsed = listCategoriesQuerySchema.safeParse(req.query);
+  if (!parsed.success) {
+    const msg = parsed.error.issues?.[0]?.message || 'Invalid query params';
+    return res.fail(400, msg);
+  }
+  next();
+};
+
+router.get(
+  '/categories',
+  authenticateJWT,
+  applyScope,
+  authorize('categories:read'),
+  validateListQuery,
+  listCategories
+);
 
 router.post(
   '/categories',

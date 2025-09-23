@@ -14,7 +14,7 @@ import {
   createMenuItem,
   updateMenuItem,
   deleteMenuItem,
-} from '../controllers/menuController.js';
+} from '../controllers/menuItemsController.js';
 import {
   listCategories,
   createCategory,

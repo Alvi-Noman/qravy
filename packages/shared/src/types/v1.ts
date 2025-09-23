@@ -26,6 +26,10 @@ export interface MenuItemDTO {
   variations: VariationDTO[];
   tags: string[];
   restaurantId?: string;
+
+  // NEW: branch scope
+  locationId?: string | null;
+
   createdAt: string;
   updatedAt: string;
   hidden?: boolean;

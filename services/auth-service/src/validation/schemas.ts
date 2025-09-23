@@ -49,6 +49,10 @@ export const menuItemSchema = z
     variations: z.array(variationSchema).max(100).optional(),
     tags: z.array(z.string().min(1).max(30)).max(100).optional(),
     restaurantId: objectId.optional(),
+
+    // allow owner/admin to target a branch
+    locationId: objectId.optional(),
+
     ...availabilityFields,
   })
   .superRefine((data, ctx) => {
@@ -109,10 +113,11 @@ export const menuItemUpdateSchema = z
     }
   });
 
-/** Bulk: availability */
+/** Bulk: availability (per-branch) */
 export const bulkAvailabilitySchema = z.object({
   ids: z.array(objectId).min(1).max(100),
   active: z.boolean(),
+  locationId: objectId.optional(), // owner/admin can target a branch
 });
 
 /** Bulk: delete */
@@ -134,15 +139,36 @@ export const bulkCategorySchema = z
 
 export const categorySchema = z.object({
   name: z.string().min(1, 'Name is required'),
+  // owner/admin can create branch-only categories
+  locationId: objectId.optional(),
 });
 
 export const categoryUpdateSchema = z.object({
   name: z.string().min(1, 'Name is required'),
 });
 
+/** Optional single-item toggles (if you add endpoints later) */
+export const menuItemToggleSchema = z.object({
+  active: z.boolean(),
+  locationId: objectId.optional(),
+});
+
+export const categoryToggleSchema = z.object({
+  visible: z.boolean(),
+  locationId: objectId.optional(),
+});
+
+/** NEW: query schemas for GET routes */
+export const listMenuItemsQuerySchema = z.object({
+  locationId: objectId.optional(),
+});
+
+export const listCategoriesQuerySchema = z.object({
+  locationId: objectId.optional(),
+});
+
 /**
- * Restaurant onboarding: just restaurantType, country, address, and the mode.
- * No quantity is collected or required here.
+ * Restaurant onboarding
  */
 export const restaurantOnboardingSchema = z.object({
   restaurantType: z.string().min(1, 'restaurantType is required'),

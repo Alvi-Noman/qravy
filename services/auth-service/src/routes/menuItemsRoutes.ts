@@ -10,7 +10,7 @@ import {
   bulkSetAvailability,
   bulkDeleteMenuItems,
   bulkChangeCategory,
-} from '../controllers/menuController.js';
+} from '../controllers/menuItemsController.js';
 import { authenticateJWT } from '../middleware/auth.js';
 import { applyScope } from '../middleware/scope.js';
 import { authorize } from '../middleware/authorize.js';
@@ -21,11 +21,29 @@ import {
   bulkAvailabilitySchema,
   bulkDeleteSchema,
   bulkCategorySchema,
+  listMenuItemsQuerySchema,
 } from '../validation/schemas.js';
 
 const router: express.Router = express.Router();
 
-router.get('/menu-items', authenticateJWT, applyScope, authorize('menuItems:read'), listMenuItems);
+// Inline query validator (since validateRequest expects 1 arg)
+const validateListQuery: express.RequestHandler = (req, res, next) => {
+  const parsed = listMenuItemsQuerySchema.safeParse(req.query);
+  if (!parsed.success) {
+    const msg = parsed.error.issues?.[0]?.message || 'Invalid query params';
+    return res.fail(400, msg);
+  }
+  next();
+};
+
+router.get(
+  '/menu-items',
+  authenticateJWT,
+  applyScope,
+  authorize('menuItems:read'),
+  validateListQuery,
+  listMenuItems
+);
 
 router.post(
   '/menu-items',

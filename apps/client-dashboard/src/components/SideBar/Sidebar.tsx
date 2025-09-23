@@ -20,6 +20,7 @@ import {
 } from '@heroicons/react/24/outline';
 import api from '../../api/auth';
 import { useAuthContext } from '../../context/AuthContext';
+import { useScope } from '../../context/ScopeContext';
 
 type NavItem = { name: string; to: string; icon: ElementType; end?: boolean };
 type Section = { heading: string; items: NavItem[] };
@@ -27,6 +28,7 @@ type StoreLocation = { id: string; name: string };
 
 export default function Sidebar(): JSX.Element {
   const { session } = useAuthContext();
+  const { activeLocationId, setActiveLocationId } = useScope();
 
   const sections: Section[] = [
     {
@@ -61,41 +63,39 @@ export default function Sidebar(): JSX.Element {
     }`;
 
   const [locations, setLocations] = useState<StoreLocation[]>([]);
-  const [loadingSelect, setLoadingSelect] = useState(true); // NEW
+  const [loadingSelect, setLoadingSelect] = useState(true);
   const isCentralSession = session?.type === 'central';
 
-  // Active location id
-  const [activeLocationId, setActiveLocationId] = useState<string>('');
-
-  // Fetch locations (and default for admins)
+  // Fetch locations; initialize ScopeContext.activeLocationId
   useEffect(() => {
     let mounted = true;
     setLoadingSelect(true);
     (async () => {
       try {
         if (isCentralSession) {
-          // Central: server already scopes to the assigned location
           const res = await api.get('/api/v1/locations');
           const items: StoreLocation[] = res.data?.items || [];
           if (!mounted) return;
           setLocations(items);
-          setActiveLocationId(items[0]?.id || '');
+          // Lock to device-assigned (API returns only that one)
+          if (!activeLocationId) setActiveLocationId(items[0]?.id || null);
         } else {
-          // Member (owner/admin): fetch list + default and select it; else "All locations"
           const [locRes, defRes] = await Promise.all([
             api.get('/api/v1/locations'),
             api.get('/api/v1/locations/default'),
           ]);
           const items: StoreLocation[] = locRes.data?.items || [];
-          const defaultLocationId = defRes.data?.defaultLocationId as string | null | undefined;
+          const defaultLocationId = (defRes.data?.defaultLocationId as string | null | undefined) || null;
           if (!mounted) return;
           setLocations(items);
 
-          const ids = new Set(items.map((l) => l.id));
-          if (defaultLocationId && ids.has(defaultLocationId)) {
-            setActiveLocationId(defaultLocationId);
-          } else {
-            setActiveLocationId(''); // All locations
+          // Initialize scope only if it hasn't been set during this mount
+          if (activeLocationId === null || activeLocationId === undefined) {
+            if (defaultLocationId && items.some((l) => l.id === defaultLocationId)) {
+              setActiveLocationId(defaultLocationId);
+            } else {
+              setActiveLocationId(null); // All locations
+            }
           }
         }
       } catch {
@@ -107,15 +107,17 @@ export default function Sidebar(): JSX.Element {
     return () => {
       mounted = false;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isCentralSession]);
 
-  const activeLocation = locations.find((b) => b.id === activeLocationId);
+  const active = locations.find((b) => b.id === (activeLocationId || ''));
+
   const displayName =
     isCentralSession
-      ? activeLocation?.name || 'Current location'
-      : activeLocationId === ''
+      ? active?.name || 'Current location'
+      : !activeLocationId
       ? 'All locations'
-      : activeLocation?.name || 'Current location';
+      : active?.name || 'Current location';
 
   return (
     <aside className="flex h-full w-64 flex-col bg-[#f5f5f5] px-4 py-4">
@@ -131,10 +133,10 @@ export default function Sidebar(): JSX.Element {
         ) : (
           <SidebarLocationSelect
             locations={locations}
-            value={activeLocationId}
+            value={activeLocationId || ''} // '' represents "All"
             onChange={(id) => {
               if (isCentralSession) return; // lock for central sessions
-              setActiveLocationId(id);
+              setActiveLocationId(id || null);
             }}
             displayName={displayName}
             isCentralSession={isCentralSession}

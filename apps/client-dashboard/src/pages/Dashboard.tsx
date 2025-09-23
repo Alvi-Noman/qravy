@@ -7,7 +7,7 @@ import {
   ArrowPathIcon,
 } from '@heroicons/react/24/outline';
 import { useAuthContext } from '../context/AuthContext';
-import { getMenuItems } from '../api/menu';
+import { getMenuItems } from '../api/menuItems';
 import { getCategories } from '../api/categories';
 import { getTenant } from '../api/tenant';
 import type { TenantDTO } from '../../../../packages/shared/src/types/v1';

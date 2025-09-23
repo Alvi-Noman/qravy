@@ -16,6 +16,9 @@ function menuItemsCol() {
 function tenantsCol() {
   return client.db('authDB').collection<TenantDoc>('tenants');
 }
+function locationsCol() {
+  return client.db('authDB').collection('locations');
+}
 
 function canWrite(role?: string): boolean {
   return role === 'owner' || role === 'admin' || role === 'editor';
@@ -24,15 +27,50 @@ function isBranch(req: Request): boolean {
   return !req.user?.role; // central device/branch session has no membership role
 }
 
+/**
+ * Derive a target locationId for branch-scoped operations.
+ * - Branch session: from req.user.locationId (required)
+ * - Member (owner/admin): from req.query.locationId or req.body.locationId (optional; validate format)
+ */
+function getTargetLocationId(req: Request): ObjectId | null {
+  if (isBranch(req)) {
+    const lid = req.user?.locationId;
+    if (lid && ObjectId.isValid(lid)) return new ObjectId(lid);
+    return null;
+  }
+  const q = (req.query.locationId as string | undefined) || (req.body?.locationId as string | undefined);
+  if (q && ObjectId.isValid(q)) return new ObjectId(q);
+  return null;
+}
+
+/**
+ * List categories:
+ * - If a locationId is provided (or branch session has one), return UNION of:
+ *   scope='all' AND scope='location' for that locationId.
+ * - If no locationId (All locations), return global + ALL branch categories.
+ */
 export async function listCategories(req: Request, res: Response, next: NextFunction) {
   try {
     const tenantId = req.user?.tenantId;
     if (!tenantId) return res.fail(409, 'Tenant not set');
 
-    const docs = await categoriesCol()
-      .find({ tenantId: new ObjectId(tenantId) })
-      .sort({ name: 1 })
-      .toArray();
+    const tenantOid = new ObjectId(tenantId);
+    const locId = getTargetLocationId(req);
+
+    const orTerms: any[] = [
+      { scope: 'all' },
+      { scope: { $exists: false } }, // legacy docs
+    ];
+    if (locId) {
+      // Specific branch view: include only that branch's categories (plus global)
+      orTerms.push({ scope: 'location', locationId: locId });
+    } else {
+      // "All locations" view: include global + ALL branch categories
+      orTerms.push({ scope: 'location' });
+    }
+
+    const filter = { tenantId: tenantOid, $or: orTerms } as any;
+    const docs = await categoriesCol().find(filter).sort({ name: 1 }).toArray();
 
     return res.ok({ items: docs.map(toCategoryDTO) });
   } catch (err) {
@@ -41,6 +79,13 @@ export async function listCategories(req: Request, res: Response, next: NextFunc
   }
 }
 
+/**
+ * Create:
+ * - Member (owner/admin):
+ *   - if body.locationId present -> scope='location' for that location
+ *   - else -> scope='all'
+ * - Branch session: 403
+ */
 export async function createCategory(req: Request, res: Response, next: NextFunction) {
   try {
     if (isBranch(req)) return res.fail(403, 'Not allowed for branch session');
@@ -51,16 +96,32 @@ export async function createCategory(req: Request, res: Response, next: NextFunc
     if (!tenantId) return res.fail(409, 'Tenant not set');
     if (!canWrite(req.user?.role)) return res.fail(403, 'Forbidden');
 
-    const { name } = req.body as { name: string };
+    const { name, locationId } = (req.body || {}) as { name: string; locationId?: string };
 
     const now = new Date();
     const doc: CategoryDoc = {
       tenantId: new ObjectId(tenantId),
       createdBy: new ObjectId(userId),
-      name,
+      name: String(name || '').trim(),
       createdAt: now,
       updatedAt: now,
     };
+
+    // Branch-aware scoping
+    const locIdStr = typeof locationId === 'string' && locationId.trim() ? locationId.trim() : '';
+    if (locIdStr) {
+      if (!ObjectId.isValid(locIdStr)) return res.fail(400, 'Invalid locationId');
+      const exists = await locationsCol().findOne({
+        _id: new ObjectId(locIdStr),
+        tenantId: new ObjectId(tenantId),
+      });
+      if (!exists) return res.fail(404, 'Location not found');
+      (doc as any).scope = 'location';
+      (doc as any).locationId = new ObjectId(locIdStr);
+    } else {
+      (doc as any).scope = 'all';
+      (doc as any).locationId = null;
+    }
 
     const result = await categoriesCol().insertOne(doc);
     const created: CategoryDoc = { ...doc, _id: result.insertedId };
@@ -81,9 +142,7 @@ export async function createCategory(req: Request, res: Response, next: NextFunc
     return res.ok({ item: toCategoryDTO(created) }, 201);
   } catch (err) {
     const code = (err as { code?: number })?.code;
-    if (code === 11000) {
-      return res.fail(409, 'Category already exists.');
-    }
+    if (code === 11000) return res.fail(409, 'Category already exists.');
     logger.error(`createCategory error: ${(err as Error).message}`);
     next(err);
   }
@@ -100,7 +159,7 @@ export async function updateCategory(req: Request, res: Response, next: NextFunc
     if (!canWrite(req.user?.role)) return res.fail(403, 'Forbidden');
 
     const { id } = req.params;
-    const { name } = req.body as { name: string };
+    const { name } = (req.body || {}) as { name: string };
     if (!ObjectId.isValid(id)) return res.fail(400, 'Invalid id');
 
     const filter = { _id: new ObjectId(id), tenantId: new ObjectId(tenantId) };
@@ -109,7 +168,7 @@ export async function updateCategory(req: Request, res: Response, next: NextFunc
 
     const doc = await categoriesCol().findOneAndUpdate(
       filter,
-      { $set: { name, updatedAt: new Date() } },
+      { $set: { name: String(name || '').trim(), updatedAt: new Date() } },
       { returnDocument: 'after' }
     );
 
@@ -127,9 +186,7 @@ export async function updateCategory(req: Request, res: Response, next: NextFunc
     return res.ok({ item: toCategoryDTO(doc) });
   } catch (err) {
     const code = (err as { code?: number })?.code;
-    if (code === 11000) {
-      return res.fail(409, 'Category already exists.');
-    }
+    if (code === 11000) return res.fail(409, 'Category already exists.');
     logger.error(`updateCategory error: ${(err as Error).message}`);
     next(err);
   }
@@ -152,11 +209,23 @@ export async function deleteCategory(req: Request, res: Response, next: NextFunc
     const cat = await categoriesCol().findOne(filter);
     if (!cat) return res.fail(404, 'Category not found');
 
-    const delItems = await menuItemsCol().deleteMany({
+    // Cascade delete only within the same scope
+    let itemFilter: any = {
       tenantId: new ObjectId(tenantId),
       category: cat.name,
-    });
+    };
 
+    const scope = (cat as any).scope as 'all' | 'location' | undefined;
+    const catLoc = (cat as any).locationId as ObjectId | undefined | null;
+
+    if (scope === 'location' && catLoc) {
+      itemFilter.locationId = catLoc;
+    } else {
+      // global: only delete global items (not branch-scoped items)
+      itemFilter.$or = [{ locationId: { $exists: false } }, { locationId: null }];
+    }
+
+    const delItems = await menuItemsCol().deleteMany(itemFilter);
     await categoriesCol().deleteOne(filter);
 
     const [remainingCategories, remainingItems] = await Promise.all([
@@ -185,7 +254,7 @@ export async function deleteCategory(req: Request, res: Response, next: NextFunc
     });
 
     logger.info(
-      `Category deleted: ${cat.name} for tenant ${tenantId}. Also deleted ${delItems.deletedCount || 0} menu items.`
+      `Category deleted: ${cat.name} for tenant ${tenantId}. Also deleted ${delItems.deletedCount || 0} scoped menu items.`
     );
 
     return res.ok({ deleted: true, deletedProducts: delItems.deletedCount || 0 });

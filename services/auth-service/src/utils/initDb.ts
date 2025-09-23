@@ -111,6 +111,10 @@ function menuItemJsonSchema() {
         createdBy: { bsonType: ['objectId', 'null'] },
         updatedBy: { bsonType: ['objectId', 'null'] },
         restaurantId: { bsonType: ['objectId', 'null'] },
+
+        scope: { enum: ['all', 'location', null] }, // NEW
+        locationId: { bsonType: ['objectId', 'null'] }, // NEW
+
         name: { bsonType: 'string' },
         price: { bsonType: ['double', 'int', 'long', 'decimal'] },
         compareAtPrice: { bsonType: ['double', 'int', 'long', 'decimal', 'null'] },
@@ -132,6 +136,8 @@ function menuItemJsonSchema() {
           },
         },
         tags: { bsonType: ['array', 'null'], items: { bsonType: 'string' } },
+        hidden: { bsonType: ['bool', 'null'] },
+        status: { enum: ['active', 'hidden', null] },
         createdAt: { bsonType: 'date' },
         updatedAt: { bsonType: 'date' },
       },
@@ -149,6 +155,10 @@ function categoryJsonSchema() {
         _id: { bsonType: 'objectId' },
         tenantId: { bsonType: 'objectId' },
         createdBy: { bsonType: ['objectId', 'null'] },
+
+        scope: { enum: ['all', 'location', null] }, // NEW
+        locationId: { bsonType: ['objectId', 'null'] }, // NEW
+
         name: { bsonType: 'string' },
         createdAt: { bsonType: 'date' },
         updatedAt: { bsonType: 'date' },
@@ -178,7 +188,6 @@ function auditJsonSchema() {
   };
 }
 
-// NEW
 function locationJsonSchema() {
   return {
     $jsonSchema: {
@@ -193,6 +202,45 @@ function locationJsonSchema() {
         address: { bsonType: ['string', 'null'] },
         zip: { bsonType: ['string', 'null'] },
         country: { bsonType: ['string', 'null'] },
+        createdAt: { bsonType: 'date' },
+        updatedAt: { bsonType: 'date' },
+      },
+    },
+  };
+}
+
+// NEW: overlays
+function itemAvailabilityJsonSchema() {
+  return {
+    $jsonSchema: {
+      bsonType: 'object',
+      required: ['tenantId', 'itemId', 'locationId', 'available', 'createdAt', 'updatedAt'],
+      additionalProperties: true,
+      properties: {
+        _id: { bsonType: 'objectId' },
+        tenantId: { bsonType: 'objectId' },
+        itemId: { bsonType: 'objectId' },
+        locationId: { bsonType: 'objectId' },
+        available: { bsonType: 'bool' },
+        createdAt: { bsonType: 'date' },
+        updatedAt: { bsonType: 'date' },
+      },
+    },
+  };
+}
+
+function categoryVisibilityJsonSchema() {
+  return {
+    $jsonSchema: {
+      bsonType: 'object',
+      required: ['tenantId', 'categoryId', 'locationId', 'visible', 'createdAt', 'updatedAt'],
+      additionalProperties: true,
+      properties: {
+        _id: { bsonType: 'objectId' },
+        tenantId: { bsonType: 'objectId' },
+        categoryId: { bsonType: 'objectId' },
+        locationId: { bsonType: 'objectId' },
+        visible: { bsonType: 'bool' },
         createdAt: { bsonType: 'date' },
         updatedAt: { bsonType: 'date' },
       },
@@ -261,16 +309,28 @@ export async function ensureUserIndexes(client: MongoClient): Promise<void> {
   logger.info('Ensured compound index on menuItems.tenantId,createdAt');
   await menuItems.createIndex({ tenantId: 1, category: 1 });
   logger.info('Ensured compound index on menuItems.tenantId,category');
+  // Branch-aware index
+  await menuItems.createIndex(
+    { tenantId: 1, scope: 1, locationId: 1, createdAt: -1 },
+    { name: 'ix_menuItems_scope_location_created' }
+  );
+  logger.info('Ensured index on menuItems.tenantId,scope,locationId,createdAt');
 
   const categories = db.collection('categories');
   await categories.createIndex({ tenantId: 1, name: 1 }, { unique: true });
   logger.info('Ensured unique compound index on categories.tenantId,name');
+  // Branch-aware index
+  await categories.createIndex(
+    { tenantId: 1, scope: 1, locationId: 1, name: 1 },
+    { name: 'ix_categories_scope_location_name' }
+  );
+  logger.info('Ensured index on categories.tenantId,scope,locationId,name');
 
   const audits = db.collection('audits');
   await audits.createIndex({ userId: 1, createdAt: -1 });
   logger.info('Ensured index on audits.userId,createdAt');
 
-  // NEW: Locations
+  // Locations
   const locations = db.collection('locations');
   await locations.createIndex(
     { tenantId: 1, name: 1 },
@@ -280,6 +340,21 @@ export async function ensureUserIndexes(client: MongoClient): Promise<void> {
   await locations.createIndex({ tenantId: 1, createdAt: -1 });
   logger.info('Ensured compound index on locations.tenantId,createdAt');
 
+  // NEW: overlays
+  const itemAvailability = db.collection('itemAvailability');
+  await itemAvailability.createIndex(
+    { tenantId: 1, itemId: 1, locationId: 1 },
+    { unique: true, name: 'ux_itemAvailability' }
+  );
+  logger.info('Ensured unique index on itemAvailability(tenantId,itemId,locationId)');
+
+  const categoryVisibility = db.collection('categoryVisibility');
+  await categoryVisibility.createIndex(
+    { tenantId: 1, categoryId: 1, locationId: 1 },
+    { unique: true, name: 'ux_categoryVisibility' }
+  );
+  logger.info('Ensured unique index on categoryVisibility(tenantId,categoryId,locationId)');
+
   // Validators
   await ensureValidator(client, 'users', userJsonSchema());
   await ensureValidator(client, 'tenants', tenantJsonSchema());
@@ -288,4 +363,6 @@ export async function ensureUserIndexes(client: MongoClient): Promise<void> {
   await ensureValidator(client, 'categories', categoryJsonSchema());
   await ensureValidator(client, 'audits', auditJsonSchema());
   await ensureValidator(client, 'locations', locationJsonSchema());
+  await ensureValidator(client, 'itemAvailability', itemAvailabilityJsonSchema());
+  await ensureValidator(client, 'categoryVisibility', categoryVisibilityJsonSchema());
 }

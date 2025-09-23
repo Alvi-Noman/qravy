@@ -23,18 +23,30 @@ export type NewMenuItem = {
   restaurantId?: string;
   hidden?: boolean;
   status?: 'active' | 'hidden';
+  // owner/admin can create branch-only items when a branch is selected
+  locationId?: string;
 };
 
 export type MenuItem = v1.MenuItemDTO;
 
-export async function getMenuItems(token: string): Promise<MenuItem[]> {
-  const res = await api.get('/api/v1/auth/menu-items', {
+export async function getMenuItems(
+  token: string,
+  opts?: { locationId?: string }
+): Promise<MenuItem[]> {
+  const url = opts?.locationId
+    ? `/api/v1/auth/menu-items?locationId=${encodeURIComponent(opts.locationId)}`
+    : '/api/v1/auth/menu-items';
+
+  const res = await api.get(url, {
     headers: { Authorization: `Bearer ${token}` },
   });
   return res.data.items as MenuItem[];
 }
 
-export async function createMenuItem(payload: NewMenuItem, token: string): Promise<MenuItem> {
+export async function createMenuItem(
+  payload: NewMenuItem,
+  token: string
+): Promise<MenuItem> {
   const res = await api.post('/api/v1/auth/menu-items', payload, {
     headers: { Authorization: `Bearer ${token}` },
   });
@@ -46,29 +58,35 @@ export async function updateMenuItem(
   payload: Partial<NewMenuItem>,
   token: string
 ): Promise<MenuItem> {
-  const res = await api.post(`/api/v1/auth/menu-items/${encodeURIComponent(id)}/update`, payload, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
+  const res = await api.post(
+    `/api/v1/auth/menu-items/${encodeURIComponent(id)}/update`,
+    payload,
+    { headers: { Authorization: `Bearer ${token}` } }
+  );
   return res.data.item as MenuItem;
 }
 
 export async function deleteMenuItem(id: string, token: string): Promise<void> {
-  await api.post(`/api/v1/auth/menu-items/${encodeURIComponent(id)}/delete`, null, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
+  await api.post(
+    `/api/v1/auth/menu-items/${encodeURIComponent(id)}/delete`,
+    null,
+    { headers: { Authorization: `Bearer ${token}` } }
+  );
 }
 
-/** Bulk availability: returns updated items */
+/** Bulk availability per-branch (pass locationId for owner/admin; branch users don't need it) */
 export async function bulkUpdateAvailability(
   ids: string[],
   active: boolean,
-  token: string
+  token: string,
+  locationId?: string
 ): Promise<{ items: MenuItem[]; matchedCount: number; modifiedCount: number }> {
-  const res = await api.post(
-    '/api/v1/auth/menu-items/bulk/availability',
-    { ids, active },
-    { headers: { Authorization: `Bearer ${token}` } }
-  );
+  const body: any = { ids, active };
+  if (locationId) body.locationId = locationId;
+
+  const res = await api.post('/api/v1/auth/menu-items/bulk/availability', body, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
   return res.data as { items: MenuItem[]; matchedCount: number; modifiedCount: number };
 }
 

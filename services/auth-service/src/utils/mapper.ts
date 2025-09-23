@@ -47,6 +47,10 @@ export function toMenuItemDTO(doc: MenuItemDoc): v1.MenuItemDTO {
     })),
     tags: doc.tags ?? [],
     restaurantId: toId(doc.restaurantId),
+
+    // NEW: expose branch scope
+    locationId: doc.locationId ? toId(doc.locationId) : null,
+
     createdAt: doc.createdAt.toISOString(),
     updatedAt: doc.updatedAt.toISOString(),
     hidden: !!doc.hidden,

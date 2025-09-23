@@ -1,5 +1,5 @@
 /**
- * CategoriesPage.tsx
+ * Categories.tsx
  *
  * A full React component for managing categories. Similar structure to MenuItemsPage,
  * but tailored to categories workflow with empty state inspired by Dashboard (center aligned,
@@ -527,12 +527,12 @@ export default function CategoriesPage() {
                     open={openMerge}
                     selectedIds={Array.from(selectedIds)}
                     categories={categories}
-                    isSubmitting={mergeMut.isPending}
+                    isSubmitting={(mergeMut as any).isPending || false}
                     onClose={() => setOpenMerge(false)}
                     onConfirm={({ fromIds, toId }) => {
                       setOpenMerge(false);
                       setSelectedIds(new Set());
-                      mergeMut.mutate({ fromIds, toId });
+                      (mergeMut as any).mutate?.({ fromIds, toId });
                     }}
                   />
                 )}

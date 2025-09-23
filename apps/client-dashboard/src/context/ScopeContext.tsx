@@ -31,6 +31,11 @@ export type ScopeContextValue = {
   setSort: (s: SortOption) => void;
   filters: PageFilters;
   setFilters: (f: PageFilters) => void;
+
+  /** Helper: returns the single active location id if specific, else null (All). */
+  activeLocationId: string | null;
+  /** Helper: set active single location or All. */
+  setActiveLocationId: (id: string | null) => void;
 };
 
 /** React context for global scope. */
@@ -44,9 +49,33 @@ export function ScopeProvider({ children }: { children: React.ReactNode }) {
   const [sort, setSort] = useState<SortOption>('az');
   const [filters, setFilters] = useState<PageFilters>({});
 
+  const activeLocationId =
+    location.mode === 'specific' && location.locations.length > 0 ? location.locations[0] : null;
+
+  const setActiveLocationId = (id: string | null) => {
+    if (id && id.trim()) {
+      setLocation({ mode: 'specific', locations: [id] });
+    } else {
+      setLocation({ mode: 'all' });
+    }
+  };
+
   const value = useMemo<ScopeContextValue>(
-    () => ({ location, setLocation, channel, setChannel, searchQuery, setSearchQuery, sort, setSort, filters, setFilters }),
-    [location, channel, searchQuery, sort, filters]
+    () => ({
+      location,
+      setLocation,
+      channel,
+      setChannel,
+      searchQuery,
+      setSearchQuery,
+      sort,
+      setSort,
+      filters,
+      setFilters,
+      activeLocationId,
+      setActiveLocationId,
+    }),
+    [location, channel, searchQuery, sort, filters, activeLocationId]
   );
 
   return <ScopeContext.Provider value={value}>{children}</ScopeContext.Provider>;

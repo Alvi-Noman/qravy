@@ -12,7 +12,7 @@ import cookieParser from 'cookie-parser';
 import morgan from 'morgan';
 
 import authRoutes from './routes/authRoutes.js';
-import menuRoutes from './routes/menuRoutes.js';
+import menuRoutes from './routes/menuItemsRoutes.js';
 import tenantRoutes from './routes/tenantRoutes.js';
 import userRoutes from './routes/userRoutes.js';
 import locationRoutes from './routes/locationRoutes.js';

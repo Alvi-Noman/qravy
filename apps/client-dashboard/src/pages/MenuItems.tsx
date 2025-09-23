@@ -14,7 +14,7 @@ import MenuToolbar, { type SortBy } from '../components/menu-items/MenuToolbar';
 import MenuToolbarSkeleton from '../components/menu-items/MenuToolbarSkeleton';
 import MenuTableSkeleton from '../components/menu-items/MenuTableSkeleton';
 import BulkActionsBar from '../components/menu-items/BulkActionsBar';
-import type { MenuItem as TMenuItem, NewMenuItem } from '../api/menu';
+import type { MenuItem as TMenuItem, NewMenuItem } from '../api/menuItems';
 import { useSearchParams } from 'react-router-dom';
 import Can from '../components/Can';
 import { usePermissions } from '../context/PermissionsContext';

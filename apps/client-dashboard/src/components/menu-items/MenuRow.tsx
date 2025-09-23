@@ -7,7 +7,7 @@ import {
   EllipsisHorizontalIcon,
   DocumentDuplicateIcon,
 } from '@heroicons/react/24/outline';
-import type { MenuItem as TMenuItem } from '../../api/menu';
+import type { MenuItem as TMenuItem } from '../../api/menuItemsItems';
 
 export default function MenuRow({
   item,

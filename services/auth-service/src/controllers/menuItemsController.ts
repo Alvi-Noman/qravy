@@ -3,6 +3,7 @@ import { ObjectId } from 'mongodb';
 import { client } from '../db.js';
 import logger from '../utils/logger.js';
 import type { MenuItemDoc, Variation } from '../models/MenuItem.js';
+import type { ItemAvailabilityDoc } from '../models/ItemAvailability.js';
 import { toMenuItemDTO } from '../utils/mapper.js';
 import { auditLog } from '../utils/audit.js';
 import type { TenantDoc } from '../models/Tenant.js';
@@ -13,12 +14,15 @@ function col() {
 function tenantsCol() {
   return client.db('authDB').collection<TenantDoc>('tenants');
 }
+function availabilityCol() {
+  return client.db('authDB').collection<ItemAvailabilityDoc>('itemAvailability');
+}
 
 function canWrite(role?: string): boolean {
   return role === 'owner' || role === 'admin' || role === 'editor';
 }
 function isBranch(req: Request): boolean {
-  return !req.user?.role; // central device/branch session has no membership role
+  return !req.user?.role; // device/branch session has no membership role
 }
 
 function num(v: unknown): number | undefined {
@@ -60,7 +64,48 @@ export async function listMenuItems(req: Request, res: Response, next: NextFunct
     const tenantId = req.user?.tenantId;
     if (!tenantId) return res.fail(409, 'Tenant not set');
 
-    const docs = await col().find({ tenantId: new ObjectId(tenantId) }).sort({ createdAt: -1 }).toArray();
+    const qLoc = typeof req.query.locationId === 'string' ? req.query.locationId : undefined;
+    const filter: any = { tenantId: new ObjectId(tenantId) };
+
+    if (qLoc && ObjectId.isValid(qLoc)) {
+      const locId = new ObjectId(qLoc);
+      // Include global items (no locationId) + items specifically for this location
+      filter.$or = [
+        { locationId: { $exists: false } },
+        { locationId: null },
+        { locationId: locId },
+      ];
+    }
+
+    const docs = await col().find(filter).sort({ createdAt: -1 }).toArray();
+
+    // If location is specified, apply per-branch availability overlay
+    if (qLoc && ObjectId.isValid(qLoc) && docs.length) {
+      const locId = new ObjectId(qLoc);
+      const itemIds = docs.map((d) => d._id!).filter(Boolean);
+      const overlays = await availabilityCol()
+        .find({
+          tenantId: new ObjectId(tenantId),
+          locationId: locId,
+          itemId: { $in: itemIds },
+        })
+        .toArray();
+      const overlayMap = new Map<string, boolean>();
+      overlays.forEach((o) => overlayMap.set(o.itemId.toString(), !!o.available));
+
+      const items = docs.map((d) => {
+        const dto = toMenuItemDTO(d);
+        const ov = overlayMap.get(d._id!.toString());
+        if (ov !== undefined) {
+          dto.hidden = !ov;
+          dto.status = ov ? 'active' : 'hidden';
+        }
+        return dto;
+      });
+
+      return res.ok({ items });
+    }
+
     return res.ok({ items: docs.map(toMenuItemDTO) });
   } catch (err) {
     logger.error(`listMenuItems error: ${(err as Error).message}`);
@@ -91,6 +136,7 @@ export async function createMenuItem(req: Request, res: Response, next: NextFunc
       restaurantId?: string;
       hidden?: boolean;
       status?: 'active' | 'hidden';
+      locationId?: string; // NEW
     };
 
     const now = new Date();
@@ -114,6 +160,15 @@ export async function createMenuItem(req: Request, res: Response, next: NextFunc
       hidden,
       status,
     };
+
+    // Branch scoping
+    if (body.locationId && ObjectId.isValid(body.locationId)) {
+      doc.locationId = new ObjectId(body.locationId);
+      doc.scope = 'location';
+    } else {
+      doc.scope = 'all';
+      doc.locationId = null;
+    }
 
     if (body.restaurantId && ObjectId.isValid(body.restaurantId)) doc.restaurantId = new ObjectId(body.restaurantId);
     if (effectivePrice !== undefined) doc.price = effectivePrice;
@@ -316,12 +371,63 @@ export async function bulkSetAvailability(req: Request, res: Response, next: Nex
     // Allow if editor/admin/owner OR branch session
     if (!(canWrite(req.user?.role) || isBranch(req))) return res.fail(403, 'Forbidden');
 
-    const { ids, active } = req.body as { ids: string[]; active: boolean };
+    const { ids, active, locationId } = req.body as { ids: string[]; active: boolean; locationId?: string };
     const oids = (ids || []).filter((s) => ObjectId.isValid(s)).map((s) => new ObjectId(s));
     if (!oids.length) return res.fail(400, 'No valid ids');
 
-    const st: 'active' | 'hidden' = active ? 'active' : 'hidden';
     const now = new Date();
+
+    // If a location is specified, upsert availability overlays per item/location
+    if (locationId && ObjectId.isValid(locationId)) {
+      const locId = new ObjectId(locationId);
+
+      const ops = oids.map((itemId) => ({
+        updateOne: {
+          filter: { tenantId: new ObjectId(tenantId), itemId, locationId: locId },
+          update: {
+            $set: { available: !!active, updatedAt: now },
+            $setOnInsert: {
+              tenantId: new ObjectId(tenantId),
+              itemId,
+              locationId: locId,
+              createdAt: now,
+            },
+          },
+          upsert: true,
+        },
+      }));
+
+      await availabilityCol().bulkWrite(ops, { ordered: false });
+
+      // Fetch affected items and apply overlay in response
+      const docs = await col()
+        .find({ _id: { $in: oids }, tenantId: new ObjectId(tenantId) })
+        .toArray();
+
+      const items = docs.map((d) => {
+        const dto = toMenuItemDTO(d);
+        dto.hidden = !active;
+        dto.status = active ? 'active' : 'hidden';
+        return dto;
+      });
+
+      await auditLog({
+        userId,
+        action: 'MENU_ITEM_BULK_AVAILABILITY',
+        after: items,
+        ip: req.ip || 'unknown',
+        userAgent: req.headers['user-agent'] || 'unknown',
+      });
+
+      return res.ok({
+        matchedCount: oids.length,
+        modifiedCount: oids.length,
+        items,
+      });
+    }
+
+    // Otherwise, update global availability on the items
+    const st: 'active' | 'hidden' = active ? 'active' : 'hidden';
     const result = await col().updateMany(
       { _id: { $in: oids }, tenantId: new ObjectId(tenantId) },
       { $set: { hidden: !active, status: st, updatedAt: now, updatedBy: new ObjectId(userId) } }

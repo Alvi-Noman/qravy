@@ -38,14 +38,17 @@ const EDITOR_CAPS: string[] = [
   'menuItems:create',
   'menuItems:update',
   'menuItems:delete',
+  'menuItems:toggleAvailability', // allow editor to toggle
   'categories:read',
   'categories:create',
   'categories:update',
   'categories:delete',
+  'categories:toggleVisibility',  // allow editor to toggle
   'offers:read',
   'offers:create',
   'offers:update',
   'offers:delete',
+  'offers:toggleActive',
 ];
 
 const ADMIN_OR_OWNER_CAPS: string[] = ['*'];
@@ -61,7 +64,6 @@ export function computeCapabilities(input: {
     return BRANCH_CAPS.slice();
   }
 
-  // member sessions (role-based)
   switch (input.role) {
     case 'owner':
     case 'admin':
@@ -71,7 +73,7 @@ export function computeCapabilities(input: {
     case 'viewer':
       return VIEWER_CAPS.slice();
     default:
-      return []; // unknown -> no caps
+      return [];
   }
 }
 
