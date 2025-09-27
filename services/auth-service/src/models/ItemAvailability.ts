@@ -1,8 +1,10 @@
 import { ObjectId } from 'mongodb';
 
+export type Channel = 'dine-in' | 'online';
+
 /**
- * Per-location availability overlay for a menu item.
- * Unique on (tenantId, itemId, locationId).
+ * Per-location, per-channel availability overlay for a menu item.
+ * Unique on (tenantId, itemId, locationId, channel).
  */
 export interface ItemAvailabilityDoc {
   _id?: ObjectId;
@@ -10,6 +12,7 @@ export interface ItemAvailabilityDoc {
   tenantId: ObjectId;
   itemId: ObjectId;
   locationId: ObjectId;
+  channel: Channel;
 
   available: boolean;
 

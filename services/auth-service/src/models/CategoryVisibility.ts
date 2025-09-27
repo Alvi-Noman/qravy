@@ -1,8 +1,10 @@
 import { ObjectId } from 'mongodb';
 
+export type Channel = 'dine-in' | 'online';
+
 /**
- * Per-location visibility overlay for a category.
- * Unique on (tenantId, categoryId, locationId).
+ * Per-location, per-channel visibility overlay for a category.
+ * Unique on (tenantId, categoryId, locationId, channel).
  */
 export interface CategoryVisibilityDoc {
   _id?: ObjectId;
@@ -10,6 +12,7 @@ export interface CategoryVisibilityDoc {
   tenantId: ObjectId;
   categoryId: ObjectId;
   locationId: ObjectId;
+  channel: Channel;
 
   visible: boolean;
 

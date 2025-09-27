@@ -6,6 +6,7 @@ import {
   CheckIcon,
   XMarkIcon,
 } from '@heroicons/react/24/outline';
+import { useScope } from '../../context/ScopeContext';
 
 const CHANNEL_TABS = ['All channels', 'Dine-In', 'Online'] as const;
 
@@ -27,14 +28,32 @@ export default function CategoriesToolbar({
   const [sortOpen, setSortOpen] = useState(false);
   const sortRef = useRef<HTMLDivElement>(null);
 
-  // CHANNELS — sliding capsule (same as items)
-  const isAllChannels = channels.size === 0;
-  const selectedChannelIdx = isAllChannels ? 0 : channels.has('dine-in') ? 1 : 2;
+  // Global channel scope
+  const { channel, setChannel: setGlobalChannel } = useScope();
 
-  const setChannel = (tab: typeof CHANNEL_TABS[number]) => {
-    if (tab === 'All channels') setChannels(new Set());
-    else if (tab === 'Dine-In') setChannels(new Set(['dine-in']));
+  // Keep local filter in sync with global channel
+  useEffect(() => {
+    if (channel === 'all') setChannels(new Set());
+    else if (channel === 'dine-in') setChannels(new Set(['dine-in']));
     else setChannels(new Set(['online']));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [channel]);
+
+  // CHANNELS — sliding capsule (same as items)
+  const isAllChannels = channel === 'all';
+  const selectedChannelIdx = channel === 'all' ? 0 : channel === 'dine-in' ? 1 : 2;
+
+  const setChannelTab = (tab: typeof CHANNEL_TABS[number]) => {
+    if (tab === 'All channels') {
+      setGlobalChannel('all');
+      setChannels(new Set());
+    } else if (tab === 'Dine-In') {
+      setGlobalChannel('dine-in');
+      setChannels(new Set(['dine-in']));
+    } else {
+      setGlobalChannel('online');
+      setChannels(new Set(['online']));
+    }
   };
 
   const channelCapsuleRef = useRef<HTMLDivElement>(null);
@@ -43,8 +62,7 @@ export default function CategoriesToolbar({
 
   const recalcChannelIndicator = () => {
     const btn = channelTabRefs.current[selectedChannelIdx];
-    const cap = channelCapsuleRef.current;
-    if (!btn || !cap) return;
+    if (!btn) return;
     setChannelIndicator({ left: btn.offsetLeft, width: btn.offsetWidth });
   };
 
@@ -102,7 +120,7 @@ export default function CategoriesToolbar({
                 aria-selected={selected}
                 ref={(el) => (channelTabRefs.current[i] = el)}
                 type="button"
-                onClick={() => setChannel(t)}
+                onClick={() => setChannelTab(t)}
                 className={`relative z-10 rounded-md px-3 py-1.5 text-[13px] font-medium transition-colors ${
                   selected ? 'text-slate-900' : 'text-slate-600 hover:text-slate-800'
                 }`}

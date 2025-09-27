@@ -1,3 +1,4 @@
+// apps/client-dashboard/src/components/menu-items/MenuToolbar.tsx
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
@@ -8,6 +9,7 @@ import {
   Squares2X2Icon,
   TagIcon,
 } from '@heroicons/react/24/outline';
+import { useScope } from '../../context/ScopeContext';
 
 type Status = 'active' | 'hidden';
 type Channel = 'dine-in' | 'online';
@@ -27,6 +29,7 @@ export default function MenuToolbar({
   setSelectedCategory,
   sortBy,
   setSortBy,
+  channelAlerts,
 }: {
   q: string;
   setQ: (v: string) => void;
@@ -39,33 +42,61 @@ export default function MenuToolbar({
   setSelectedCategory: (v: string) => void;
   sortBy: SortBy;
   setSortBy: (v: SortBy) => void;
+  // Optional channel alert flags: show a red dot if at least one item is OFF in that channel but ON in the other
+  channelAlerts?: { dineIn: boolean; online: boolean };
 }) {
-  // Channels capsule
-  const isAllChannels = channels.size === 0;
-  const selectedChannelIdx = isAllChannels ? 0 : channels.has('dine-in') ? 1 : 2;
-  const setChannelTab = (tab: typeof CHANNEL_TABS[number]) => {
-    if (tab === 'All channels') setChannels(new Set());
-    else if (tab === 'Dine-In') setChannels(new Set(['dine-in']));
+  // Global channel scope
+  const { channel, setChannel } = useScope();
+
+  // Sync local filter state with global channel scope (list filtering is handled by fetch; this is UI only)
+  useEffect(() => {
+    if (channel === 'all') setChannels(new Set());
+    else if (channel === 'dine-in') setChannels(new Set(['dine-in']));
     else setChannels(new Set(['online']));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [channel]);
+
+  // Channels capsule
+  const isAllChannels = channel === 'all';
+  const selectedChannelIdx = channel === 'all' ? 0 : channel === 'dine-in' ? 1 : 2;
+
+  const setChannelTab = (tab: typeof CHANNEL_TABS[number]) => {
+    if (tab === 'All channels') {
+      setChannel('all');
+      setChannels(new Set());
+    } else if (tab === 'Dine-In') {
+      setChannel('dine-in');
+      setChannels(new Set(['dine-in']));
+    } else {
+      setChannel('online');
+      setChannels(new Set(['online']));
+    }
   };
+
   const channelCapsuleRef = useRef<HTMLDivElement>(null);
   const channelTabRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const [channelIndicator, setChannelIndicator] = useState({ left: 0, width: 0 });
+
   const recalcChannelIndicator = () => {
     const btn = channelTabRefs.current[selectedChannelIdx];
     if (!btn) return;
     setChannelIndicator({ left: btn.offsetLeft, width: btn.offsetWidth });
   };
+
   useLayoutEffect(() => {
     recalcChannelIndicator();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   useLayoutEffect(() => {
     recalcChannelIndicator();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedChannelIdx]);
+
   useEffect(() => {
     const onResize = () => recalcChannelIndicator();
     window.addEventListener('resize', onResize);
     return () => window.removeEventListener('resize', onResize);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Popovers
@@ -75,6 +106,7 @@ export default function MenuToolbar({
   const statusRef = useRef<HTMLDivElement>(null);
   const catRef = useRef<HTMLDivElement>(null);
   const sortRef = useRef<HTMLDivElement>(null);
+
   useEffect(() => {
     const onDoc = (e: MouseEvent) => {
       const t = e.target as Node;
@@ -96,7 +128,11 @@ export default function MenuToolbar({
     if (status.has('active')) return 'Available Items';
     return 'Unavailable Items';
   }, [status]);
+
   const categoryLabel = useMemo(() => selectedCategory || 'All Categories', [selectedCategory]);
+
+  const Dot = ({ show }: { show?: boolean }) =>
+    show ? <span className="ml-1 inline-block h-2 w-2 rounded-full bg-red-500" /> : null;
 
   return (
     <div className="flex w-full flex-col gap-3 md:flex-row md:items-center md:justify-between text-sm">
@@ -118,6 +154,9 @@ export default function MenuToolbar({
           />
           {CHANNEL_TABS.map((t, i) => {
             const selected = i === selectedChannelIdx;
+            const withDot =
+              (t === 'Dine-In' && channelAlerts?.dineIn) ||
+              (t === 'Online' && channelAlerts?.online);
             return (
               <button
                 key={t}
@@ -130,7 +169,10 @@ export default function MenuToolbar({
                   selected ? 'text-slate-900' : 'text-slate-600 hover:text-slate-800'
                 }`}
               >
-                {t}
+                <span className="inline-flex items-center">
+                  {t}
+                  <Dot show={withDot} />
+                </span>
               </button>
             );
           })}

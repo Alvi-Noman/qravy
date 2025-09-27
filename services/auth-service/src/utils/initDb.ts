@@ -112,8 +112,18 @@ function menuItemJsonSchema() {
         updatedBy: { bsonType: ['objectId', 'null'] },
         restaurantId: { bsonType: ['objectId', 'null'] },
 
-        scope: { enum: ['all', 'location', null] }, // NEW
-        locationId: { bsonType: ['objectId', 'null'] }, // NEW
+        scope: { enum: ['all', 'location', null] }, // branch scope
+        locationId: { bsonType: ['objectId', 'null'] },
+
+        // Channel baseline visibility
+        visibility: {
+          bsonType: ['object', 'null'],
+          additionalProperties: false,
+          properties: {
+            dineIn: { bsonType: ['bool', 'null'] },
+            online: { bsonType: ['bool', 'null'] },
+          },
+        },
 
         name: { bsonType: 'string' },
         price: { bsonType: ['double', 'int', 'long', 'decimal'] },
@@ -156,8 +166,11 @@ function categoryJsonSchema() {
         tenantId: { bsonType: 'objectId' },
         createdBy: { bsonType: ['objectId', 'null'] },
 
-        scope: { enum: ['all', 'location', null] }, // NEW
-        locationId: { bsonType: ['objectId', 'null'] }, // NEW
+        scope: { enum: ['all', 'location', null] }, // branch scope
+        locationId: { bsonType: ['objectId', 'null'] },
+
+        // Channel scope for category
+        channelScope: { enum: ['all', 'dine-in', 'online', null] },
 
         name: { bsonType: 'string' },
         createdAt: { bsonType: 'date' },
@@ -209,18 +222,19 @@ function locationJsonSchema() {
   };
 }
 
-// NEW: overlays
+// Overlays (per-location, per-channel)
 function itemAvailabilityJsonSchema() {
   return {
     $jsonSchema: {
       bsonType: 'object',
-      required: ['tenantId', 'itemId', 'locationId', 'available', 'createdAt', 'updatedAt'],
+      required: ['tenantId', 'itemId', 'locationId', 'channel', 'available', 'createdAt', 'updatedAt'],
       additionalProperties: true,
       properties: {
         _id: { bsonType: 'objectId' },
         tenantId: { bsonType: 'objectId' },
         itemId: { bsonType: 'objectId' },
         locationId: { bsonType: 'objectId' },
+        channel: { enum: ['dine-in', 'online'] },
         available: { bsonType: 'bool' },
         createdAt: { bsonType: 'date' },
         updatedAt: { bsonType: 'date' },
@@ -233,13 +247,14 @@ function categoryVisibilityJsonSchema() {
   return {
     $jsonSchema: {
       bsonType: 'object',
-      required: ['tenantId', 'categoryId', 'locationId', 'visible', 'createdAt', 'updatedAt'],
+      required: ['tenantId', 'categoryId', 'locationId', 'channel', 'visible', 'createdAt', 'updatedAt'],
       additionalProperties: true,
       properties: {
         _id: { bsonType: 'objectId' },
         tenantId: { bsonType: 'objectId' },
         categoryId: { bsonType: 'objectId' },
         locationId: { bsonType: 'objectId' },
+        channel: { enum: ['dine-in', 'online'] },
         visible: { bsonType: 'bool' },
         createdAt: { bsonType: 'date' },
         updatedAt: { bsonType: 'date' },
@@ -283,6 +298,19 @@ async function ensureValidator(client: MongoClient, collection: string, schema: 
   }
 }
 
+async function dropIndexIfExists(db: MongoClient['db'], collection: string, indexName: string) {
+  try {
+    const col = db('authDB').collection(collection);
+    const indexes = await col.indexes();
+    if (indexes.some((ix) => ix.name === indexName)) {
+      await col.dropIndex(indexName);
+      logger.info(`Dropped index ${collection}.${indexName}`);
+    }
+  } catch (e) {
+    logger.warn(`Could not drop index ${collection}.${indexName}: ${errorMessage(e)}`);
+  }
+}
+
 export async function ensureUserIndexes(client: MongoClient): Promise<void> {
   const db = client.db('authDB');
 
@@ -319,12 +347,12 @@ export async function ensureUserIndexes(client: MongoClient): Promise<void> {
   const categories = db.collection('categories');
   await categories.createIndex({ tenantId: 1, name: 1 }, { unique: true });
   logger.info('Ensured unique compound index on categories.tenantId,name');
-  // Branch-aware index
+  // Branch-aware + channel scope index (non-unique)
   await categories.createIndex(
-    { tenantId: 1, scope: 1, locationId: 1, name: 1 },
-    { name: 'ix_categories_scope_location_name' }
+    { tenantId: 1, scope: 1, locationId: 1, channelScope: 1, name: 1 },
+    { name: 'ix_categories_scope_location_channel_name' }
   );
-  logger.info('Ensured index on categories.tenantId,scope,locationId,name');
+  logger.info('Ensured index on categories.tenantId,scope,locationId,channelScope,name');
 
   const audits = db.collection('audits');
   await audits.createIndex({ userId: 1, createdAt: -1 });
@@ -340,20 +368,22 @@ export async function ensureUserIndexes(client: MongoClient): Promise<void> {
   await locations.createIndex({ tenantId: 1, createdAt: -1 });
   logger.info('Ensured compound index on locations.tenantId,createdAt');
 
-  // NEW: overlays
+  // Overlays (drop old unique indexes without channel, then create new with channel)
+  await dropIndexIfExists(client.db, 'itemAvailability', 'ux_itemAvailability');
   const itemAvailability = db.collection('itemAvailability');
   await itemAvailability.createIndex(
-    { tenantId: 1, itemId: 1, locationId: 1 },
-    { unique: true, name: 'ux_itemAvailability' }
+    { tenantId: 1, itemId: 1, locationId: 1, channel: 1 },
+    { unique: true, name: 'ux_itemAvailability_loc_channel' }
   );
-  logger.info('Ensured unique index on itemAvailability(tenantId,itemId,locationId)');
+  logger.info('Ensured unique index on itemAvailability(tenantId,itemId,locationId,channel)');
 
+  await dropIndexIfExists(client.db, 'categoryVisibility', 'ux_categoryVisibility');
   const categoryVisibility = db.collection('categoryVisibility');
   await categoryVisibility.createIndex(
-    { tenantId: 1, categoryId: 1, locationId: 1 },
-    { unique: true, name: 'ux_categoryVisibility' }
+    { tenantId: 1, categoryId: 1, locationId: 1, channel: 1 },
+    { unique: true, name: 'ux_categoryVisibility_loc_channel' }
   );
-  logger.info('Ensured unique index on categoryVisibility(tenantId,categoryId,locationId)');
+  logger.info('Ensured unique index on categoryVisibility(tenantId,categoryId,locationId,channel)');
 
   // Validators
   await ensureValidator(client, 'users', userJsonSchema());

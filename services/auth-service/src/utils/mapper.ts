@@ -51,6 +51,12 @@ export function toMenuItemDTO(doc: MenuItemDoc): v1.MenuItemDTO {
     // NEW: expose branch scope
     locationId: doc.locationId ? toId(doc.locationId) : null,
 
+    // NEW: expose per-channel baseline visibility (default true if missing)
+    visibility: {
+      dineIn: doc.visibility?.dineIn ?? true,
+      online: doc.visibility?.online ?? true,
+    },
+
     createdAt: doc.createdAt.toISOString(),
     updatedAt: doc.updatedAt.toISOString(),
     hidden: !!doc.hidden,

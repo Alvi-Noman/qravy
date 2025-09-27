@@ -27,8 +27,14 @@ export interface MenuItemDTO {
   tags: string[];
   restaurantId?: string;
 
-  // NEW: branch scope
+  // Branch scope
   locationId?: string | null;
+
+  // NEW: per-channel baseline visibility
+  visibility?: {
+    dineIn?: boolean;
+    online?: boolean;
+  };
 
   createdAt: string;
   updatedAt: string;
@@ -55,7 +61,6 @@ export interface TenantPlanInfoDTO {
 
 export type SubscriptionStatus = 'none' | 'active';
 
-// Payment-related enums (non-sensitive)
 export type PaymentProvider = 'none' | 'stripe' | 'adyen' | 'mock';
 export type CardBrand =
   | 'visa'
@@ -69,7 +74,6 @@ export type CardBrand =
   | 'unknown';
 export type FundingType = 'credit' | 'debit' | 'prepaid' | 'unknown';
 
-// Public payment metadata DTO (non-sensitive)
 export interface TenantPaymentDTO {
   provider?: PaymentProvider;
   customerId?: string;
@@ -85,7 +89,6 @@ export interface TenantPaymentDTO {
   updatedAt?: string; // ISO string
 }
 
-/* Billing profile DTOs */
 export type TaxExemptType = 'none' | 'exempt' | 'reverse';
 
 export interface BillingAddressDTO {
@@ -113,17 +116,16 @@ export interface BillingProfileDTO {
 export interface TenantOnboardingProgressDTO {
   hasCategory: boolean;
   hasMenuItem: boolean;
-  hasLocations?: boolean; 
+  hasLocations?: boolean;
   checklist?: Record<string, boolean>;
 }
 
-/** Restaurant info DTO (counts are derived from /locations, not here) */
 export interface RestaurantInfoDTO {
   restaurantType: string;
   country: string;
   address: string;
   locationMode?: 'single' | 'multiple';
-  hasLocations?: boolean; 
+  hasLocations?: boolean;
 }
 
 export interface TenantDTO {

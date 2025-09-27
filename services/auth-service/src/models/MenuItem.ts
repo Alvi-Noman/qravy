@@ -1,6 +1,7 @@
 import { ObjectId } from 'mongodb';
 
 export type ItemScope = 'all' | 'location';
+export type Channel = 'dine-in' | 'online';
 
 export interface Variation {
   name: string;
@@ -22,6 +23,13 @@ export interface MenuItemDoc {
   scope?: ItemScope;
   locationId?: ObjectId | null;
 
+  // Channel-aware baseline visibility (per-channel default)
+  // If omitted, treat both channels as visible by default.
+  visibility?: {
+    dineIn?: boolean;  // default true if undefined
+    online?: boolean;  // default true if undefined
+  };
+
   name: string;
   price?: number;
   compareAtPrice?: number;
@@ -34,6 +42,7 @@ export interface MenuItemDoc {
   variations?: Variation[];
   tags?: string[];
 
+  // Legacy/global flags. Derived per-view; kept for backward-compat.
   hidden?: boolean;
   status?: 'active' | 'hidden';
 

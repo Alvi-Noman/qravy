@@ -1,8 +1,11 @@
+// apps/client-dashboard/src/components/menu-items/useMenuItems.ts
+
 /**
  * Menu items hooks with optimistic updates where appropriate.
- * Loader is shown only for delete and assign-category. Category rows update after loader completes.
- * Uses a minimum 1200ms delay for those operations to align with the visual loader.
+ * Real-time availability: cache-first updates (no visible refresh).
+ * We update all relevant caches (all/dine-in/online + indicators) for the current location.
  */
+
 import { useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAuthContext } from '../../context/AuthContext';
@@ -53,22 +56,53 @@ type BulkCategoryRes = { items: TMenuItem[]; matchedCount: number; modifiedCount
 
 export function useMenuItems() {
   const { token, session } = useAuthContext();
-  const { activeLocationId } = useScope();
+  const { activeLocationId, channel } = useScope();
   const queryClient = useQueryClient();
   const enabled = !!token;
   const { start, done } = useProgress();
   const MIN_MS = 1200;
 
+  // Resolve location for first render to avoid "all items" flash
+  const persistedLocationId =
+    typeof window !== 'undefined' ? localStorage.getItem('scope:activeLocationId') : null;
+  const sessionLocationId = session?.locationId || null;
+  const locationIdForQuery = activeLocationId ?? persistedLocationId ?? sessionLocationId ?? undefined;
+  const lidKey = locationIdForQuery || 'all';
+
+  // Channel resolution: undefined means "All channels"
+  const channelForQuery = channel !== 'all' ? channel : undefined;
+  const chanKey = channelForQuery || 'all';
+
+  // Helper: update every menu-items cache for this location (lists + indicator queries)
+  function patchAllLocationCaches(updater: (arr: TMenuItem[]) => TMenuItem[]) {
+    const keys: Array<ReadonlyArray<any>> = [
+      ['menu-items', token, lidKey, 'all'],
+      ['menu-items', token, lidKey, 'dine-in'],
+      ['menu-items', token, lidKey, 'online'],
+      // dot indicator queries
+      ['menu-items', token, lidKey, 'dine-in', 'indicator'],
+      ['menu-items', token, lidKey, 'online', 'indicator'],
+      // current channel view
+      ['menu-items', token, lidKey, chanKey],
+    ];
+
+    for (const key of keys) {
+      queryClient.setQueryData<TMenuItem[]>(key as any, (prev) => (prev ? updater(prev) : prev));
+    }
+  }
+
   const itemsQuery = useQuery<TMenuItem[]>({
-    queryKey: ['menu-items', token, activeLocationId || 'all'],
-    queryFn: () => getMenuItems(token as string, { locationId: activeLocationId || undefined }),
+    queryKey: ['menu-items', token, lidKey, chanKey],
+    queryFn: () => getMenuItems(token as string, { locationId: locationIdForQuery, channel: channelForQuery }),
     enabled,
+    placeholderData: undefined, // Avoid showing previous channel data during refetch
   });
 
   const categoriesQuery = useQuery<Category[]>({
-    queryKey: ['categories', token, activeLocationId || 'all'],
-    queryFn: () => getCategories(token as string, { locationId: activeLocationId || undefined }),
+    queryKey: ['categories', token, lidKey, chanKey],
+    queryFn: () => getCategories(token as string, { locationId: locationIdForQuery, channel: channelForQuery }),
     enabled,
+    placeholderData: undefined,
   });
 
   const items = itemsQuery.data ?? [];
@@ -82,17 +116,20 @@ export function useMenuItems() {
           ? parseFloat((payload as any).price)
           : (payload as any).price;
 
-      // If a specific branch is selected (owner/admin), create as branch-only
-      const withScope =
-        activeLocationId && session?.type !== 'central'
-          ? ({ ...payload, price, locationId: activeLocationId } as NewMenuItem)
-          : ({ ...payload, price } as NewMenuItem);
+      // Seed scope + channel for creation
+      const withScope: NewMenuItem = {
+        ...payload,
+        price,
+        ...(locationIdForQuery && session?.type !== 'central' ? { locationId: locationIdForQuery } : {}),
+        ...(channelForQuery ? { channel: channelForQuery } : {}), // All channels -> omit so server seeds both
+      };
 
       return minDelay(createMenuItem(withScope, token as string), MIN_MS);
     },
     onSuccess: (created) => {
+      // Update current view immediately; other channel/all views will refetch on navigation
       queryClient.setQueryData<TMenuItem[]>(
-        ['menu-items', token, activeLocationId || 'all'],
+        ['menu-items', token, lidKey, chanKey],
         (prev) => [...(prev ?? []), created]
       );
 
@@ -131,28 +168,26 @@ export function useMenuItems() {
       return minDelay(updateMenuItem(id, payload, token as string), MIN_MS);
     },
     onMutate: async ({ id, payload }) => {
-      await queryClient.cancelQueries({ queryKey: ['menu-items', token, activeLocationId || 'all'] });
-      const snapshot = queryClient.getQueryData<TMenuItem[]>(['menu-items', token, activeLocationId || 'all']) ?? [];
-      queryClient.setQueryData<TMenuItem[]>(['menu-items', token, activeLocationId || 'all'], (prev) =>
+      await queryClient.cancelQueries({ queryKey: ['menu-items', token, lidKey, chanKey] });
+      const snapshot = queryClient.getQueryData<TMenuItem[]>(['menu-items', token, lidKey, chanKey]) ?? [];
+      queryClient.setQueryData<TMenuItem[]>(['menu-items', token, lidKey, chanKey], (prev) =>
         (prev ?? []).map((it) => (it.id === id ? ({ ...it, ...payload } as TMenuItem) : it))
       );
       return { snapshot };
     },
     onError: (e, _v, ctx) => {
-      if (ctx?.snapshot) queryClient.setQueryData(['menu-items', token, activeLocationId || 'all'], ctx.snapshot);
+      if (ctx?.snapshot) queryClient.setQueryData(['menu-items', token, lidKey, chanKey], ctx.snapshot);
       toastError((e as any)?.message || 'Failed to update product');
     },
     onSuccess: (updated) => {
-      queryClient.setQueryData<TMenuItem[]>(['menu-items', token, activeLocationId || 'all'], (prev) =>
-        (prev ?? []).map((it) => (it.id === updated.id ? updated : it))
-      );
+      // Also update the other caches for consistency
+      patchAllLocationCaches((arr) => arr.map((it) => (it.id === updated.id ? updated : it)));
       toastSuccess('Product updated');
       broadcast();
     },
   });
 
-  // Single-item availability toggle should be per-branch.
-  // For owner/admin in "All", require selecting a branch first.
+  // Real-time single-item availability toggle (no refetch)
   const availabilityMut = useMutation<
     TMenuItem[],
     Error,
@@ -160,32 +195,34 @@ export function useMenuItems() {
     { snapshot: TMenuItem[] }
   >({
     mutationFn: async ({ id, active }) => {
-      if (!activeLocationId && session?.type !== 'central') {
-        throw new Error('Select a location to toggle availability');
-      }
-      const res = await bulkUpdateAvailability([id], active, token as string, activeLocationId || undefined);
+      const res = await bulkUpdateAvailability(
+        [id],
+        active,
+        token as string,
+        locationIdForQuery || undefined,
+        channelForQuery || undefined
+      );
       return res.items;
     },
     onMutate: async ({ id, active }) => {
-      await queryClient.cancelQueries({ queryKey: ['menu-items', token, activeLocationId || 'all'] });
-      const snapshot = queryClient.getQueryData<TMenuItem[]>(['menu-items', token, activeLocationId || 'all']) ?? [];
-      queryClient.setQueryData<TMenuItem[]>(['menu-items', token, activeLocationId || 'all'], (prev) =>
-        (prev ?? []).map((it) =>
+      await queryClient.cancelQueries({ queryKey: ['menu-items', token, lidKey, chanKey] });
+
+      const apply = (arr: TMenuItem[]) =>
+        arr.map((it) =>
           it.id === id ? ({ ...it, hidden: !active, status: active ? 'active' : 'hidden' } as TMenuItem) : it
-        )
-      );
+        );
+
+      const snapshot = queryClient.getQueryData<TMenuItem[]>(['menu-items', token, lidKey, chanKey]) ?? [];
+      // Optimistic across all caches for this location (lists + indicators)
+      patchAllLocationCaches(apply);
       return { snapshot };
     },
     onError: (e, _v, ctx) => {
-      if (ctx?.snapshot) queryClient.setQueryData(['menu-items', token, activeLocationId || 'all'], ctx.snapshot);
+      if (ctx?.snapshot) queryClient.setQueryData(['menu-items', token, lidKey, chanKey], ctx.snapshot);
       if (e instanceof Error) toastError(e.message);
     },
-    onSuccess: (updatedItems) => {
-      queryClient.setQueryData<TMenuItem[]>(['menu-items', token, activeLocationId || 'all'], (prev) => {
-        const map = new Map((prev ?? []).map((it) => [it.id, it]));
-        updatedItems.forEach((u) => map.set(u.id, u));
-        return Array.from(map.values());
-      });
+    onSuccess: () => {
+      // Caches already updated — no invalidate/refetch needed
       broadcast();
     },
   });
@@ -194,19 +231,18 @@ export function useMenuItems() {
     mutationFn: ({ id }) => minDelay(deleteMenuItem(id, token as string), MIN_MS),
     onMutate: async ({ id }) => {
       start();
-      await queryClient.cancelQueries({ queryKey: ['menu-items', token, activeLocationId || 'all'] });
-      const snapshot = queryClient.getQueryData<TMenuItem[]>(['menu-items', token, activeLocationId || 'all']) ?? [];
-      queryClient.setQueryData<TMenuItem[]>(['menu-items', token, activeLocationId || 'all'], (prev) =>
-        (prev ?? []).filter((it) => it.id !== id)
-      );
+      await queryClient.cancelQueries({ queryKey: ['menu-items', token, lidKey, chanKey] });
+      const snapshot = queryClient.getQueryData<TMenuItem[]>(['menu-items', token, lidKey, chanKey]) ?? [];
+      // Remove across all caches for this location
+      patchAllLocationCaches((arr) => arr.filter((it) => it.id !== id));
       return { snapshot };
     },
     onError: (e, _v, ctx) => {
-      if (ctx?.snapshot) queryClient.setQueryData(['menu-items', token, activeLocationId || 'all'], ctx.snapshot);
+      if (ctx?.snapshot) queryClient.setQueryData(['menu-items', token, lidKey, chanKey], ctx.snapshot);
       toastError((e as any)?.message || 'Failed to delete product');
     },
     onSuccess: () => {
-      const remaining = queryClient.getQueryData<TMenuItem[]>(['menu-items', token, activeLocationId || 'all']) ?? [];
+      const remaining = queryClient.getQueryData<TMenuItem[]>(['menu-items', token, lidKey, chanKey]) ?? [];
       if (remaining.length === 0) {
         queryClient.setQueryData<TenantDTO>(['tenant', token], (prev) =>
           prev
@@ -222,8 +258,6 @@ export function useMenuItems() {
         );
       }
       queryClient.invalidateQueries({ queryKey: ['tenant', token] });
-
-      toastSuccess('Product deleted');
       broadcast();
     },
     onSettled: () => {
@@ -236,25 +270,27 @@ export function useMenuItems() {
       const it = items.find((x) => x.id === id);
       if (!it) throw new Error('Item not found');
       const copyName = `${it.name} (Copy)`;
-      // Keep duplication in the same scope as current selection
       const payload: NewMenuItem = {
         name: copyName,
         price: (it as any).price,
         category: it.category,
         description: it.description,
-        ...(activeLocationId && session?.type !== 'central' ? { locationId: activeLocationId } : {}),
+        ...(locationIdForQuery && session?.type !== 'central' ? { locationId: locationIdForQuery } : {}),
+        ...(channelForQuery ? { channel: channelForQuery } : {}),
       };
       return createMenuItem(payload, token as string);
     },
     onSuccess: (created) => {
+      // Add to current view; optional: also add to other caches if needed
       queryClient.setQueryData<TMenuItem[]>(
-        ['menu-items', token, activeLocationId || 'all'],
+        ['menu-items', token, lidKey, chanKey],
         (prev) => [...(prev ?? []), created]
       );
       broadcast();
     },
   });
 
+  // Real-time bulk availability (no refetch)
   const bulkAvailabilityMut = useMutation<
     BulkAvailRes,
     Error,
@@ -262,28 +298,31 @@ export function useMenuItems() {
     { snapshot: TMenuItem[] }
   >({
     mutationFn: ({ ids, active }) =>
-      bulkUpdateAvailability(ids, active, token as string, activeLocationId || undefined),
+      bulkUpdateAvailability(
+        ids,
+        active,
+        token as string,
+        locationIdForQuery || undefined,
+        channelForQuery || undefined
+      ),
     onMutate: async ({ ids, active }) => {
-      await queryClient.cancelQueries({ queryKey: ['menu-items', token, activeLocationId || 'all'] });
-      const snapshot = queryClient.getQueryData<TMenuItem[]>(['menu-items', token, activeLocationId || 'all']) ?? [];
-      queryClient.setQueryData<TMenuItem[]>(['menu-items', token, activeLocationId || 'all'], (prev) =>
-        (prev ?? []).map((it) =>
+      await queryClient.cancelQueries({ queryKey: ['menu-items', token, lidKey, chanKey] });
+
+      const apply = (arr: TMenuItem[]) =>
+        arr.map((it) =>
           ids.includes(it.id)
             ? ({ ...it, hidden: !active, status: active ? 'active' : 'hidden' } as TMenuItem)
             : it
-        )
-      );
+        );
+
+      const snapshot = queryClient.getQueryData<TMenuItem[]>(['menu-items', token, lidKey, chanKey]) ?? [];
+      patchAllLocationCaches(apply);
       return { snapshot };
     },
     onError: (_e, _v, ctx) => {
-      if (ctx?.snapshot) queryClient.setQueryData(['menu-items', token, activeLocationId || 'all'], ctx.snapshot);
+      if (ctx?.snapshot) queryClient.setQueryData(['menu-items', token, lidKey, chanKey], ctx.snapshot);
     },
-    onSuccess: (res) => {
-      queryClient.setQueryData<TMenuItem[]>(['menu-items', token, activeLocationId || 'all'], (prev) => {
-        const map = new Map((prev ?? []).map((it) => [it.id, it]));
-        res.items.forEach((u: TMenuItem) => map.set(u.id, u));
-        return Array.from(map.values());
-      });
+    onSuccess: () => {
       broadcast();
     },
     retry: shouldRetry,
@@ -299,18 +338,16 @@ export function useMenuItems() {
     mutationFn: ({ ids }) => minDelay(bulkDeleteMenuItems(ids, token as string), MIN_MS),
     onMutate: async ({ ids }) => {
       start();
-      await queryClient.cancelQueries({ queryKey: ['menu-items', token, activeLocationId || 'all'] });
-      const snapshot = queryClient.getQueryData<TMenuItem[]>(['menu-items', token, activeLocationId || 'all']) ?? [];
-      queryClient.setQueryData<TMenuItem[]>(['menu-items', token, activeLocationId || 'all'], (prev) =>
-        (prev ?? []).filter((it) => !ids.includes(it.id))
-      );
+      await queryClient.cancelQueries({ queryKey: ['menu-items', token, lidKey, chanKey] });
+      const snapshot = queryClient.getQueryData<TMenuItem[]>(['menu-items', token, lidKey, chanKey]) ?? [];
+      patchAllLocationCaches((arr) => arr.filter((it) => !ids.includes(it.id)));
       return { snapshot };
     },
     onError: (_e, _v, ctx) => {
-      if (ctx?.snapshot) queryClient.setQueryData(['menu-items', token, activeLocationId || 'all'], ctx.snapshot);
+      if (ctx?.snapshot) queryClient.setQueryData(['menu-items', token, lidKey, chanKey], ctx.snapshot);
     },
     onSuccess: () => {
-      const remaining = queryClient.getQueryData<TMenuItem[]>(['menu-items', token, activeLocationId || 'all']) ?? [];
+      const remaining = queryClient.getQueryData<TMenuItem[]>(['menu-items', token, lidKey, chanKey]) ?? [];
       if (remaining.length === 0) {
         queryClient.setQueryData<TenantDTO>(['tenant', token], (prev) =>
           prev
@@ -326,7 +363,6 @@ export function useMenuItems() {
         );
       }
       queryClient.invalidateQueries({ queryKey: ['tenant', token] });
-
       broadcast();
     },
     onSettled: () => {
@@ -346,19 +382,17 @@ export function useMenuItems() {
       minDelay(bulkChangeCategoryApi(ids, category, categoryId, token as string), MIN_MS),
     onMutate: async () => {
       start();
-      await queryClient.cancelQueries({ queryKey: ['menu-items', token, activeLocationId || 'all'] });
-      const snapshot = queryClient.getQueryData<TMenuItem[]>(['menu-items', token, activeLocationId || 'all']) ?? [];
+      await queryClient.cancelQueries({ queryKey: ['menu-items', token, lidKey, chanKey] });
+      const snapshot = queryClient.getQueryData<TMenuItem[]>(['menu-items', token, lidKey, chanKey]) ?? [];
       return { snapshot };
     },
     onError: (_e, _v, ctx) => {
-      if (ctx?.snapshot) queryClient.setQueryData(['menu-items', token, activeLocationId || 'all'], ctx.snapshot);
+      if (ctx?.snapshot) queryClient.setQueryData(['menu-items', token, lidKey, chanKey], ctx.snapshot);
     },
     onSuccess: (res) => {
-      queryClient.setQueryData<TMenuItem[]>(['menu-items', token, activeLocationId || 'all'], (prev) => {
-        const map = new Map((prev ?? []).map((it) => [it.id, it]));
-        res.items.forEach((u: TMenuItem) => map.set(u.id, u));
-        return Array.from(map.values());
-      });
+      // Merge returned items into all caches
+      const updatedById = new Map(res.items.map((u) => [u.id, u]));
+      patchAllLocationCaches((arr) => arr.map((it) => updatedById.get(it.id) ?? it));
       broadcast();
     },
     onSettled: () => {

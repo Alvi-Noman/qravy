@@ -28,20 +28,33 @@ function broadcast() {
 
 export function useCategories() {
   const { token, session } = useAuthContext();
-  const { activeLocationId } = useScope();
+  const { activeLocationId, channel } = useScope();
   const queryClient = useQueryClient();
   const enabled = !!token;
 
+  // Avoid initial “all” flash: prefer scope, then persisted, then session
+  const persistedLocationId =
+    typeof window !== 'undefined' ? localStorage.getItem('scope:activeLocationId') : null;
+  const sessionLocationId = session?.locationId || null;
+  const locationIdForQuery = activeLocationId ?? persistedLocationId ?? sessionLocationId ?? undefined;
+  const lidKey = locationIdForQuery || 'all';
+
+  // Channel for queries/actions: undefined means “All channels”
+  const channelForQuery = channel !== 'all' ? channel : undefined;
+  const chanKey = channelForQuery || 'all';
+
   const categoriesQuery = useQuery<Category[]>({
-    queryKey: ['categories', token, activeLocationId || 'all'],
-    queryFn: () => getCategories(token as string, { locationId: activeLocationId || undefined }),
+    queryKey: ['categories', token, lidKey, chanKey],
+    queryFn: () => getCategories(token as string, { locationId: locationIdForQuery, channel: channelForQuery }),
     enabled,
+    placeholderData: undefined,
   });
 
   const itemsQuery = useQuery<TMenuItem[]>({
-    queryKey: ['menu-items', token, activeLocationId || 'all'],
-    queryFn: () => getMenuItems(token as string, { locationId: activeLocationId || undefined }),
+    queryKey: ['menu-items', token, lidKey, chanKey],
+    queryFn: () => getMenuItems(token as string, { locationId: locationIdForQuery, channel: channelForQuery }),
     enabled,
+    placeholderData: undefined,
   });
 
   const categories = categoriesQuery.data ?? [];
@@ -67,18 +80,18 @@ export function useCategories() {
       if (!trimmed) throw new Error('Name is required.');
       if (findByName(trimmed)) throw new Error('A category with this name already exists.');
 
-      // If a specific branch is selected (owner/admin), create as branch-only
+      // Owner/admin: create branch-only if a branch is selected; channel-specific if a channel is selected
       return createCategory(trimmed, token as string, {
-        locationId: activeLocationId || undefined,
+        locationId: locationIdForQuery || undefined,
+        channel: channelForQuery || undefined,
       });
     },
     onSuccess: (created) => {
       queryClient.setQueryData<Category[]>(
-        ['categories', token, activeLocationId || 'all'],
+        ['categories', token, lidKey, chanKey],
         (prev) => [...(prev ?? []), created].sort((a, b) => a.name.localeCompare(b.name))
       );
 
-      // Ensure onboarding flags are consistent
       queryClient.setQueryData<TenantDTO>(['tenant', token], (prev) =>
         prev
           ? {
@@ -113,19 +126,19 @@ export function useCategories() {
       const updated = await updateCategory(id, trimmed, token as string);
 
       const oldName = current.name;
-      // Optimistically update items in cache for the current view scope
+      // Optimistic in current scope
       queryClient.setQueryData<TMenuItem[]>(
-        ['menu-items', token, activeLocationId || 'all'],
+        ['menu-items', token, lidKey, chanKey],
         (prev) =>
           (prev ?? []).map((it) =>
             it.category === oldName ? ({ ...it, category: updated.name } as TMenuItem) : it
           )
       );
 
-      // Persist rename on the server for items currently visible in scope
+      // Persist rename for items in current scope
       const list =
-        queryClient.getQueryData<TMenuItem[]>(['menu-items', token, activeLocationId || 'all']) ??
-        (await getMenuItems(token as string, { locationId: activeLocationId || undefined }));
+        queryClient.getQueryData<TMenuItem[]>(['menu-items', token, lidKey, chanKey]) ??
+        (await getMenuItems(token as string, { locationId: locationIdForQuery, channel: channelForQuery }));
       await Promise.allSettled(
         list
           .filter((it) => it.category === oldName)
@@ -136,7 +149,7 @@ export function useCategories() {
     },
     onSuccess: (updated) => {
       queryClient.setQueryData<Category[]>(
-        ['categories', token, activeLocationId || 'all'],
+        ['categories', token, lidKey, chanKey],
         (prev) =>
           (prev ?? [])
             .map((c) => (c.id === updated.id ? updated : c))
@@ -146,8 +159,7 @@ export function useCategories() {
       broadcast();
     },
     onError: (e) => {
-      // Make sure the list is refreshed if rename propagation failed
-      queryClient.invalidateQueries({ queryKey: ['menu-items', token, activeLocationId || 'all'] });
+      queryClient.invalidateQueries({ queryKey: ['menu-items', token, lidKey, chanKey] });
       toastError((e as any)?.message || 'Failed to rename category');
     },
   });
@@ -172,10 +184,10 @@ export function useCategories() {
         const newName = to.name;
 
         const snapshot =
-          queryClient.getQueryData<TMenuItem[]>(['menu-items', token, activeLocationId || 'all']) ?? [];
+          queryClient.getQueryData<TMenuItem[]>(['menu-items', token, lidKey, chanKey]) ?? [];
         // Optimistic in current scope
         queryClient.setQueryData<TMenuItem[]>(
-          ['menu-items', token, activeLocationId || 'all'],
+          ['menu-items', token, lidKey, chanKey],
           (prev) =>
             (prev ?? []).map((it) =>
               it.category === oldName ? ({ ...it, category: newName } as TMenuItem) : it
@@ -185,7 +197,7 @@ export function useCategories() {
         const itemsList =
           snapshot.length
             ? snapshot
-            : await getMenuItems(token as string, { locationId: activeLocationId || undefined });
+            : await getMenuItems(token as string, { locationId: locationIdForQuery, channel: channelForQuery });
 
         await Promise.allSettled(
           itemsList
@@ -199,7 +211,7 @@ export function useCategories() {
     },
     onSuccess: ({ id }) => {
       const next = queryClient.setQueryData<Category[]>(
-        ['categories', token, activeLocationId || 'all'],
+        ['categories', token, lidKey, chanKey],
         (prev) => (prev ?? []).filter((c) => c.id !== id)
       ) as Category[] | undefined;
 
@@ -219,7 +231,7 @@ export function useCategories() {
         );
       }
 
-      queryClient.invalidateQueries({ queryKey: ['menu-items', token, activeLocationId || 'all'] });
+      queryClient.invalidateQueries({ queryKey: ['menu-items', token, lidKey, chanKey] });
       queryClient.invalidateQueries({ queryKey: ['tenant', token] });
 
       toastSuccess('Category deleted');
@@ -230,7 +242,7 @@ export function useCategories() {
     },
   });
 
-  // Category availability per-branch: toggle all items in this category in the current scope
+  // Allow toggling in "All locations" and "All channels": server will fan out as needed
   const availabilityMut = useMutation<
     { name: string; active: boolean },
     Error,
@@ -238,26 +250,28 @@ export function useCategories() {
     { snapshot: TMenuItem[] }
   >({
     mutationFn: async ({ name, active }) => {
-      if (!activeLocationId && session?.type !== 'central') {
-        throw new Error('Select a location to toggle category visibility');
-      }
       const list =
-        queryClient.getQueryData<TMenuItem[]>(['menu-items', token, activeLocationId || 'all']) ??
-        (await getMenuItems(token as string, { locationId: activeLocationId || undefined }));
+        queryClient.getQueryData<TMenuItem[]>(['menu-items', token, lidKey, chanKey]) ??
+        (await getMenuItems(token as string, { locationId: locationIdForQuery, channel: channelForQuery }));
 
       const targetIds = list.filter((it) => it.category === name).map((it) => it.id);
       if (targetIds.length === 0) return { name, active };
 
-      // Use per-branch bulk availability overlay
-      await bulkUpdateAvailability(targetIds, active, token as string, activeLocationId || undefined);
+      await bulkUpdateAvailability(
+        targetIds,
+        active,
+        token as string,
+        locationIdForQuery || undefined,
+        channelForQuery || undefined
+      );
       return { name, active };
     },
     onMutate: async ({ name, active }) => {
-      await queryClient.cancelQueries({ queryKey: ['menu-items', token, activeLocationId || 'all'] });
-      const snapshot = queryClient.getQueryData<TMenuItem[]>(['menu-items', token, activeLocationId || 'all']) ?? [];
+      await queryClient.cancelQueries({ queryKey: ['menu-items', token, lidKey, chanKey] });
+      const snapshot = queryClient.getQueryData<TMenuItem[]>(['menu-items', token, lidKey, chanKey]) ?? [];
       // Optimistic update in current scope
       queryClient.setQueryData<TMenuItem[]>(
-        ['menu-items', token, activeLocationId || 'all'],
+        ['menu-items', token, lidKey, chanKey],
         (prev) =>
           (prev ?? []).map((it) =>
             it.category === name
@@ -268,16 +282,16 @@ export function useCategories() {
       return { snapshot };
     },
     onError: (e, _vars, ctx) => {
-      if (ctx?.snapshot) queryClient.setQueryData(['menu-items', token, activeLocationId || 'all'], ctx.snapshot);
+      if (ctx?.snapshot) queryClient.setQueryData(['menu-items', token, lidKey, chanKey], ctx.snapshot);
       if (e instanceof Error) toastError(e.message);
     },
     onSettled: () => {
-      queryClient.invalidateQueries({ queryKey: ['menu-items', token, activeLocationId || 'all'] });
+      queryClient.invalidateQueries({ queryKey: ['menu-items', token, lidKey, chanKey] });
       broadcast();
     },
   });
 
-  // Merge categories (kept; branch-aware by operating on currently scoped items)
+  // Merge categories (kept; branch/channel-aware by operating on currently scoped items)
   const mergeMut = useMutation({
     mutationFn: async ({ fromIds, toId }: { fromIds: string[]; toId: string }) => {
       const to = findById(toId);
@@ -290,10 +304,10 @@ export function useCategories() {
       const toName = to.name;
 
       const snapshot =
-        queryClient.getQueryData<TMenuItem[]>(['menu-items', token, activeLocationId || 'all']) ?? [];
+        queryClient.getQueryData<TMenuItem[]>(['menu-items', token, lidKey, chanKey]) ?? [];
       // Optimistic within current scope
       queryClient.setQueryData<TMenuItem[]>(
-        ['menu-items', token, activeLocationId || 'all'],
+        ['menu-items', token, lidKey, chanKey],
         (prev) =>
           (prev ?? []).map((it) =>
             it.category && fromNames.includes(it.category) ? ({ ...it, category: toName } as TMenuItem) : it
@@ -303,7 +317,7 @@ export function useCategories() {
       const itemsList =
         snapshot.length
           ? snapshot
-          : await getMenuItems(token as string, { locationId: activeLocationId || undefined });
+          : await getMenuItems(token as string, { locationId: locationIdForQuery, channel: channelForQuery });
 
       await Promise.allSettled(
         itemsList
@@ -317,11 +331,10 @@ export function useCategories() {
     },
     onSuccess: ({ removedIds }) => {
       queryClient.setQueryData<Category[]>(
-        ['categories', token, activeLocationId || 'all'],
+        ['categories', token, lidKey, chanKey],
         (prev) => (prev ?? []).filter((c) => !removedIds.includes(c.id))
       );
 
-      // keep onboarding flags
       queryClient.setQueryData<TenantDTO>(['tenant', token], (prev) =>
         prev
           ? {
@@ -335,15 +348,15 @@ export function useCategories() {
           : prev
       );
 
-      queryClient.invalidateQueries({ queryKey: ['menu-items', token, activeLocationId || 'all'] });
+      queryClient.invalidateQueries({ queryKey: ['menu-items', token, lidKey, chanKey] });
       queryClient.invalidateQueries({ queryKey: ['tenant', token] });
 
       toastSuccess('Categories merged');
       broadcast();
     },
     onError: (e: any) => {
-      queryClient.invalidateQueries({ queryKey: ['menu-items', token, activeLocationId || 'all'] });
-      queryClient.invalidateQueries({ queryKey: ['categories', token, activeLocationId || 'all'] });
+      queryClient.invalidateQueries({ queryKey: ['menu-items', token, lidKey, chanKey] });
+      queryClient.invalidateQueries({ queryKey: ['categories', token, lidKey, chanKey] });
       toastError(e?.message || 'Failed to merge categories');
     },
   });

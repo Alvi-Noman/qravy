@@ -8,16 +8,19 @@
 
 import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence } from 'framer-motion';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Squares2X2Icon } from '@heroicons/react/24/outline';
 import { useMenuItems } from '../components/menu-items/useMenuItems';
 import MenuToolbar, { type SortBy } from '../components/menu-items/MenuToolbar';
 import MenuToolbarSkeleton from '../components/menu-items/MenuToolbarSkeleton';
 import MenuTableSkeleton from '../components/menu-items/MenuTableSkeleton';
 import BulkActionsBar from '../components/menu-items/BulkActionsBar';
-import type { MenuItem as TMenuItem, NewMenuItem } from '../api/menuItems';
+import { getMenuItems, type MenuItem as TMenuItem, type NewMenuItem } from '../api/menuItems';
 import { useSearchParams } from 'react-router-dom';
 import Can from '../components/Can';
 import { usePermissions } from '../context/PermissionsContext';
+import { useAuthContext } from '../context/AuthContext';
+import { useScope } from '../context/ScopeContext';
 
 const MenuTable = lazy(() => import('../components/menu-items/MenuTable'));
 const BulkChangeCategoryDialog = lazy(() => import('../components/menu-items/BulkChangeCategoryDialog'));
@@ -117,14 +120,28 @@ export default function MenuItemsPage(): JSX.Element {
     }
   }, [routeWantsNew, canCreate, searchParams, setSearchParams]);
 
+  const queryClient = useQueryClient();
+
   useEffect(() => {
-    const onStorage = (e: StorageEvent) => e.key === 'menu:updated' && itemsQuery.refetch();
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === 'menu:updated') {
+        // Refetch main lists and dot indicators when other tabs update
+        itemsQuery.refetch();
+        queryClient.invalidateQueries({
+          predicate: (q) => {
+            const k = q.queryKey as any[];
+            return Array.isArray(k) && k[0] === 'menu-items';
+          },
+        });
+      }
+    };
     window.addEventListener('storage', onStorage);
     return () => window.removeEventListener('storage', onStorage);
-  }, [itemsQuery]);
+  }, [itemsQuery, queryClient]);
 
   const [q, setQ] = useState('');
   const [status, setStatus] = useState<Set<Status>>(new Set());
+  // Local channel filter state is kept for the toolbar UI, but list filtering should NOT hide rows by channel.
   const [channels, setChannels] = useState<Set<Channel>>(new Set());
   const [selectedCategory, setSelectedCategory] = useState<string>('');
   const [sortBy, setSortBy] = useState<SortBy>('name-asc');
@@ -158,13 +175,15 @@ export default function MenuItemsPage(): JSX.Element {
     };
     onScroll();
     scroller.addEventListener('scroll', onScroll, { passive: true });
-    return () => {
-      scroller.removeEventListener('scroll', onScroll);
-      if (raf) cancelAnimationFrame(raf);
-    };
   }, []);
 
-  const loading = itemsQuery.isLoading || categoriesQuery.isLoading;
+  // Treat refetch as loading to avoid showing previous channel state
+  const loading =
+    itemsQuery.isLoading ||
+    categoriesQuery.isLoading ||
+    (itemsQuery.isFetching && !itemsQuery.isLoading) ||
+    (categoriesQuery.isFetching && !categoriesQuery.isLoading);
+
   const sourceItems = frozenItems ?? items;
 
   const viewItems = useMemo(() => {
@@ -177,33 +196,35 @@ export default function MenuItemsPage(): JSX.Element {
         (it.description || '').toLowerCase().includes(qnorm) ||
         (it.category || '').toLowerCase().includes(qnorm);
       const matchesCategory = !selectedCategory || it.category === selectedCategory;
-      const matchesChannels =
-        channels.size === 0 ||
-        Array.from(channels).every((ch) => {
-          if (ch === 'dine-in') return itAny.visibility?.dineIn !== false;
-          if (ch === 'online') return itAny.visibility?.online !== false;
-          return true;
-        });
+
+      // Do NOT filter by channel here; channel scoping is handled by the fetch.
+      // Keep rows visible even when the current channel is OFF (switch appears off).
       const isHidden = itAny.hidden || itAny.status === 'hidden';
       const matchesStatus = status.size === 0 || status.has(isHidden ? 'hidden' : 'active');
-      return matchesQ && matchesCategory && matchesChannels && matchesStatus;
+      return matchesQ && matchesCategory && matchesStatus;
     });
 
     if (sortBy === 'name-asc') list = list.slice().sort((a, b) => a.name.localeCompare(b.name));
     if (sortBy === 'created-desc') {
-      list = list.slice().sort((a: any, b: any) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
+      list = list
+        .slice()
+        .sort((a: any, b: any) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
     }
     if (sortBy === 'most-used') {
-      list = list.slice().sort((a: any, b: any) => (b.usageCount || b.ordersCount || 0) - (a.usageCount || a.ordersCount || 0));
+      list = list
+        .slice()
+        .sort((a: any, b: any) => (b.usageCount || b.ordersCount || 0) - (a.usageCount || a.ordersCount || 0));
     }
     return list;
-  }, [sourceItems, q, status, channels, selectedCategory, sortBy]);
+  }, [sourceItems, q, status, selectedCategory, sortBy]);
 
   useEffect(() => {
     if (!pendingHighlightId) return;
     const exists = viewItems.some((it) => it.id === pendingHighlightId);
     if (!exists) return;
-    const node = document.querySelector(`[data-item-id="${pendingHighlightId}"]`) as HTMLElement | null;
+    const node = document.querySelector(
+      `[data-item-id="${pendingHighlightId}"]`
+    ) as HTMLElement | null;
     if (!node) return;
     const scroller = contentRef.current || getScrollContainer(node);
     const before = getScrollTop(scroller);
@@ -254,6 +275,49 @@ export default function MenuItemsPage(): JSX.Element {
     setSelectedIds(all ? new Set() : new Set(viewItems.map((it) => it.id)));
   };
   const clearSelection = () => setSelectedIds(new Set());
+
+  // Compute channel alerts (red dot) by comparing availability in dine-in vs online
+  const { token, session } = useAuthContext();
+  const { activeLocationId } = useScope();
+  const persistedLocationId =
+    typeof window !== 'undefined' ? localStorage.getItem('scope:activeLocationId') : null;
+  const sessionLocationId = session?.locationId || null;
+  const locationIdForQuery = activeLocationId ?? persistedLocationId ?? sessionLocationId ?? undefined;
+  const lidKey = locationIdForQuery || 'all';
+
+  const dineInQuery = useQuery<TMenuItem[]>({
+    queryKey: ['menu-items', token, lidKey, 'dine-in', 'indicator'],
+    queryFn: () => getMenuItems(token as string, { locationId: locationIdForQuery, channel: 'dine-in' }),
+    enabled: !!token,
+    placeholderData: undefined,
+    staleTime: 0,
+    refetchOnMount: 'always',
+  });
+  const onlineQuery = useQuery<TMenuItem[]>({
+    queryKey: ['menu-items', token, lidKey, 'online', 'indicator'],
+    queryFn: () => getMenuItems(token as string, { locationId: locationIdForQuery, channel: 'online' }),
+    enabled: !!token,
+    placeholderData: undefined,
+    staleTime: 0,
+    refetchOnMount: 'always',
+  });
+
+  const dItems = dineInQuery.data ?? [];
+  const oItems = onlineQuery.data ?? [];
+  const dMap = new Map(dItems.map((x: any) => [x.id, x]));
+  const oMap = new Map(oItems.map((x: any) => [x.id, x]));
+  const allIds = new Set<string>([...dMap.keys(), ...oMap.keys()]);
+  let dineInExclusiveOff = false;
+  let onlineExclusiveOff = false;
+  for (const id of allIds) {
+    const d = dMap.get(id) as any | undefined;
+    const o = oMap.get(id) as any | undefined;
+    const dHidden = !!(d && (d.hidden || d.status === 'hidden'));
+    const oHidden = !!(o && (o.hidden || o.status === 'hidden'));
+    if (dHidden && !oHidden) dineInExclusiveOff = true;
+    if (oHidden && !dHidden) onlineExclusiveOff = true;
+    if (dineInExclusiveOff && onlineExclusiveOff) break;
+  }
 
   // Handlers (always pass functions; guard inside by capability)
   const handleAddClick = () => {
@@ -368,6 +432,7 @@ export default function MenuItemsPage(): JSX.Element {
                 setSelectedCategory={setSelectedCategory}
                 sortBy={sortBy}
                 setSortBy={setSortBy}
+                channelAlerts={{ dineIn: dineInExclusiveOff, online: onlineExclusiveOff }}
               />
 
               <div className="mt-4 space-y-4">

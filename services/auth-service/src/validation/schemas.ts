@@ -4,6 +4,7 @@
 import { z } from 'zod';
 
 const objectId = z.string().regex(/^[a-fA-F0-9]{24}$/, 'Invalid id');
+const channelEnum = z.enum(['dine-in', 'online']);
 
 const variationSchema = z.object({
   name: z.string().min(1, 'Variation name is required'),
@@ -50,8 +51,11 @@ export const menuItemSchema = z
     tags: z.array(z.string().min(1).max(30)).max(100).optional(),
     restaurantId: objectId.optional(),
 
-    // allow owner/admin to target a branch
+    // owner/admin can target a branch
     locationId: objectId.optional(),
+
+    // NEW: per-channel seed (when creating under a specific channel)
+    channel: channelEnum.optional(),
 
     ...availabilityFields,
   })
@@ -113,11 +117,12 @@ export const menuItemUpdateSchema = z
     }
   });
 
-/** Bulk: availability (per-branch) */
+/** Bulk: availability (per-branch, per-channel) */
 export const bulkAvailabilitySchema = z.object({
   ids: z.array(objectId).min(1).max(100),
   active: z.boolean(),
   locationId: objectId.optional(), // owner/admin can target a branch
+  channel: channelEnum.optional(), // NEW: per-channel toggle
 });
 
 /** Bulk: delete */
@@ -141,30 +146,36 @@ export const categorySchema = z.object({
   name: z.string().min(1, 'Name is required'),
   // owner/admin can create branch-only categories
   locationId: objectId.optional(),
+  // NEW: per-channel category creation (belongs to this channel only)
+  channel: channelEnum.optional(),
 });
 
 export const categoryUpdateSchema = z.object({
   name: z.string().min(1, 'Name is required'),
 });
 
-/** Optional single-item toggles (if you add endpoints later) */
+/** Optional single-item toggles */
 export const menuItemToggleSchema = z.object({
   active: z.boolean(),
   locationId: objectId.optional(),
+  channel: channelEnum.optional(),
 });
 
 export const categoryToggleSchema = z.object({
   visible: z.boolean(),
   locationId: objectId.optional(),
+  channel: channelEnum.optional(),
 });
 
-/** NEW: query schemas for GET routes */
+/** Query schemas for GET routes */
 export const listMenuItemsQuerySchema = z.object({
   locationId: objectId.optional(),
+  channel: channelEnum.optional(),
 });
 
 export const listCategoriesQuerySchema = z.object({
   locationId: objectId.optional(),
+  channel: channelEnum.optional(),
 });
 
 /**

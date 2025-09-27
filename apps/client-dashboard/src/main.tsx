@@ -1,7 +1,7 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { BrowserRouter } from 'react-router-dom';
-import { QueryClient, QueryClientProvider, keepPreviousData } from '@tanstack/react-query';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import './styles/tailwind.css';
 import App from './App';
 
@@ -12,8 +12,8 @@ const queryClient = new QueryClient({
       gcTime: 30 * 60 * 1000,
       refetchOnWindowFocus: true,
       retry: 1,
-      // v5 replacement for keepPreviousData
-      placeholderData: keepPreviousData,
+      // Do not keep previous data between scope changes
+      // (removes the brief "old state" flash)
     },
     mutations: {
       retry: 0,

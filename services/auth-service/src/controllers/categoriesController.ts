@@ -27,6 +27,10 @@ function isBranch(req: Request): boolean {
   return !req.user?.role; // central device/branch session has no membership role
 }
 
+function parseChannel(v: unknown): 'dine-in' | 'online' | undefined {
+  return v === 'dine-in' || v === 'online' ? v : undefined;
+}
+
 /**
  * Derive a target locationId for branch-scoped operations.
  * - Branch session: from req.user.locationId (required)
@@ -48,6 +52,7 @@ function getTargetLocationId(req: Request): ObjectId | null {
  * - If a locationId is provided (or branch session has one), return UNION of:
  *   scope='all' AND scope='location' for that locationId.
  * - If no locationId (All locations), return global + ALL branch categories.
+ * - If channel is provided, include categories with channelScope='all' or that channel (or missing field).
  */
 export async function listCategories(req: Request, res: Response, next: NextFunction) {
   try {
@@ -56,6 +61,7 @@ export async function listCategories(req: Request, res: Response, next: NextFunc
 
     const tenantOid = new ObjectId(tenantId);
     const locId = getTargetLocationId(req);
+    const qCh = parseChannel(req.query.channel);
 
     const orTerms: any[] = [
       { scope: 'all' },
@@ -69,7 +75,21 @@ export async function listCategories(req: Request, res: Response, next: NextFunc
       orTerms.push({ scope: 'location' });
     }
 
-    const filter = { tenantId: tenantOid, $or: orTerms } as any;
+    const filter: any = { tenantId: tenantOid, $or: orTerms };
+
+    if (qCh) {
+      // Limit by channel: include 'all' or the selected channel, and legacy without the field
+      filter.$and = [
+        {
+          $or: [
+            { channelScope: 'all' },
+            { channelScope: qCh },
+            { channelScope: { $exists: false } },
+          ],
+        },
+      ];
+    }
+
     const docs = await categoriesCol().find(filter).sort({ name: 1 }).toArray();
 
     return res.ok({ items: docs.map(toCategoryDTO) });
@@ -84,6 +104,9 @@ export async function listCategories(req: Request, res: Response, next: NextFunc
  * - Member (owner/admin):
  *   - if body.locationId present -> scope='location' for that location
  *   - else -> scope='all'
+ * - Channel:
+ *   - if body.channel present -> channelScope=that channel
+ *   - else -> channelScope='all' (All channels)
  * - Branch session: 403
  */
 export async function createCategory(req: Request, res: Response, next: NextFunction) {
@@ -96,7 +119,11 @@ export async function createCategory(req: Request, res: Response, next: NextFunc
     if (!tenantId) return res.fail(409, 'Tenant not set');
     if (!canWrite(req.user?.role)) return res.fail(403, 'Forbidden');
 
-    const { name, locationId } = (req.body || {}) as { name: string; locationId?: string };
+    const { name, locationId, channel } = (req.body || {}) as {
+      name: string;
+      locationId?: string;
+      channel?: 'dine-in' | 'online';
+    };
 
     const now = new Date();
     const doc: CategoryDoc = {
@@ -122,6 +149,10 @@ export async function createCategory(req: Request, res: Response, next: NextFunc
       (doc as any).scope = 'all';
       (doc as any).locationId = null;
     }
+
+    // Channel scope
+    const ch = parseChannel(channel);
+    (doc as any).channelScope = ch ? ch : 'all';
 
     const result = await categoriesCol().insertOne(doc);
     const created: CategoryDoc = { ...doc, _id: result.insertedId };
@@ -209,7 +240,7 @@ export async function deleteCategory(req: Request, res: Response, next: NextFunc
     const cat = await categoriesCol().findOne(filter);
     if (!cat) return res.fail(404, 'Category not found');
 
-    // Cascade delete only within the same scope
+    // Cascade delete only within the same branch scope
     let itemFilter: any = {
       tenantId: new ObjectId(tenantId),
       category: cat.name,

@@ -140,6 +140,7 @@ export default function CategoriesPage() {
   // UI + filter states
   const [q, setQ] = useState('');
   const [sortBy, setSortBy] = useState<SortBy>('name-asc');
+  // channels state remains for the toolbar UI only; do not filter the list by channel
   const [channels, setChannels] = useState<Set<'dine-in' | 'online'>>(new Set());
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
@@ -205,24 +206,13 @@ export default function CategoriesPage() {
     }
     return m;
   }, [items]);
+
+  // Keep categories visible regardless of channel; fetch already scopes per channel.
   const viewCategories = useMemo(() => {
     let list = sourceCategories.slice();
     const qnorm = q.trim().toLowerCase();
     if (qnorm) list = list.filter((c) => c.name.toLowerCase().includes(qnorm));
-    if (channels.size > 0) {
-      const selected = Array.from(channels);
-      list = list.filter((c) =>
-        items.some((it) => {
-          if (it.category !== c.name) return false;
-          const itAny = it as any;
-          return selected.every((ch) => {
-            if (ch === 'dine-in') return itAny.visibility?.dineIn !== false;
-            if (ch === 'online') return itAny.visibility?.online !== false;
-            return true;
-          });
-        })
-      );
-    }
+
     if (sortBy === 'name-asc') list.sort((a, b) => a.name.localeCompare(b.name));
     if (sortBy === 'created-desc')
       list.sort(
@@ -231,7 +221,7 @@ export default function CategoriesPage() {
     if (sortBy === 'most-used')
       list.sort((a, b) => (usageMap.get(b.name) ?? 0) - (usageMap.get(a.name) ?? 0));
     return list;
-  }, [sourceCategories, items, q, channels, sortBy, usageMap]);
+  }, [sourceCategories, q, sortBy, usageMap]);
 
   // Highlight logic (auto-scroll + highlight)
   useEffect(() => {

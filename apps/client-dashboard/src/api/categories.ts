@@ -7,15 +7,19 @@
 import api from './auth';
 import type { v1 } from '../../../../packages/shared/src/types';
 
+export type Channel = 'dine-in' | 'online';
 export type Category = v1.CategoryDTO;
 
 export async function getCategories(
   token: string,
-  opts?: { locationId?: string }
+  opts?: { locationId?: string; channel?: Channel }
 ): Promise<Category[]> {
-  const url = opts?.locationId
-    ? `/api/v1/auth/categories?locationId=${encodeURIComponent(opts.locationId)}`
-    : '/api/v1/auth/categories';
+  const params = new URLSearchParams();
+  if (opts?.locationId) params.set('locationId', opts.locationId);
+  if (opts?.channel) params.set('channel', opts.channel);
+
+  const url =
+    '/api/v1/auth/categories' + (params.toString() ? `?${params.toString()}` : '');
 
   const res = await api.get(url, {
     headers: { Authorization: `Bearer ${token}` },
@@ -26,10 +30,11 @@ export async function getCategories(
 export async function createCategory(
   name: string,
   token: string,
-  opts?: { locationId?: string }
+  opts?: { locationId?: string; channel?: Channel }
 ): Promise<Category> {
   const body: any = { name };
   if (opts?.locationId) body.locationId = opts.locationId;
+  if (opts?.channel) body.channel = opts.channel;
 
   const res = await api.post('/api/v1/auth/categories', body, {
     headers: { Authorization: `Bearer ${token}` },
