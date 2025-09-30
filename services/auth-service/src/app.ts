@@ -16,7 +16,8 @@ import menuRoutes from './routes/menuItemsRoutes.js';
 import tenantRoutes from './routes/tenantRoutes.js';
 import userRoutes from './routes/userRoutes.js';
 import locationRoutes from './routes/locationRoutes.js';
-import accessRoutes from './routes/accessRoutes.js'; // ADD
+import accessRoutes from './routes/accessRoutes.js';
+import categoriesRoutes from './routes/categoriesRoutes.js'; // ADD
 
 import logger from './utils/logger.js';
 import { responseFormatter } from './middleware/response.js';
@@ -63,7 +64,8 @@ app.use('/api/v1/menu', menuRoutes);
 app.use('/api/v1/tenant', tenantRoutes);
 app.use('/api/v1/users', userRoutes);
 app.use('/api/v1/locations', locationRoutes);
-app.use('/api/v1/access', accessRoutes); // ADD
+app.use('/api/v1/access', accessRoutes);
+app.use('/api/v1/categories', categoriesRoutes); // primary mount (optional)
 
 /**
  * …and add legacy aliases under /api/v1/auth for backward compatibility
@@ -72,6 +74,7 @@ app.use('/api/v1/access', accessRoutes); // ADD
 app.use('/api/v1/auth', menuRoutes);
 app.use('/api/v1/auth', tenantRoutes);
 app.use('/api/v1/auth', userRoutes);
+app.use('/api/v1/auth', categoriesRoutes); // ADD alias so /api/v1/auth/categories/* works
 
 // Dev-only 404 tracer for /api/v1/* (helps catch wrong paths)
 if (process.env.NODE_ENV !== 'production') {

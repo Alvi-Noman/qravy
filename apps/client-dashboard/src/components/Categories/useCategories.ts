@@ -1,4 +1,4 @@
-// components/categories/useCategories.ts
+// apps/client-dashboard/src/components/categories/useCategories.ts
 import { useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
@@ -6,7 +6,9 @@ import {
   createCategory,
   updateCategory,
   deleteCategory,
+  bulkSetCategoryVisibility,
   type Category,
+  type Channel,
 } from '../../api/categories';
 import {
   getMenuItems,
@@ -21,40 +23,85 @@ import { useScope } from '../../context/ScopeContext';
 
 function broadcast() {
   try {
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('categories:updated'));
+      window.dispatchEvent(new CustomEvent('menu:updated'));
+      try {
+        const BC: any = (window as any).BroadcastChannel;
+        if (BC) {
+          const c = new BC('categories');
+          c.postMessage({ type: 'updated', at: Date.now() });
+          c.close?.();
+          const m = new BC('menu');
+          m.postMessage({ type: 'updated', at: Date.now() });
+          m.close?.();
+        }
+      } catch {}
+    }
     localStorage.setItem('categories:updated', String(Date.now()));
     localStorage.setItem('menu:updated', String(Date.now()));
   } catch {}
 }
+function httpStatus(err: any): number | undefined {
+  return err?.response?.status ?? err?.status;
+}
+function shouldRetry(failures: number, err: any) {
+  return httpStatus(err) === 429 && failures < 3;
+}
+function retryDelay(attempt: number) {
+  const base = Math.min(1000 * 2 ** attempt, 5000);
+  return base + Math.floor(Math.random() * 300);
+}
+const plural = (n: number, s: string, p: string = s + 's') => `${n} ${n === 1 ? s : p}`;
 
 export function useCategories() {
-  const { token, session } = useAuthContext();
+  const { token } = useAuthContext();
   const { activeLocationId, channel } = useScope();
   const queryClient = useQueryClient();
   const enabled = !!token;
 
-  // Avoid initial “all” flash: prefer scope, then persisted, then session
-  const persistedLocationId =
-    typeof window !== 'undefined' ? localStorage.getItem('scope:activeLocationId') : null;
-  const sessionLocationId = session?.locationId || null;
-  const locationIdForQuery = activeLocationId ?? persistedLocationId ?? sessionLocationId ?? undefined;
+  // Scope only from ScopeContext
+  const locationIdForQuery = activeLocationId ?? undefined;
   const lidKey = locationIdForQuery || 'all';
-
-  // Channel for queries/actions: undefined means “All channels”
   const channelForQuery = channel !== 'all' ? channel : undefined;
   const chanKey = channelForQuery || 'all';
 
+  // Keys we touch often
+  const catsKeyCurrent = ['categories', token, lidKey, chanKey] as const;
+  const catsKeyAll = ['categories', token, lidKey, 'all'] as const;
+  const catsKeyDineIn = ['categories', token, lidKey, 'dine-in'] as const;
+  const catsKeyOnline = ['categories', token, lidKey, 'online'] as const;
+
+  const itemsKeyCurrent = ['menu-items', token, lidKey, chanKey] as const;
+  const itemsKeyAll = ['menu-items', token, lidKey, 'all'] as const;
+  const diIndicatorKey = ['menu-items', token, lidKey, 'dine-in', 'indicator'] as const;
+  const onIndicatorKey = ['menu-items', token, lidKey, 'online', 'indicator'] as const;
+  const globalAllKey = ['menu-items', token, 'all', 'all'] as const; // All locations + All channels
+
   const categoriesQuery = useQuery<Category[]>({
-    queryKey: ['categories', token, lidKey, chanKey],
-    queryFn: () => getCategories(token as string, { locationId: locationIdForQuery, channel: channelForQuery }),
+    queryKey: catsKeyCurrent,
+    queryFn: () =>
+      getCategories(token as string, {
+        locationId: locationIdForQuery,
+        channel: channelForQuery,
+      }),
     enabled,
     placeholderData: undefined,
+    retry: shouldRetry,
+    retryDelay,
   });
 
   const itemsQuery = useQuery<TMenuItem[]>({
-    queryKey: ['menu-items', token, lidKey, chanKey],
-    queryFn: () => getMenuItems(token as string, { locationId: locationIdForQuery, channel: channelForQuery }),
+    queryKey: itemsKeyCurrent,
+    queryFn: () =>
+      getMenuItems(token as string, {
+        locationId: locationIdForQuery,
+        channel: channelForQuery,
+      }),
     enabled,
     placeholderData: undefined,
+    retry: shouldRetry,
+    retryDelay,
   });
 
   const categories = categoriesQuery.data ?? [];
@@ -74,24 +121,144 @@ export function useCategories() {
   const findByName = (name: string) =>
     categories.find((c) => c.name.toLowerCase() === name.toLowerCase()) || null;
 
-  const createMut = useMutation({
-    mutationFn: async (name: string) => {
+  // Helpers for item patching (used by availabilityMut)
+  const patchByCategory =
+    (name: string, active: boolean) =>
+    (arr: TMenuItem[] | undefined): TMenuItem[] =>
+      (arr ?? []).map((it) =>
+        it.category === name
+          ? ({ ...it, hidden: !active, status: active ? 'active' : 'hidden' } as TMenuItem)
+          : it
+      );
+
+  // Recompute a lid's 'all' list rows for a set of ids by reading its DI/ON caches
+  function recomputeAllRowsForLidByIds(lid: string, ids: string[]) {
+    const kDI = ['menu-items', token, lid, 'dine-in'] as const;
+    const kON = ['menu-items', token, lid, 'online'] as const;
+    const kALL = ['menu-items', token, lid, 'all'] as const;
+    const di = queryClient.getQueryData<TMenuItem[]>(kDI as any) ?? [];
+    const on = queryClient.getQueryData<TMenuItem[]>(kON as any) ?? [];
+    const diMap = new Map(di.map((x) => [x.id, !(x.hidden || x.status === 'hidden')]));
+    const onMap = new Map(on.map((x) => [x.id, !(x.hidden || x.status === 'hidden')]));
+    queryClient.setQueryData<TMenuItem[]>(kALL as any, (prev) => {
+      if (!prev) return prev;
+      const next = prev.slice();
+      for (let i = 0; i < next.length; i++) {
+        const it = next[i] as any;
+        if (!ids.includes(it.id)) continue;
+        const d = diMap.get(it.id);
+        const o = onMap.get(it.id);
+        const active = d === true || o === true ? true : d === false && o === false ? false : undefined;
+        if (active !== undefined) {
+          next[i] = { ...it, hidden: !active, status: active ? 'active' : 'hidden' };
+        }
+      }
+      return next;
+    });
+  }
+
+  // 🔧 Helper: if a category id is not present in ANY location/channel cache, purge it from All-Locations caches too.
+  function purgeFromAllLocationsIfAbsentEverywhere(catId: string) {
+    const entries = queryClient.getQueriesData<Category[]>({ queryKey: ['categories', token] });
+
+    // Is the category present in any per-location cache?
+    let existsSomewhere = false;
+    for (const [key, data] of entries) {
+      const k = key as any[];
+      // shape: ['categories', token, lidKey, chanKey]
+      if (!Array.isArray(k) || k[0] !== 'categories' || k[1] !== token) continue;
+      const lid = k[2];
+      if (lid === 'all') continue; // skip the All-Locations caches during presence check
+      if (Array.isArray(data) && data.some((c) => c.id === catId)) {
+        existsSomewhere = true;
+        break;
+      }
+    }
+    if (existsSomewhere) return;
+
+    // Remove from every All-Locations cache (all/dine-in/online)
+    queryClient.getQueriesData<Category[]>({ queryKey: ['categories', token, 'all'] }).forEach(([key, data]) => {
+      if (!Array.isArray(data)) return;
+      queryClient.setQueryData<Category[]>(
+        key as any,
+        (prev) => (prev ?? []).filter((c) => c.id !== catId)
+      );
+    });
+  }
+
+  // Cross-scope patchers (mirror useMenuItems) — used only for item availability-by-category
+  function patchAllScopesByCategory(
+    name: string,
+    active: boolean,
+    mode: 'all-channels' | 'single-channel'
+  ) {
+    const entries = queryClient.getQueriesData<TMenuItem[]>({ queryKey: ['menu-items', token] });
+    const lidsChanged = new Map<string, Set<string>>(); // lid -> ids changed
+
+    for (const [key, data] of entries) {
+      const k = key as any[];
+      const lid = k[2] as string;
+      const chan = k[3] as string;
+      const isIndicator = k[4] === 'indicator';
+      if (!Array.isArray(data)) continue;
+
+      const affectedIds = data.filter((x) => (x as any).category === name).map((x) => x.id);
+      if (affectedIds.length) {
+        if (!lidsChanged.has(lid)) lidsChanged.set(lid, new Set());
+        affectedIds.forEach((id) => lidsChanged.get(lid)!.add(id));
+      }
+
+      if (mode === 'all-channels') {
+        if (chan === 'dine-in' || chan === 'online' || chan === 'all' || isIndicator) {
+          queryClient.setQueryData<TMenuItem[]>(key as any, patchByCategory(name, active)(data));
+        }
+      } else {
+        if (chan === chanKey || (isIndicator && chanKey !== 'all')) {
+          queryClient.setQueryData<TMenuItem[]>(key as any, patchByCategory(name, active)(data));
+        }
+      }
+    }
+
+    if (mode === 'single-channel') {
+      lidsChanged.forEach((ids, lid) => recomputeAllRowsForLidByIds(lid, Array.from(ids)));
+    }
+  }
+
+  // Create category (supports Advanced: channel + include/exclude lists)
+  type CreateOpts = {
+    locationId?: string;
+    channel?: Channel;
+    includeLocationIds?: string[];
+    excludeLocationIds?: string[];
+  };
+  type CreateVars = string | { name: string; opts?: CreateOpts };
+
+  const createMut = useMutation<Category, Error, CreateVars>({
+    mutationFn: async (vars) => {
+      const name = typeof vars === 'string' ? vars : vars.name;
+      const formOpts = typeof vars === 'string' ? undefined : vars.opts;
       const trimmed = name.trim();
       if (!trimmed) throw new Error('Name is required.');
       if (findByName(trimmed)) throw new Error('A category with this name already exists.');
 
-      // Owner/admin: create branch-only if a branch is selected; channel-specific if a channel is selected
+      const chosenChannel = formOpts?.channel ?? channelForQuery;
+      const chosenLocationId = formOpts?.locationId ?? locationIdForQuery;
+
       return createCategory(trimmed, token as string, {
-        locationId: locationIdForQuery || undefined,
-        channel: channelForQuery || undefined,
+        locationId: chosenLocationId || undefined,
+        channel: chosenChannel || undefined,
+        includeLocationIds: formOpts?.includeLocationIds,
+        excludeLocationIds: formOpts?.excludeLocationIds,
       });
     },
     onSuccess: (created) => {
+      // Optimistically add in the current scope (server will filter in other scopes)
       queryClient.setQueryData<Category[]>(
-        ['categories', token, lidKey, chanKey],
+        catsKeyCurrent as any,
         (prev) => [...(prev ?? []), created].sort((a, b) => a.name.localeCompare(b.name))
       );
 
+      // Onboarding
       queryClient.setQueryData<TenantDTO>(['tenant', token], (prev) =>
         prev
           ? {
@@ -105,6 +272,14 @@ export function useCategories() {
           : prev
       );
       queryClient.invalidateQueries({ queryKey: ['tenant', token] });
+
+      // Invalidate all category queries for this tenant so other scopes refresh
+      queryClient.invalidateQueries({
+        predicate: (q) => {
+          const k = q.queryKey as any[];
+          return Array.isArray(k) && k[0] === 'categories' && k[1] === token;
+        },
+      });
 
       toastSuccess('Category added');
       broadcast();
@@ -126,19 +301,22 @@ export function useCategories() {
       const updated = await updateCategory(id, trimmed, token as string);
 
       const oldName = current.name;
-      // Optimistic in current scope
+      // Optimistic items rename in current scope
       queryClient.setQueryData<TMenuItem[]>(
-        ['menu-items', token, lidKey, chanKey],
+        itemsKeyCurrent as any,
         (prev) =>
           (prev ?? []).map((it) =>
             it.category === oldName ? ({ ...it, category: updated.name } as TMenuItem) : it
           )
       );
 
-      // Persist rename for items in current scope
+      // Persist in backend for items currently in scope
       const list =
-        queryClient.getQueryData<TMenuItem[]>(['menu-items', token, lidKey, chanKey]) ??
-        (await getMenuItems(token as string, { locationId: locationIdForQuery, channel: channelForQuery }));
+        queryClient.getQueryData<TMenuItem[]>(itemsKeyCurrent as any) ??
+        (await getMenuItems(token as string, {
+          locationId: locationIdForQuery,
+          channel: channelForQuery,
+        }));
       await Promise.allSettled(
         list
           .filter((it) => it.category === oldName)
@@ -148,21 +326,61 @@ export function useCategories() {
       return updated;
     },
     onSuccess: (updated) => {
+      // Update categories UI
       queryClient.setQueryData<Category[]>(
-        ['categories', token, lidKey, chanKey],
+        catsKeyCurrent as any,
         (prev) =>
           (prev ?? [])
             .map((c) => (c.id === updated.id ? updated : c))
             .sort((a, b) => a.name.localeCompare(b.name))
       );
+
+      // Ensure All-locations views refetch
+      queryClient.invalidateQueries({
+        predicate: (q) => {
+          const k = q.queryKey as any[];
+          return (
+            Array.isArray(k) &&
+            (k[0] === 'categories' || k[0] === 'menu-items') &&
+            k[1] === token &&
+            k[2] === 'all'
+          );
+        },
+      });
+
       toastSuccess('Category renamed');
       broadcast();
     },
     onError: (e) => {
-      queryClient.invalidateQueries({ queryKey: ['menu-items', token, lidKey, chanKey] });
+      queryClient.invalidateQueries({ queryKey: itemsKeyCurrent as any });
       toastError((e as any)?.message || 'Failed to rename category');
     },
   });
+
+  // Helpers for scoped category deletions (optimistic cache updates)
+  const filterOutCatId =
+    (id: string) =>
+    (prev: Category[] | undefined): Category[] | undefined =>
+      prev ? prev.filter((c) => c.id !== id) : prev;
+
+  function removeCategoryEverywhere(id: string) {
+    queryClient.getQueriesData<Category[]>({ queryKey: ['categories', token] }).forEach(([key, data]) => {
+      if (!Array.isArray(data)) return;
+      queryClient.setQueryData<Category[]>(key as any, filterOutCatId(id));
+    });
+  }
+
+  function removeCategoryFromChannelAcrossAllLids(chan: 'dine-in' | 'online', id: string) {
+    queryClient.getQueriesData<Category[]>({ queryKey: ['categories', token] }).forEach(([key, data]) => {
+      if (!Array.isArray(data)) return;
+      const k = key as any[];
+      const cacheChan = k[3] as string;
+      if (cacheChan === chan) {
+        queryClient.setQueryData<Category[]>(key as any, filterOutCatId(id));
+      }
+    });
+    // Do not touch 'all' lists; the category may still exist in the other channel.
+  }
 
   const deleteMut = useMutation({
     mutationFn: async ({
@@ -183,11 +401,10 @@ export function useCategories() {
         const oldName = target.name;
         const newName = to.name;
 
-        const snapshot =
-          queryClient.getQueryData<TMenuItem[]>(['menu-items', token, lidKey, chanKey]) ?? [];
-        // Optimistic in current scope
+        const snapshot = queryClient.getQueryData<TMenuItem[]>(itemsKeyCurrent as any) ?? [];
+        // Optimistic within current scope
         queryClient.setQueryData<TMenuItem[]>(
-          ['menu-items', token, lidKey, chanKey],
+          itemsKeyCurrent as any,
           (prev) =>
             (prev ?? []).map((it) =>
               it.category === oldName ? ({ ...it, category: newName } as TMenuItem) : it
@@ -197,7 +414,10 @@ export function useCategories() {
         const itemsList =
           snapshot.length
             ? snapshot
-            : await getMenuItems(token as string, { locationId: locationIdForQuery, channel: channelForQuery });
+            : await getMenuItems(token as string, {
+                locationId: locationIdForQuery,
+                channel: channelForQuery,
+              });
 
         await Promise.allSettled(
           itemsList
@@ -206,12 +426,47 @@ export function useCategories() {
         );
       }
 
-      await deleteCategory(id, token as string);
+      // Scoped delete (backend interprets undefined as "not scoped")
+      await deleteCategory(id, token as string, {
+        locationId: locationIdForQuery,
+        channel: channelForQuery,
+      } as any);
       return { id };
     },
+    onMutate: async ({ id }) => {
+      const isGlobalView = !locationIdForQuery;
+      const isChannelScoped = !!channelForQuery;
+
+      if (isGlobalView && !isChannelScoped) {
+        removeCategoryEverywhere(id);
+      } else if (isGlobalView && isChannelScoped) {
+        removeCategoryFromChannelAcrossAllLids(channelForQuery!, id);
+      } else if (!isGlobalView && isChannelScoped) {
+        // Location + single channel → remove only in this location+channel
+        queryClient.setQueryData<Category[]>(catsKeyCurrent as any, filterOutCatId(id));
+        // Remove from 'all' in this location only if we know it's not present in the other channel list
+        const otherChan = channelForQuery === 'dine-in' ? 'online' : 'dine-in';
+        const otherKey = otherChan === 'dine-in' ? catsKeyDineIn : catsKeyOnline;
+        const otherList = queryClient.getQueryData<Category[]>(otherKey as any);
+        if (Array.isArray(otherList)) {
+          const stillThere = otherList.some((c) => c.id === id);
+          if (!stillThere) {
+            queryClient.setQueryData<Category[]>(catsKeyAll as any, filterOutCatId(id));
+          }
+        }
+      } else {
+        // Location only → remove from both channels + 'all' for this lid
+        queryClient.setQueryData<Category[]>(catsKeyDineIn as any, filterOutCatId(id));
+        queryClient.setQueryData<Category[]>(catsKeyOnline as any, filterOutCatId(id));
+        queryClient.setQueryData<Category[]>(catsKeyAll as any, filterOutCatId(id));
+      }
+
+      return {};
+    },
     onSuccess: ({ id }) => {
+      // Keep previous behavior for onboarding based on current scope list emptiness
       const next = queryClient.setQueryData<Category[]>(
-        ['categories', token, lidKey, chanKey],
+        catsKeyCurrent as any,
         (prev) => (prev ?? []).filter((c) => c.id !== id)
       ) as Category[] | undefined;
 
@@ -231,67 +486,199 @@ export function useCategories() {
         );
       }
 
-      queryClient.invalidateQueries({ queryKey: ['menu-items', token, lidKey, chanKey] });
+      // 🔑 If the category is gone from every per-location cache, purge it from All-Locations caches too
+      purgeFromAllLocationsIfAbsentEverywhere(id);
+
+      // Refresh items and tenant in current scope
+      queryClient.invalidateQueries({ queryKey: itemsKeyCurrent as any });
       queryClient.invalidateQueries({ queryKey: ['tenant', token] });
 
-      toastSuccess('Category deleted');
+      // Invalidate ALL category caches (any lid/channel) after server-side delete/tombstone
+      queryClient.invalidateQueries({
+        predicate: (q) => {
+          const k = q.queryKey as any[];
+          return Array.isArray(k) && k[0] === 'categories' && k[1] === token;
+        },
+      });
+
+      // Toast by scope
+      const isGlobalView = !locationIdForQuery;
+      const isChannelScoped = !!channelForQuery;
+      if (isGlobalView && !isChannelScoped) {
+        toastSuccess('Category deleted everywhere.');
+      } else if (isGlobalView && isChannelScoped) {
+        const chanLabel = channelForQuery === 'dine-in' ? 'Dine-In' : 'Online';
+        toastSuccess(`Category deleted from ${chanLabel} across all locations.`);
+      } else if (!isGlobalView && isChannelScoped) {
+        const chanLabel = channelForQuery === 'dine-in' ? 'Dine-In' : 'Online';
+        toastSuccess(`Category deleted from ${chanLabel} in this location.`);
+      } else {
+        toastSuccess('Category deleted from this location.');
+      }
+
       broadcast();
     },
     onError: (e: any) => {
+      // Re-sync all category queries for this token
+      queryClient.invalidateQueries({
+        predicate: (q) => {
+          const k = q.queryKey as any[];
+          return Array.isArray(k) && k[0] === 'categories' && k[1] === token;
+        },
+      });
       toastError(e?.message || 'Failed to delete category');
     },
   });
 
-  // Allow toggling in "All locations" and "All channels": server will fan out as needed
+  // Category visibility per-branch/per-channel (overlay) — used for "Remove from this location" and show/hide
+  const bulkVisibilityMut = useMutation<
+    { visible: boolean; matchedCount: number; modifiedCount: number },
+    Error,
+    { ids: string[]; visible: boolean; locationId?: string; channel?: Channel }
+  >({
+    mutationFn: async ({ ids, visible, locationId, channel }) => {
+      const res = await bulkSetCategoryVisibility(
+        ids,
+        visible,
+        token as string,
+        locationId ?? locationIdForQuery ?? undefined,
+        channel ?? channelForQuery ?? undefined
+      );
+      return { visible, matchedCount: res.matchedCount, modifiedCount: res.modifiedCount };
+    },
+    onMutate: async ({ ids, visible }) => {
+      if (visible === false) {
+        queryClient.setQueryData<Category[]>(
+          catsKeyCurrent as any,
+          (prev) => (prev ?? []).filter((c) => !ids.includes(c.id))
+        );
+      }
+      return {};
+    },
+    onError: (e) => {
+      queryClient.invalidateQueries({
+        predicate: (q) => {
+          const k = q.queryKey as any[];
+          return Array.isArray(k) && k[0] === 'categories' && k[1] === token;
+        },
+      });
+      if (e instanceof Error) toastError(e.message);
+    },
+    onSuccess: ({ visible, matchedCount, modifiedCount }) => {
+      // Refresh categories (visibility affects lists)
+      queryClient.invalidateQueries({
+        predicate: (q) => {
+          const k = q.queryKey as any[];
+          return Array.isArray(k) && k[0] === 'categories' && k[1] === token;
+        },
+      });
+      const chan = channelForQuery ? (channelForQuery === 'dine-in' ? ' • Dine-In' : ' • Online') : '';
+      const loc = locationIdForQuery ? ' in this location' : ' across all locations';
+      const verb = visible ? 'Shown' : 'Hidden';
+      toastSuccess(`${verb}: ${modifiedCount}/${matchedCount} ${plural(matchedCount, 'category')}${chan}${loc}.`);
+      broadcast();
+    },
+  });
+
+  // Toggle availability for all items in a category (branch/channel-aware) with cross-scope patching
   const availabilityMut = useMutation<
-    { name: string; active: boolean },
+    { name: string; active: boolean; matchedCount: number; modifiedCount: number },
     Error,
     { name: string; active: boolean },
-    { snapshot: TMenuItem[] }
+    { snapshot?: TMenuItem[] }
   >({
     mutationFn: async ({ name, active }) => {
       const list =
-        queryClient.getQueryData<TMenuItem[]>(['menu-items', token, lidKey, chanKey]) ??
+        queryClient.getQueryData<TMenuItem[]>(itemsKeyCurrent as any) ??
         (await getMenuItems(token as string, { locationId: locationIdForQuery, channel: channelForQuery }));
 
       const targetIds = list.filter((it) => it.category === name).map((it) => it.id);
-      if (targetIds.length === 0) return { name, active };
+      if (targetIds.length === 0) return { name, active, matchedCount: 0, modifiedCount: 0 };
 
-      await bulkUpdateAvailability(
+      const res = await bulkUpdateAvailability(
         targetIds,
         active,
         token as string,
         locationIdForQuery || undefined,
         channelForQuery || undefined
       );
-      return { name, active };
+      return { name, active, matchedCount: res.matchedCount, modifiedCount: res.modifiedCount };
     },
     onMutate: async ({ name, active }) => {
-      await queryClient.cancelQueries({ queryKey: ['menu-items', token, lidKey, chanKey] });
-      const snapshot = queryClient.getQueryData<TMenuItem[]>(['menu-items', token, lidKey, chanKey]) ?? [];
-      // Optimistic update in current scope
-      queryClient.setQueryData<TMenuItem[]>(
-        ['menu-items', token, lidKey, chanKey],
-        (prev) =>
-          (prev ?? []).map((it) =>
-            it.category === name
-              ? ({ ...it, hidden: !active, status: active ? 'active' : 'hidden' } as TMenuItem)
-              : it
-          )
-      );
+      await queryClient.cancelQueries({ queryKey: itemsKeyCurrent as any });
+      const snapshot = queryClient.getQueryData<TMenuItem[]>(itemsKeyCurrent as any) ?? [];
+
+      const isGlobal = !locationIdForQuery;
+
+      if (isGlobal) {
+        if (!channelForQuery) {
+          patchAllScopesByCategory(name, active, 'all-channels');
+        } else {
+          patchAllScopesByCategory(name, active, 'single-channel');
+        }
+      } else {
+        if (!channelForQuery) {
+          queryClient.setQueryData<TMenuItem[]>(
+            ['menu-items', token, lidKey, 'dine-in'] as any,
+            patchByCategory(name, active)
+          );
+          queryClient.setQueryData<TMenuItem[]>(
+            ['menu-items', token, lidKey, 'online'] as any,
+            patchByCategory(name, active)
+          );
+          queryClient.setQueryData<TMenuItem[]>(itemsKeyAll as any, patchByCategory(name, active));
+          queryClient.setQueryData<TMenuItem[]>(
+            diIndicatorKey as any,
+            (prev) => (prev ? patchByCategory(name, active)(prev) : prev)
+          );
+          queryClient.setQueryData<TMenuItem[]>(
+            onIndicatorKey as any,
+            (prev) => (prev ? patchByCategory(name, active)(prev) : prev)
+          );
+        } else {
+          queryClient.setQueryData<TMenuItem[]>(itemsKeyCurrent as any, patchByCategory(name, active));
+          const arr = queryClient.getQueryData<TMenuItem[]>(itemsKeyCurrent as any) ?? [];
+          const ids = arr.filter((x) => x.category === name).map((x) => x.id);
+          if (ids.length) recomputeAllRowsForLidByIds(lidKey, ids);
+        }
+
+        if (active === true) {
+          queryClient.setQueryData<TMenuItem[]>(
+            globalAllKey as any,
+            (prev) => (prev ? patchByCategory(name, true)(prev) : prev)
+          );
+        } else {
+          queryClient.invalidateQueries({ queryKey: globalAllKey as any });
+        }
+      }
+
       return { snapshot };
     },
     onError: (e, _vars, ctx) => {
-      if (ctx?.snapshot) queryClient.setQueryData(['menu-items', token, lidKey, chanKey], ctx.snapshot);
+      if (ctx?.snapshot) queryClient.setQueryData(itemsKeyCurrent as any, ctx.snapshot);
+      queryClient.invalidateQueries({
+        predicate: (q) => {
+          const k = q.queryKey as any[];
+          return Array.isArray(k) && k[0] === 'menu-items' && k[1] === token;
+        },
+      });
       if (e instanceof Error) toastError(e.message);
     },
-    onSettled: () => {
-      queryClient.invalidateQueries({ queryKey: ['menu-items', token, lidKey, chanKey] });
+    onSuccess: ({ active, matchedCount, modifiedCount }) => {
+      const chan = channelForQuery ? (channelForQuery === 'dine-in' ? ' • Dine-In' : ' • Online') : '';
+      const loc = locationIdForQuery ? ' in this location' : ' across all locations';
+      const action = active ? 'Set available' : 'Set unavailable';
+      toastSuccess(`${action}: ${modifiedCount}/${matchedCount} ${plural(matchedCount, 'item')}${chan}${loc}.`);
       broadcast();
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: itemsKeyCurrent as any });
+      queryClient.invalidateQueries({ queryKey: diIndicatorKey as any });
+      queryClient.invalidateQueries({ queryKey: onIndicatorKey as any });
     },
   });
 
-  // Merge categories (kept; branch/channel-aware by operating on currently scoped items)
+  // Merge categories (branch/channel-aware by operating on currently scoped items)
   const mergeMut = useMutation({
     mutationFn: async ({ fromIds, toId }: { fromIds: string[]; toId: string }) => {
       const to = findById(toId);
@@ -303,21 +690,25 @@ export function useCategories() {
       const fromNames = from.map((f) => f.name);
       const toName = to.name;
 
-      const snapshot =
-        queryClient.getQueryData<TMenuItem[]>(['menu-items', token, lidKey, chanKey]) ?? [];
+      const snapshot = queryClient.getQueryData<TMenuItem[]>(itemsKeyCurrent as any) ?? [];
       // Optimistic within current scope
       queryClient.setQueryData<TMenuItem[]>(
-        ['menu-items', token, lidKey, chanKey],
+        itemsKeyCurrent as any,
         (prev) =>
           (prev ?? []).map((it) =>
-            it.category && fromNames.includes(it.category) ? ({ ...it, category: toName } as TMenuItem) : it
+            it.category && fromNames.includes(it.category)
+              ? ({ ...it, category: toName } as TMenuItem)
+              : it
           )
       );
 
       const itemsList =
         snapshot.length
           ? snapshot
-          : await getMenuItems(token as string, { locationId: locationIdForQuery, channel: channelForQuery });
+          : await getMenuItems(token as string, {
+              locationId: locationIdForQuery,
+              channel: channelForQuery,
+            });
 
       await Promise.allSettled(
         itemsList
@@ -331,7 +722,7 @@ export function useCategories() {
     },
     onSuccess: ({ removedIds }) => {
       queryClient.setQueryData<Category[]>(
-        ['categories', token, lidKey, chanKey],
+        catsKeyCurrent as any,
         (prev) => (prev ?? []).filter((c) => !removedIds.includes(c.id))
       );
 
@@ -348,15 +739,23 @@ export function useCategories() {
           : prev
       );
 
-      queryClient.invalidateQueries({ queryKey: ['menu-items', token, lidKey, chanKey] });
+      queryClient.invalidateQueries({ queryKey: itemsKeyCurrent as any });
       queryClient.invalidateQueries({ queryKey: ['tenant', token] });
+
+      // Ensure All-locations category queries refetch
+      queryClient.invalidateQueries({
+        predicate: (q) => {
+          const k = q.queryKey as any[];
+          return Array.isArray(k) && k[0] === 'categories' && k[1] === token && k[2] === 'all';
+        },
+      });
 
       toastSuccess('Categories merged');
       broadcast();
     },
     onError: (e: any) => {
-      queryClient.invalidateQueries({ queryKey: ['menu-items', token, lidKey, chanKey] });
-      queryClient.invalidateQueries({ queryKey: ['categories', token, lidKey, chanKey] });
+      queryClient.invalidateQueries({ queryKey: itemsKeyCurrent as any });
+      queryClient.invalidateQueries({ queryKey: catsKeyCurrent as any });
       toastError(e?.message || 'Failed to merge categories');
     },
   });
@@ -371,6 +770,7 @@ export function useCategories() {
     renameMut,
     deleteMut,
     mergeMut,
-    availabilityMut,
+    availabilityMut, // items availability by category (optional control)
+    bulkVisibilityMut, // show/hide categories per branch/channel with feedback
   };
 }

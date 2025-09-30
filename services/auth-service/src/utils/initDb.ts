@@ -112,10 +112,9 @@ function menuItemJsonSchema() {
         updatedBy: { bsonType: ['objectId', 'null'] },
         restaurantId: { bsonType: ['objectId', 'null'] },
 
-        scope: { enum: ['all', 'location', null] }, // branch scope
+        scope: { enum: ['all', 'location', null] },
         locationId: { bsonType: ['objectId', 'null'] },
 
-        // Channel baseline visibility
         visibility: {
           bsonType: ['object', 'null'],
           additionalProperties: false,
@@ -166,10 +165,9 @@ function categoryJsonSchema() {
         tenantId: { bsonType: 'objectId' },
         createdBy: { bsonType: ['objectId', 'null'] },
 
-        scope: { enum: ['all', 'location', null] }, // branch scope
+        scope: { enum: ['all', 'location', null] },
         locationId: { bsonType: ['objectId', 'null'] },
 
-        // Channel scope for category
         channelScope: { enum: ['all', 'dine-in', 'online', null] },
 
         name: { bsonType: 'string' },
@@ -222,12 +220,17 @@ function locationJsonSchema() {
   };
 }
 
-// Overlays (per-location, per-channel)
+/**
+ * Overlays (per-location, per-channel) — allow either:
+ *  A) availability overlay: has `available` (removed absent/false)
+ *  B) tombstone: has `removed: true` (no `available` required)
+ */
 function itemAvailabilityJsonSchema() {
   return {
     $jsonSchema: {
       bsonType: 'object',
-      required: ['tenantId', 'itemId', 'locationId', 'channel', 'available', 'createdAt', 'updatedAt'],
+      // always-required identity + timestamps
+      required: ['tenantId', 'itemId', 'locationId', 'channel', 'createdAt', 'updatedAt'],
       additionalProperties: true,
       properties: {
         _id: { bsonType: 'objectId' },
@@ -235,19 +238,44 @@ function itemAvailabilityJsonSchema() {
         itemId: { bsonType: 'objectId' },
         locationId: { bsonType: 'objectId' },
         channel: { enum: ['dine-in', 'online'] },
-        available: { bsonType: 'bool' },
+
+        // shape A fields
+        available: { bsonType: ['bool', 'null'] },
+
+        // shape B field
+        removed: { bsonType: ['bool', 'null'] },
+
         createdAt: { bsonType: 'date' },
         updatedAt: { bsonType: 'date' },
       },
+      oneOf: [
+        // A) overlay document
+        {
+          required: ['available'],
+          properties: {
+            removed: { enum: [false, null] },
+          },
+        },
+        // B) tombstone document
+        {
+          required: ['removed'],
+          properties: {
+            removed: { enum: [true] },
+          },
+        },
+      ],
     },
   };
 }
 
+/**
+ * Category visibility overlays — same dual-shape approach as above.
+ */
 function categoryVisibilityJsonSchema() {
   return {
     $jsonSchema: {
       bsonType: 'object',
-      required: ['tenantId', 'categoryId', 'locationId', 'channel', 'visible', 'createdAt', 'updatedAt'],
+      required: ['tenantId', 'categoryId', 'locationId', 'channel', 'createdAt', 'updatedAt'],
       additionalProperties: true,
       properties: {
         _id: { bsonType: 'objectId' },
@@ -255,10 +283,32 @@ function categoryVisibilityJsonSchema() {
         categoryId: { bsonType: 'objectId' },
         locationId: { bsonType: 'objectId' },
         channel: { enum: ['dine-in', 'online'] },
-        visible: { bsonType: 'bool' },
+
+        // overlay field
+        visible: { bsonType: ['bool', 'null'] },
+
+        // tombstone field
+        removed: { bsonType: ['bool', 'null'] },
+
         createdAt: { bsonType: 'date' },
         updatedAt: { bsonType: 'date' },
       },
+      oneOf: [
+        // A) overlay document
+        {
+          required: ['visible'],
+          properties: {
+            removed: { enum: [false, null] },
+          },
+        },
+        // B) tombstone document
+        {
+          required: ['removed'],
+          properties: {
+            removed: { enum: [true] },
+          },
+        },
+      ],
     },
   };
 }
@@ -337,7 +387,6 @@ export async function ensureUserIndexes(client: MongoClient): Promise<void> {
   logger.info('Ensured compound index on menuItems.tenantId,createdAt');
   await menuItems.createIndex({ tenantId: 1, category: 1 });
   logger.info('Ensured compound index on menuItems.tenantId,category');
-  // Branch-aware index
   await menuItems.createIndex(
     { tenantId: 1, scope: 1, locationId: 1, createdAt: -1 },
     { name: 'ix_menuItems_scope_location_created' }
@@ -347,7 +396,6 @@ export async function ensureUserIndexes(client: MongoClient): Promise<void> {
   const categories = db.collection('categories');
   await categories.createIndex({ tenantId: 1, name: 1 }, { unique: true });
   logger.info('Ensured unique compound index on categories.tenantId,name');
-  // Branch-aware + channel scope index (non-unique)
   await categories.createIndex(
     { tenantId: 1, scope: 1, locationId: 1, channelScope: 1, name: 1 },
     { name: 'ix_categories_scope_location_channel_name' }
@@ -358,7 +406,6 @@ export async function ensureUserIndexes(client: MongoClient): Promise<void> {
   await audits.createIndex({ userId: 1, createdAt: -1 });
   logger.info('Ensured index on audits.userId,createdAt');
 
-  // Locations
   const locations = db.collection('locations');
   await locations.createIndex(
     { tenantId: 1, name: 1 },
@@ -368,7 +415,7 @@ export async function ensureUserIndexes(client: MongoClient): Promise<void> {
   await locations.createIndex({ tenantId: 1, createdAt: -1 });
   logger.info('Ensured compound index on locations.tenantId,createdAt');
 
-  // Overlays (drop old unique indexes without channel, then create new with channel)
+  // Overlays
   await dropIndexIfExists(client.db, 'itemAvailability', 'ux_itemAvailability');
   const itemAvailability = db.collection('itemAvailability');
   await itemAvailability.createIndex(

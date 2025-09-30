@@ -1,4 +1,5 @@
 import { createContext, useContext, useMemo, useState, useEffect } from 'react';
+import { useAuthContext } from './AuthContext';
 
 export type ChannelScope = 'all' | 'dine-in' | 'online';
 export type LocationScope =
@@ -29,10 +30,17 @@ export type ScopeContextValue = {
 
 const ScopeContext = createContext<ScopeContextValue | undefined>(undefined);
 const STORAGE_KEY = 'scope:activeLocationId';
-const CHANNEL_STORAGE_KEY = 'scope:channel';
 
 export function ScopeProvider({ children }: { children: React.ReactNode }) {
-  // Hydrate initial selection synchronously from localStorage to avoid an initial "All" fetch
+  const { token } = useAuthContext();
+
+  // Per-session/tenant-ish channel storage key (no TS errors)
+  const CHANNEL_KEY = useMemo(
+    () => `scope:channel:${token ?? 'anon'}`,
+    [token]
+  );
+
+  // Hydrate initial selection synchronously from localStorage
   const [location, setLocation] = useState<LocationScope>(() => {
     try {
       const saved = typeof window !== 'undefined' ? localStorage.getItem(STORAGE_KEY) : null;
@@ -43,14 +51,22 @@ export function ScopeProvider({ children }: { children: React.ReactNode }) {
     return { mode: 'all' };
   });
 
-  // Hydrate channel from localStorage (default to 'all')
-  const [channel, setChannel] = useState<ChannelScope>(() => {
+  // Channel: per key; default to 'all'
+  const [channel, setChannel] = useState<ChannelScope>('all');
+
+  // Rehydrate channel whenever key changes
+  useEffect(() => {
     try {
-      const saved = typeof window !== 'undefined' ? localStorage.getItem(CHANNEL_STORAGE_KEY) : null;
-      if (saved === 'dine-in' || saved === 'online' || saved === 'all') return saved as ChannelScope;
-    } catch {}
-    return 'all';
-  });
+      const saved = typeof window !== 'undefined' ? localStorage.getItem(CHANNEL_KEY) : null;
+      if (saved === 'dine-in' || saved === 'online' || saved === 'all') {
+        setChannel(saved as ChannelScope);
+      } else {
+        setChannel('all');
+      }
+    } catch {
+      setChannel('all');
+    }
+  }, [CHANNEL_KEY]);
 
   const [searchQuery, setSearchQuery] = useState('');
   const [sort, setSort] = useState<SortOption>('az');
@@ -81,12 +97,12 @@ export function ScopeProvider({ children }: { children: React.ReactNode }) {
     } catch {}
   }, [activeLocationId]);
 
-  // Persist channel
+  // Persist channel per key
   useEffect(() => {
     try {
-      localStorage.setItem(CHANNEL_STORAGE_KEY, channel);
+      localStorage.setItem(CHANNEL_KEY, channel);
     } catch {}
-  }, [channel]);
+  }, [channel, CHANNEL_KEY]);
 
   const value = useMemo<ScopeContextValue>(
     () => ({

@@ -18,9 +18,9 @@ import {
   MapPinIcon,
   Cog6ToothIcon,
 } from '@heroicons/react/24/outline';
-import api from '../../api/auth';
 import { useAuthContext } from '../../context/AuthContext';
 import { useScope } from '../../context/ScopeContext';
+import { useLocations } from '../locations/useLocations';
 
 type NavItem = { name: string; to: string; icon: ElementType; end?: boolean };
 type Section = { heading: string; items: NavItem[] };
@@ -29,6 +29,7 @@ type StoreLocation = { id: string; name: string };
 export default function Sidebar(): JSX.Element {
   const { session } = useAuthContext();
   const { activeLocationId, setActiveLocationId } = useScope();
+  const { locations, locationsQuery } = useLocations();
 
   const sections: Section[] = [
     {
@@ -62,53 +63,41 @@ export default function Sidebar(): JSX.Element {
         : 'text-slate-700 hover:bg-slate-50 hover:text-slate-900'
     }`;
 
-  const [locations, setLocations] = useState<StoreLocation[]>([]);
-  const [loadingSelect, setLoadingSelect] = useState(true);
   const isCentralSession = session?.type === 'central';
+  const loadingSelect = locationsQuery.isLoading && locations.length === 0;
 
-  // Fetch locations; initialize ScopeContext.activeLocationId
+  // Keep scope in sync with session type and available locations
   useEffect(() => {
-    let mounted = true;
-    setLoadingSelect(true);
-    (async () => {
-      try {
-        if (isCentralSession) {
-          const res = await api.get('/api/v1/locations');
-          const items: StoreLocation[] = res.data?.items || [];
-          if (!mounted) return;
-          setLocations(items);
-          // Lock to device-assigned (API returns only that one)
-          if (!activeLocationId) setActiveLocationId(items[0]?.id || null);
-        } else {
-          const [locRes, defRes] = await Promise.all([
-            api.get('/api/v1/locations'),
-            api.get('/api/v1/locations/default'),
-          ]);
-          const items: StoreLocation[] = locRes.data?.items || [];
-          const defaultLocationId = (defRes.data?.defaultLocationId as string | null | undefined) || null;
-          if (!mounted) return;
-          setLocations(items);
+    if (!isCentralSession) return; // admins/team default to All locations (managed by ScopeContext/localStorage)
+    const locId = session?.locationId || locations[0]?.id || null;
+    if (locId && activeLocationId !== locId) {
+      setActiveLocationId(locId);
+    }
+  }, [isCentralSession, session?.locationId, locations, activeLocationId, setActiveLocationId]);
 
-          // Initialize scope only if it hasn't been set during this mount
-          if (activeLocationId === null || activeLocationId === undefined) {
-            if (defaultLocationId && items.some((l) => l.id === defaultLocationId)) {
-              setActiveLocationId(defaultLocationId);
-            } else {
-              setActiveLocationId(null); // All locations
-            }
-          }
-        }
-      } catch {
-        // ignore for sidebar
-      } finally {
-        if (mounted) setLoadingSelect(false);
-      }
-    })();
-    return () => {
-      mounted = false;
+  // Refetch on broadcast (same-tab and cross-tab)
+  useEffect(() => {
+    const refresh = () => locationsQuery.refetch();
+
+    const onCustom = () => refresh();
+    window.addEventListener('locations:updated' as any, onCustom as EventListener);
+
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === 'locations:updated') refresh();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isCentralSession]);
+    window.addEventListener('storage', onStorage);
+
+    const onVis = () => {
+      if (document.visibilityState === 'visible') refresh();
+    };
+    document.addEventListener('visibilitychange', onVis);
+
+    return () => {
+      window.removeEventListener('locations:updated' as any, onCustom as EventListener);
+      window.removeEventListener('storage', onStorage);
+      document.removeEventListener('visibilitychange', onVis);
+    };
+  }, [locationsQuery]);
 
   const active = locations.find((b) => b.id === (activeLocationId || ''));
 

@@ -2,8 +2,6 @@
  * MenuItemsPage.tsx
  *
  * A full React component for managing menu items.
- * Includes toolbar, filtering, sorting, bulk actions, product drawer,
- * and an improved Empty State that matches the Dashboard's "centered icon" style.
  */
 
 import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
@@ -39,6 +37,10 @@ type DrawerSubmitValues = {
   media?: string[];
   variations?: { name: string; price?: number; imageUrl?: string }[];
   tags?: string[];
+  // Advanced from drawer
+  channel?: Channel;                // if single channel selected
+  includeLocationIds?: string[];    // only show in these branches (global item)
+  excludeLocationIds?: string[];    // hide in these branches (global item)
 };
 
 const HIGHLIGHT_HOLD_MS = 2500;
@@ -96,6 +98,7 @@ export default function MenuItemsPage(): JSX.Element {
     duplicateMut,
     availabilityMut,
     bulkAvailabilityMut,
+    bulkDeleteMut, // ensure this is exported by useMenuItems
     bulkCategoryMut,
   } = useMenuItems();
 
@@ -108,7 +111,6 @@ export default function MenuItemsPage(): JSX.Element {
   const [searchParams, setSearchParams] = useSearchParams();
   const routeWantsNew = searchParams.get('new') === 'product';
 
-  // Respect capability for route-driven "Add Product"
   useEffect(() => {
     if (routeWantsNew) {
       if (canCreate) setOpenAdd(true);
@@ -123,25 +125,30 @@ export default function MenuItemsPage(): JSX.Element {
   const queryClient = useQueryClient();
 
   useEffect(() => {
+    const refetchMenu = () => {
+      itemsQuery.refetch();
+      queryClient.invalidateQueries({
+        predicate: (q) => {
+          const k = q.queryKey as any[];
+          return Array.isArray(k) && k[0] === 'menu-items';
+        },
+      });
+    };
     const onStorage = (e: StorageEvent) => {
       if (e.key === 'menu:updated') {
-        // Refetch main lists and dot indicators when other tabs update
-        itemsQuery.refetch();
-        queryClient.invalidateQueries({
-          predicate: (q) => {
-            const k = q.queryKey as any[];
-            return Array.isArray(k) && k[0] === 'menu-items';
-          },
-        });
+        refetchMenu();
       }
     };
     window.addEventListener('storage', onStorage);
-    return () => window.removeEventListener('storage', onStorage);
+    window.addEventListener('menu:updated' as any, refetchMenu as any);
+    return () => {
+      window.removeEventListener('storage', onStorage);
+      window.removeEventListener('menu:updated' as any, refetchMenu as any);
+    };
   }, [itemsQuery, queryClient]);
 
   const [q, setQ] = useState('');
   const [status, setStatus] = useState<Set<Status>>(new Set());
-  // Local channel filter state is kept for the toolbar UI, but list filtering should NOT hide rows by channel.
   const [channels, setChannels] = useState<Set<Channel>>(new Set());
   const [selectedCategory, setSelectedCategory] = useState<string>('');
   const [sortBy, setSortBy] = useState<SortBy>('name-asc');
@@ -150,6 +157,10 @@ export default function MenuItemsPage(): JSX.Element {
   const [openAdd, setOpenAdd] = useState(routeWantsNew && canCreate);
   const [openEdit, setOpenEdit] = useState<TMenuItem | null>(null);
   const [openBulkCategory, setOpenBulkCategory] = useState(false);
+
+  // New: dialog control for deletes
+  const [openDeleteOne, setOpenDeleteOne] = useState(false);
+  const [deleteOneId, setDeleteOneId] = useState<string | null>(null);
   const [openDeleteMany, setOpenDeleteMany] = useState(false);
 
   const [frozenItems, setFrozenItems] = useState<TMenuItem[] | null>(null);
@@ -177,13 +188,13 @@ export default function MenuItemsPage(): JSX.Element {
     scroller.addEventListener('scroll', onScroll, { passive: true });
   }, []);
 
-  // Treat refetch as loading to avoid showing previous channel state
   const loading =
     itemsQuery.isLoading ||
     categoriesQuery.isLoading ||
     (itemsQuery.isFetching && !itemsQuery.isLoading) ||
     (categoriesQuery.isFetching && !categoriesQuery.isLoading);
 
+  const { activeLocationId } = useScope(); // remove channelScope filtering; backend handles channel visibility
   const sourceItems = frozenItems ?? items;
 
   const viewItems = useMemo(() => {
@@ -197,12 +208,13 @@ export default function MenuItemsPage(): JSX.Element {
         (it.category || '').toLowerCase().includes(qnorm);
       const matchesCategory = !selectedCategory || it.category === selectedCategory;
 
-      // Do NOT filter by channel here; channel scoping is handled by the fetch.
-      // Keep rows visible even when the current channel is OFF (switch appears off).
       const isHidden = itAny.hidden || itAny.status === 'hidden';
       const matchesStatus = status.size === 0 || status.has(isHidden ? 'hidden' : 'active');
       return matchesQ && matchesCategory && matchesStatus;
     });
+
+    // Do not apply any additional client-side channel filtering.
+    // The backend already enforces baseline visibility per scope/channel.
 
     if (sortBy === 'name-asc') list = list.slice().sort((a, b) => a.name.localeCompare(b.name));
     if (sortBy === 'created-desc') {
@@ -222,9 +234,7 @@ export default function MenuItemsPage(): JSX.Element {
     if (!pendingHighlightId) return;
     const exists = viewItems.some((it) => it.id === pendingHighlightId);
     if (!exists) return;
-    const node = document.querySelector(
-      `[data-item-id="${pendingHighlightId}"]`
-    ) as HTMLElement | null;
+    const node = document.querySelector(`[data-item-id="${pendingHighlightId}"]`) as HTMLElement | null;
     if (!node) return;
     const scroller = contentRef.current || getScrollContainer(node);
     const before = getScrollTop(scroller);
@@ -276,11 +286,9 @@ export default function MenuItemsPage(): JSX.Element {
   };
   const clearSelection = () => setSelectedIds(new Set());
 
-  // Compute channel alerts (red dot) by comparing availability in dine-in vs online
+  // Indicators for channel alerts
   const { token, session } = useAuthContext();
-  const { activeLocationId } = useScope();
-  const persistedLocationId =
-    typeof window !== 'undefined' ? localStorage.getItem('scope:activeLocationId') : null;
+  const persistedLocationId = typeof window !== 'undefined' ? localStorage.getItem('scope:activeLocationId') : null;
   const sessionLocationId = session?.locationId || null;
   const locationIdForQuery = activeLocationId ?? persistedLocationId ?? sessionLocationId ?? undefined;
   const lidKey = locationIdForQuery || 'all';
@@ -302,24 +310,27 @@ export default function MenuItemsPage(): JSX.Element {
     refetchOnMount: 'always',
   });
 
-  const dItems = dineInQuery.data ?? [];
-  const oItems = onlineQuery.data ?? [];
-  const dMap = new Map(dItems.map((x: any) => [x.id, x]));
-  const oMap = new Map(oItems.map((x: any) => [x.id, x]));
-  const allIds = new Set<string>([...dMap.keys(), ...oMap.keys()]);
   let dineInExclusiveOff = false;
   let onlineExclusiveOff = false;
-  for (const id of allIds) {
-    const d = dMap.get(id) as any | undefined;
-    const o = oMap.get(id) as any | undefined;
-    const dHidden = !!(d && (d.hidden || d.status === 'hidden'));
-    const oHidden = !!(o && (o.hidden || o.status === 'hidden'));
-    if (dHidden && !oHidden) dineInExclusiveOff = true;
-    if (oHidden && !dHidden) onlineExclusiveOff = true;
-    if (dineInExclusiveOff && onlineExclusiveOff) break;
-  }
 
-  // Handlers (always pass functions; guard inside by capability)
+  if (activeLocationId) {
+    const dItems = dineInQuery.data ?? [];
+    const oItems = onlineQuery.data ?? [];
+    const dMap = new Map(dItems.map((x: any) => [x.id, !(x.hidden || x.status === 'hidden')]));
+    const oMap = new Map(oItems.map((x: any) => [x.id, !(x.hidden || x.status === 'hidden')]));
+    const commonIds = [...dMap.keys()].filter((id) => oMap.has(id));
+
+    for (const id of commonIds) {
+      const dActive = dMap.get(id) === true;
+      const oActive = oMap.get(id) === true;
+      if (!dActive && oActive) dineInExclusiveOff = true;
+      if (!oActive && dActive) onlineExclusiveOff = true;
+      if (dineInExclusiveOff && onlineExclusiveOff) break;
+    }
+  }
+  // All locations -> keep both flags false (no dots)
+
+  // Handlers
   const handleAddClick = () => {
     if (!canCreate) return;
     const sp = new URLSearchParams(searchParams);
@@ -329,7 +340,14 @@ export default function MenuItemsPage(): JSX.Element {
   };
   const handleToggleAvailability = (id: string, active: boolean) => {
     if (!canToggleAvailability) return;
-    availabilityMut.mutate({ id, active });
+    availabilityMut.mutate(
+      { id, active },
+      {
+        onSuccess: () => {
+          if (!active) setStatus(new Set()); // keep unavailable rows visible
+        },
+      }
+    );
   };
   const handleEdit = (item: TMenuItem) => {
     if (!canUpdate) return;
@@ -339,12 +357,15 @@ export default function MenuItemsPage(): JSX.Element {
     if (!canCreate) return;
     duplicateMut.mutate(id);
   };
+
+  // Open single-delete dialog
   const handleDelete = (id: string) => {
     if (!canDelete) return;
-    if (confirm('Delete this item?')) deleteMut.mutate({ id });
+    setDeleteOneId(id);
+    setOpenDeleteOne(true);
   };
 
-  // Bulk handlers (always functions; no-ops if not allowed)
+  // Bulk handlers
   const onSetAvailable = () => {
     if (!canToggleAvailability) return;
     const ids = Array.from(selectedIds);
@@ -353,7 +374,15 @@ export default function MenuItemsPage(): JSX.Element {
   const onSetUnavailable = () => {
     if (!canToggleAvailability) return;
     const ids = Array.from(selectedIds);
-    if (ids.length) bulkAvailabilityMut.mutate({ ids, active: false });
+    if (!ids.length) return;
+    bulkAvailabilityMut.mutate(
+      { ids, active: false },
+      {
+        onSuccess: () => {
+          setStatus(new Set()); // keep unavailable rows visible
+        },
+      }
+    );
   };
   const onAssignCategory = () => {
     if (!canUpdate) return;
@@ -365,6 +394,7 @@ export default function MenuItemsPage(): JSX.Element {
   };
 
   const showBulkBar = viewItems.length > 0;
+  const isBranchView = !!activeLocationId;
 
   return (
     <div className="flex h-full flex-col min-h-0">
@@ -514,6 +544,12 @@ export default function MenuItemsPage(): JSX.Element {
                           tags: values.tags,
                         };
                         if (typeof values.price === 'number') payload.price = values.price;
+
+                        // Forward Advanced selections
+                        if (values.channel) payload.channel = values.channel;
+                        if (values.includeLocationIds?.length) payload.includeLocationIds = values.includeLocationIds;
+                        if (values.excludeLocationIds?.length) payload.excludeLocationIds = values.excludeLocationIds;
+
                         const created = await createMut.mutateAsync(payload);
                         const sp = new URLSearchParams(searchParams);
                         sp.delete('new');
@@ -532,9 +568,7 @@ export default function MenuItemsPage(): JSX.Element {
                         name: openEdit.name,
                         price: String((openEdit as any).price ?? ''),
                         compareAtPrice:
-                          (openEdit as any).compareAtPrice != null
-                            ? String((openEdit as any).compareAtPrice)
-                            : '',
+                          (openEdit as any).compareAtPrice != null ? String((openEdit as any).compareAtPrice) : '',
                         category: openEdit.category || '',
                         description: (openEdit as any).description || '',
                         imagePreviews: (openEdit as any).media || [],
@@ -568,41 +602,81 @@ export default function MenuItemsPage(): JSX.Element {
                   )}
                 </AnimatePresence>
 
-                {openBulkCategory && canUpdate && (
-                  <BulkChangeCategoryDialog
-                    open={openBulkCategory}
-                    categories={categoryNames}
-                    onClose={() => setOpenBulkCategory(false)}
-                    onConfirm={(category) => {
-                      const ids = Array.from(selectedIds);
-                      if (!ids.length) return setOpenBulkCategory(false);
-                      bulkCategoryMut.mutate(
-                        { ids, category },
-                        {
-                          onSuccess: () => {
-                            setOpenBulkCategory(false);
-                            clearSelection();
-                          },
-                        }
-                      );
+                {/* Single delete dialog */}
+                {openDeleteOne && canDelete && (
+                  <ConfirmDeleteItemsDialog
+                    open={openDeleteOne}
+                    count={1}
+                    scope={isBranchView ? 'branch' : 'global'}
+                    onClose={() => {
+                      setOpenDeleteOne(false);
+                      setDeleteOneId(null);
                     }}
-                    isSubmitting={bulkAvailabilityMut.isPending}
+                    onConfirm={async () => {
+                      if (!deleteOneId) return;
+                      await deleteMut.mutateAsync({ id: deleteOneId });
+                      setOpenDeleteOne(false);
+                      setDeleteOneId(null);
+                    }}
+                    isSubmitting={deleteMut.isPending}
                   />
                 )}
 
+                {/* Bulk delete dialog */}
                 {openDeleteMany && canDelete && (
                   <ConfirmDeleteItemsDialog
                     open={openDeleteMany}
                     count={selectedIds.size}
+                    scope={isBranchView ? 'branch' : 'global'}
                     onClose={() => setOpenDeleteMany(false)}
                     onConfirm={() => {
-                      const ids = Array.from(selectedIds);
-                      Promise.allSettled(ids.map((id) => deleteMut.mutateAsync({ id }))).finally(() => {
-                        clearSelection();
+                      const raw = Array.from(selectedIds);
+                      if (!raw.length) {
                         setOpenDeleteMany(false);
-                      });
+                        return;
+                      }
+
+                      if (isBranchView) {
+                        // Branch scope: remove from this location only
+                        bulkAvailabilityMut.mutate(
+                          { ids: raw, active: false },
+                          {
+                            onSettled: () => {
+                              setOpenDeleteMany(false);
+                              clearSelection();
+                            },
+                          }
+                        );
+                      } else {
+                        // All locations: true delete everywhere (ensure 24-hex ObjectIds)
+                        const byId = new Map(viewItems.map((it: any) => [it.id, it]));
+                        const HEX24 = /^[a-fA-F0-9]{24}$/;
+                        const ids = raw
+                          .map((sid) => {
+                            const it: any = byId.get(sid);
+                            const candidates = [it?.id, it?._id, it?.itemId];
+                            return candidates?.find((v: unknown) => typeof v === 'string' && HEX24.test(v as string));
+                          })
+                          .filter(Boolean) as string[];
+
+                        if (!ids.length) {
+                          setOpenDeleteMany(false);
+                          clearSelection();
+                          return;
+                        }
+
+                        bulkDeleteMut.mutate(
+                          { ids },
+                          {
+                            onSettled: () => {
+                              setOpenDeleteMany(false);
+                              clearSelection();
+                            },
+                          }
+                        );
+                      }
                     }}
-                    isSubmitting={deleteMut.isPending}
+                    isSubmitting={isBranchView ? bulkAvailabilityMut.isPending : bulkDeleteMut.isPending}
                   />
                 )}
               </Suspense>

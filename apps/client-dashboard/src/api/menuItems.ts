@@ -25,9 +25,13 @@ export type NewMenuItem = {
   restaurantId?: string;
   hidden?: boolean;
   status?: 'active' | 'hidden';
-  // owner/admin can create branch-only items when a branch is selected
-  locationId?: string;
-  // NEW: channel seed when creating under a specific channel (omit for "All channels")
+
+  // Branch scoping or targeting
+  locationId?: string;              // create as branch-only item (single branch)
+  includeLocationIds?: string[];    // global item: visible only in these branches
+  excludeLocationIds?: string[];    // global item: visible everywhere except these branches
+
+  // Channel seed when creating under a specific channel (omit for "All channels")
   channel?: Channel;
 };
 
@@ -40,12 +44,16 @@ export async function getMenuItems(
   const params = new URLSearchParams();
   if (opts?.locationId) params.set('locationId', opts.locationId);
   if (opts?.channel) params.set('channel', opts.channel);
+  // Cache-buster to avoid 304/ETag reuse while debugging
+  params.set('_', String(Date.now()));
 
-  const url =
-    '/api/v1/auth/menu-items' + (params.toString() ? `?${params.toString()}` : '');
+  const url = '/api/v1/auth/menu-items' + (params.toString() ? `?${params.toString()}` : '');
 
   const res = await api.get(url, {
-    headers: { Authorization: `Bearer ${token}` },
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Accept: 'application/json',
+    },
   });
   return res.data.items as MenuItem[];
 }
@@ -73,12 +81,19 @@ export async function updateMenuItem(
   return res.data.item as MenuItem;
 }
 
-export async function deleteMenuItem(id: string, token: string): Promise<void> {
-  await api.post(
-    `/api/v1/auth/menu-items/${encodeURIComponent(id)}/delete`,
-    null,
-    { headers: { Authorization: `Bearer ${token}` } }
-  );
+// Scoped delete: optional locationId/channel as query params
+export async function deleteMenuItem(
+  id: string,
+  token: string,
+  scope?: { locationId?: string; channel?: Channel }
+): Promise<void> {
+  const params = new URLSearchParams();
+  if (scope?.locationId) params.set('locationId', scope.locationId);
+  if (scope?.channel) params.set('channel', scope.channel);
+  const qs = params.toString();
+  const url = `/api/v1/auth/menu-items/${encodeURIComponent(id)}/delete${qs ? `?${qs}` : ''}`;
+
+  await api.post(url, null, { headers: { Authorization: `Bearer ${token}` } });
 }
 
 /** Bulk availability per-branch/per-channel */
@@ -99,14 +114,14 @@ export async function bulkUpdateAvailability(
   return res.data as { items: MenuItem[]; matchedCount: number; modifiedCount: number };
 }
 
-/** Bulk delete: returns deletedCount */
+/** Bulk delete: supports optional scope in payload */
 export async function bulkDeleteMenuItems(
-  ids: string[],
+  payload: { ids: string[]; locationId?: string; channel?: Channel },
   token: string
 ): Promise<{ deletedCount: number; ids: string[] }> {
   const res = await api.post(
     '/api/v1/auth/menu-items/bulk/delete',
-    { ids },
+    payload,
     { headers: { Authorization: `Bearer ${token}` } }
   );
   return res.data as { deletedCount: number; ids: string[] };

@@ -11,15 +11,10 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useAuthContext } from '../../context/AuthContext';
 import { toastSuccess, toastError } from '../Toaster';
 import type { TenantDTO } from '../../../../../packages/shared/src/types/v1';
+import { notifyLocationsUpdated } from '../../utils/notify';
 
 const STEP_KEY = 'ai-setup-steps';
 const QK = ['locations'] as const;
-
-function broadcast() {
-  try {
-    localStorage.setItem('locations:updated', String(Date.now()));
-  } catch {}
-}
 
 function setLocalStep(id: string, done: boolean) {
   try {
@@ -62,12 +57,12 @@ export function useLocations() {
   const createMut = useMutation({
     mutationFn: (values: LocationInput) => createLocation(values),
     onSuccess: (created) => {
-      // Update list
+      // Update list immediately
       queryClient.setQueryData<Location[]>([QK[0], token], (prev) =>
         Array.isArray(prev) ? [...prev, created] : [created]
       );
 
-      // Optimistically set hasLocations = true on tenant (preserving other flags)
+      // Optimistically set hasLocations = true on tenant
       queryClient.setQueryData<TenantDTO>(['tenant', token], (prev) =>
         prev
           ? {
@@ -82,14 +77,11 @@ export function useLocations() {
           : prev
       );
 
-      // Instant visual: mark the local checklist step as done
       setLocalStep('add-locations', true);
-
-      // Pull server truth
       queryClient.invalidateQueries({ queryKey: ['tenant', token] });
 
       toastSuccess('Location added');
-      broadcast();
+      notifyLocationsUpdated(); // let Sidebar and other tabs refresh
     },
     onError: (err: unknown) => {
       toastError(`Failed to add location: ${errMsg(err)}`);
@@ -104,7 +96,7 @@ export function useLocations() {
         (prev ?? []).map((l) => (l.id === updated.id ? updated : l))
       );
       toastSuccess('Location updated');
-      broadcast();
+      notifyLocationsUpdated();
     },
     onError: (err: unknown) => {
       toastError(`Failed to update location: ${errMsg(err)}`);
@@ -115,12 +107,10 @@ export function useLocations() {
   const deleteMut = useMutation({
     mutationFn: (payload: { id: string }) => deleteLocation(payload.id),
     onSuccess: (res) => {
-      // Remove from list
       const next = queryClient.setQueryData<Location[]>([QK[0], token], (prev) =>
         (prev ?? []).filter((l) => l.id !== res.id)
       ) as Location[] | undefined;
 
-      // If none left, optimistically flip hasLocations = false and local step off
       const noneLeft = !next || next.length === 0;
       if (noneLeft) {
         queryClient.setQueryData<TenantDTO>(['tenant', token], (prev) =>
@@ -139,11 +129,10 @@ export function useLocations() {
         setLocalStep('add-locations', false);
       }
 
-      // Pull server truth
       queryClient.invalidateQueries({ queryKey: ['tenant', token] });
 
       toastSuccess('Location deleted');
-      broadcast();
+      notifyLocationsUpdated();
     },
     onError: (err: unknown) => {
       toastError(`Failed to delete location: ${errMsg(err)}`);

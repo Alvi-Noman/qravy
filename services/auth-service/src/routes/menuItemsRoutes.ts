@@ -68,6 +68,8 @@ router.post(
   authenticateJWT,
   applyScope,
   authorize('menuItems:delete'),
+  // Validate optional ?locationId=&channel= for scoped delete
+  validateListQuery,
   deleteMenuItem
 );
 
@@ -85,6 +87,7 @@ router.post(
   authenticateJWT,
   applyScope,
   authorize('menuItems:delete'),
+  // bulkDeleteSchema should accept { ids, locationId?, channel? }
   validateRequest(bulkDeleteSchema),
   bulkDeleteMenuItems
 );

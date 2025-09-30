@@ -5,13 +5,15 @@ import 'dotenv/config';
 import express, { type Application, type Request, type Response, type NextFunction } from 'express';
 import cors from 'cors';
 import { createProxyMiddleware } from 'http-proxy-middleware';
-import type { ClientRequest } from 'http';
+import type { ClientRequest, IncomingMessage } from 'http';
 import logger from './utils/logger.js';
 import registerUploadsProxy from './proxy/uploads.js';
 
 const app: Application = express();
 
 app.set('trust proxy', 1);
+// Gateway should not generate ETags
+app.set('etag', false);
 
 // Basic request log
 app.use((req: Request, _res: Response, next: NextFunction) => {
@@ -19,72 +21,95 @@ app.use((req: Request, _res: Response, next: NextFunction) => {
   next();
 });
 
-// CORS (supports comma-separated origins in CORS_ORIGIN)
+// CORS (comma-separated origins supported)
 const CORS_ORIGINS = (process.env.CORS_ORIGIN || 'http://localhost:5173')
   .split(',')
   .map((s) => s.trim());
 
-app.use(
-  cors({
-    origin: (origin, cb) => {
-      // allow requests with no origin (curl/mobile apps)
-      if (!origin) return cb(null, true);
-      if (CORS_ORIGINS.includes(origin)) return cb(null, true);
-      return cb(new Error(`Not allowed by CORS: ${origin}`));
-    },
-    credentials: true,
-    methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'authorization'],
-  })
-);
+const corsOptions: cors.CorsOptions = {
+  origin: (origin, cb) => {
+    if (!origin) return cb(null, true); // allow curl/mobile/no-origin
+    if (CORS_ORIGINS.includes(origin)) return cb(null, true);
+    return cb(new Error(`Not allowed by CORS: ${origin}`));
+  },
+  credentials: true,
+  methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'authorization', 'X-Requested-With'],
+  exposedHeaders: ['ETag'],
+  maxAge: 86400,
+};
 
-// Parse JSON bodies (we re-forward body on proxy below)
+app.use(cors(corsOptions));
+// Ensure preflight ends here with 204
+app.options('*', cors(corsOptions));
+
+// Parse JSON bodies (we’ll re-forward the body in the proxy)
 app.use(express.json({ limit: '2mb' }));
 
 // Targets from .env
 const AUTH_TARGET = process.env.AUTH_SERVICE_URL || 'http://auth-service:3001';
 
-// Helper: proxy with JSON body forwarding and basic error logging
-const jsonProxyToAuth = () =>
-  createProxyMiddleware({
+/**
+ * Helper: proxy to auth-service with JSON body forwarding
+ * - Query strings are automatically preserved by http-proxy-middleware
+ */
+function jsonProxyToAuth() {
+  return createProxyMiddleware({
     target: AUTH_TARGET,
     changeOrigin: true,
     xfwd: true,
     ws: false,
     cookieDomainRewrite: 'localhost',
+
     onProxyReq: (proxyReq: ClientRequest, req: Request & { body?: unknown }) => {
-      // Forward JSON body for methods that can have a body
+      // Only forward JSON bodies for mutating methods
       const method = (req.method || 'GET').toUpperCase();
       if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) return;
-      if (!req.body || !Object.keys(req.body as object).length) return;
 
-      const contentType = (proxyReq.getHeader('content-type') as string | undefined) || '';
-      if (!contentType.includes('application/json')) return;
+      const hasBody = req.body && Object.keys(req.body as object).length > 0;
+      if (!hasBody) return;
+
+      const ct = (proxyReq.getHeader('content-type') as string | undefined) || '';
+      if (!ct.includes('application/json')) return;
 
       const body = JSON.stringify(req.body);
       proxyReq.setHeader('content-length', Buffer.byteLength(body));
       proxyReq.write(body);
     },
+
+    onProxyRes(proxyRes: IncomingMessage, _req: Request, res: Response) {
+      // Prevent caching on proxied JSON responses
+      try {
+        if (proxyRes.headers) {
+          delete proxyRes.headers.etag;
+          delete proxyRes.headers['last-modified'];
+          proxyRes.headers['cache-control'] = 'no-store';
+        }
+        res.removeHeader('ETag');
+        res.setHeader('Cache-Control', 'no-store');
+      } catch {
+        /* noop */
+      }
+    },
+
     onError(err, req, res) {
-      logger.error(
-        `[PROXY][AUTH] ${req.method} ${req.originalUrl} -> ${AUTH_TARGET} error: ${(err as Error).message}`
-      );
+      logger.error(`[PROXY][AUTH] ${req.method} ${req.originalUrl} -> ${AUTH_TARGET} error: ${(err as Error).message}`);
       if (!res.headersSent) {
         (res as Response).status(502).json({ message: 'Bad gateway (auth-service unavailable)' });
       }
     },
   });
+}
 
-// Uploads proxy (mount this BEFORE the catch-all /api/v1 proxy)
+// 1) Uploads proxy FIRST so it won’t be swallowed by the /api/v1 catch-all
 registerUploadsProxy(app);
 
-// Proxies to auth-service
-// 1) Explicit important paths
+// 2) Explicit mounts to auth-service (nice for clarity & future overrides)
 app.use('/api/v1/auth', jsonProxyToAuth());
 app.use('/api/v1/locations', jsonProxyToAuth());
-app.use('/api/v1/access', jsonProxyToAuth()); // ADD
+app.use('/api/v1/access', jsonProxyToAuth());
 
-// 2) Catch-all for any other /api/v1/* endpoints served by auth-service
+// 3) Catch-all for any other /api/v1/* paths served by auth-service
 app.use('/api/v1', jsonProxyToAuth());
 
 // Health

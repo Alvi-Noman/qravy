@@ -25,6 +25,7 @@ import CategoryListSkeleton from '../components/categories/CategoryListSkeleton'
 import { TagIcon } from '@heroicons/react/24/outline';
 import Can from '../components/Can';
 import { usePermissions } from '../context/PermissionsContext';
+import { useScope } from '../context/ScopeContext'; // NEW
 
 const CategoryList = lazy(() => import('../components/categories/CategoryList'));
 const CategoryFormDialog = lazy(() => import('../components/categories/CategoryFormDialog'));
@@ -102,6 +103,7 @@ export default function CategoriesPage() {
     deleteMut,
     mergeMut,
     availabilityMut,
+    bulkVisibilityMut,
   } = useCategories();
 
   const { has } = usePermissions();
@@ -109,6 +111,8 @@ export default function CategoriesPage() {
   const canUpdate = has('categories:update');
   const canDelete = has('categories:delete');
   const canToggleVisibility = has('categories:toggleVisibility');
+
+  const { activeLocationId, channel: scopeChannel } = useScope(); // NEW
 
   // Read/write URL query to drive Add Category dialog
   const [searchParams, setSearchParams] = useSearchParams();
@@ -207,11 +211,23 @@ export default function CategoriesPage() {
     return m;
   }, [items]);
 
-  // Keep categories visible regardless of channel; fetch already scopes per channel.
+  // Keep categories visible; hide only when they don't belong to the selected channel,
+  // or when we know all items for that category are off in this channel.
   const viewCategories = useMemo(() => {
     let list = sourceCategories.slice();
     const qnorm = q.trim().toLowerCase();
     if (qnorm) list = list.filter((c) => c.name.toLowerCase().includes(qnorm));
+
+    // In All locations + single channel, apply channelScope + active-state rules
+    if (!activeLocationId && (scopeChannel === 'dine-in' || scopeChannel === 'online')) {
+      // 1) Channel scope: only show categories whose channelScope is 'all' or matches the selected channel
+      list = list.filter((c: any) => {
+        const cs = (c?.channelScope as 'all' | 'dine-in' | 'online' | undefined) ?? 'all';
+        return cs === 'all' || cs === scopeChannel;
+      });
+      // 2) Active items: keep categories with no items; hide only when we know all items are off
+      //list = list.filter((c) => activeByName.get(c.name) !== false);
+    }
 
     if (sortBy === 'name-asc') list.sort((a, b) => a.name.localeCompare(b.name));
     if (sortBy === 'created-desc')
@@ -221,7 +237,7 @@ export default function CategoriesPage() {
     if (sortBy === 'most-used')
       list.sort((a, b) => (usageMap.get(b.name) ?? 0) - (usageMap.get(a.name) ?? 0));
     return list;
-  }, [sourceCategories, q, sortBy, usageMap]);
+  }, [sourceCategories, q, sortBy, usageMap, activeLocationId, scopeChannel, activeByName]);
 
   // Highlight logic (auto-scroll + highlight)
   useEffect(() => {
@@ -471,7 +487,7 @@ export default function CategoriesPage() {
                       sp.delete('new');
                       setSearchParams(sp, { replace: true });
                     }}
-                    onSubmit={async (name) => {
+                    onSubmit={async (name, opts) => {
                       if (editing) {
                         const updated = await renameMut.mutateAsync({
                           id: editing.id,
@@ -483,7 +499,7 @@ export default function CategoriesPage() {
                         setSearchParams(sp, { replace: true });
                         setQueuedHighlightId(updated.id);
                       } else {
-                        const created = await createMut.mutateAsync(name);
+                        const created = await createMut.mutateAsync({ name, opts });
                         setOpenForm(false);
                         const sp = new URLSearchParams(searchParams);
                         sp.delete('new');
@@ -500,10 +516,24 @@ export default function CategoriesPage() {
                     category={deleteTarget}
                     categories={categories}
                     usageCount={deleteTarget ? usageMap.get(deleteTarget.name) ?? 0 : 0}
+                    scope={activeLocationId ? 'branch' : 'global'}
+                    // Use deleteMut for branch scope too (it hard-deletes branch-scoped categories)
                     isSubmitting={deleteMut.isPending}
                     onClose={() => setOpenDelete(false)}
-                    onConfirm={({ mode, reassignToId }) => {
+                    onConfirm={(opts) => {
                       if (!deleteTarget) return;
+
+                      // Branch-scope removal -> call delete API with current scope
+                      if ('scope' in opts && opts.scope === 'branch') {
+                        deleteMut.mutate(
+                          { id: deleteTarget.id, mode: 'cascade' },
+                          { onSuccess: () => setOpenDelete(false) }
+                        );
+                        return;
+                      }
+
+                      // Global delete everywhere (cascade or reassign)
+                      const { mode, reassignToId } = opts as { mode: 'cascade' | 'reassign'; reassignToId?: string };
                       deleteMut.mutate(
                         { id: deleteTarget.id, mode, reassignToId },
                         { onSuccess: () => setOpenDelete(false) }

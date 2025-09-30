@@ -103,6 +103,48 @@ function RequireOnboarding({ children }: { children: React.ReactNode }) {
 }
 
 function App() {
+  // NEW: Cross-tab sync bridge (BroadcastChannel -> existing events/storage)
+  useEffect(() => {
+    let menuBC: BroadcastChannel | undefined;
+    let catsBC: BroadcastChannel | undefined;
+    try {
+      if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
+        menuBC = new BroadcastChannel('menu');
+        menuBC.onmessage = () => {
+          window.dispatchEvent(new CustomEvent('menu:updated'));
+          try {
+            localStorage.setItem('menu:updated', String(Date.now()));
+          } catch {}
+        };
+        catsBC = new BroadcastChannel('categories');
+        catsBC.onmessage = () => {
+          window.dispatchEvent(new CustomEvent('categories:updated'));
+          try {
+            localStorage.setItem('categories:updated', String(Date.now()));
+          } catch {}
+        };
+      }
+    } catch {}
+    return () => {
+      try {
+        menuBC?.close();
+        catsBC?.close();
+      } catch {}
+    };
+  }, []);
+
+  // NEW: Prefetch common pages on idle to speed first navigation
+  useEffect(() => {
+    const id = window.setTimeout(() => {
+      Promise.allSettled([
+        import('./pages/MenuItems'),
+        import('./pages/Categories'),
+        import('./pages/Locations'),
+      ]);
+    }, 1200);
+    return () => window.clearTimeout(id);
+  }, []);
+
   return (
     <AuthProvider>
       <PermissionsProvider>

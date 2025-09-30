@@ -9,7 +9,7 @@ import {
   type TextareaHTMLAttributes,
 } from 'react';
 import { motion } from 'framer-motion';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useAuthContext } from '../../context/AuthContext';
 import CategorySelect from './CategorySelect';
 import { createCategory as apiCreateCategory, type Category } from '../../api/categories';
@@ -18,6 +18,8 @@ import Variations from './Variations';
 import ImageUploadZone from './ImageUploadZone';
 import Tags from './Tags';
 import type { TenantDTO } from '../../../../../packages/shared/src/types/v1';
+import { useScope } from '../../context/ScopeContext';
+import { fetchLocations, type Location } from '../../api/locations';
 
 type UiVariation = { label: string; price?: string; imagePreview?: string | null; imageUrl?: string | null };
 
@@ -75,11 +77,16 @@ export default function ProductDrawer({
     media?: string[];
     variations?: { name: string; price?: number; imageUrl?: string }[];
     tags?: string[];
+    // Advanced selections (optional)
+    channel?: 'dine-in' | 'online';
+    includeLocationIds?: string[];
+    excludeLocationIds?: string[];
   }) => void | Promise<void>; // allow async submit
   persistKey?: string;
 }) {
   const API_BASE = import.meta.env.VITE_API_BASE_URL || '';
   const { token } = useAuthContext();
+  const { activeLocationId, channel: scopeChannel } = useScope();
   const queryClient = useQueryClient();
 
   const STORAGE_TTL_MS = 5_000;
@@ -107,6 +114,29 @@ export default function ProductDrawer({
   );
   const [tags, setTags] = useState<string[]>(initial.tags || []);
   const [uiVariations, setUiVariations] = useState<UiVariation[]>(initial.variations || []);
+
+  // Advanced: UI state
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  // Channels default from ScopeContext channel
+  const [chDineIn, setChDineIn] = useState(scopeChannel !== 'online'); // default true unless scope is online
+  const [chOnline, setChOnline] = useState(scopeChannel !== 'dine-in'); // default true unless scope is dine-in
+  // Branch checklist (for All locations only)
+  const locationsQuery = useQuery<Location[]>({
+    queryKey: ['locations', token],
+    queryFn: fetchLocations,
+    enabled: !!token && !activeLocationId, // we only need when All locations is selected
+    staleTime: 30_000,
+  });
+  const allLocations = locationsQuery.data ?? [];
+  const [selectedBranchIds, setSelectedBranchIds] = useState<Set<string>>(new Set());
+
+  // Initialize branch selection to "all checked" when data arrives (All locations view only)
+  useEffect(() => {
+    if (activeLocationId) return; // branch scope
+    if (allLocations.length && selectedBranchIds.size === 0) {
+      setSelectedBranchIds(new Set(allLocations.map((l) => l.id)));
+    }
+  }, [allLocations, selectedBranchIds.size, activeLocationId]);
 
   // Global errors
   const [localError, setLocalError] = useState<string | null>(null);
@@ -457,6 +487,21 @@ export default function ProductDrawer({
       }
     }
 
+    // Advanced validations
+    const channelsUnchecked = !chDineIn && !chOnline;
+    if (channelsUnchecked) {
+      setLocalError('Select at least one channel (Dine-In or Online) in Advanced.');
+      hasError = true;
+    }
+
+    if (!activeLocationId) {
+      // All locations: ensure at least one branch selected
+      if (allLocations.length && selectedBranchIds.size === 0) {
+        setLocalError('Select at least one branch in Advanced.');
+        hasError = true;
+      }
+    }
+
     // Block submit when we already have known variation/global issues
     if (varNameError || varImageError || mediaImageError) hasError = true;
 
@@ -507,6 +552,23 @@ export default function ProductDrawer({
       if (compareAtNum !== undefined) payload.compareAtPrice = compareAtNum;
     }
 
+    // Advanced -> channel
+    // both checked => omit channel (backend defaults both visible)
+    // one checked => set that channel
+    if (chDineIn !== chOnline) {
+      payload.channel = chDineIn ? 'dine-in' : 'online';
+    }
+
+    // Advanced -> branches (All locations view only)
+    if (!activeLocationId && allLocations.length) {
+      const allIds = allLocations.map((l) => l.id);
+      const unchecked = allIds.filter((id) => !selectedBranchIds.has(id));
+      if (unchecked.length > 0) {
+        // We use exclude list for unchecked branches
+        payload.excludeLocationIds = unchecked;
+      }
+    }
+
     clearSnapshot();
     setSaving(true);
     setLocalError(null);
@@ -525,13 +587,10 @@ export default function ProductDrawer({
         setSaving(false);
         onClose(); // trigger slide-out
       } else {
-        // If onSubmit is sync, still show loader for at least MIN_SAVE_MS
         await minDelay;
         setSaving(false);
-        // Parent can still decide to close externally if needed
       }
     } catch (err) {
-      // Ensure the bar is visible for MIN_SAVE_MS even on error
       await minDelay;
       setSaving(false);
       setLocalError(err instanceof Error ? err.message : 'Failed to save product.');
@@ -548,7 +607,8 @@ export default function ProductDrawer({
       varNameError ||
       varImageError ||
       mediaImageError ||
-      createCatMut.isError
+      createCatMut.isError ||
+      localError
     ) {
       scheduleScrollToError();
     }
@@ -560,6 +620,7 @@ export default function ProductDrawer({
     varImageError,
     mediaImageError,
     createCatMut.isError,
+    localError,
     scheduleScrollToError,
   ]);
 
@@ -585,15 +646,12 @@ export default function ProductDrawer({
   >(new Map());
 
   // Map merged gallery index -> underlying base index in values.imagePreviews
-  // Layout: [variants (including loading: sentinels)] + [base (all)]
   const resolveBaseIndexFromMerged = useCallback(
     (mergedIndex: number) => {
       const original = values.imagePreviews || [];
 
-      // Use the variantTiles length (not just resolved URLs) to know the variant block size
       const variantCount = (typedVariants || []).length;
 
-      // indices of existing base images (exclude those used by resolved variant URLs)
       const baseIndices: number[] = [];
       const vUrlSet = new Set(variantUrls);
       for (let j = 0; j < original.length; j++) {
@@ -601,16 +659,13 @@ export default function ProductDrawer({
         if (u !== null && !vUrlSet.has(u)) baseIndices.push(j);
       }
 
-      // If clicking within the variants block, resolver should not be used; fallback to append
       if (mergedIndex < variantCount) return original.length;
 
-      // Map into base region
       const basePos = mergedIndex - variantCount;
 
       if (basePos < baseIndices.length) {
         return baseIndices[basePos];
       }
-      // Beyond existing base images -> append
       const extra = basePos - baseIndices.length;
       return original.length + extra;
     },
@@ -889,7 +944,29 @@ export default function ProductDrawer({
         aria-busy={saving || undefined}
       >
         <div className="flex items-center justify-between px-5 py-4 border-b border-[#dbdbdb] sticky top-0 bg-[#fcfcfc]">
-          <h3 className="text-lg font-semibold text-[#2e2e30]">{title}</h3>
+          <div className="flex items-center gap-2">
+            <h3 className="text-lg font-semibold text-[#2e2e30]">{title}</h3>
+            {/* Local scope badge (hide on All locations + All channels) */}
+            {activeLocationId ? (
+              (() => {
+                const locationDisplay = (() => {
+                  const loc = allLocations.find((l) => l.id === activeLocationId);
+                  return loc?.name || 'Current location';
+                })();
+                const singleChannel = chDineIn !== chOnline ? (chDineIn ? 'Dine-In' : 'Online') : null;
+                const text = singleChannel ? `${locationDisplay} • ${singleChannel}` : locationDisplay;
+                return (
+                  <span
+                    className="inline-flex items-center gap-2 rounded-full border border-[#dbdbdb] bg-[#fcfcfc] px-2.5 py-1 text-xs text-[#2e2e30] max-w-[60%] truncate"
+                    title={text}
+                    aria-label={`Scope: ${text}`}
+                  >
+                    <span className="truncate">{text}</span>
+                  </span>
+                );
+              })()
+            ) : null}
+          </div>
           <button
             className={`text-[#6b7280] hover:text-[#374151] ${saving ? 'cursor-not-allowed opacity-60' : ''}`}
             onClick={handleBackdropClick}
@@ -1054,6 +1131,91 @@ export default function ProductDrawer({
               <Tags value={tags} onChange={setTags} />
             </Field>
 
+            {/* Advanced section */}
+            <div className="mt-2">
+              <button
+                type="button"
+                className="text-sm font-medium text-[#2e2e30] underline-offset-2 hover:underline"
+                onClick={() => setAdvancedOpen((v) => !v)}
+              >
+                Advanced {advancedOpen ? '⌃' : '⌄'}
+              </button>
+
+              {advancedOpen && (
+                <div className="mt-3 space-y-4 rounded-md border border-[#e6e6e8] bg-white p-3">
+                  {/* Channels */}
+                  <div>
+                    <div className="text-sm font-medium text-[#2e2e30] mb-1">Channels</div>
+                    <div className="flex items-center gap-4">
+                      <label className="inline-flex items-center gap-2">
+                        <input
+                          type="checkbox"
+                          checked={chDineIn}
+                          onChange={(e) => setChDineIn(e.currentTarget.checked)}
+                        />
+                        <span className="text-sm text-[#2e2e30]">Dine-In</span>
+                      </label>
+                      <label className="inline-flex items-center gap-2">
+                        <input
+                          type="checkbox"
+                          checked={chOnline}
+                          onChange={(e) => setChOnline(e.currentTarget.checked)}
+                        />
+                        <span className="text-sm text-[#2e2e30]">Online</span>
+                      </label>
+                    </div>
+                    {!chDineIn && !chOnline ? (
+                      <div className="mt-1 text-xs text-red-600" role="alert">
+                        Select at least one channel.
+                      </div>
+                    ) : null}
+                  </div>
+
+                  {/* Branches */}
+                  {!activeLocationId ? (
+                    <div>
+                      <div className="text-sm font-medium text-[#2e2e30] mb-1">Branches</div>
+                      {locationsQuery.isLoading ? (
+                        <div className="text-sm text-[#6b6b70]">Loading branches…</div>
+                      ) : allLocations.length ? (
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1">
+                          {allLocations.map((loc) => {
+                            const checked = selectedBranchIds.has(loc.id);
+                            return (
+                              <label key={loc.id} className="inline-flex items-center gap-2">
+                                <input
+                                  type="checkbox"
+                                  checked={checked}
+                                  onChange={(e) => {
+                                    const next = new Set(selectedBranchIds);
+                                    if (e.currentTarget.checked) next.add(loc.id);
+                                    else next.delete(loc.id);
+                                    setSelectedBranchIds(next);
+                                  }}
+                                />
+                                <span className="text-sm text-[#2e2e30]">{loc.name}</span>
+                              </label>
+                            );
+                          })}
+                        </div>
+                      ) : (
+                        <div className="text-sm text-[#6b6b70]">No branches found.</div>
+                      )}
+                      {allLocations.length > 0 && selectedBranchIds.size === 0 ? (
+                        <div className="mt-1 text-xs text-red-600" role="alert">
+                          Select at least one branch.
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : (
+                    <div className="text-xs text-[#6b6b70]">
+                      This product will be created only in the current location.
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
             {(localError || createCatMut.isError) && (
               <div className="text-sm text-red-600" role="alert" aria-live="polite">
                 {localError || (createCatMut.error as Error)?.message || 'Something went wrong.'}
@@ -1192,4 +1354,4 @@ function CurrencyInput({
       />
     </div>
   );
-}
+} 

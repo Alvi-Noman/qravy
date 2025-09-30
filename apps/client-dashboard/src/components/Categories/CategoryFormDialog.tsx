@@ -1,8 +1,18 @@
-import { useEffect } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { AnimatePresence, motion } from 'framer-motion';
+import { useQuery } from '@tanstack/react-query';
+import { useScope } from '../../context/ScopeContext';
+import { fetchLocations, type Location } from '../../api/locations';
 
 type FormValues = { name: string };
+
+type SubmitOptions = {
+  channel?: 'dine-in' | 'online';
+  includeLocationIds?: string[];
+  excludeLocationIds?: string[];
+  locationId?: string;
+};
 
 export default function CategoryFormDialog({
   open,
@@ -18,7 +28,7 @@ export default function CategoryFormDialog({
   initialName?: string;
   existingNames?: string[];
   onClose: () => void;
-  onSubmit: (name: string) => void | Promise<void>;
+  onSubmit: (name: string, opts?: SubmitOptions) => void | Promise<void>;
   isSubmitting?: boolean;
 }) {
   const {
@@ -30,6 +40,32 @@ export default function CategoryFormDialog({
     defaultValues: { name: initialName },
     mode: 'onChange',
   });
+
+  const { activeLocationId, channel: scopeChannel } = useScope();
+
+  // Advanced controls
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  // Channels default to both checked; if scope is a single channel, favor it
+  const [chDineIn, setChDineIn] = useState(scopeChannel !== 'online');
+  const [chOnline, setChOnline] = useState(scopeChannel !== 'dine-in');
+
+  // Locations (only needed on All locations view)
+  const locationsQuery = useQuery<Location[]>({
+    queryKey: ['locations'],
+    queryFn: fetchLocations,
+    enabled: !activeLocationId, // only fetch when All locations
+    staleTime: 30000,
+  });
+  const allLocations = locationsQuery.data ?? [];
+  const [selectedBranchIds, setSelectedBranchIds] = useState<Set<string>>(new Set());
+
+  // Initialize branch selection when loaded (All locations only)
+  useEffect(() => {
+    if (activeLocationId) return;
+    if (open && allLocations.length && selectedBranchIds.size === 0) {
+      setSelectedBranchIds(new Set(allLocations.map((l) => l.id)));
+    }
+  }, [open, activeLocationId, allLocations, selectedBranchIds.size]);
 
   useEffect(() => {
     if (open) reset({ name: initialName });
@@ -44,11 +80,86 @@ export default function CategoryFormDialog({
     return true;
   };
 
-  const submit = (v: FormValues) => {
-    onSubmit(v.name.trim());
+  const [advancedError, setAdvancedError] = useState<string | null>(null);
+  const busy = isSubmitting || rhfSubmitting;
+
+  const submit = async (v: FormValues) => {
+    // Validate advanced selections
+    setAdvancedError(null);
+
+    if (!chDineIn && !chOnline) {
+      setAdvancedError('Select at least one channel (Dine-In or Online).');
+      return;
+    }
+
+    if (!activeLocationId && allLocations.length && selectedBranchIds.size === 0) {
+      setAdvancedError('Select at least one branch.');
+      return;
+    }
+
+    const opts: SubmitOptions = {};
+
+    // Channel: if exactly one checked, set that channel. If both, omit (defaults to both).
+    if (chDineIn !== chOnline) {
+      opts.channel = chDineIn ? 'dine-in' : 'online';
+    }
+
+    // Branches:
+    // - If on a specific branch (sidebar), scope category to that locationId.
+    // - If All locations, derive exclude list for unchecked branches.
+    if (activeLocationId) {
+      opts.locationId = activeLocationId;
+    } else if (allLocations.length) {
+      const allIds = allLocations.map((l) => l.id);
+      const unchecked = allIds.filter((id) => !selectedBranchIds.has(id));
+      if (unchecked.length > 0) {
+        // Hide category in these branches
+        opts.excludeLocationIds = unchecked;
+      }
+    }
+
+    await onSubmit(v.name.trim(), opts);
   };
 
-  const busy = isSubmitting || rhfSubmitting;
+  const branchesList = useMemo(() => {
+    return allLocations.map((loc) => {
+      const checked = selectedBranchIds.has(loc.id);
+      return (
+        <label key={loc.id} className="inline-flex items-center gap-2">
+          <input
+            type="checkbox"
+            checked={checked}
+            onChange={(e) => {
+              const next = new Set(selectedBranchIds);
+              if (e.currentTarget.checked) next.add(loc.id);
+              else next.delete(loc.id);
+              setSelectedBranchIds(next);
+            }}
+          />
+          <span className="text-sm text-[#2e2e30]">{loc.name}</span>
+        </label>
+      );
+    });
+  }, [allLocations, selectedBranchIds]);
+
+  // Badge logic (header):
+  // - Hide when All locations + All channels
+  // - If a specific location is selected:
+  //    - both channels => show location only
+  //    - single channel => show "Location • Channel"
+  const locationDisplay = useMemo(() => {
+    if (!activeLocationId) return '';
+    const loc = allLocations.find((l) => l.id === activeLocationId);
+    return loc?.name || 'Current location';
+  }, [activeLocationId, allLocations]);
+
+  const singleChannel = chDineIn !== chOnline ? (chDineIn ? 'Dine-In' : 'Online') : null;
+  const shouldShowBadge = !!activeLocationId; // only when a specific location is selected
+  const badgeText = shouldShowBadge
+    ? singleChannel
+      ? `${locationDisplay} • ${singleChannel}`
+      : locationDisplay
+    : '';
 
   return (
     <AnimatePresence>
@@ -69,7 +180,18 @@ export default function CategoryFormDialog({
             className="relative w-full max-w-md rounded-lg border border-[#ececec] bg-white p-5 shadow-lg"
           >
             <div className="mb-4">
-              <h3 className="text-lg font-semibold text-[#2e2e30]">{title}</h3>
+              <div className="flex items-center justify-between gap-3">
+                <h3 className="text-lg font-semibold text-[#2e2e30]">{title}</h3>
+                {shouldShowBadge && badgeText ? (
+                  <span
+                    className="inline-flex items-center gap-2 rounded-full border border-[#dbdbdb] bg-[#fcfcfc] px-2.5 py-1 text-xs text-[#2e2e30] max-w-[60%] truncate"
+                    title={badgeText}
+                    aria-label={`Scope: ${badgeText}`}
+                  >
+                    <span className="truncate">{badgeText}</span>
+                  </span>
+                ) : null}
+              </div>
               <p className="text-sm text-[#6b6b70]">Give it a clear, concise name.</p>
             </div>
 
@@ -88,6 +210,66 @@ export default function CategoryFormDialog({
                 <div className="text-sm text-red-600">{errors.name.message}</div>
               ) : null}
             </div>
+
+            {/* Advanced collapsible */}
+            <div className="mt-4">
+              <button
+                type="button"
+                className="text-sm font-medium text-[#2e2e30] underline-offset-2 hover:underline"
+                onClick={() => setAdvancedOpen((v) => !v)}
+              >
+                Advanced {advancedOpen ? '▲' : '▼'}
+              </button>
+
+              {advancedOpen && (
+                <div className="mt-3 space-y-4 rounded-md border border-[#e6e6e8] bg-white p-3">
+                  {/* Channels */}
+                  <div>
+                    <div className="text-sm font-medium text-[#2e2e30] mb-1">Channels</div>
+                    <div className="flex items-center gap-4">
+                      <label className="inline-flex items-center gap-2">
+                        <input
+                          type="checkbox"
+                          checked={chDineIn}
+                          onChange={(e) => setChDineIn(e.currentTarget.checked)}
+                        />
+                        <span className="text-sm text-[#2e2e30]">Dine-In</span>
+                      </label>
+                      <label className="inline-flex items-center gap-2">
+                        <input
+                          type="checkbox"
+                          checked={chOnline}
+                          onChange={(e) => setChOnline(e.currentTarget.checked)}
+                        />
+                        <span className="text-sm text-[#2e2e30]">Online</span>
+                      </label>
+                    </div>
+                  </div>
+
+                  {/* Branches */}
+                  {!activeLocationId ? (
+                    <div>
+                      <div className="text-sm font-medium text-[#2e2e30] mb-1">Branches</div>
+                      {locationsQuery.isLoading ? (
+                        <div className="text-sm text-[#6b6b70]">Loading branches…</div>
+                      ) : allLocations.length ? (
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1">
+                          {branchesList}
+                        </div>
+                      ) : (
+                        <div className="text-sm text-[#6b6b70]">No branches found.</div>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="text-xs text-[#6b6b70]">
+                      This category will be created only in the current location.
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {advancedError ? <div className="mt-2 text-sm text-red-600">{advancedError}</div> : null}
 
             <div className="mt-5 flex items-center justify-end gap-2">
               <button

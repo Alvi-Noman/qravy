@@ -4,6 +4,7 @@ import {
   createCategory,
   updateCategory,
   deleteCategory,
+  bulkSetCategoryVisibility,
 } from '../controllers/categoriesController.js';
 import { authenticateJWT } from '../middleware/auth.js';
 import { applyScope } from '../middleware/scope.js';
@@ -12,7 +13,8 @@ import { validateRequest } from '../middleware/validateRequest.js';
 import {
   categorySchema,
   categoryUpdateSchema,
-  listCategoriesQuerySchema, // ⬅️ add
+  listCategoriesQuerySchema,
+  bulkCategoryVisibilitySchema,
 } from '../validation/schemas.js';
 
 const router: express.Router = express.Router();
@@ -27,11 +29,19 @@ const validateListQuery: express.RequestHandler = (req, res, next) => {
   next();
 };
 
+// Helper: allow branch sessions, otherwise require capability
+const allowBranchOrAuthorize =
+  (capability: string): express.RequestHandler =>
+  (req, res, next) => {
+    if (!req.user?.role) return next(); // branch session
+    return authorize(capability)(req, res, next);
+  };
+
 router.get(
   '/categories',
   authenticateJWT,
   applyScope,
-  authorize('categories:read'),
+  allowBranchOrAuthorize('categories:read'),
   validateListQuery,
   listCategories
 );
@@ -60,6 +70,16 @@ router.post(
   applyScope,
   authorize('categories:delete'),
   deleteCategory
+);
+
+// Bulk per-branch/per-channel category visibility
+router.post(
+  '/categories/bulk/visibility',
+  authenticateJWT,
+  applyScope,
+  allowBranchOrAuthorize('categories:update'), // allow branch sessions
+  validateRequest(bulkCategoryVisibilitySchema),
+  bulkSetCategoryVisibility
 );
 
 export default router;

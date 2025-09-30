@@ -17,6 +17,7 @@ export default function CategoriesToolbar({
   setChannels,
   sortBy,
   setSortBy,
+  channelAlerts, // NEW
 }: {
   q: string;
   setQ: (v: string) => void;
@@ -24,6 +25,8 @@ export default function CategoriesToolbar({
   setChannels: (v: Set<'dine-in' | 'online'>) => void;
   sortBy: 'name-asc' | 'created-desc' | 'most-used';
   setSortBy: (v: 'name-asc' | 'created-desc' | 'most-used') => void;
+  // Optional red dot if a category is off in one channel but on in the other
+  channelAlerts?: { dineIn: boolean; online: boolean }; // NEW
 }) {
   const [sortOpen, setSortOpen] = useState(false);
   const sortRef = useRef<HTMLDivElement>(null);
@@ -39,7 +42,7 @@ export default function CategoriesToolbar({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [channel]);
 
-  // CHANNELS — sliding capsule (same as items)
+  // CHANNELS — sliding capsule
   const isAllChannels = channel === 'all';
   const selectedChannelIdx = channel === 'all' ? 0 : channel === 'dine-in' ? 1 : 2;
 
@@ -93,6 +96,9 @@ export default function CategoriesToolbar({
     };
   }, [sortOpen]);
 
+  const Dot = ({ show }: { show?: boolean }) =>
+    show ? <span className="ml-1 inline-block h-2 w-2 rounded-full bg-red-500" /> : null;
+
   return (
     <div className="flex w-full flex-col gap-3 md:flex-row md:items-center md:justify-between">
       <div className="flex flex-1 flex-wrap items-center gap-2">
@@ -113,6 +119,9 @@ export default function CategoriesToolbar({
           />
           {CHANNEL_TABS.map((t, i) => {
             const selected = i === selectedChannelIdx;
+            const withDot =
+              (t === 'Dine-In' && channelAlerts?.dineIn) ||
+              (t === 'Online' && channelAlerts?.online);
             return (
               <button
                 key={t}
@@ -125,7 +134,10 @@ export default function CategoriesToolbar({
                   selected ? 'text-slate-900' : 'text-slate-600 hover:text-slate-800'
                 }`}
               >
-                {t}
+                <span className="inline-flex items-center">
+                  {t}
+                  <Dot show={withDot} />
+                </span>
               </button>
             );
           })}

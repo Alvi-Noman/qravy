@@ -8,7 +8,7 @@ export default function CategoryList({
   activeByName,
   toggling,
   selectedIds,
-  highlightId, // NEW
+  highlightId, 
   onToggleSelect,
   onToggleSelectAll,
   onToggleAvailability,
@@ -20,7 +20,7 @@ export default function CategoryList({
   activeByName: Map<string, boolean>;
   toggling: boolean;
   selectedIds: Set<string>;
-  highlightId?: string | null; // NEW
+  highlightId?: string | null; 
   onToggleSelect: (id: string) => void;
   onToggleSelectAll: () => void;
   onToggleAvailability: (category: Category, active: boolean) => void;

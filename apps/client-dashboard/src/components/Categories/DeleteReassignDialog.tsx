@@ -1,12 +1,18 @@
 import { useEffect, useMemo, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import type { Category } from '../../api/categories';
+import { useScope } from '../../context/ScopeContext';
+
+type ConfirmPayload =
+  | { scope: 'branch' } // remove from this location (and possibly channel)
+  | { scope: 'global'; mode: 'cascade' | 'reassign'; reassignToId?: string }; // global (everywhere or channel-only)
 
 export default function DeleteReassignDialog({
   open,
   category,
   categories,
   usageCount,
+  scope = 'global', // 'global' | 'branch'
   onClose,
   onConfirm,
   isSubmitting = false,
@@ -15,12 +21,15 @@ export default function DeleteReassignDialog({
   category: Category | null;
   categories: Category[];
   usageCount: number;
+  scope?: 'global' | 'branch';
   onClose: () => void;
-  onConfirm: (opts: { mode: 'cascade' | 'reassign'; reassignToId?: string }) => void;
+  onConfirm: (opts: ConfirmPayload) => void;
   isSubmitting?: boolean;
 }) {
   const [mode, setMode] = useState<'cascade' | 'reassign'>('cascade');
   const [toId, setToId] = useState<string>('');
+
+  const isBranchScope = scope === 'branch';
 
   const others = useMemo(
     () => (category ? categories.filter((c) => c.id !== category.id) : []),
@@ -36,7 +45,14 @@ export default function DeleteReassignDialog({
 
   if (!category) return null;
 
+  // Channel hint + context
+  const { activeLocationId, channel } = useScope();
+  const isChannelScoped = channel && channel !== 'all';
+  const chanLabel = channel === 'dine-in' ? 'Dine‑In' : channel === 'online' ? 'Online' : '';
   const headingId = 'delete-category-title';
+
+  // Determine if this is channel-only delete across all locations (global + channel)
+  const isGlobalChannelOnly = !isBranchScope && isChannelScoped;
 
   return (
     <AnimatePresence>
@@ -55,8 +71,21 @@ export default function DeleteReassignDialog({
             onSubmit={(e) => {
               e.preventDefault();
               if (isSubmitting) return;
+
+              if (isBranchScope) {
+                onConfirm({ scope: 'branch' });
+                return;
+              }
+
+              // For channel-only (global + channel), no reassign/cascade concept applies on client;
+              // just proceed (we'll pass 'cascade' to keep shape consistent; useCategories ignores it for channel deletes)
+              if (isGlobalChannelOnly) {
+                onConfirm({ scope: 'global', mode: 'cascade' });
+                return;
+              }
+
               if (mode === 'reassign' && !toId) return;
-              onConfirm({ mode, reassignToId: mode === 'reassign' ? toId : undefined });
+              onConfirm({ scope: 'global', mode, reassignToId: mode === 'reassign' ? toId : undefined });
             }}
             initial={{ scale: 0.98, opacity: 0, y: 8 }}
             animate={{ scale: 1, opacity: 1, y: 0 }}
@@ -66,72 +95,93 @@ export default function DeleteReassignDialog({
           >
             <div className="mb-4">
               <h3 id={headingId} className="text-base font-semibold text-[#2e2e30]">
-                Delete “{category.name}”
+                {isBranchScope
+                  ? `Remove from this location${isChannelScoped ? ` (${chanLabel})` : ''}`
+                  : isGlobalChannelOnly
+                  ? `Delete “${category.name}” from this channel`
+                  : `Delete “${category.name}”`}
               </h3>
-              <p className="text-[#6b6b70]">
-                {usageCount > 0
-                  ? `This category has ${usageCount} linked product${usageCount > 1 ? 's' : ''}. Choose what to do with them.`
-                  : 'This category has no linked products.'}
-              </p>
+
+              {isBranchScope ? (
+                <p className="text-[#6b6b70]">
+                  This will hide the “{category.name}” category in this location
+                  {isChannelScoped ? ` (${chanLabel})` : ''}. Products remain intact. You can show the category again later.
+                </p>
+              ) : isGlobalChannelOnly ? (
+                <p className="text-[#6b6b70]">
+                  This will delete the “{category.name}” category from the {chanLabel} channel across all locations.
+                  Products in this category remain under the other channel(s).
+                </p>
+              ) : (
+                <p className="text-[#6b6b70]">
+                  {usageCount > 0
+                    ? `This category has ${usageCount} linked product${usageCount > 1 ? 's' : ''}. Choose what to do with them.`
+                    : 'This category has no linked products.'}
+                </p>
+              )}
             </div>
 
-            <div className="space-y-4">
-              <label className="flex items-start gap-3">
-                <input
-                  type="radio"
-                  name="delete-mode"
-                  value="cascade"
-                  checked={mode === 'cascade'}
-                  onChange={() => setMode('cascade')}
-                  className="mt-1"
-                />
-                <div>
-                  <div className="font-medium text-[#2e2e30]">Delete category</div>
-                  <div className="text-[#6b7280]">
-                    {usageCount > 0
-                      ? 'Also deletes the linked products (cascade).'
-                      : 'No linked products to delete.'}
+            {/* Global + all channels (everywhere) → show cascade/reassign options.
+                Global + channel-only → skip options (simple confirm). */}
+            {!isBranchScope && !isGlobalChannelOnly ? (
+              <div className="space-y-4">
+                <label className="flex items-start gap-3">
+                  <input
+                    type="radio"
+                    name="delete-mode"
+                    value="cascade"
+                    checked={mode === 'cascade'}
+                    onChange={() => setMode('cascade')}
+                    className="mt-1"
+                  />
+                  <div>
+                    <div className="font-medium text-[#2e2e30]">Delete category everywhere</div>
+                    <div className="text-[#6b7280]">
+                      {usageCount > 0
+                        ? 'Also deletes the linked products (cascade).'
+                        : 'No linked products to delete.'}
+                    </div>
                   </div>
-                </div>
-              </label>
+                </label>
 
-              <div className={`flex items-start gap-3 ${!canReassign ? 'opacity-60' : ''}`}>
-                <input
-                  type="radio"
-                  name="delete-mode"
-                  value="reassign"
-                  checked={mode === 'reassign'}
-                  onChange={() => canReassign && setMode('reassign')}
-                  className="mt-1"
-                  disabled={!canReassign}
-                />
-                <div className="flex-1">
-                  <div className="font-medium text-[#2e2e30]">Reassign products, then delete</div>
-                  <div className="mt-2">
-                    <select
-                      disabled={mode !== 'reassign' || !canReassign}
-                      value={toId}
-                      onChange={(e) => setToId(e.target.value)}
-                      className="w-full rounded-md border border-[#cecece] bg-white px-3 py-2 text-sm text-[#2e2e30] disabled:opacity-50"
-                    >
-                      <option value="" disabled>
-                        {canReassign ? 'Select category to move products to' : 'No categories available'}
-                      </option>
-                      {others.map((c) => (
-                        <option key={c.id} value={c.id}>
-                          {c.name}
+                <div className={`flex items-start gap-3 ${!canReassign ? 'opacity-60' : ''}`}>
+                  <input
+                    type="radio"
+                    name="delete-mode"
+                    value="reassign"
+                    checked={mode === 'reassign'}
+                    onChange={() => canReassign && setMode('reassign')}
+                    className="mt-1"
+                    disabled={!canReassign}
+                  />
+                  <div className="flex-1">
+                    <div className="font-medium text-[#2e2e30]">Reassign products, then delete everywhere</div>
+                    <div className="mt-2">
+                      <select
+                        disabled={mode !== 'reassign' || !canReassign}
+                        value={toId}
+                        onChange={(e) => setToId(e.target.value)}
+                        className="w-full rounded-md border border-[#cecece] bg-white px-3 py-2 text-sm text-[#2e2e30] disabled:opacity-50"
+                      >
+                        <option value="" disabled>
+                          {canReassign ? 'Select category to move products to' : 'No categories available'}
                         </option>
-                      ))}
-                    </select>
-                    {!canReassign && usageCount > 0 ? (
-                      <div className="mt-2 text-[13px] text-[#6b6b70]">
-                        Create another category to move products to, or choose Delete (cascade).
-                      </div>
-                    ) : null}
+                        {others.map((c) => (
+                          <option key={c.id} value={c.id}>
+                            {c.name}
+                          </option>
+                        ))}
+                      </select>
+                      {!canReassign && usageCount > 0 ? (
+                        <div className="mt-2 text-[13px] text-[#6b6b70]">
+                          Create another category to move products to, or choose Delete (cascade).
+                        </div>
+                      ) : null}
+                    </div>
                   </div>
                 </div>
               </div>
-            </div>
+            ) : null}
 
             <div className="mt-6 flex items-center justify-end gap-2">
               <button
@@ -144,10 +194,18 @@ export default function DeleteReassignDialog({
               </button>
               <button
                 type="submit"
-                disabled={isSubmitting || (mode === 'reassign' && !toId)}
-                className="rounded-md bg-red-600 px-4 py-2 text-sm text-white hover:opacity-90 disabled:opacity-50"
+                disabled={isSubmitting || (!isBranchScope && !isGlobalChannelOnly && mode === 'reassign' && !toId)}
+                className={`rounded-md px-4 py-2 text-sm text-white ${
+                  !isBranchScope && !isGlobalChannelOnly ? 'bg-red-600 hover:opacity-90' : 'bg-[#2e2e30] hover:opacity-90'
+                } disabled:opacity-50`}
               >
-                {isSubmitting ? 'Deleting…' : 'Delete'}
+                {isSubmitting
+                  ? isBranchScope
+                    ? 'Removing…'
+                    : 'Deleting…'
+                  : isBranchScope
+                  ? 'Remove'
+                  : 'Delete'}
               </button>
             </div>
           </motion.form>

@@ -7,7 +7,8 @@ import {
   EllipsisHorizontalIcon,
   DocumentDuplicateIcon,
 } from '@heroicons/react/24/outline';
-import type { MenuItem as TMenuItem } from '../../api/menuItemsItems';
+import type { MenuItem as TMenuItem } from '../../api/menuItems';
+import { useScope } from '../../context/ScopeContext';
 
 export default function MenuRow({
   item,
@@ -82,7 +83,6 @@ export default function MenuRow({
       data-item-id={item.id}
       className="border-t border-[#f2f2f2] hover:bg-[#fafafa] transition-colors duration-700"
       style={{
-        // Very light brand-tinted highlight; override with CSS var if you have one
         backgroundColor: isNew ? 'var(--brand-25, #f9fbff)' : undefined,
       }}
     >
@@ -181,6 +181,19 @@ function RowMenu({
   const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
   const MENU_WIDTH = 160;
 
+  const { activeLocationId, channel } = useScope();
+  const isBranchView = !!activeLocationId;
+  const isChannelScoped = channel && channel !== 'all';
+
+  const deleteLabel =
+    !isBranchView && !isChannelScoped
+      ? 'Delete everywhere'
+      : !isBranchView && isChannelScoped
+      ? 'Delete from this channel'
+      : isBranchView && !isChannelScoped
+      ? 'Delete from this location'
+      : 'Delete from this channel in this location';
+
   useEffect(() => {
     if (!open) return;
     const onClick = () => setOpen(false);
@@ -214,6 +227,11 @@ function RowMenu({
     };
   }, [open]);
 
+  const baseBtn = 'flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-[#f5f5f5]';
+  const isDestructive = !isBranchView && !isChannelScoped;
+  const deleteBtnClass = isDestructive ? `${baseBtn} text-red-600 hover:bg-[#fff0f0]` : baseBtn;
+  const deleteIconClass = isDestructive ? 'h-4 w-4' : 'h-4 w-4 text-[#6b7280]';
+
   return (
     <>
       <button
@@ -224,6 +242,9 @@ function RowMenu({
           setOpen((v) => !v);
         }}
         className="rounded-md p-1.5 text-[#111827] hover:bg-[#f3f4f6]"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label="Open row actions"
       >
         <EllipsisHorizontalIcon className="h-7 w-7" />
       </button>
@@ -240,6 +261,7 @@ function RowMenu({
                 style={{ position: 'fixed', top: pos.top, left: pos.left }}
                 className="z-[1000] w-40 overflow-hidden rounded-lg border border-[#ececec] bg-white shadow-lg"
                 onClick={(e) => e.stopPropagation()}
+                role="menu"
               >
                 <ul className="py-1 text-sm">
                   <li>
@@ -250,6 +272,7 @@ function RowMenu({
                         onEdit(item);
                       }}
                       className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-[#f5f5f5]"
+                      role="menuitem"
                     >
                       <PencilSquareIcon className="h-4 w-4 text-[#6b7280]" />
                       Edit
@@ -263,6 +286,7 @@ function RowMenu({
                         onDuplicate(item.id);
                       }}
                       className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-[#f5f5f5]"
+                      role="menuitem"
                     >
                       <DocumentDuplicateIcon className="h-4 w-4 text-[#6b7280]" />
                       Duplicate
@@ -275,10 +299,11 @@ function RowMenu({
                         setOpen(false);
                         onDelete(item.id);
                       }}
-                      className="flex w-full items-center gap-2 px-3 py-2 text-left text-red-600 hover:bg-[#fff0f0]"
+                      className={deleteBtnClass}
+                      role="menuitem"
                     >
-                      <TrashIcon className="h-4 w-4" />
-                      Delete
+                      <TrashIcon className={deleteIconClass} />
+                      {deleteLabel}
                     </button>
                   </li>
                 </ul>

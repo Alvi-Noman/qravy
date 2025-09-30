@@ -51,11 +51,15 @@ export const menuItemSchema = z
     tags: z.array(z.string().min(1).max(30)).max(100).optional(),
     restaurantId: objectId.optional(),
 
-    // owner/admin can target a branch
+    // owner/admin can target a single branch (branch-scoped item)
     locationId: objectId.optional(),
 
-    // NEW: per-channel seed (when creating under a specific channel)
+    // per-channel seed (when creating under a specific channel)
     channel: channelEnum.optional(),
+
+    // for global items, target branches explicitly
+    includeLocationIds: z.array(objectId).optional(),
+    excludeLocationIds: z.array(objectId).optional(),
 
     ...availabilityFields,
   })
@@ -85,6 +89,25 @@ export const menuItemSchema = z
         code: z.ZodIssueCode.custom,
         path: ['compareAtPrice'],
         message: 'compareAtPrice must be >= price',
+      });
+    }
+
+    // Targeting validation
+    const hasInclude = Array.isArray(data.includeLocationIds) && data.includeLocationIds.length > 0;
+    const hasExclude = Array.isArray(data.excludeLocationIds) && data.excludeLocationIds.length > 0;
+
+    if (hasInclude && hasExclude) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['includeLocationIds'],
+        message: 'Provide only one of includeLocationIds or excludeLocationIds, not both',
+      });
+    }
+    if (data.locationId && (hasInclude || hasExclude)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['includeLocationIds'],
+        message: 'include/excludeLocationIds are only valid when creating a global item (omit locationId)',
       });
     }
   });
@@ -122,12 +145,14 @@ export const bulkAvailabilitySchema = z.object({
   ids: z.array(objectId).min(1).max(100),
   active: z.boolean(),
   locationId: objectId.optional(), // owner/admin can target a branch
-  channel: channelEnum.optional(), // NEW: per-channel toggle
+  channel: channelEnum.optional(), // per-channel toggle
 });
 
-/** Bulk: delete */
+/** Bulk: delete (supports optional scope) */
 export const bulkDeleteSchema = z.object({
   ids: z.array(objectId).min(1).max(100),
+  locationId: objectId.optional(),
+  channel: channelEnum.optional(),
 });
 
 /** Bulk: change category */
@@ -142,13 +167,36 @@ export const bulkCategorySchema = z
     message: 'Provide category or categoryId',
   });
 
-export const categorySchema = z.object({
-  name: z.string().min(1, 'Name is required'),
-  // owner/admin can create branch-only categories
-  locationId: objectId.optional(),
-  // NEW: per-channel category creation (belongs to this channel only)
-  channel: channelEnum.optional(),
-});
+export const categorySchema = z
+  .object({
+    name: z.string().min(1, 'Name is required'),
+    // owner/admin can create branch-only categories
+    locationId: objectId.optional(),
+    // per-channel category creation (belongs to this channel only)
+    channel: channelEnum.optional(),
+    // for global categories, target branches explicitly
+    includeLocationIds: z.array(objectId).optional(),
+    excludeLocationIds: z.array(objectId).optional(),
+  })
+  .superRefine((data, ctx) => {
+    const hasInclude = Array.isArray(data.includeLocationIds) && data.includeLocationIds.length > 0;
+    const hasExclude = Array.isArray(data.excludeLocationIds) && data.excludeLocationIds.length > 0;
+
+    if (hasInclude && hasExclude) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['includeLocationIds'],
+        message: 'Provide only one of includeLocationIds or excludeLocationIds, not both',
+      });
+    }
+    if (data.locationId && (hasInclude || hasExclude)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['includeLocationIds'],
+        message: 'include/excludeLocationIds are only valid when creating a global category (omit locationId)',
+      });
+    }
+  });
 
 export const categoryUpdateSchema = z.object({
   name: z.string().min(1, 'Name is required'),
@@ -174,6 +222,14 @@ export const listMenuItemsQuerySchema = z.object({
 });
 
 export const listCategoriesQuerySchema = z.object({
+  locationId: objectId.optional(),
+  channel: channelEnum.optional(),
+});
+
+/** NEW: Bulk category visibility (per-branch, per-channel) */
+export const bulkCategoryVisibilitySchema = z.object({
+  ids: z.array(objectId).min(1).max(100),
+  visible: z.boolean(),
   locationId: objectId.optional(),
   channel: channelEnum.optional(),
 });
