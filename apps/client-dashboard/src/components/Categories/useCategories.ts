@@ -382,6 +382,94 @@ export function useCategories() {
     // Do not touch 'all' lists; the category may still exist in the other channel.
   }
 
+  // ---------- NEW: item removal helpers to mirror backend cascades ----------
+  const filterOutItemsByCategory =
+    (name: string) =>
+    (prev: TMenuItem[] | undefined): TMenuItem[] | undefined =>
+      prev ? prev.filter((it) => it.category !== name) : prev;
+
+  function removeItemsEverywhereByCategory(name: string) {
+    queryClient.getQueriesData<TMenuItem[]>({ queryKey: ['menu-items', token] }).forEach(([key, data]) => {
+      if (!Array.isArray(data)) return;
+      queryClient.setQueryData<TMenuItem[]>(key as any, filterOutItemsByCategory(name));
+    });
+  }
+
+  function removeItemsByCategoryFromChannelAcrossAllLids(
+    chan: 'dine-in' | 'online',
+    name: string
+  ) {
+    const perLidRemovedIds = new Map<string, Set<string>>();
+
+    queryClient.getQueriesData<TMenuItem[]>({ queryKey: ['menu-items', token] }).forEach(([key, data]) => {
+      if (!Array.isArray(data)) return;
+      const k = key as any[];
+      const lid = k[2] as string;
+      const cacheChan = k[3] as string;
+      const isIndicator = k[4] === 'indicator';
+
+      if (cacheChan === chan || isIndicator) {
+        const removed = new Set<string>();
+        data.forEach((it) => {
+          if (it.category === name) removed.add(it.id);
+        });
+        if (removed.size) {
+          if (!perLidRemovedIds.has(lid)) perLidRemovedIds.set(lid, new Set());
+          removed.forEach((id) => perLidRemovedIds.get(lid)!.add(id));
+        }
+        queryClient.setQueryData<TMenuItem[]>(key as any, filterOutItemsByCategory(name));
+      }
+    });
+
+    // For each lid, update 'all' only when the item no longer exists in the OTHER channel list
+    perLidRemovedIds.forEach((ids, lid) => {
+      const otherChan = chan === 'dine-in' ? 'online' : 'dine-in';
+      const otherKey = ['menu-items', token, lid, otherChan] as const;
+      const otherList = queryClient.getQueryData<TMenuItem[]>(otherKey as any) ?? [];
+      const keepIds = new Set(otherList.map((x) => x.id));
+      const allKey = ['menu-items', token, lid, 'all'] as const;
+      queryClient.setQueryData<TMenuItem[]>(
+        allKey as any,
+        (prev) =>
+          (prev ?? []).filter((it) => it.category !== name || keepIds.has(it.id))
+      );
+    });
+  }
+
+  function removeItemsByCategoryInCurrentLidChannel(name: string) {
+    // Only in this location + channel
+    if (!channelForQuery) return;
+    queryClient.setQueryData<TMenuItem[]>(itemsKeyCurrent as any, filterOutItemsByCategory(name));
+    const otherChan = channelForQuery === 'dine-in' ? 'online' : 'dine-in';
+    const otherKey = ['menu-items', token, lidKey, otherChan] as const;
+    const otherList = queryClient.getQueryData<TMenuItem[]>(otherKey as any) ?? [];
+    const keepIds = new Set(otherList.map((x) => x.id));
+    queryClient.setQueryData<TMenuItem[]>(
+      itemsKeyAll as any,
+      (prev) =>
+        (prev ?? []).filter((it) => it.category !== name || keepIds.has(it.id))
+    );
+    // indicators
+    const indKey = channelForQuery === 'dine-in' ? diIndicatorKey : onIndicatorKey;
+    queryClient.setQueryData<TMenuItem[]>(indKey as any, filterOutItemsByCategory(name));
+  }
+
+  function removeItemsByCategoryInCurrentLidBothChannels(name: string) {
+    // Location only (both channels)
+    queryClient.setQueryData<TMenuItem[]>(
+      ['menu-items', token, lidKey, 'dine-in'] as any,
+      filterOutItemsByCategory(name)
+    );
+    queryClient.setQueryData<TMenuItem[]>(
+      ['menu-items', token, lidKey, 'online'] as any,
+      filterOutItemsByCategory(name)
+    );
+    queryClient.setQueryData<TMenuItem[]>(itemsKeyAll as any, filterOutItemsByCategory(name));
+    queryClient.setQueryData<TMenuItem[]>(diIndicatorKey as any, filterOutItemsByCategory(name));
+    queryClient.setQueryData<TMenuItem[]>(onIndicatorKey as any, filterOutItemsByCategory(name));
+  }
+  // -------------------------------------------------------------------------
+
   const deleteMut = useMutation({
     mutationFn: async ({
       id,
@@ -401,8 +489,9 @@ export function useCategories() {
         const oldName = target.name;
         const newName = to.name;
 
-        const snapshot = queryClient.getQueryData<TMenuItem[]>(itemsKeyCurrent as any) ?? [];
-        // Optimistic within current scope
+        const snapshot =
+          queryClient.getQueryData<TMenuItem[]>(itemsKeyCurrent as any) ?? [];
+        // Optimistic items in current scope
         queryClient.setQueryData<TMenuItem[]>(
           itemsKeyCurrent as any,
           (prev) =>
@@ -414,10 +503,7 @@ export function useCategories() {
         const itemsList =
           snapshot.length
             ? snapshot
-            : await getMenuItems(token as string, {
-                locationId: locationIdForQuery,
-                channel: channelForQuery,
-              });
+            : await getMenuItems(token as string, { locationId: locationIdForQuery, channel: channelForQuery });
 
         await Promise.allSettled(
           itemsList
@@ -431,39 +517,70 @@ export function useCategories() {
         locationId: locationIdForQuery,
         channel: channelForQuery,
       } as any);
-      return { id };
+      return { id, deletedName: target.name };
     },
     onMutate: async ({ id }) => {
+      // Optimistically remove CATEGORY from the relevant caches based on scope
       const isGlobalView = !locationIdForQuery;
       const isChannelScoped = !!channelForQuery;
 
       if (isGlobalView && !isChannelScoped) {
+        // All locations + all channels → remove everywhere
         removeCategoryEverywhere(id);
       } else if (isGlobalView && isChannelScoped) {
+        // All locations + single channel → remove only that channel across all lids
         removeCategoryFromChannelAcrossAllLids(channelForQuery!, id);
       } else if (!isGlobalView && isChannelScoped) {
         // Location + single channel → remove only in this location+channel
-        queryClient.setQueryData<Category[]>(catsKeyCurrent as any, filterOutCatId(id));
-        // Remove from 'all' in this location only if we know it's not present in the other channel list
+        queryClient.setQueryData<Category[]>(catsKeyCurrent as any, (prev) =>
+          (prev ?? []).filter((c) => c.id !== id)
+        );
+
+        // Drop from this location's "all" cache only if absent in other channel
         const otherChan = channelForQuery === 'dine-in' ? 'online' : 'dine-in';
         const otherKey = otherChan === 'dine-in' ? catsKeyDineIn : catsKeyOnline;
-        const otherList = queryClient.getQueryData<Category[]>(otherKey as any);
-        if (Array.isArray(otherList)) {
-          const stillThere = otherList.some((c) => c.id === id);
-          if (!stillThere) {
-            queryClient.setQueryData<Category[]>(catsKeyAll as any, filterOutCatId(id));
-          }
+        const otherList = queryClient.getQueryData<Category[]>(otherKey as any) ?? [];
+        const stillInOther = otherList.some((c) => c.id === id);
+        if (!stillInOther) {
+          queryClient.setQueryData<Category[]>(catsKeyAll as any, (prev) =>
+            (prev ?? []).filter((c) => c.id !== id)
+          );
         }
       } else {
         // Location only → remove from both channels + 'all' for this lid
-        queryClient.setQueryData<Category[]>(catsKeyDineIn as any, filterOutCatId(id));
-        queryClient.setQueryData<Category[]>(catsKeyOnline as any, filterOutCatId(id));
-        queryClient.setQueryData<Category[]>(catsKeyAll as any, filterOutCatId(id));
+        queryClient.setQueryData<Category[]>(catsKeyDineIn as any, (prev) =>
+          (prev ?? []).filter((c) => c.id !== id)
+        );
+        queryClient.setQueryData<Category[]>(catsKeyOnline as any, (prev) =>
+          (prev ?? []).filter((c) => c.id !== id)
+        );
+        queryClient.setQueryData<Category[]>(catsKeyAll as any, (prev) =>
+          (prev ?? []).filter((c) => c.id !== id)
+        );
       }
 
       return {};
     },
-    onSuccess: ({ id }) => {
+    onSuccess: ({ id, deletedName }) => {
+      // -------- Optimistically remove ITEMS by category to mirror backend cascades --------
+      const isGlobalView = !locationIdForQuery;
+      const isChannelScoped = !!channelForQuery;
+
+      if (isGlobalView && !isChannelScoped) {
+        // Delete items everywhere
+        removeItemsEverywhereByCategory(deletedName);
+      } else if (isGlobalView && isChannelScoped) {
+        // Delete items only from this channel across all lids
+        removeItemsByCategoryFromChannelAcrossAllLids(channelForQuery!, deletedName);
+      } else if (!isGlobalView && isChannelScoped) {
+        // Delete items only in this location + channel
+        removeItemsByCategoryInCurrentLidChannel(deletedName);
+      } else {
+        // Location only: delete items in both channels for this lid
+        removeItemsByCategoryInCurrentLidBothChannels(deletedName);
+      }
+      // ---------------------------------------------------------------------
+
       // Keep previous behavior for onboarding based on current scope list emptiness
       const next = queryClient.setQueryData<Category[]>(
         catsKeyCurrent as any,
@@ -486,14 +603,13 @@ export function useCategories() {
         );
       }
 
-      // 🔑 If the category is gone from every per-location cache, purge it from All-Locations caches too
-      purgeFromAllLocationsIfAbsentEverywhere(id);
-
-      // Refresh items and tenant in current scope
+      // Refresh items/tenant in current scope
       queryClient.invalidateQueries({ queryKey: itemsKeyCurrent as any });
+      queryClient.invalidateQueries({ queryKey: diIndicatorKey as any });
+      queryClient.invalidateQueries({ queryKey: onIndicatorKey as any });
       queryClient.invalidateQueries({ queryKey: ['tenant', token] });
 
-      // Invalidate ALL category caches (any lid/channel) after server-side delete/tombstone
+      // 🔁 Invalidate ALL category caches (any lid/channel) after server-side delete/tombstone
       queryClient.invalidateQueries({
         predicate: (q) => {
           const k = q.queryKey as any[];
@@ -502,8 +618,6 @@ export function useCategories() {
       });
 
       // Toast by scope
-      const isGlobalView = !locationIdForQuery;
-      const isChannelScoped = !!channelForQuery;
       if (isGlobalView && !isChannelScoped) {
         toastSuccess('Category deleted everywhere.');
       } else if (isGlobalView && isChannelScoped) {

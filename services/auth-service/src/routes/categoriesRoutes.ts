@@ -64,7 +64,17 @@ router.post(
   updateCategory
 );
 
+// Back-compat: POST delete
 router.post(
+  '/categories/:id/delete',
+  authenticateJWT,
+  applyScope,
+  authorize('categories:delete'),
+  deleteCategory
+);
+
+// Preferred: DELETE delete
+router.delete(
   '/categories/:id/delete',
   authenticateJWT,
   applyScope,

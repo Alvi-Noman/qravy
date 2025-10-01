@@ -184,6 +184,16 @@ export function useMenuItems() {
     // Do not touch 'all' lists; the item may still exist via the other channel.
   }
 
+  // NEW: invalidate all menu queries for a specific location (covers both channels + "all")
+  function invalidateMenusForLid(lid: string) {
+    queryClient.invalidateQueries({
+      predicate: (q) => {
+        const k = q.queryKey as any[];
+        return Array.isArray(k) && k[0] === 'menu-items' && k[1] === token && k[2] === lid;
+      },
+    });
+  }
+
   const itemsQueryKeyPrefix = ['menu-items', token] as const;
 
   // Mutations
@@ -489,9 +499,15 @@ export function useMenuItems() {
         queryClient.invalidateQueries({ queryKey: ['tenant', token] });
         toastSuccess('Deleted item everywhere.');
       } else if (isGlobalView && isChannelScoped) {
+        // Backend may hard-delete branch-scoped docs when last active channel is removed → re-sync all menus
+        queryClient.invalidateQueries({
+          predicate: (q) => Array.isArray(q.queryKey) && q.queryKey[0] === 'menu-items' && q.queryKey[1] === token,
+        });
         const chanLabel = channelForQuery === 'dine-in' ? 'Dine-In' : 'Online';
         toastSuccess(`Deleted item from ${chanLabel} across all locations.`);
       } else if (!isGlobalView && isChannelScoped) {
+        // IMPORTANT: if backend hard-deleted the branch-scoped item (last channel), we must refresh BOTH channels for this lid
+        invalidateMenusForLid(lidKey as string);
         const chanLabel = channelForQuery === 'dine-in' ? 'Dine-In' : 'Online';
         toastSuccess(`Deleted item from ${chanLabel} in this location.`);
       } else {
@@ -616,9 +632,15 @@ export function useMenuItems() {
         toastSuccess(`Deleted ${plural(vars.ids.length, 'item')} everywhere.`);
         queryClient.invalidateQueries({ queryKey: ['tenant', token] });
       } else if (isGlobalView && isChannelScoped) {
+        // Some may be hard-deleted by backend (last active channel). Re-sync all menus.
+        queryClient.invalidateQueries({
+          predicate: (q) => Array.isArray(q.queryKey) && q.queryKey[0] === 'menu-items' && q.queryKey[1] === token,
+        });
         const chanLabel = channelForQuery === 'dine-in' ? 'Dine-In' : 'Online';
         toastSuccess(`Deleted ${plural(vars.ids.length, 'item')} from ${chanLabel} across all locations.`);
       } else if (!isGlobalView && isChannelScoped) {
+        // IMPORTANT: ensure both channel caches for this location reflect potential hard-deletes
+        invalidateMenusForLid(lidKey as string);
         const chanLabel = channelForQuery === 'dine-in' ? 'Dine-In' : 'Online';
         toastSuccess(`Deleted ${plural(vars.ids.length, 'item')} from ${chanLabel} in this location.`);
       } else {

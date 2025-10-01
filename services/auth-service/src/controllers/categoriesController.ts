@@ -79,7 +79,7 @@ export async function listCategories(req: Request, res: Response, next: NextFunc
     const docs = await categoriesCol().find(baseFilter).sort({ name: 1 }).toArray();
     if (docs.length === 0) return res.ok({ items: [] });
 
-    // BRANCH VIEW: keep previous logic (overlay + tombstones for this location only)
+    // BRANCH VIEW
     if (locId) {
       const visQuery: any = {
         tenantId: tenantOid,
@@ -91,7 +91,7 @@ export async function listCategories(req: Request, res: Response, next: NextFunc
       const visOverlays = await categoryVisibilityCol().find(visQuery).toArray();
 
       const overlayByCat = new Map<string, Map<'dine-in' | 'online', boolean>>();
-      const removedByCat  = new Map<string, Set<'dine-in' | 'online'>>();
+      const removedByCat = new Map<string, Set<'dine-in' | 'online'>>();
       for (const v of visOverlays as any[]) {
         const catKey = v.categoryId.toString();
         const ch = v.channel as 'dine-in' | 'online';
@@ -119,7 +119,7 @@ export async function listCategories(req: Request, res: Response, next: NextFunc
           if (removedSet?.has(qCh)) return false;
           return isVisibleInBranch(cat, qCh);
         }
-        const fullyRemoved = removedSet && ['dine-in', 'online'].every((c) => removedSet.has(c as any));
+        const fullyRemoved = removedSet && (['dine-in', 'online'] as const).every((c) => removedSet.has(c));
         if (fullyRemoved) return false;
         return isVisibleInBranch(cat, 'dine-in') || isVisibleInBranch(cat, 'online');
       });
@@ -127,13 +127,11 @@ export async function listCategories(req: Request, res: Response, next: NextFunc
       return res.ok({ items: filtered.map(toCategoryDTO) });
     }
 
-    // GLOBAL VIEW (ALL LOCATIONS): new logic to hide categories removed everywhere
-    // 1) Load all tenant locations (needed to evaluate "exists anywhere?")
+    // GLOBAL VIEW (ALL LOCATIONS): hide categories that don't exist in any location/channel
     const locDocs = await locationsCol().find({ tenantId: tenantOid }, { projection: { _id: 1 } }).toArray();
     const locIds = locDocs.map((l: any) => l._id as ObjectId);
     const locCount = locIds.length;
 
-    // 2) Load all visibility overlays/tombstones for these categories across all locations
     const visQueryAll: any = {
       tenantId: tenantOid,
       categoryId: { $in: docs.map((d) => d._id!).filter(Boolean) },
@@ -143,9 +141,7 @@ export async function listCategories(req: Request, res: Response, next: NextFunc
 
     const overlaysAll = await categoryVisibilityCol().find(visQueryAll).toArray();
 
-    // overlayByCatAll: cat -> channel -> loc -> visible(bool)
     const overlayByCatAll = new Map<string, Map<'dine-in' | 'online', Map<string, boolean>>>();
-    // removedByCatAll: cat -> channel -> Set<loc>
     const removedByCatAll = new Map<string, Map<'dine-in' | 'online', Set<string>>>();
 
     for (const v of overlaysAll as any[]) {
@@ -167,12 +163,8 @@ export async function listCategories(req: Request, res: Response, next: NextFunc
       }
     }
 
-    const channelsToEval = qCh ? [qCh] as const : (['dine-in', 'online'] as const);
-
     const existsAnywhereForChannel = (cat: CategoryDoc, ch: 'dine-in' | 'online'): boolean => {
       if (!channelAllowed(cat, ch)) return false;
-
-      // If no locations exist yet, baseline visibility decides
       if (locCount === 0) return true;
 
       const perChLoc = overlayByCatAll.get(cat._id!.toString())?.get(ch) ?? new Map<string, boolean>();
@@ -180,7 +172,7 @@ export async function listCategories(req: Request, res: Response, next: NextFunc
 
       for (const lid of locIds) {
         const key = lid.toString();
-        if (removedLocs.has(key)) continue;               // tombstoned in this loc+ch
+        if (removedLocs.has(key)) continue;
         const ov = perChLoc.get(key);
         const finalVisible = ov !== undefined ? ov : true; // baseline visible = true
         if (finalVisible) return true;
@@ -190,10 +182,8 @@ export async function listCategories(req: Request, res: Response, next: NextFunc
 
     const filteredGlobal = docs.filter((cat) => {
       if (qCh) {
-        // Show only if it exists in at least one location for this channel
         return existsAnywhereForChannel(cat, qCh);
       }
-      // All channels: keep if it exists in any channel in any location
       return existsAnywhereForChannel(cat, 'dine-in') || existsAnywhereForChannel(cat, 'online');
     });
 
@@ -285,7 +275,7 @@ export async function createCategory(req: Request, res: Response, next: NextFunc
                   filter: { tenantId: new ObjectId(tenantId), categoryId: created._id!, locationId: lid, channel: c },
                   update: {
                     $set: { visible: true, updatedAt: now },
-                    $unset: { removed: '' },
+                    $unset: { removed: "" },
                     $setOnInsert: {
                       tenantId: new ObjectId(tenantId),
                       categoryId: created._id!,
@@ -415,121 +405,165 @@ export async function deleteCategory(req: Request, res: Response, next: NextFunc
     const qCh = parseChannel(req.query.channel);
     const now = new Date();
 
-    // Location + Channel: remove only that location+channel
+    // ✅ support legacy docs that only stored category name
+    const catMatch = { $or: [{ categoryId: cat._id }, { category: cat.name }] as any[] };
+
+    const availability = client.db('authDB').collection('itemAvailability');
+
+    // helper
+    const cleanupItemOverlays = async (itemIds: ObjectId[]) => {
+      if (!itemIds.length) return;
+      await availability.deleteMany({ tenantId: tenantOid, itemId: { $in: itemIds } });
+    };
+
+    // -------- Location + Channel
     if (qLoc && ObjectId.isValid(qLoc) && qCh) {
       const locId = new ObjectId(qLoc);
-      const scope = (cat as any).scope as 'all' | 'location' | undefined;
-      const catLoc = (cat as any).locationId as ObjectId | undefined | null;
+      const key = qCh === 'dine-in' ? 'visibility.dineIn' : 'visibility.online';
+      const otherKey = qCh === 'dine-in' ? 'visibility.online' : 'visibility.dineIn';
 
-      if (scope === 'location' && catLoc && catLoc.toString() === locId.toString()) {
-        // Branch-scoped: narrow channelScope to opposite channel
-        const newScope = qCh === 'dine-in' ? 'online' : 'dine-in';
-        await categoriesCol().updateOne(filter, {
-          $set: { channelScope: newScope, updatedAt: now },
-        });
-        // Clean overlays for this loc+channel
-        await categoryVisibilityCol().deleteMany({
+      // Items that belong only to this location
+      const branchItems = await menuItemsCol()
+        .find({ tenantId: tenantOid, ...catMatch, locationId: locId })
+        .toArray();
+
+      // Items that are global (show in all locations)
+      const globalItems = await menuItemsCol()
+        .find({
           tenantId: tenantOid,
-          categoryId: cat._id!,
+          ...catMatch,
+          $or: [{ locationId: { $exists: false } }, { locationId: null }],
+        })
+        .toArray();
+
+      // For branch-scoped items: if other channel is ON → just turn OFF this channel.
+      // If other channel is OFF → hard delete.
+      const toHardDelete: ObjectId[] = [];
+      const visUpdates: any[] = [];
+      const overlayDeletes: any[] = [];
+
+      for (const it of branchItems as any[]) {
+        const vis = it.visibility || {};
+        const otherOn = vis[otherKey] === true;
+        if (otherOn) {
+          visUpdates.push({
+            updateOne: {
+              filter: { _id: it._id, tenantId: tenantOid },
+              update: {
+                $set: { [key]: false, updatedAt: now, updatedBy: new ObjectId(userId) },
+              },
+            },
+          });
+          // remove any local overlays for this channel (so baseline OFF wins)
+          overlayDeletes.push({
+            deleteMany: {
+              filter: { tenantId: tenantOid, itemId: it._id, locationId: locId, channel: qCh },
+            },
+          });
+        } else {
+          toHardDelete.push(it._id as ObjectId);
+        }
+      }
+
+      if (visUpdates.length) await menuItemsCol().bulkWrite(visUpdates, { ordered: false });
+      if (overlayDeletes.length) await availability.bulkWrite(overlayDeletes, { ordered: false });
+
+      if (toHardDelete.length) {
+        await menuItemsCol().deleteMany({ _id: { $in: toHardDelete }, tenantId: tenantOid });
+        await availability.deleteMany({
+          tenantId: tenantOid,
+          itemId: { $in: toHardDelete },
           locationId: locId,
           channel: qCh,
         });
-      } else {
-        // Global: write per-location+channel tombstone (removed)
-        await categoryVisibilityCol().updateOne(
-          { tenantId: tenantOid, categoryId: cat._id!, locationId: locId, channel: qCh },
-          {
-            $set: { removed: true, updatedAt: now },
-            $unset: { visible: '' },
-            $setOnInsert: {
-              tenantId: tenantOid,
-              categoryId: cat._id!,
-              locationId: locId,
-              channel: qCh,
-              createdAt: now,
-            },
-          },
-          { upsert: true }
-        );
       }
+
+      // For global items: stamp per-location+channel tombstones so they disappear only here
+      if (globalItems.length) {
+        const ops = globalItems.map((it: any) => ({
+          updateOne: {
+            filter: { tenantId: tenantOid, itemId: it._id, locationId: locId, channel: qCh },
+            update: {
+              $set: { removed: true, updatedAt: now },
+              $setOnInsert: {
+                tenantId: tenantOid,
+                itemId: it._id,
+                locationId: locId,
+                channel: qCh,
+                createdAt: now,
+              },
+            },
+            upsert: true,
+          },
+        }));
+        await availability.bulkWrite(ops, { ordered: false });
+      }
+
+      // Mark the category removed in this location+channel
+      await categoryVisibilityCol().updateOne(
+        { tenantId: tenantOid, categoryId: cat._id!, locationId: locId, channel: qCh },
+        {
+          $set: { removed: true, updatedAt: now },
+          $unset: { visible: '' as '' },
+          $setOnInsert: {
+            tenantId: tenantOid,
+            categoryId: cat._id!,
+            locationId: locId,
+            channel: qCh,
+            createdAt: now,
+          },
+        },
+        { upsert: true }
+      );
+
+      const affected = branchItems.length + globalItems.length;
 
       await auditLog({
         userId,
         action: 'CATEGORY_DELETE',
         before: toCategoryDTO(cat),
+        metadata: { deletedProducts: affected },
         ip: req.ip || 'unknown',
         userAgent: req.headers['user-agent'] || 'unknown',
       });
 
-      return res.ok({ deleted: true });
+      return res.ok({ deleted: true, deletedProducts: affected });
     }
 
-    // Location only: remove from that location (both channels)
+    // -------- Location only (all channels in that location)
     if (qLoc && ObjectId.isValid(qLoc) && !qCh) {
       const locId = new ObjectId(qLoc);
-      const scope = (cat as any).scope as 'all' | 'location' | undefined;
-      const catLoc = (cat as any).locationId as ObjectId | undefined | null;
 
-      if (scope === 'location' && catLoc && catLoc.toString() === locId.toString()) {
-        // Branch-scoped: hard delete this category doc + cascade delete items in this branch
-        let itemFilter: any = {
+      const branchItems = await menuItemsCol()
+        .find({ tenantId: tenantOid, ...catMatch, locationId: locId })
+        .toArray();
+
+      const globalItems = await menuItemsCol()
+        .find({
           tenantId: tenantOid,
-          category: cat.name,
-          locationId: locId,
-        };
-        const delItems = await menuItemsCol().deleteMany(itemFilter);
-        await categoriesCol().deleteOne(filter);
+          ...catMatch,
+          $or: [{ locationId: { $exists: false } }, { locationId: null }],
+        })
+        .toArray();
 
-        // Cleanup overlays for this category/location
-        await categoryVisibilityCol().deleteMany({
-          tenantId: tenantOid,
-          categoryId: cat._id!,
-          locationId: locId,
-        });
+      // Branch-scoped: hard delete (both channels are local to this branch)
+      const delIds = branchItems.map((i) => i._id as ObjectId);
+      if (delIds.length) {
+        await menuItemsCol().deleteMany({ _id: { $in: delIds }, tenantId: tenantOid });
+        await availability.deleteMany({ tenantId: tenantOid, itemId: { $in: delIds }, locationId: locId });
+      }
 
-        const [remainingCategories, remainingItems] = await Promise.all([
-          categoriesCol().countDocuments({ tenantId: tenantOid }),
-          menuItemsCol().countDocuments({ tenantId: tenantOid }),
-        ]);
-
-        await tenantsCol().updateOne(
-          { _id: tenantOid },
-          {
-            $set: {
-              'onboardingProgress.hasCategory': remainingCategories > 0,
-              'onboardingProgress.hasMenuItem': remainingItems > 0,
-              updatedAt: new Date(),
-            },
-          }
-        );
-
-        await auditLog({
-          userId,
-          action: 'CATEGORY_DELETE',
-          before: toCategoryDTO(cat),
-          metadata: { deletedProducts: delItems.deletedCount || 0 },
-          ip: req.ip || 'unknown',
-          userAgent: req.headers['user-agent'] || 'unknown',
-        });
-
-        logger.info(
-          `Category deleted: ${cat.name} for tenant ${tenantId} in location ${locId.toString()}. Also deleted ${delItems.deletedCount || 0} scoped menu items.`
-        );
-
-        return res.ok({ deleted: true, deletedProducts: delItems.deletedCount || 0 });
-      } else {
-        // Global: write location tombstones for both channels
-        const ops: any[] = [];
-        for (const c of ['dine-in', 'online'] as const) {
-          ops.push({
+      // Global: tombstone both channels for this location
+      if (globalItems.length) {
+        const ops = (['dine-in', 'online'] as const).flatMap((c) =>
+          globalItems.map((it: any) => ({
             updateOne: {
-              filter: { tenantId: tenantOid, categoryId: cat._id!, locationId: locId, channel: c },
+              filter: { tenantId: tenantOid, itemId: it._id, locationId: locId, channel: c },
               update: {
                 $set: { removed: true, updatedAt: now },
-                $unset: { visible: '' },
                 $setOnInsert: {
                   tenantId: tenantOid,
-                  categoryId: cat._id!,
+                  itemId: it._id,
                   locationId: locId,
                   channel: c,
                   createdAt: now,
@@ -537,102 +571,102 @@ export async function deleteCategory(req: Request, res: Response, next: NextFunc
               },
               upsert: true,
             },
-          });
-        }
-        if (ops.length) await categoryVisibilityCol().bulkWrite(ops, { ordered: false });
-
-        await auditLog({
-          userId,
-          action: 'CATEGORY_DELETE',
-          before: toCategoryDTO(cat),
-          ip: req.ip || 'unknown',
-          userAgent: req.headers['user-agent'] || 'unknown',
-        });
-
-        return res.ok({ deleted: true });
+          }))
+        );
+        await availability.bulkWrite(ops, { ordered: false });
       }
+
+      // Keep your category tombstones as before
+      const visOps = (['dine-in', 'online'] as const).map((c) => ({
+        updateOne: {
+          filter: { tenantId: tenantOid, categoryId: cat._id!, locationId: locId, channel: c },
+          update: {
+            $set: { removed: true, updatedAt: now },
+            $unset: { visible: '' as '' },
+            $setOnInsert: {
+              tenantId: tenantOid,
+              categoryId: cat._id!,
+              locationId: locId,
+              channel: c,
+              createdAt: now,
+            },
+          },
+          upsert: true,
+        },
+      }));
+      await categoryVisibilityCol().bulkWrite(visOps, { ordered: false });
+
+      const affected = branchItems.length + globalItems.length;
+
+      await auditLog({
+        userId,
+        action: 'CATEGORY_DELETE',
+        before: toCategoryDTO(cat),
+        metadata: { deletedProducts: affected },
+        ip: req.ip || 'unknown',
+        userAgent: req.headers['user-agent'] || 'unknown',
+      });
+
+      return res.ok({ deleted: true, deletedProducts: affected });
     }
 
-    // Channel only: remove from this channel across all locations
+    // -------- Channel only (all locations for that channel)
     if (!qLoc && qCh) {
-      const newScope = qCh === 'dine-in' ? 'online' : 'dine-in';
-      await categoriesCol().updateOne(filter, {
-        $set: { channelScope: newScope, updatedAt: now },
-      });
-      // Remove any overlays for this channel across all locations
+      // Keep your original behavior (tenant-wide removal for that channel)
+      const items = await menuItemsCol()
+        .find({ tenantId: tenantOid, ...catMatch })
+        .toArray();
+
+      if (items.length) {
+        const ids = items.map((i) => i._id as ObjectId);
+        await menuItemsCol().deleteMany({ _id: { $in: ids }, tenantId: tenantOid });
+        await cleanupItemOverlays(ids);
+      }
+
       await categoryVisibilityCol().deleteMany({
         tenantId: tenantOid,
         categoryId: cat._id!,
         channel: qCh,
       });
 
+      await categoriesCol().updateOne(filter, {
+        $set: { channelScope: qCh === 'dine-in' ? 'online' : 'dine-in', updatedAt: now },
+      });
+
       await auditLog({
         userId,
         action: 'CATEGORY_DELETE',
         before: toCategoryDTO(cat),
+        metadata: { deletedProducts: items.length },
         ip: req.ip || 'unknown',
         userAgent: req.headers['user-agent'] || 'unknown',
       });
 
-      return res.ok({ deleted: true });
+      return res.ok({ deleted: true, deletedProducts: items.length });
     }
 
-    // No scope: hard delete everywhere + cascade + cleanup overlays
-    // Cascade delete only within the same branch scope (existing logic)
-    let itemFilter: any = {
-      tenantId: tenantOid,
-      category: cat.name,
-    };
+    // -------- Global delete (all items everywhere)
+    const allItems = await menuItemsCol().find({ tenantId: tenantOid, ...catMatch }).toArray();
+    const allIds = allItems.map((i) => i._id as ObjectId);
 
-    const scope = (cat as any).scope as 'all' | 'location' | undefined;
-    const catLoc = (cat as any).locationId as ObjectId | undefined | null;
-
-    if (scope === 'location' && catLoc) {
-      itemFilter.locationId = catLoc;
-    } else {
-      // global: only delete global items (not branch-scoped items)
-      itemFilter.$or = [{ locationId: { $exists: false } }, { locationId: null }];
+    if (allIds.length) {
+      await menuItemsCol().deleteMany({ _id: { $in: allIds }, tenantId: tenantOid });
+      await cleanupItemOverlays(allIds);
     }
 
-    const delItems = await menuItemsCol().deleteMany(itemFilter);
     await categoriesCol().deleteOne(filter);
-
-    // Cleanup overlays for this category id
-    await categoryVisibilityCol().deleteMany({
-      tenantId: tenantOid,
-      categoryId: cat._id!,
-    });
-
-    const [remainingCategories, remainingItems] = await Promise.all([
-      categoriesCol().countDocuments({ tenantId: tenantOid }),
-      menuItemsCol().countDocuments({ tenantId: tenantOid }),
-    ]);
-
-    await tenantsCol().updateOne(
-      { _id: tenantOid },
-      {
-        $set: {
-          'onboardingProgress.hasCategory': remainingCategories > 0,
-          'onboardingProgress.hasMenuItem': remainingItems > 0,
-          updatedAt: new Date(),
-        },
-      }
-    );
+    await categoryVisibilityCol().deleteMany({ tenantId: tenantOid, categoryId: cat._id! });
 
     await auditLog({
       userId,
       action: 'CATEGORY_DELETE',
       before: toCategoryDTO(cat),
-      metadata: { deletedProducts: delItems.deletedCount || 0 },
+      metadata: { deletedProducts: allIds.length },
       ip: req.ip || 'unknown',
       userAgent: req.headers['user-agent'] || 'unknown',
     });
 
-    logger.info(
-      `Category deleted: ${cat.name} for tenant ${tenantId}. Also deleted ${delItems.deletedCount || 0} scoped menu items.`
-    );
-
-    return res.ok({ deleted: true, deletedProducts: delItems.deletedCount || 0 });
+    return res.ok({ deleted: true, deletedProducts: allIds.length });
   } catch (err) {
     logger.error(`deleteCategory error: ${(err as Error).message}`);
     next(err);

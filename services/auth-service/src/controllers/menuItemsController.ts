@@ -627,18 +627,48 @@ export async function deleteMenuItem(req: Request, res: Response, next: NextFunc
     const qCh = parseChannel(req.query.channel);
     const now = new Date();
 
-    // Location + Channel: remove only that location+channel
+    const hardDeleteAndCleanup = async (reason: 'branch+channel only' | 'channel only') => {
+      const deleted = await col().findOneAndDelete(
+        { _id: item._id!, tenantId: tenantOid },
+        { includeResultMetadata: false }
+      );
+      await availabilityCol().deleteMany({ tenantId: tenantOid, itemId: item._id! });
+      await auditLog({
+        userId,
+        action: 'MENU_ITEM_DELETE',
+        before: toMenuItemDTO(deleted!),
+        metadata: { reason },
+        ip: req.ip || 'unknown',
+        userAgent: req.headers['user-agent'] || 'unknown',
+      });
+      const remaining = await col().countDocuments({ tenantId: tenantOid });
+      await tenantsCol().updateOne(
+        { _id: tenantOid },
+        { $set: { 'onboardingProgress.hasMenuItem': remaining > 0, updatedAt: new Date() } }
+      );
+      return res.ok({ deleted: true });
+    };
+
+    // Location + Channel
     if (qLoc && ObjectId.isValid(qLoc) && qCh) {
       const locId = new ObjectId(qLoc);
+      const key = visKey(qCh);
+      const otherKey = key === 'dineIn' ? 'online' : 'dineIn';
 
       if (item.locationId && (item.locationId as ObjectId).toString() === locId.toString()) {
-        // Branch-scoped item: turn off this channel baseline for this doc
-        const key = visKey(qCh);
+        // Branch-scoped item
+        const vis = item.visibility || {};
+        const otherOn = vis[otherKey] === true;
+        if (!otherOn) {
+          // last channel → hard delete to avoid ghosts in "all"
+          return await hardDeleteAndCleanup('branch+channel only');
+        }
+        // turn off only this channel
         await col().updateOne(
           { _id: item._id, tenantId: tenantOid },
           { $set: { [`visibility.${key}`]: false, updatedAt: now, updatedBy: new ObjectId(userId) } }
         );
-        // Remove any overlay that might bring it back for this location+channel
+        // remove any local overlays for this channel
         await availabilityCol().deleteMany({
           tenantId: tenantOid,
           itemId: item._id!,
@@ -646,7 +676,7 @@ export async function deleteMenuItem(req: Request, res: Response, next: NextFunc
           channel: qCh,
         });
       } else {
-        // Global item: write a per-location+channel tombstone (removed)
+        // Global item: per-location+channel tombstone
         await availabilityCol().updateOne(
           { tenantId: tenantOid, itemId: item._id!, locationId: locId, channel: qCh },
           {
@@ -673,23 +703,21 @@ export async function deleteMenuItem(req: Request, res: Response, next: NextFunc
       return res.ok({ deleted: true });
     }
 
-    // Location only: remove from that location (both channels)
+    // Location only
     if (qLoc && ObjectId.isValid(qLoc) && !qCh) {
       const locId = new ObjectId(qLoc);
 
       if (item.locationId && (item.locationId as ObjectId).toString() === locId.toString()) {
-        // Branch-scoped item: hard delete this doc
+        // Branch-scoped: hard delete
         const deleted = await col().findOneAndDelete(
           { _id: item._id, tenantId: tenantOid },
           { includeResultMetadata: false }
         );
-        // Cleanup overlays for this item/location
         await availabilityCol().deleteMany({
           tenantId: tenantOid,
           itemId: item._id!,
           locationId: locId,
         });
-
         await auditLog({
           userId,
           action: 'MENU_ITEM_DELETE',
@@ -697,16 +725,14 @@ export async function deleteMenuItem(req: Request, res: Response, next: NextFunc
           ip: req.ip || 'unknown',
           userAgent: req.headers['user-agent'] || 'unknown',
         });
-
         const remaining = await col().countDocuments({ tenantId: tenantOid });
         await tenantsCol().updateOne(
           { _id: tenantOid },
           { $set: { 'onboardingProgress.hasMenuItem': remaining > 0, updatedAt: new Date() } }
         );
-
         return res.ok({ deleted: true });
       } else {
-        // Global item: write location tombstones for both channels
+        // Global: tombstones for both channels
         const ops: AnyBulkWriteOperation<ItemAvailabilityDoc>[] = [];
         for (const ch of CHANNELS) {
           ops.push({
@@ -735,19 +761,28 @@ export async function deleteMenuItem(req: Request, res: Response, next: NextFunc
           ip: req.ip || 'unknown',
           userAgent: req.headers['user-agent'] || 'unknown',
         });
-
         return res.ok({ deleted: true });
       }
     }
 
-    // Channel only: remove from this channel across all locations
+    // Channel only
     if (!qLoc && qCh) {
       const key = visKey(qCh);
+      const otherKey = key === 'dineIn' ? 'online' : 'dineIn';
+
+      // Branch-scoped and other channel OFF → hard delete
+      if (item.locationId) {
+        const vis = item.visibility || {};
+        const otherOn = vis[otherKey] === true;
+        if (!otherOn) {
+          return await hardDeleteAndCleanup('channel only');
+        }
+      }
+
       await col().updateOne(
         { _id: item._id, tenantId: tenantOid },
         { $set: { [`visibility.${key}`]: false, updatedAt: now, updatedBy: new ObjectId(userId) } }
       );
-      // Remove any overlays for this channel across all locations
       await availabilityCol().deleteMany({
         tenantId: tenantOid,
         itemId: item._id!,
@@ -761,21 +796,17 @@ export async function deleteMenuItem(req: Request, res: Response, next: NextFunc
         ip: req.ip || 'unknown',
         userAgent: req.headers['user-agent'] || 'unknown',
       });
-
       return res.ok({ deleted: true });
     }
 
-    // No scope: hard delete everywhere + cleanup overlays
+    // No scope: hard delete everywhere
     const deleted = await col().findOneAndDelete(
       { _id: new ObjectId(id), tenantId: tenantOid },
       { includeResultMetadata: false }
     );
     if (!deleted) return res.fail(404, 'Item not found');
 
-    await availabilityCol().deleteMany({
-      tenantId: tenantOid,
-      itemId: new ObjectId(id),
-    });
+    await availabilityCol().deleteMany({ tenantId: tenantOid, itemId: new ObjectId(id) });
 
     await auditLog({
       userId,

@@ -48,7 +48,7 @@ export default function DeleteReassignDialog({
   // Channel hint + context
   const { activeLocationId, channel } = useScope();
   const isChannelScoped = channel && channel !== 'all';
-  const chanLabel = channel === 'dine-in' ? 'Dine‑In' : channel === 'online' ? 'Online' : '';
+  const chanLabel = channel === 'dine-in' ? 'Dine-In' : channel === 'online' ? 'Online' : '';
   const headingId = 'delete-category-title';
 
   // Determine if this is channel-only delete across all locations (global + channel)
@@ -96,7 +96,7 @@ export default function DeleteReassignDialog({
             <div className="mb-4">
               <h3 id={headingId} className="text-base font-semibold text-[#2e2e30]">
                 {isBranchScope
-                  ? `Remove from this location${isChannelScoped ? ` (${chanLabel})` : ''}`
+                  ? `Delete from this location${isChannelScoped ? ` (${chanLabel})` : ''}`
                   : isGlobalChannelOnly
                   ? `Delete “${category.name}” from this channel`
                   : `Delete “${category.name}”`}
@@ -104,8 +104,9 @@ export default function DeleteReassignDialog({
 
               {isBranchScope ? (
                 <p className="text-[#6b6b70]">
-                  This will hide the “{category.name}” category in this location
-                  {isChannelScoped ? ` (${chanLabel})` : ''}. Products remain intact. You can show the category again later.
+                  This will delete the “{category.name}” category in this location
+                  {isChannelScoped ? ` (${chanLabel})` : ''} and remove all products linked to it within this scope.
+                  This only affects this location{isChannelScoped ? ' and channel' : ''}.
                 </p>
               ) : isGlobalChannelOnly ? (
                 <p className="text-[#6b6b70]">
@@ -199,13 +200,7 @@ export default function DeleteReassignDialog({
                   !isBranchScope && !isGlobalChannelOnly ? 'bg-red-600 hover:opacity-90' : 'bg-[#2e2e30] hover:opacity-90'
                 } disabled:opacity-50`}
               >
-                {isSubmitting
-                  ? isBranchScope
-                    ? 'Removing…'
-                    : 'Deleting…'
-                  : isBranchScope
-                  ? 'Remove'
-                  : 'Delete'}
+                {isSubmitting ? 'Deleting…' : 'Delete'}
               </button>
             </div>
           </motion.form>

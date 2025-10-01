@@ -387,6 +387,14 @@ export async function ensureUserIndexes(client: MongoClient): Promise<void> {
   logger.info('Ensured compound index on menuItems.tenantId,createdAt');
   await menuItems.createIndex({ tenantId: 1, category: 1 });
   logger.info('Ensured compound index on menuItems.tenantId,category');
+
+  // ✅ New: cover cascade-delete filters by (tenantId, category, locationId)
+  await menuItems.createIndex(
+    { tenantId: 1, category: 1, locationId: 1 },
+    { name: 'ix_menuItems_tenant_category_location' }
+  );
+  logger.info('Ensured index on menuItems.tenantId,category,locationId');
+
   await menuItems.createIndex(
     { tenantId: 1, scope: 1, locationId: 1, createdAt: -1 },
     { name: 'ix_menuItems_scope_location_created' }

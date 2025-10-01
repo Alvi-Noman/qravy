@@ -525,6 +525,7 @@ export default function CategoriesPage() {
 
                       // Branch-scope removal -> call delete API with current scope
                       if ('scope' in opts && opts.scope === 'branch') {
+                        // Ensure mode is explicitly provided to satisfy typing
                         deleteMut.mutate(
                           { id: deleteTarget.id, mode: 'cascade' },
                           { onSuccess: () => setOpenDelete(false) }
@@ -533,7 +534,11 @@ export default function CategoriesPage() {
                       }
 
                       // Global delete everywhere (cascade or reassign)
-                      const { mode, reassignToId } = opts as { mode: 'cascade' | 'reassign'; reassignToId?: string };
+                      const { mode, reassignToId } = opts as {
+                        mode: 'cascade' | 'reassign';
+                        reassignToId?: string;
+                      };
+
                       deleteMut.mutate(
                         { id: deleteTarget.id, mode, reassignToId },
                         { onSuccess: () => setOpenDelete(false) }

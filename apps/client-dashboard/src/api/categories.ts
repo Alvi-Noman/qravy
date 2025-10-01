@@ -36,16 +36,20 @@ export async function createCategory(
   }
 ): Promise<Category> {
   const uniq = (arr?: string[]) => Array.from(new Set((arr ?? []).filter(Boolean)));
-  const include = uniq(opts?.includeLocationIds);
-  const exclude = uniq(opts?.excludeLocationIds);
 
   const body: any = { name };
+
+  // Branch scope (mutually exclusive with include/exclude seeding)
   if (opts?.locationId) body.locationId = opts.locationId;
   if (opts?.channel) body.channel = opts.channel;
 
-  // Only send one of include/exclude (prefer include when both provided)
-  if (include.length) body.includeLocationIds = include;
-  else if (exclude.length) body.excludeLocationIds = exclude;
+  // Only seed include/exclude for GLOBAL categories
+  if (!opts?.locationId) {
+    const include = uniq(opts?.includeLocationIds);
+    const exclude = uniq(opts?.excludeLocationIds);
+    if (include.length) body.includeLocationIds = include;
+    else if (exclude.length) body.excludeLocationIds = exclude;
+  }
 
   const res = await api.post('/api/v1/auth/categories', body, {
     headers: { Authorization: `Bearer ${token}` },
@@ -62,19 +66,23 @@ export async function updateCategory(id: string, name: string, token: string): P
   return res.data.item as Category;
 }
 
-// Scoped delete: optional locationId/channel as query params
+/**
+ * DELETE category with optional scope via query params.
+ * Use HTTP DELETE (no JSON body) to avoid proxies hanging on POST with empty body.
+ */
 export async function deleteCategory(
   id: string,
   token: string,
   scope?: { locationId?: string; channel?: Channel }
 ): Promise<void> {
-  const params = new URLSearchParams();
-  if (scope?.locationId) params.set('locationId', scope.locationId);
-  if (scope?.channel) params.set('channel', scope.channel);
-  const qs = params.toString();
-  const url = `/api/v1/auth/categories/${encodeURIComponent(id)}/delete${qs ? `?${qs}` : ''}`;
+  const params: Record<string, string> = {};
+  if (scope?.locationId) params.locationId = scope.locationId;
+  if (scope?.channel) params.channel = scope.channel;
 
-  await api.post(url, null, { headers: { Authorization: `Bearer ${token}` } });
+  await api.delete(`/api/v1/auth/categories/${encodeURIComponent(id)}/delete`, {
+    headers: { Authorization: `Bearer ${token}` },
+    params,
+  });
 }
 
 /**
