@@ -106,9 +106,27 @@ export async function listMenuItems(req: Request, res: Response, next: NextFunct
       return dto;
     };
 
-    // Branch view: global + that branch, overlay applied.
+    const catChannelAllowed = (cat: any | undefined, ch: 'dine-in' | 'online'): boolean => {
+      const s = (cat as any)?.channelScope as 'all' | 'dine-in' | 'online' | undefined;
+      if (!s || s === 'all') return true;
+      return s === ch;
+    };
+
+    const categoryVisibilityCol = () => client.db('authDB').collection('categoryVisibility');
+
+    const catVisibleForCh = (
+      catId: string | undefined,
+      ch: 'dine-in' | 'online',
+      overlayByCat: Map<string, Map<'dine-in' | 'online', boolean>>
+    ): boolean | undefined => {
+      if (!catId) return undefined; // undefined => no category rule for this channel
+      return overlayByCat.get(catId)?.get(ch);
+    };
+
+    // ===== BRANCH VIEW =====
     if (qLoc && ObjectId.isValid(qLoc)) {
       const locId = new ObjectId(qLoc);
+
       const filter = {
         ...baseFilter,
         $or: [{ locationId: { $exists: false } }, { locationId: null }, { locationId: locId }],
@@ -116,7 +134,48 @@ export async function listMenuItems(req: Request, res: Response, next: NextFunct
       const docs = await col().find(filter).sort({ createdAt: -1 }).toArray();
       if (docs.length === 0) return res.ok({ items: [] });
 
-      // Load overlays for this location (availability + removal tombstones)
+      // Load categories used by these items
+      const catIds = Array.from(
+        new Set(
+          docs
+            .map((d) => d.categoryId)
+            .filter((id): id is ObjectId => !!id && ObjectId.isValid(id as any))
+            .map((id) => (id as ObjectId).toString())
+        )
+      ).map((s) => new ObjectId(s));
+
+      const cats = catIds.length
+        ? await client
+            .db('authDB')
+            .collection('categories')
+            .find({ _id: { $in: catIds }, tenantId: tenantOid })
+            .project({ _id: 1, scope: 1, locationId: 1, channelScope: 1 })
+            .toArray()
+        : [];
+      const catById = new Map<string, any>(cats.map((c: any) => [c._id.toString(), c]));
+
+      // Category visibility overlays at this location
+      const catVisQuery: any = { tenantId: tenantOid, locationId: locId, categoryId: { $in: catIds } };
+      if (qCh) catVisQuery.channel = qCh;
+
+      const catVis = catIds.length ? await categoryVisibilityCol().find(catVisQuery).toArray() : [];
+      const catOverlayByCat = new Map<string, Map<'dine-in' | 'online', boolean>>();
+      const catRemovedByCat = new Map<string, Set<'dine-in' | 'online'>>();
+      for (const v of catVis as any[]) {
+        const catKey = v.categoryId.toString();
+        const ch = v.channel as 'dine-in' | 'online';
+        if (v.removed === true) {
+          const set = catRemovedByCat.get(catKey) ?? new Set<'dine-in' | 'online'>();
+          set.add(ch);
+          catRemovedByCat.set(catKey, set);
+        } else if (typeof v.visible === 'boolean') {
+          const m = catOverlayByCat.get(catKey) ?? new Map<'dine-in' | 'online', boolean>();
+          m.set(ch, v.visible);
+          catOverlayByCat.set(catKey, m);
+        }
+      }
+
+      // Item overlays at this location
       const overlayQuery: any = {
         tenantId: tenantOid,
         locationId: locId,
@@ -131,11 +190,11 @@ export async function listMenuItems(req: Request, res: Response, next: NextFunct
         const itemKey = o.itemId.toString();
         const ch = o.channel as 'dine-in' | 'online';
         if (o.removed === true) {
-          const set = removedByItem.get(itemKey) ?? new Set();
+          const set = removedByItem.get(itemKey) ?? new Set<'dine-in' | 'online'>();
           set.add(ch);
           removedByItem.set(itemKey, set);
         } else {
-          const m = overlayByItem.get(itemKey) ?? new Map();
+          const m = overlayByItem.get(itemKey) ?? new Map<'dine-in' | 'online', boolean>();
           m.set(ch, !!o.available);
           overlayByItem.set(itemKey, m);
         }
@@ -145,54 +204,123 @@ export async function listMenuItems(req: Request, res: Response, next: NextFunct
       for (const d of docs) {
         const dto = toMenuItemDTO(d);
         const itmKey = d._id!.toString();
+
+        let cat: any | undefined;
+        let catIdStr: string | undefined;
+        if (d.categoryId) {
+          catIdStr = (d.categoryId as ObjectId).toString();
+          cat = catById.get(catIdStr);
+
+          // Category constrained to another location
+          if (cat?.scope === 'location') {
+            const catLoc =
+              cat.locationId && ObjectId.isValid(cat.locationId) ? (cat.locationId as ObjectId) : null;
+            if (!catLoc || catLoc.toString() !== locId.toString()) continue;
+          }
+
+          // Per-channel constraint
+          if (qCh && !catChannelAllowed(cat, qCh)) continue;
+
+          // Hard removal (removed=true) ⇒ skip
+          if (catIdStr) {
+            if (qCh) {
+              if (catRemovedByCat.get(catIdStr)?.has(qCh)) continue;
+            } else {
+              const removedBoth = (['dine-in', 'online'] as const).every(
+                (c) => catRemovedByCat.get(catIdStr!)?.has(c)
+              );
+              if (removedBoth) continue;
+            }
+          }
+        }
+
         const removedSet = removedByItem.get(itmKey);
 
         if (qCh) {
-          // Scoped delete (tombstone) wins: skip entirely if removed for this channel in this location
           if (removedSet?.has(qCh)) continue;
 
-          // Single-channel branch view: respect baseline channel-exclusion, but allow overlay to enable it.
+          // Soft-off if category says visible:false at this loc+channel
+          const catVisFlag = catIdStr ? catVisibleForCh(catIdStr, qCh, catOverlayByCat) : undefined;
+          if (catVisFlag === false) {
+            items.push(mark(false, dto));
+            continue;
+          }
+
           const baseline = baseVisible(d, qCh);
           const ov = overlayByItem.get(itmKey)?.get(qCh);
-          if (!baseline && ov !== true) continue; // excluded and no override => skip
           const finalAvail = ov !== undefined ? ov : baseline;
-          items.push(mark(finalAvail, dto));
+          items.push(mark(!!finalAvail, dto));
         } else {
-          // All-channels branch view: if removed for both channels in this location, skip
-          const fullyRemoved =
-            removedSet && CHANNELS.every((c) => removedSet.has(c));
-          if (fullyRemoved) continue;
+          // All channels view at this location
+          const channels = CHANNELS.filter((c) => !d.categoryId || catChannelAllowed(cat, c));
 
-          // Include, reflect aggregated availability
-          let availableAny = false;
-          for (const ch of CHANNELS) {
+          // If category removed for BOTH channels at this location ⇒ skip entirely
+          const catRemovedBoth =
+            catIdStr &&
+            channels.length > 0 &&
+            channels.every((c) => catRemovedByCat.get(catIdStr!)?.has(c) === true);
+          if (catRemovedBoth) continue;
+
+          // If category visible:false for BOTH channels ⇒ show OFF
+          const catHiddenBoth =
+            catIdStr &&
+            channels.length > 0 &&
+            channels.every((c) => catVisibleForCh(catIdStr!, c, catOverlayByCat) === false);
+          if (catHiddenBoth) {
+            items.push(mark(false, dto));
+            continue;
+          }
+
+          // Otherwise compute if ANY channel is effectively on
+          let anyOn = false;
+          for (const ch of channels) {
+            const catVisFlag = catIdStr ? catVisibleForCh(catIdStr, ch, catOverlayByCat) : undefined;
+            if (catVisFlag === false) continue; // soft off at this channel
+
             const baseline = baseVisible(d, ch);
             const ov = overlayByItem.get(itmKey)?.get(ch);
             const finalAvail = ov !== undefined ? ov : baseline;
             if (finalAvail) {
-              availableAny = true;
+              anyOn = true;
               break;
             }
           }
-          items.push(mark(availableAny, dto));
+          items.push(mark(anyOn, dto));
         }
       }
 
       return res.ok({ items });
     }
 
-    // "All locations" view
+    // ===== ALL LOCATIONS VIEW =====
     const docs = await col().find(baseFilter).sort({ createdAt: -1 }).toArray();
     if (docs.length === 0) return res.ok({ items: [] });
 
-    // Get all tenant locations
+    const catIdsAll = Array.from(
+      new Set(
+        docs
+          .map((d) => d.categoryId)
+          .filter((id): id is ObjectId => !!id && ObjectId.isValid(id as any))
+          .map((id) => (id as ObjectId).toString())
+      )
+    ).map((s) => new ObjectId(s));
+
+    const catsAll = catIdsAll.length
+      ? await client
+          .db('authDB')
+          .collection('categories')
+          .find({ _id: { $in: catIdsAll }, tenantId: tenantOid })
+          .project({ _id: 1, scope: 1, locationId: 1, channelScope: 1 })
+          .toArray()
+      : [];
+    const catByIdAll = new Map<string, any>(catsAll.map((c: any) => [c._id.toString(), c]));
+
     const locDocs = await locationsCol()
       .find({ tenantId: tenantOid }, { projection: { _id: 1 } })
       .toArray();
     const locIds = locDocs.map((l: any) => l._id as ObjectId);
     const locCount = locIds.length;
 
-    // Gather overlays across all locations (for single channel or both)
     const overlayQueryAll: any = {
       tenantId: tenantOid,
       itemId: { $in: docs.map((d) => d._id!).filter(Boolean) },
@@ -202,9 +330,7 @@ export async function listMenuItems(req: Request, res: Response, next: NextFunct
 
     const overlaysAll = await availabilityCol().find(overlayQueryAll).toArray();
 
-    // availability overlays by item->channel->loc: boolean
     const overlayByItemAll = new Map<string, Map<'dine-in' | 'online', Map<string, boolean>>>();
-    // removal tombstones by item->channel->Set<locId>
     const removedByItemAll = new Map<string, Map<'dine-in' | 'online', Set<string>>>();
 
     for (const o of overlaysAll as any[]) {
@@ -212,17 +338,48 @@ export async function listMenuItems(req: Request, res: Response, next: NextFunct
       const ch = o.channel as 'dine-in' | 'online';
       const locKey = o.locationId.toString();
       if (o.removed === true) {
-        const chMap = removedByItemAll.get(itemKey) ?? new Map();
+        const chMap = removedByItemAll.get(itemKey) ?? new Map<'dine-in' | 'online', Set<string>>();
         const set = chMap.get(ch) ?? new Set<string>();
         set.add(locKey);
         chMap.set(ch, set);
         removedByItemAll.set(itemKey, chMap);
       } else {
-        const chMap = overlayByItemAll.get(itemKey) ?? new Map();
+        const chMap = overlayByItemAll.get(itemKey) ?? new Map<'dine-in' | 'online', Map<string, boolean>>();
         const locMap = chMap.get(ch) ?? new Map<string, boolean>();
         locMap.set(locKey, !!o.available);
         chMap.set(ch, locMap);
         overlayByItemAll.set(itemKey, chMap);
+      }
+    }
+
+    const catVisAllQuery: any = {
+      tenantId: tenantOid,
+      categoryId: { $in: catIdsAll },
+    };
+    if (locCount > 0) catVisAllQuery.locationId = { $in: locIds };
+    if (qCh) catVisAllQuery.channel = qCh;
+
+    const catVisAll = catIdsAll.length ? await categoryVisibilityCol().find(catVisAllQuery).toArray() : [];
+
+    const catOverlayByCatAll = new Map<string, Map<'dine-in' | 'online', Map<string, boolean>>>();
+    const catRemovedByCatAll = new Map<string, Map<'dine-in' | 'online', Set<string>>>();
+
+    for (const v of catVisAll as any[]) {
+      const catKey = v.categoryId.toString();
+      const ch = v.channel as 'dine-in' | 'online';
+      const locKey = v.locationId.toString();
+      if (v.removed === true) {
+        const chMap = catRemovedByCatAll.get(catKey) ?? new Map<'dine-in' | 'online', Set<string>>();
+        const set = chMap.get(ch) ?? new Set<string>();
+        set.add(locKey);
+        chMap.set(ch, set);
+        catRemovedByCatAll.set(catKey, chMap);
+      } else if (typeof v.visible === 'boolean') {
+        const chMap = catOverlayByCatAll.get(catKey) ?? new Map<'dine-in' | 'online', Map<string, boolean>>();
+        const locMap = chMap.get(ch) ?? new Map<string, boolean>();
+        locMap.set(locKey, v.visible);
+        chMap.set(ch, locMap);
+        catOverlayByCatAll.set(catKey, chMap);
       }
     }
 
@@ -231,56 +388,63 @@ export async function listMenuItems(req: Request, res: Response, next: NextFunct
         const dto = toMenuItemDTO(d);
         const itmKey = d._id!.toString();
 
+        const catIdStr = d.categoryId ? (d.categoryId as ObjectId).toString() : undefined;
+        const cat = catIdStr ? catByIdAll.get(catIdStr) : undefined;
+
+        if (qCh && !catChannelAllowed(cat, qCh)) return null;
+
         const channelsToEval = qCh ? [qCh] : CHANNELS;
 
-        const availForChannel = (ch: 'dine-in' | 'online'): boolean => {
+        const availForChannel = (ch: 'dine-in' | 'online'): { present: boolean; on: boolean } => {
+          if (d.categoryId && !catChannelAllowed(cat, ch)) return { present: false, on: false };
+
           const baseline = baseVisible(d, ch);
-          if (locCount === 0) return baseline;
+          if (locCount === 0) return { present: true, on: baseline };
 
           const perChLoc = overlayByItemAll.get(itmKey)?.get(ch) ?? new Map<string, boolean>();
           const removedLocs = removedByItemAll.get(itmKey)?.get(ch) ?? new Set<string>();
 
-          if (d.locationId) {
-            // Branch-only item: evaluate only its own branch
-            const k = (d.locationId as ObjectId).toString();
-            if (removedLocs.has(k)) return false; // tombstoned in that branch+channel
-            const ov = perChLoc.get(k);
-            return ov !== undefined ? ov : baseline;
-          }
+          let presentSomewhere = false;
+          let anyOn = false;
 
-          // Global item across all locations for this channel:
-          // presence if any location is not removed AND evaluates true (baseline or overlay).
           for (const lid of locIds) {
             const key = lid.toString();
-            if (removedLocs.has(key)) continue; // removed in this loc+ch
+
+            // Hard removal by category at this (loc,ch)
+            if (catIdStr) {
+              const catRemoved = catRemovedByCatAll.get(catIdStr)?.get(ch)?.has(key) === true;
+              if (catRemoved) continue;
+
+              // Soft-off by category
+              const catVis = catOverlayByCatAll.get(catIdStr)?.get(ch)?.get(key);
+              if (catVis === false) {
+                presentSomewhere = true; // listed but off
+                continue;
+              }
+            }
+
+            if (removedLocs.has(key)) continue;
+
             const ov = perChLoc.get(key);
             const final = ov !== undefined ? ov : baseline;
-            if (final) return true;
+
+            presentSomewhere = true;
+            if (final) anyOn = true;
           }
-          return false;
+
+          return { present: presentSomewhere, on: anyOn };
         };
 
-        // If a single channel is requested, hide items excluded by baseline unless any location enables them.
-        if (qCh) {
-          const baseline = baseVisible(d, qCh);
-          const perChLoc = overlayByItemAll.get(itmKey)?.get(qCh) ?? new Map<string, boolean>();
-          const removedLocs = removedByItemAll.get(itmKey)?.get(qCh) ?? new Set<string>();
-          const anyEnabled = Array.from(perChLoc.entries()).some(
-            ([locKey, val]) => val === true && !removedLocs.has(locKey)
-          );
-          if (!baseline && !anyEnabled) return null;
-        }
-
-        // Aggregate availability for requested channels (used to set hidden/status)
-        let availableAny = false;
+        let present = false;
+        let anyOn = false;
         for (const ch of channelsToEval) {
-          if (availForChannel(ch)) {
-            availableAny = true;
-            break;
-          }
+          const r = availForChannel(ch);
+          present = present || r.present;
+          anyOn = anyOn || r.on;
         }
 
-        return mark(availableAny, dto);
+        if (!present) return null;
+        return mark(anyOn, dto);
       })
       .filter(Boolean) as ReturnType<typeof toMenuItemDTO>[];
 
@@ -291,8 +455,8 @@ export async function listMenuItems(req: Request, res: Response, next: NextFunct
   }
 }
 
+
 // createMenuItem, updateMenuItem, deleteMenuItem, bulkSetAvailability, bulkDeleteMenuItems, bulkChangeCategory
-// (unchanged in behavior; typed ops added)
 
 export async function createMenuItem(req: Request, res: Response, next: NextFunction) {
   try {
@@ -335,8 +499,28 @@ export async function createMenuItem(req: Request, res: Response, next: NextFunc
     let hidden = typeof body.hidden === 'boolean' ? body.hidden : false;
     let status: 'active' | 'hidden' = body.status === 'hidden' ? 'hidden' : hidden ? 'hidden' : 'active';
 
+    const tenantOid = new ObjectId(tenantId);
+
+    // Resolve category
+    const categories = client.db('authDB').collection('categories');
+    let resolvedCat: any | null = null;
+
+    if (body.categoryId && ObjectId.isValid(body.categoryId)) {
+      resolvedCat = await categories.findOne({
+        _id: new ObjectId(body.categoryId),
+        tenantId: tenantOid,
+      });
+    }
+    if (!resolvedCat && typeof body.category === 'string' && body.category.trim()) {
+      resolvedCat = await categories.findOne({
+        tenantId: tenantOid,
+        name: (body.category as string).trim(),
+      });
+    }
+
+    // Build base doc
     const doc: any = {
-      tenantId: new ObjectId(tenantId),
+      tenantId: tenantOid,
       createdBy: new ObjectId(userId),
       name: String(body.name || '').trim(),
       createdAt: now,
@@ -345,45 +529,142 @@ export async function createMenuItem(req: Request, res: Response, next: NextFunc
       status,
     };
 
-    const isBranchScoped = body.locationId && ObjectId.isValid(body.locationId);
-    if (isBranchScoped) {
-      doc.locationId = new ObjectId(body.locationId!);
-      doc.scope = 'location';
-    } else {
-      doc.scope = 'all';
-      doc.locationId = null;
-    }
-
-    const ch = parseChannel(body.channel);
-    if (ch) {
-      doc.visibility = {
-        dineIn: ch === 'dine-in',
-        online: ch === 'online',
-      };
-    } else {
-      doc.visibility = { dineIn: true, online: true };
-    }
-
+    // Optional fields
+    if (typeof body.description === 'string') doc.description = body.description;
     if (body.restaurantId && ObjectId.isValid(body.restaurantId)) doc.restaurantId = new ObjectId(body.restaurantId);
     if (effectivePrice !== undefined) doc.price = effectivePrice;
     if (effectiveCompareAt !== undefined) doc.compareAtPrice = effectiveCompareAt;
-    if (typeof body.description === 'string') doc.description = body.description;
-    if (typeof body.category === 'string') doc.category = body.category;
-    if (body.categoryId && ObjectId.isValid(body.categoryId)) doc.categoryId = new ObjectId(body.categoryId);
-
     const media = Array.isArray(body.media) ? body.media.filter((u) => typeof u === 'string' && u) : [];
     if (media.length) doc.media = media;
     if (normVariations.length) doc.variations = normVariations;
-
     const tags =
       Array.isArray(body.tags) ? body.tags.filter((t) => typeof t === 'string' && t.trim()).map((t) => t.trim()) : [];
     if (tags.length) doc.tags = tags;
 
+    // Category-first scope & channel
+    if (resolvedCat) {
+      doc.categoryId = resolvedCat._id;
+      doc.category = resolvedCat.name;
+
+      if (resolvedCat.scope === 'location') {
+        doc.scope = 'location';
+        doc.locationId = resolvedCat.locationId ?? null;
+      } else {
+        doc.scope = 'all';
+        doc.locationId = null;
+      }
+
+      const cs = resolvedCat.channelScope as 'all' | 'dine-in' | 'online' | undefined;
+      if (cs === 'dine-in') {
+        doc.visibility = { dineIn: true, online: false };
+      } else if (cs === 'online') {
+        doc.visibility = { dineIn: false, online: true };
+      } else {
+        doc.visibility = { dineIn: true, online: true };
+      }
+    } else {
+      // Fallback
+      const isBranchScoped = body.locationId && ObjectId.isValid(body.locationId);
+      if (isBranchScoped) {
+        doc.locationId = new ObjectId(body.locationId!);
+        doc.scope = 'location';
+      } else {
+        doc.scope = 'all';
+        doc.locationId = null;
+      }
+
+      const ch = parseChannel(body.channel);
+      if (ch) {
+        doc.visibility = { dineIn: ch === 'dine-in', online: ch === 'online' };
+      } else {
+        doc.visibility = { dineIn: true, online: true };
+      }
+
+      if (typeof body.category === 'string') doc.category = body.category;
+      if (body.categoryId && ObjectId.isValid(body.categoryId)) doc.categoryId = new ObjectId(body.categoryId);
+    }
+
+    // Insert
+    const result = await col().insertOne(doc);
+    const created: MenuItemDoc = { ...doc, _id: result.insertedId };
+
+    // Mirror categoryVisibility:
+    // - removed === true  -> itemAvailability.removed = true  (hard block)
+    // - visible === false -> itemAvailability.available = false, removed = false (soft off)
+    if (resolvedCat) {
+      const catVis = await client
+        .db('authDB')
+        .collection('categoryVisibility')
+        .find({
+          tenantId: tenantOid,
+          categoryId: resolvedCat._id,
+          $or: [{ visible: false }, { removed: true }],
+        })
+        .project({ locationId: 1, channel: 1, visible: 1, removed: 1 })
+        .toArray();
+
+      if (catVis.length) {
+        const ops: AnyBulkWriteOperation<ItemAvailabilityDoc>[] = [];
+        for (const v of catVis as any[]) {
+          const lid = v.locationId as ObjectId | undefined;
+          const ch = v.channel as 'dine-in' | 'online' | undefined;
+          if (!lid || !ch) continue;
+
+          if (v.removed === true) {
+            // hard block
+            ops.push({
+              updateOne: {
+                filter: { tenantId: tenantOid, itemId: created._id!, locationId: lid, channel: ch },
+                update: {
+                  $set: { removed: true, updatedAt: now },
+                  $setOnInsert: {
+                    tenantId: tenantOid,
+                    itemId: created._id!,
+                    locationId: lid,
+                    channel: ch,
+                    createdAt: now,
+                  },
+                },
+                upsert: true,
+              },
+            });
+          } else if (v.visible === false) {
+            // soft off
+            ops.push({
+              updateOne: {
+                filter: { tenantId: tenantOid, itemId: created._id!, locationId: lid, channel: ch },
+                update: {
+                  $set: { available: false, removed: false, updatedAt: now },
+                  $setOnInsert: {
+                    tenantId: tenantOid,
+                    itemId: created._id!,
+                    locationId: lid,
+                    channel: ch,
+                    createdAt: now,
+                  },
+                },
+                upsert: true,
+              },
+            });
+          }
+        }
+        if (ops.length) await availabilityCol().bulkWrite(ops, { ordered: false });
+      }
+    }
+
+    // Include/exclude location seeding for global items (unchanged)
     let includeIds: ObjectId[] = [];
     let excludeIds: ObjectId[] = [];
-    const seedChs: Array<'dine-in' | 'online'> = ch ? [ch] : CHANNELS;
+    const seedChs: Array<'dine-in' | 'online'> =
+      created.visibility?.dineIn && created.visibility?.online
+        ? (['dine-in', 'online'] as const)
+        : created.visibility?.dineIn
+        ? (['dine-in'] as const)
+        : (['online'] as const);
 
-    if (!isBranchScoped) {
+    const isGlobalItem = created.scope === 'all' && !created.locationId;
+
+    if (isGlobalItem) {
       const rawInclude = Array.isArray(body.includeLocationIds) ? body.includeLocationIds : [];
       const rawExclude = Array.isArray(body.excludeLocationIds) ? body.excludeLocationIds : [];
 
@@ -397,42 +678,25 @@ export async function createMenuItem(req: Request, res: Response, next: NextFunc
       if (validInclude.length || validExclude.length) {
         const wanted = [...validInclude, ...validExclude];
         const locs = await locationsCol()
-          .find({ _id: { $in: wanted }, tenantId: new ObjectId(tenantId) }, { projection: { _id: 1 } })
+          .find({ _id: { $in: wanted }, tenantId: tenantOid }, { projection: { _id: 1 } })
           .toArray();
         const allowed = new Set(locs.map((l: any) => (l._id as ObjectId).toString()));
         includeIds = validInclude.filter((id) => allowed.has(id.toString()));
         excludeIds = validExclude.filter((id) => allowed.has(id.toString()));
-
-        if (includeIds.length) {
-          for (const c of seedChs) {
-            const key = visKey(c);
-            doc.visibility[key] = false;
-          }
-        }
       }
-    }
 
-    const result = await col().insertOne(doc);
-    const created: MenuItemDoc = { ...doc, _id: result.insertedId };
-
-    if (!isBranchScoped) {
-      const ops: AnyBulkWriteOperation<ItemAvailabilityDoc>[] = [];
       if (includeIds.length) {
+        const ops: AnyBulkWriteOperation<ItemAvailabilityDoc>[] = [];
         for (const lid of includeIds) {
           for (const c of seedChs) {
             ops.push({
               updateOne: {
-                filter: {
-                  tenantId: new ObjectId(tenantId),
-                  itemId: created._id,
-                  locationId: lid,
-                  channel: c,
-                },
+                filter: { tenantId: tenantOid, itemId: created._id!, locationId: lid, channel: c },
                 update: {
                   $set: { available: true, removed: false, updatedAt: now },
                   $setOnInsert: {
-                    tenantId: new ObjectId(tenantId),
-                    itemId: created._id,
+                    tenantId: tenantOid,
+                    itemId: created._id!,
                     locationId: lid,
                     channel: c,
                     createdAt: now,
@@ -443,22 +707,19 @@ export async function createMenuItem(req: Request, res: Response, next: NextFunc
             });
           }
         }
+        if (ops.length) await availabilityCol().bulkWrite(ops, { ordered: false });
       } else if (excludeIds.length) {
+        const ops: AnyBulkWriteOperation<ItemAvailabilityDoc>[] = [];
         for (const lid of excludeIds) {
-          for (const c of CHANNELS) {
+          for (const c of (['dine-in', 'online'] as const)) {
             ops.push({
               updateOne: {
-                filter: {
-                  tenantId: new ObjectId(tenantId),
-                  itemId: created._id,
-                  locationId: lid,
-                  channel: c,
-                },
+                filter: { tenantId: tenantOid, itemId: created._id!, locationId: lid, channel: c },
                 update: {
                   $set: { removed: true, updatedAt: now },
                   $setOnInsert: {
-                    tenantId: new ObjectId(tenantId),
-                    itemId: created._id,
+                    tenantId: tenantOid,
+                    itemId: created._id!,
                     locationId: lid,
                     channel: c,
                     createdAt: now,
@@ -469,8 +730,8 @@ export async function createMenuItem(req: Request, res: Response, next: NextFunc
             });
           }
         }
+        if (ops.length) await availabilityCol().bulkWrite(ops, { ordered: false });
       }
-      if (ops.length) await availabilityCol().bulkWrite(ops, { ordered: false });
     }
 
     await auditLog({
@@ -482,7 +743,7 @@ export async function createMenuItem(req: Request, res: Response, next: NextFunc
     });
 
     await tenantsCol().updateOne(
-      { _id: new ObjectId(tenantId) },
+      { _id: tenantOid },
       { $set: { 'onboardingProgress.hasMenuItem': true, updatedAt: now } }
     );
 
@@ -493,6 +754,7 @@ export async function createMenuItem(req: Request, res: Response, next: NextFunc
     next(err);
   }
 }
+
 
 export async function updateMenuItem(req: Request, res: Response, next: NextFunction) {
   try {
@@ -844,26 +1106,69 @@ export async function bulkSetAvailability(req: Request, res: Response, next: Nex
       locationId?: string;
       channel?: 'dine-in' | 'online';
     };
+
     const oids = (ids || []).filter((s) => ObjectId.isValid(s)).map((s) => new ObjectId(s));
     if (!oids.length) return res.fail(400, 'No valid ids');
 
     const now = new Date();
     const chs = channel ? [channel] : CHANNELS;
+    const tenantOid = new ObjectId(tenantId);
 
+    // ----- PER-LOCATION BRANCH (respect category hard-exclusions at that location) -----
     if (locationId && ObjectId.isValid(locationId)) {
       const locId = new ObjectId(locationId);
 
+      // Load items with their categoryId
+      const items = await col()
+        .find({ _id: { $in: oids }, tenantId: tenantOid })
+        .project<{ _id: ObjectId; categoryId?: ObjectId }>({ _id: 1, categoryId: 1 })
+        .toArray();
+
+      const catIds = Array.from(
+        new Set(items.map((i) => i.categoryId).filter((id): id is ObjectId => !!id))
+      );
+
+      // Pull category hard-exclusions (removed:true) for this location
+      const removedByCatCh = new Map<string, Set<'dine-in' | 'online'>>(); // catId -> set(ch)
+      if (catIds.length) {
+        const catVis = await client
+          .db('authDB')
+          .collection('categoryVisibility')
+          .find({
+            tenantId: tenantOid,
+            categoryId: { $in: catIds },
+            locationId: locId,
+            removed: true,
+          })
+          .project({ categoryId: 1, channel: 1 })
+          .toArray();
+
+        for (const v of catVis as any[]) {
+          const key = (v.categoryId as ObjectId).toString();
+          const ch = v.channel as 'dine-in' | 'online';
+          const set = removedByCatCh.get(key) ?? new Set<'dine-in' | 'online'>();
+          set.add(ch);
+          removedByCatCh.set(key, set);
+        }
+      }
+
+      // Build availability ops, skipping (loc,ch) where the category is hard-removed
       const ops: AnyBulkWriteOperation<ItemAvailabilityDoc>[] = [];
       for (const ch of chs) {
-        for (const itemId of oids) {
+        for (const it of items) {
+          const catKey = it.categoryId?.toString();
+          if (catKey && removedByCatCh.get(catKey)?.has(ch)) {
+            // Category forbids this location+channel → do not allow toggling it ON/OFF here
+            continue;
+          }
           ops.push({
             updateOne: {
-              filter: { tenantId: new ObjectId(tenantId), itemId, locationId: locId, channel: ch },
+              filter: { tenantId: tenantOid, itemId: it._id, locationId: locId, channel: ch },
               update: {
                 $set: { available: !!active, removed: false, updatedAt: now },
                 $setOnInsert: {
-                  tenantId: new ObjectId(tenantId),
-                  itemId,
+                  tenantId: tenantOid,
+                  itemId: it._id,
                   locationId: locId,
                   channel: ch,
                   createdAt: now,
@@ -874,10 +1179,11 @@ export async function bulkSetAvailability(req: Request, res: Response, next: Nex
           });
         }
       }
+
       if (ops.length) await availabilityCol().bulkWrite(ops, { ordered: false });
 
-      const docs = await col().find({ _id: { $in: oids }, tenantId: new ObjectId(tenantId) }).toArray();
-      const items = docs.map((d) => {
+      const docs = await col().find({ _id: { $in: oids }, tenantId: tenantOid }).toArray();
+      const itemsOut = docs.map((d) => {
         const dto = toMenuItemDTO(d);
         dto.hidden = !active;
         dto.status = active ? 'active' : 'hidden';
@@ -887,28 +1193,35 @@ export async function bulkSetAvailability(req: Request, res: Response, next: Nex
       await auditLog({
         userId,
         action: 'MENU_ITEM_BULK_AVAILABILITY',
-        after: items,
+        after: itemsOut,
         ip: req.ip || 'unknown',
         userAgent: req.headers['user-agent'] || 'unknown',
       });
 
-      return res.ok({ matchedCount: oids.length * chs.length, modifiedCount: oids.length * chs.length, items });
+      return res.ok({ matchedCount: ops.length, modifiedCount: ops.length, items: itemsOut });
     }
 
+    // ----- GLOBAL BRANCH (all locations) -----
     const locDocs = await locationsCol()
-      .find({ tenantId: new ObjectId(tenantId) }, { projection: { _id: 1 } })
+      .find({ tenantId: tenantOid }, { projection: { _id: 1 } })
       .toArray();
     const locIds = locDocs.map((l: any) => l._id as ObjectId);
 
     if (active === true) {
-      await availabilityCol().deleteMany({
-        tenantId: new ObjectId(tenantId),
-        itemId: { $in: oids },
-        ...(locIds.length ? { locationId: { $in: locIds } } : {}),
-        channel: { $in: chs },
-      });
-      // Do not change baseline visibility here
+      // Turn ON globally by clearing only "available:false" overlays,
+      // but DO NOT delete tombstones (removed:true).
+      if (locIds.length > 0) {
+        await availabilityCol().deleteMany({
+          tenantId: tenantOid,
+          itemId: { $in: oids },
+          ...(locIds.length ? { locationId: { $in: locIds } } : {}),
+          channel: { $in: chs },
+          removed: { $ne: true },            // <— preserve hard removals
+        });
+      }
+      // Baseline visibility on the item doc still governs per-channel; we do not flip baseline here.
     } else {
+      // Turn OFF globally by writing available:false overlays everywhere (safe even if category is removed).
       if (locIds.length > 0) {
         const ops: AnyBulkWriteOperation<ItemAvailabilityDoc>[] = [];
         for (const itemId of oids) {
@@ -916,11 +1229,11 @@ export async function bulkSetAvailability(req: Request, res: Response, next: Nex
             for (const ch of chs) {
               ops.push({
                 updateOne: {
-                  filter: { tenantId: new ObjectId(tenantId), itemId, locationId: lid, channel: ch },
+                  filter: { tenantId: tenantOid, itemId, locationId: lid, channel: ch },
                   update: {
                     $set: { available: false, removed: false, updatedAt: now },
                     $setOnInsert: {
-                      tenantId: new ObjectId(tenantId),
+                      tenantId: tenantOid,
                       itemId,
                       locationId: lid,
                       channel: ch,
@@ -935,11 +1248,10 @@ export async function bulkSetAvailability(req: Request, res: Response, next: Nex
         }
         if (ops.length) await availabilityCol().bulkWrite(ops, { ordered: false });
       }
-      // Do not change baseline visibility here
     }
 
-    const docs = await col().find({ _id: { $in: oids }, tenantId: new ObjectId(tenantId) }).toArray();
-    const items = docs.map((d) => {
+    const docs = await col().find({ _id: { $in: oids }, tenantId: tenantOid }).toArray();
+    const itemsOut = docs.map((d) => {
       const dto = toMenuItemDTO(d);
       dto.hidden = !active;
       dto.status = active ? 'active' : 'hidden';
@@ -949,7 +1261,7 @@ export async function bulkSetAvailability(req: Request, res: Response, next: Nex
     await auditLog({
       userId,
       action: 'MENU_ITEM_BULK_AVAILABILITY',
-      after: items,
+      after: itemsOut,
       ip: req.ip || 'unknown',
       userAgent: req.headers['user-agent'] || 'unknown',
     });
@@ -957,7 +1269,7 @@ export async function bulkSetAvailability(req: Request, res: Response, next: Nex
     return res.ok({
       matchedCount: docs.length,
       modifiedCount: docs.length,
-      items,
+      items: itemsOut,
     });
   } catch (err) {
     logger.error(`bulkSetAvailability error: ${(err as Error).message}`);
@@ -1089,6 +1401,7 @@ export async function bulkDeleteMenuItems(req: Request, res: Response, next: Nex
       const or = deleteOverlaysFilters;
       await availabilityCol().deleteMany({ $or: or });
     }
+
     let deletedCount = 0;
     if (hardDeleteIds.length) {
       const before = await col()
