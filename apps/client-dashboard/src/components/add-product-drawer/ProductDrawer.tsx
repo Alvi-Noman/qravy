@@ -552,12 +552,38 @@ export default function ProductDrawer({
       if (compareAtNum !== undefined) payload.compareAtPrice = compareAtNum;
     }
 
-    // Advanced -> channel
-    // both checked => omit channel (backend defaults both visible)
-    // one checked => set that channel
-    if (chDineIn !== chOnline) {
-      payload.channel = chDineIn ? 'dine-in' : 'online';
+    // -------------------- CHANNEL + LOCATION EXCLUSIONS (NEW) --------------------
+    const exactlyOneChannel = chDineIn !== chOnline;
+
+    console.log('EXCLUSION CHECK', {
+      chDineIn,
+      chOnline,
+      exactlyOneChannel,
+      activeLocationId,
+      payloadBefore: { ...payload },
+    });
+
+    if (exactlyOneChannel) {
+      // the one the user kept ON
+      const checked: 'dine-in' | 'online' = chDineIn ? 'dine-in' : 'online';
+      // the one the user turned OFF
+      const unchecked: 'dine-in' | 'online' = chDineIn ? 'online' : 'dine-in';
+
+      // keep your current “seed to one channel” behavior
+      payload.channel = checked;
+
+      // add the actual exclusion fields the backend needs
+      const pAny = payload as any;
+      if (activeLocationId) {
+        // location AND channel exclusion
+        pAny.excludeChannelAt = unchecked;
+        pAny.excludeChannelAtLocationIds = [activeLocationId];
+      } else {
+        // channel-only (global) exclusion
+        pAny.excludeChannel = unchecked;
+      }
     }
+    // ---------------------------------------------------------------------------
 
     // Advanced -> branches (All locations view only)
     if (!activeLocationId && allLocations.length) {
@@ -1354,4 +1380,4 @@ function CurrencyInput({
       />
     </div>
   );
-} 
+}

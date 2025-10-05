@@ -27,12 +27,18 @@ export type NewMenuItem = {
   status?: 'active' | 'hidden';
 
   // Branch scoping or targeting
-  locationId?: string;              // create as branch-only item (single branch)
-  includeLocationIds?: string[];    // global item: visible only in these branches
-  excludeLocationIds?: string[];    // global item: visible everywhere except these branches
+  locationId?: string;
+  includeLocationIds?: string[];
+  excludeLocationIds?: string[];
 
-  // Channel seed when creating under a specific channel (omit for "All channels")
+  // Channel seed
   channel?: Channel;
+
+  // Channel exclusion controls
+  excludeChannel?: Channel;                 // exclude globally
+  excludeAtLocationIds?: string[];          // exclude at these locations (both channels)
+  excludeChannelAt?: Channel;               // which channel to exclude at locations
+  excludeChannelAtLocationIds?: string[];   // locations for that channel exclusion
 };
 
 export type MenuItem = v1.MenuItemDTO;
@@ -44,7 +50,6 @@ export async function getMenuItems(
   const params = new URLSearchParams();
   if (opts?.locationId) params.set('locationId', opts.locationId);
   if (opts?.channel) params.set('channel', opts.channel);
-  // Cache-buster to avoid 304/ETag reuse while debugging
   params.set('_', String(Date.now()));
 
   const url = '/api/v1/auth/menu-items' + (params.toString() ? `?${params.toString()}` : '');
@@ -62,17 +67,48 @@ export async function createMenuItem(
   payload: NewMenuItem,
   token: string
 ): Promise<MenuItem> {
-  const res = await api.post('/api/v1/auth/menu-items', payload, {
+  // ---- Normalization block ----
+  const normalized: NewMenuItem = (() => {
+    const p = { ...payload };
+
+    const noLocTargets =
+      !p.locationId &&
+      (!p.includeLocationIds || p.includeLocationIds.length === 0) &&
+      (!p.excludeLocationIds || p.excludeLocationIds.length === 0) &&
+      (!p.excludeAtLocationIds || p.excludeAtLocationIds.length === 0) &&
+      (!p.excludeChannelAtLocationIds || p.excludeChannelAtLocationIds.length === 0);
+
+    // collapse per-location exclusion → global exclusion if no loc targets
+    if (!p.excludeChannel && p.excludeChannelAt && noLocTargets) {
+      p.excludeChannel = p.excludeChannelAt as Channel;
+      delete (p as any).excludeChannelAt;
+      delete (p as any).excludeChannelAtLocationIds;
+    }
+
+    // don’t send channel if it equals excluded one
+    if (p.excludeChannel && p.channel === p.excludeChannel) {
+      delete p.channel;
+    }
+
+    return p;
+  })();
+
+  // 👇 proof log
+  console.log('[API createMenuItem] normalized payload:', normalized);
+
+  const res = await api.post('/api/v1/auth/menu-items', normalized, {
     headers: { Authorization: `Bearer ${token}` },
   });
   return res.data.item as MenuItem;
 }
 
+/** ✅ Update menu item */
 export async function updateMenuItem(
   id: string,
   payload: Partial<NewMenuItem>,
   token: string
 ): Promise<MenuItem> {
+  console.log('[API updateMenuItem] payload:', payload);
   const res = await api.post(
     `/api/v1/auth/menu-items/${encodeURIComponent(id)}/update`,
     payload,
@@ -81,7 +117,6 @@ export async function updateMenuItem(
   return res.data.item as MenuItem;
 }
 
-// Scoped delete: optional locationId/channel as query params
 export async function deleteMenuItem(
   id: string,
   token: string,
@@ -93,10 +128,11 @@ export async function deleteMenuItem(
   const qs = params.toString();
   const url = `/api/v1/auth/menu-items/${encodeURIComponent(id)}/delete${qs ? `?${qs}` : ''}`;
 
+  console.log('[API deleteMenuItem] scope:', scope);
+
   await api.post(url, null, { headers: { Authorization: `Bearer ${token}` } });
 }
 
-/** Bulk availability per-branch/per-channel */
 export async function bulkUpdateAvailability(
   ids: string[],
   active: boolean,
@@ -108,17 +144,20 @@ export async function bulkUpdateAvailability(
   if (locationId) body.locationId = locationId;
   if (channel) body.channel = channel;
 
+  console.log('[API bulkUpdateAvailability] body:', body);
+
   const res = await api.post('/api/v1/auth/menu-items/bulk/availability', body, {
     headers: { Authorization: `Bearer ${token}` },
   });
   return res.data as { items: MenuItem[]; matchedCount: number; modifiedCount: number };
 }
 
-/** Bulk delete: supports optional scope in payload */
 export async function bulkDeleteMenuItems(
   payload: { ids: string[]; locationId?: string; channel?: Channel },
   token: string
 ): Promise<{ deletedCount: number; ids: string[] }> {
+  console.log('[API bulkDeleteMenuItems] payload:', payload);
+
   const res = await api.post(
     '/api/v1/auth/menu-items/bulk/delete',
     payload,
@@ -127,16 +166,18 @@ export async function bulkDeleteMenuItems(
   return res.data as { deletedCount: number; ids: string[] };
 }
 
-/** Bulk category: returns updated items */
 export async function bulkChangeCategoryApi(
   ids: string[],
   category: string | undefined,
   categoryId: string | undefined,
   token: string
 ): Promise<{ items: MenuItem[]; matchedCount: number; modifiedCount: number }> {
+  const body = { ids, category, categoryId };
+  console.log('[API bulkChangeCategoryApi] body:', body);
+
   const res = await api.post(
     '/api/v1/auth/menu-items/bulk/category',
-    { ids, category, categoryId },
+    body,
     { headers: { Authorization: `Bearer ${token}` } }
   );
   return res.data as { items: MenuItem[]; matchedCount: number; modifiedCount: number };
