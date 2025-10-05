@@ -224,8 +224,18 @@ export function useMenuItems() {
           ? vis.dineIn !== false // undefined -> treated as true
           : vis.online !== false;
 
-      if (showInCurrent) {
-        queryClient.setQueryData<TMenuItem[]>(keyCurrent as any, (prev) => [...(prev ?? []), created]);
+      const isBranchView = !!activeLocationId;
+
+      if (!isBranchView) {
+        // Global view: safe to optimistically add
+        if (showInCurrent) {
+          queryClient.setQueryData<TMenuItem[]>(keyCurrent as any, (prev) => [...(prev ?? []), created]);
+        }
+      } else {
+        // Branch/Location view: do NOT optimistically add, because per-location excludes
+        // (excludeAtLocationIds / excludeChannelAtLocationIds) are applied server-side
+        // and are not visible in the returned item DTO. Just refetch this list.
+        queryClient.invalidateQueries({ queryKey: keyCurrent as any });
       }
 
       // Keep global all-locations + all-channels cache updated (list page can hydrate from here)

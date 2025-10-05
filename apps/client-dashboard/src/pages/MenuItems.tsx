@@ -41,6 +41,12 @@ type DrawerSubmitValues = {
   channel?: Channel;                // if single channel selected
   includeLocationIds?: string[];    // only show in these branches (global item)
   excludeLocationIds?: string[];    // hide in these branches (global item)
+
+  // ⬇️ ONLY ADDITIONS BELOW (forwarded as-is to the API)
+  excludeChannel?: Channel;                 // exclude channel globally
+  excludeAtLocationIds?: string[];         // exclude item at these locations (both channels)
+  excludeChannelAt?: Channel;              // which channel to exclude at locations
+  excludeChannelAtLocationIds?: string[];  // locations for that channel exclusion
 };
 
 const HIGHLIGHT_HOLD_MS = 2500;
@@ -149,7 +155,7 @@ export default function MenuItemsPage(): JSX.Element {
 
   const [q, setQ] = useState('');
   const [status, setStatus] = useState<Set<Status>>(new Set());
-  const [channels, setChannels] = useState<Set<Channel>>(new Set());
+  // ⬇️ removed local channels state; we derive it from ScopeContext instead
   const [selectedCategory, setSelectedCategory] = useState<string>('');
   const [sortBy, setSortBy] = useState<SortBy>('name-asc');
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -194,8 +200,29 @@ export default function MenuItemsPage(): JSX.Element {
     (itemsQuery.isFetching && !itemsQuery.isLoading) ||
     (categoriesQuery.isFetching && !categoriesQuery.isLoading);
 
-  const { activeLocationId } = useScope(); // remove channelScope filtering; backend handles channel visibility
+  // Pull channel + setter from scope, and derive pills from it
+  const { activeLocationId, channel, setChannel } = useScope(); // backend handles channel visibility
   const sourceItems = frozenItems ?? items;
+
+  // Derived pills from scope (read-only view of current scope)
+  const channels = useMemo(() => {
+    const s = new Set<Channel>();
+    if (channel === 'all') {
+      s.add('dine-in');
+      s.add('online');
+    } else if (channel === 'dine-in' || channel === 'online') {
+      s.add(channel);
+    }
+    return s;
+  }, [channel]);
+
+  // Writer for pills → updates the scope (single source of truth)
+  const setChannels = (next: Set<Channel>) => {
+    const hasDI = next.has('dine-in');
+    const hasON = next.has('online');
+    const nextScope = hasDI && hasON ? 'all' : hasDI ? 'dine-in' : hasON ? 'online' : 'all';
+    if (nextScope !== channel) setChannel(nextScope as any);
+  };
 
   const viewItems = useMemo(() => {
     const qnorm = q.trim().toLowerCase();
@@ -549,6 +576,14 @@ export default function MenuItemsPage(): JSX.Element {
                         if (values.channel) payload.channel = values.channel;
                         if (values.includeLocationIds?.length) payload.includeLocationIds = values.includeLocationIds;
                         if (values.excludeLocationIds?.length) payload.excludeLocationIds = values.excludeLocationIds;
+
+                        // ⬇️ ONLY NEW FORWARDING (exclusion fields)
+                        if (values.excludeChannel) (payload as any).excludeChannel = values.excludeChannel;
+                        if (values.excludeAtLocationIds?.length)
+                          (payload as any).excludeAtLocationIds = values.excludeAtLocationIds;
+                        if (values.excludeChannelAt) (payload as any).excludeChannelAt = values.excludeChannelAt;
+                        if (values.excludeChannelAtLocationIds?.length)
+                          (payload as any).excludeChannelAtLocationIds = values.excludeChannelAtLocationIds;
 
                         const created = await createMut.mutateAsync(payload);
                         const sp = new URLSearchParams(searchParams);

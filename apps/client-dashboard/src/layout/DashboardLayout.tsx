@@ -3,7 +3,6 @@ import { useState, useEffect, useRef, lazy, Suspense } from 'react';
 import { Outlet, Navigate, useLocation } from 'react-router-dom';
 import TopBar from '../components/topbar/TopBar';
 import AIAssistantPanel from '../components/AIAssistantPanel';
-import { ScopeProvider } from '../context/ScopeContext';
 import { useAuthContext } from '../context/AuthContext';
 
 // Trial UI
@@ -174,43 +173,41 @@ export default function DashboardLayout(): JSX.Element {
   }, [location.pathname, queryClient]);
 
   return (
-    <ScopeProvider>
-      <div className="flex h-screen bg-[#f5f5f5] overflow-hidden">
-        <Suspense fallback={<SidebarFallback />}>
-          <Sidebar />
-        </Suspense>
+    <div className="flex h-screen bg-[#f5f5f5] overflow-hidden">
+      <Suspense fallback={<SidebarFallback />}>
+        <Sidebar />
+      </Suspense>
 
-        <main className="flex-1 min-w-0 min-h-0 flex items-start justify-center bg-[#f5f5f5]">
-          <div className="flex-1 mr-4 my-2 h-[calc(100vh-1rem)] min-h-0 min-w-0">
+      <main className="flex-1 min-w-0 min-h-0 flex items-start justify-center bg-[#f5f5f5]">
+        <div className="flex-1 mr-4 my-2 h-[calc(100vh-1rem)] min-h-0 min-w-0">
+          <div
+            className="h-full min-h-0 min-w-0 rounded-xl border border-[#ececec] bg-[#fcfcfc] overflow-hidden grid"
+            style={{
+              gridTemplateColumns: `minmax(0,1fr) ${aiOpen ? AI_PANEL_WIDTH : 0}px`,
+              transition: 'grid-template-columns 300ms ease',
+            }}
+          >
+            {/* Left */}
             <div
-              className="h-full min-h-0 min-w-0 rounded-xl border border-[#ececec] bg-[#fcfcfc] overflow-hidden grid"
-              style={{
-                gridTemplateColumns: `minmax(0,1fr) ${aiOpen ? AI_PANEL_WIDTH : 0}px`,
-                transition: 'grid-template-columns 300ms ease',
-              }}
+              className="flex h-full min-h-0 flex-col overflow-y-auto overscroll-contain"
+              style={{ scrollbarGutter: 'stable' }}
             >
-              {/* Left */}
-              <div
-                className="flex h-full min-h-0 flex-col overflow-y-auto overscroll-contain"
-                style={{ scrollbarGutter: 'stable' }}
-              >
-                <TopBar onAIClick={() => { setAiDismissed(false); setAiOpen(true); }} />
-                <div className="flex-1 min-h-0 min-w-0">
-                  <Outlet />
-                </div>
+              <TopBar onAIClick={() => { setAiDismissed(false); setAiOpen(true); }} />
+              <div className="flex-1 min-h-0 min-w-0">
+                <Outlet />
               </div>
-
-              {/* Right */}
-              <AIAssistantPanel
-                open={aiOpen}
-                onClose={() => { setAiDismissed(true); setAiOpen(false); }}
-                onRequestOpen={() => { if (!aiDismissed) setAiOpen(true); }} // allow auto-open unless dismissed
-                width={AI_PANEL_WIDTH}
-              />
             </div>
+
+            {/* Right */}
+            <AIAssistantPanel
+              open={aiOpen}
+              onClose={() => { setAiDismissed(true); setAiOpen(false); }}
+              onRequestOpen={() => { if (!aiDismissed) setAiOpen(true); }} // allow auto-open unless dismissed
+              width={AI_PANEL_WIDTH}
+            />
           </div>
-        </main>
-      </div>
+        </div>
+      </main>
 
       {/* Trial toast (shifts left when AI panel is open) */}
       <TrialToast
@@ -283,6 +280,6 @@ export default function DashboardLayout(): JSX.Element {
           }
         }}
       />
-    </ScopeProvider>
+    </div>
   );
 }

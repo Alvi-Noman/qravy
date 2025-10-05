@@ -61,6 +61,16 @@ export const menuItemSchema = z
     includeLocationIds: z.array(objectId).optional(),
     excludeLocationIds: z.array(objectId).optional(),
 
+    // ---------- NEW: item-level channel exclusion controls ----------
+    // exclude one channel globally (e.g., hide from 'online' everywhere)
+    excludeChannel: channelEnum.optional(),
+    // exclude item entirely at these locations (both channels)
+    excludeAtLocationIds: z.array(objectId).optional(),
+    // exclude a specific channel at specific locations
+    excludeChannelAt: channelEnum.optional(),
+    excludeChannelAtLocationIds: z.array(objectId).optional(),
+    // ----------------------------------------------------------------
+
     ...availabilityFields,
   })
   .superRefine((data, ctx) => {
@@ -110,6 +120,15 @@ export const menuItemSchema = z
         message: 'include/excludeLocationIds are only valid when creating a global item (omit locationId)',
       });
     }
+
+    // Light coupling checks for the new fields (non-blocking but helpful)
+    if (Array.isArray(data.excludeChannelAtLocationIds) && data.excludeChannelAtLocationIds.length > 0 && !data.excludeChannelAt) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['excludeChannelAt'],
+        message: 'excludeChannelAt is required when excludeChannelAtLocationIds is provided',
+      });
+    }
   });
 
 export const menuItemUpdateSchema = z
@@ -124,6 +143,14 @@ export const menuItemUpdateSchema = z
     variations: z.array(variationSchema).max(100).optional(),
     tags: z.array(z.string().min(1).max(30)).max(100).optional(),
     restaurantId: objectId.optional(),
+
+    // ---------- NEW: allow updating item-level channel exclusions ----------
+    excludeChannel: channelEnum.optional(),
+    excludeAtLocationIds: z.array(objectId).optional(),
+    excludeChannelAt: channelEnum.optional(),
+    excludeChannelAtLocationIds: z.array(objectId).optional(),
+    // ----------------------------------------------------------------------
+
     ...availabilityFields,
   })
   .refine((data) => Object.keys(data).length > 0, {
@@ -136,6 +163,13 @@ export const menuItemUpdateSchema = z
         code: z.ZodIssueCode.custom,
         path: ['compareAtPrice'],
         message: 'compareAtPrice must be >= price',
+      });
+    }
+    if (Array.isArray(data.excludeChannelAtLocationIds) && data.excludeChannelAtLocationIds.length > 0 && !data.excludeChannelAt) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['excludeChannelAt'],
+        message: 'excludeChannelAt is required when excludeChannelAtLocationIds is provided',
       });
     }
   });
