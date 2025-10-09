@@ -614,6 +614,24 @@ export default function MenuItemsPage(): JSX.Element {
                             price: v.price != null ? String(v.price) : '',
                             imagePreview: v.imageUrl || null,
                           })) || [],
+
+                        // ----- NEW: seed Advanced from the item itself -----
+                        channel: (openEdit as any).channel,
+                        includeLocationIds: (openEdit as any).includeLocationIds,
+                        excludeLocationIds: (openEdit as any).excludeLocationIds,
+
+                        // IMPORTANT: derive excludeChannel from visibility if server didn't include it
+                        excludeChannel:
+                          (openEdit as any).excludeChannel ??
+                          ((openEdit as any).visibility?.dineIn === false
+                            ? 'dine-in'
+                            : (openEdit as any).visibility?.online === false
+                            ? 'online'
+                            : undefined),
+
+                        excludeAtLocationIds: (openEdit as any).excludeAtLocationIds,
+                        excludeChannelAt: (openEdit as any).excludeChannelAt,
+                        excludeChannelAtLocationIds: (openEdit as any).excludeChannelAtLocationIds,
                       }}
                       onClose={() => setOpenEdit(null)}
                       persistKey={`edit:${(openEdit as any).id}`}
@@ -630,6 +648,19 @@ export default function MenuItemsPage(): JSX.Element {
                           tags: values.tags,
                         };
                         if (typeof values.price === 'number') payload.price = values.price;
+
+                        // (Optional) also update Advanced on edit
+                        if (values.channel) payload.channel = values.channel;
+                        if (values.includeLocationIds?.length) payload.includeLocationIds = values.includeLocationIds;
+                        if (values.excludeLocationIds?.length) payload.excludeLocationIds = values.excludeLocationIds;
+
+                        if (values.excludeChannel) (payload as any).excludeChannel = values.excludeChannel;
+                        if (values.excludeAtLocationIds?.length)
+                          (payload as any).excludeAtLocationIds = values.excludeAtLocationIds;
+                        if (values.excludeChannelAt) (payload as any).excludeChannelAt = values.excludeChannelAt;
+                        if (values.excludeChannelAtLocationIds?.length)
+                          (payload as any).excludeChannelAtLocationIds = values.excludeChannelAtLocationIds;
+
                         await updateMut.mutateAsync({ id: editingId, payload });
                         setQueuedHighlightId(editingId);
                       }}

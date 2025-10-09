@@ -1,5 +1,5 @@
-// components/Categories/CategoryRow.tsx
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+// components/categories/CategoryRow.tsx
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Link } from 'react-router-dom';
 import { AnimatePresence, motion } from 'framer-motion';
@@ -17,7 +17,7 @@ export default function CategoryRow({
   selected,
   active,
   disabled,
-  isNew = false, // NEW
+  isNew = false,
   onToggleSelect,
   onToggleAvailability,
   onEdit,
@@ -28,7 +28,7 @@ export default function CategoryRow({
   selected: boolean;
   active: boolean;
   disabled?: boolean;
-  isNew?: boolean; // NEW
+  isNew?: boolean;
   onToggleSelect: (id: string) => void;
   onToggleAvailability: (category: Category, active: boolean) => void;
   onEdit: (category: Category) => void;
@@ -39,10 +39,52 @@ export default function CategoryRow({
   const [menuPos, setMenuPos] = useState<{ top: number; left: number } | null>(null);
   const MENU_WIDTH = 160;
 
-  const { activeLocationId, channel } = useScope();
+  const { activeLocationId, channel: scopeChannel } = useScope();
   const isBranchView = !!activeLocationId;
-  const isChannelScoped = channel && channel !== 'all';
+  const isChannelScoped = scopeChannel && scopeChannel !== 'all';
 
+  // ----- Scope-aware availability/visibility -----
+  const channelScope = (category as any).channelScope as 'all' | 'dine-in' | 'online' | undefined;
+  const visibility = ((category as any).visibility || {}) as {
+    includedLocationIds?: string[];
+    excludedLocationIds?: string[];
+  };
+
+  const channelBlocked = useMemo(() => {
+    if (!isChannelScoped) return false;
+    if (!channelScope || channelScope === 'all') return false;
+    // If page is filtered to 'dine-in' but category is 'online' only (or vice versa), block switch
+    return (
+      (scopeChannel === 'dine-in' && channelScope === 'online') ||
+      (scopeChannel === 'online' && channelScope === 'dine-in')
+    );
+  }, [isChannelScoped, channelScope, scopeChannel]);
+
+  const locationBlocked = useMemo(() => {
+    if (!isBranchView) return false;
+    const locId = activeLocationId!;
+    if (visibility.excludedLocationIds?.length && visibility.excludedLocationIds.includes(locId)) {
+      return true;
+    }
+    if (visibility.includedLocationIds?.length && !visibility.includedLocationIds.includes(locId)) {
+      return true;
+    }
+    return false;
+  }, [isBranchView, activeLocationId, visibility]);
+
+  // If the category is blocked by current scope, the toggle should be disabled
+  const switchDisabled = disabled || channelBlocked || locationBlocked;
+
+  // Badges to explain why it’s disabled
+  const scopeBadges = useMemo(() => {
+    const badges: string[] = [];
+    if (channelScope === 'dine-in') badges.push('Dine-In only');
+    if (channelScope === 'online') badges.push('Online only');
+    if (isBranchView && locationBlocked) badges.push('Hidden in this branch');
+    return badges;
+  }, [channelScope, isBranchView, locationBlocked]);
+
+  // ----- Delete label text -----
   const deleteLabel =
     !isBranchView && !isChannelScoped
       ? 'Delete everywhere'
@@ -92,13 +134,16 @@ export default function CategoryRow({
   const deleteBtnClass = isDestructive ? `${baseBtn} text-red-600 hover:bg-[#fff0f0]` : baseBtn;
   const deleteIconClass = isDestructive ? 'h-4 w-4' : 'h-4 w-4 text-[#6b7280]';
 
+  const rowDimmed = switchDisabled; // visually hint scope-blocked rows
+
   return (
     <tr
-      data-item-id={category.id} // NEW (used for scroll/highlight)
+      data-item-id={category.id}
       className="border-t border-[#f2f2f2] hover:bg-[#fafafa]"
       style={{
-        backgroundColor: isNew ? 'var(--brand-25, #f9fbff)' : undefined, // NEW
-        transition: 'background-color 700ms ease',
+        backgroundColor: isNew ? 'var(--brand-25, #f9fbff)' : undefined,
+        opacity: rowDimmed ? 0.75 : 1,
+        transition: 'background-color 700ms ease, opacity 200ms ease',
       }}
     >
       <td className="px-3 py-3 align-middle">
@@ -121,8 +166,19 @@ export default function CategoryRow({
           <div className="truncate font-medium text-[#111827] group-hover:underline">
             {category.name}
           </div>
-          <div className="text-xs text-[#9b9ba1]">
-            Added {new Date(category.createdAt).toLocaleDateString()}
+          <div className="mt-0.5 flex flex-wrap items-center gap-2">
+            <span className="text-xs text-[#9b9ba1]">
+              Added {new Date(category.createdAt).toLocaleDateString()}
+            </span>
+            {scopeBadges.map((b) => (
+              <span
+                key={b}
+                className="inline-flex items-center rounded-full border border-[#e5e7eb] bg-[#fafafa] px-2 py-0.5 text-[10px] leading-4 text-[#44464b]"
+                title={b}
+              >
+                {b}
+              </span>
+            ))}
           </div>
         </Link>
       </td>
@@ -142,11 +198,22 @@ export default function CategoryRow({
           type="button"
           role="switch"
           aria-checked={active}
-          onClick={() => !disabled && onToggleAvailability(category, !active)}
-          disabled={disabled}
+          onClick={() => !switchDisabled && onToggleAvailability(category, !active)}
+          disabled={switchDisabled}
           className={`relative inline-flex h-6 w-11 items-center rounded-full transition ${
             active ? 'bg-slate-400' : 'bg-slate-300'
-          } ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}
+          } ${switchDisabled ? 'opacity-50 cursor-not-allowed' : ''}`}
+          title={
+            switchDisabled
+              ? channelBlocked
+                ? channelScope === 'online'
+                  ? 'Unavailable in Dine-In channel'
+                  : 'Unavailable in Online channel'
+                : locationBlocked
+                ? 'Hidden in this branch'
+                : 'Unavailable in this scope'
+              : 'Toggle visibility'
+          }
         >
           <span
             className={`inline-block h-4 w-4 transform rounded-full bg-white transition ${
@@ -197,7 +264,7 @@ export default function CategoryRow({
                         className={baseBtn}
                         role="menuitem"
                       >
-                        <PencilSquareIcon className="h-4 w-4 text-[#6b7280]}" />
+                        <PencilSquareIcon className="h-4 w-4 text-[#6b7280]" />
                         Edit
                       </button>
                     </li>

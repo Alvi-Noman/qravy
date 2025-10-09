@@ -6,17 +6,12 @@ import type { TenantDoc } from '../models/Tenant.js';
 import type { UserDoc } from '../models/User.js';
 import type { v1 } from '../../../../packages/shared/src/types/index.js';
 
-/**
- Convert a MongoDB ObjectId to a string.
- Ensures frontend receives strings (not ObjectId objects) in DTOs.
-*/
+/** Convert a MongoDB ObjectId to a string. */
 function toId(id?: ObjectId): string {
   return id ? id.toString() : '';
 }
 
-/**
- Map a UserDoc from MongoDB into a UserDTO for external API responses.
-*/
+/** Map a UserDoc from MongoDB into a UserDTO for external API responses. */
 export function toUserDTO(user: UserDoc, tenant?: TenantDoc): v1.UserDTO {
   return {
     id: toId(user._id),
@@ -28,10 +23,15 @@ export function toUserDTO(user: UserDoc, tenant?: TenantDoc): v1.UserDTO {
 }
 
 /**
- Map a MenuItemDoc into a MenuItemDTO.
-*/
-export function toMenuItemDTO(doc: MenuItemDoc): v1.MenuItemDTO {
-  return {
+ * Map a MenuItemDoc into a MenuItemDTO.
+ * Accepts optional `extras` so controllers can attach advanced
+ * availability/exclusion hints that the editor uses to seed its state.
+ */
+export function toMenuItemDTO(
+  doc: MenuItemDoc,
+  extras?: Partial<v1.MenuItemDTO>
+): v1.MenuItemDTO {
+  const base: v1.MenuItemDTO = {
     id: toId(doc._id),
     name: doc.name,
     price: doc.price as number,
@@ -48,10 +48,10 @@ export function toMenuItemDTO(doc: MenuItemDoc): v1.MenuItemDTO {
     tags: doc.tags ?? [],
     restaurantId: toId(doc.restaurantId),
 
-    // NEW: expose branch scope
+    // Branch scope
     locationId: doc.locationId ? toId(doc.locationId) : null,
 
-    // NEW: expose per-channel baseline visibility (default true if missing)
+    // Per-channel baseline visibility (default true if missing)
     visibility: {
       dineIn: doc.visibility?.dineIn ?? true,
       online: doc.visibility?.online ?? true,
@@ -62,11 +62,12 @@ export function toMenuItemDTO(doc: MenuItemDoc): v1.MenuItemDTO {
     hidden: !!doc.hidden,
     status: (doc.status as 'active' | 'hidden') ?? (doc.hidden ? 'hidden' : 'active'),
   };
+
+  // Merge controller-provided extras (excludeChannel, per-location tombstones, etc.)
+  return { ...base, ...(extras ?? {}) };
 }
 
-/**
- Map a CategoryDoc into a CategoryDTO.
-*/
+/** Map a CategoryDoc into a CategoryDTO. */
 export function toCategoryDTO(doc: CategoryDoc): v1.CategoryDTO {
   return {
     id: toId(doc._id),
@@ -77,10 +78,10 @@ export function toCategoryDTO(doc: CategoryDoc): v1.CategoryDTO {
 }
 
 /**
- Map a TenantDoc into a TenantDTO.
- Supports onboarding status, plan info, trial info, subscription status,
- plus optional cancellation and payment metadata (non-sensitive).
-*/
+ * Map a TenantDoc into a TenantDTO.
+ * Supports onboarding status, plan info, trial info, subscription status,
+ * plus optional cancellation and payment metadata (non-sensitive).
+ */
 export function toTenantDTO(doc: TenantDoc): v1.TenantDTO {
   const paymentUpdatedAt =
     doc.payment?.updatedAt instanceof Date
@@ -110,7 +111,7 @@ export function toTenantDTO(doc: TenantDoc): v1.TenantDTO {
       ? {
           hasCategory: !!doc.onboardingProgress.hasCategory,
           hasMenuItem: !!doc.onboardingProgress.hasMenuItem,
-          hasLocations: !!doc.onboardingProgress.hasLocations, // ADDED
+          hasLocations: !!doc.onboardingProgress.hasLocations,
           checklist: doc.onboardingProgress.checklist,
         }
       : undefined,
@@ -122,7 +123,7 @@ export function toTenantDTO(doc: TenantDoc): v1.TenantDTO {
           country: doc.restaurantInfo.country,
           address: doc.restaurantInfo.address,
           locationMode: doc.restaurantInfo.locationMode,
-          hasLocations: !!doc.restaurantInfo.hasLocations, // ADDED
+          hasLocations: !!doc.restaurantInfo.hasLocations,
         }
       : undefined,
 

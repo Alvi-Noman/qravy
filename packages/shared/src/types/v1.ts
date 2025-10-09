@@ -30,11 +30,26 @@ export interface MenuItemDTO {
   // Branch scope
   locationId?: string | null;
 
-  // NEW: per-channel baseline visibility
+  // Per-channel baseline visibility (computed from item/category)
   visibility?: {
     dineIn?: boolean;
     online?: boolean;
   };
+
+  /** ---------- Advanced availability/exclusion hints for editor ---------- */
+  // If exactly one channel is globally excluded at baseline
+  excludeChannel?: 'dine-in' | 'online';
+
+  // Locations where the item is excluded entirely (both channels)
+  excludeAtLocationIds?: string[];
+
+  // Per-location channel exclusion (tombstones)
+  excludeChannelAt?: 'dine-in' | 'online';
+  excludeChannelAtLocationIds?: string[];
+
+  // (Optional future use) explicit allow-list / deny-list
+  includeLocationIds?: string[];
+  excludeLocationIds?: string[];
 
   createdAt: string;
   updatedAt: string;

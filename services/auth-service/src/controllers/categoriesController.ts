@@ -79,6 +79,12 @@ export async function listCategories(req: Request, res: Response, next: NextFunc
     const docs = await categoriesCol().find(baseFilter).sort({ name: 1 }).toArray();
     if (docs.length === 0) return res.ok({ items: [] });
 
+    // helper to surface channel from channelScope
+    const pickChannel = (cat: CategoryDoc): ('dine-in' | 'online' | undefined) => {
+      const scope = (cat as any).channelScope as 'all' | 'dine-in' | 'online' | undefined;
+      return scope && scope !== 'all' ? scope : undefined;
+    };
+
     // BRANCH VIEW
     if (locId) {
       const visQuery: any = {
@@ -124,7 +130,14 @@ export async function listCategories(req: Request, res: Response, next: NextFunc
         return isVisibleInBranch(cat, 'dine-in') || isVisibleInBranch(cat, 'online');
       });
 
-      return res.ok({ items: filtered.map(toCategoryDTO) });
+      // Return DTO + channel (branch view doesn’t return per-location arrays)
+      const items = filtered.map((cat) => {
+        const dto = toCategoryDTO(cat) as any;
+        dto.channel = pickChannel(cat);
+        return dto;
+      });
+
+      return res.ok({ items });
     }
 
     // GLOBAL VIEW (ALL LOCATIONS): hide categories that don't exist in any location/channel
@@ -187,7 +200,37 @@ export async function listCategories(req: Request, res: Response, next: NextFunc
       return existsAnywhereForChannel(cat, 'dine-in') || existsAnywhereForChannel(cat, 'online');
     });
 
-    return res.ok({ items: filteredGlobal.map(toCategoryDTO) });
+    // Summarize per-category restrictions for the UI
+    const summarizeRestrictions = (cat: CategoryDoc) => {
+      const catKey = cat._id!.toString();
+
+      // channel
+      const channel = pickChannel(cat);
+
+      // excludeLocationIds: union of removed tombstones across both channels
+      const removedChMap = removedByCatAll.get(catKey);
+      const excl = new Set<string>();
+      if (removedChMap) {
+        for (const ch of (['dine-in', 'online'] as const)) {
+          const s = removedChMap.get(ch);
+          if (s) for (const lid of s) excl.add(lid);
+        }
+      }
+
+      return {
+        channel,
+        excludeLocationIds: Array.from(excl),
+        // includeLocationIds intentionally omitted (cannot infer strict-whitelist reliably)
+      };
+    };
+
+    const items = filteredGlobal.map((cat) => {
+      const dto = toCategoryDTO(cat) as any;
+      const extra = summarizeRestrictions(cat);
+      return { ...dto, ...extra };
+    });
+
+    return res.ok({ items });
   } catch (err) {
     logger.error(`listCategories error: ${(err as Error).message}`);
     next(err);

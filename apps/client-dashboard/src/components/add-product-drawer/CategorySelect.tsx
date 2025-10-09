@@ -1,10 +1,27 @@
 import { useEffect, useRef, useState } from 'react';
 import { ChevronDownIcon, PlusCircleIcon } from '@heroicons/react/24/outline';
 
+export type Channel = 'dine-in' | 'online';
+export type CategoryLike = {
+  name: string;
+  channel?: Channel;                 // optional single-channel category
+  includeLocationIds?: string[];     // only these locations
+  excludeLocationIds?: string[];     // hide at these locations
+  disabled?: boolean;                // <-- NEW: allow disabling options
+};
+
 type CategorySelectProps = {
+  /** currently selected category name (empty string means none) */
   value: string | '';
-  categories: string[];
-  onChange: (value: string) => void;
+  /** can be a list of names or full objects with restrictions */
+  categories: (string | CategoryLike)[];
+  /**
+   * onChange remains backward-compatible:
+   * - 1st arg: the category name (string)
+   * - 2nd arg (optional): full category object if provided in `categories`
+   */
+  onChange: (value: string, detail?: CategoryLike) => void;
+  /** create a new category; should return the created name */
   onCreateCategory: (name: string) => Promise<string>;
   placeholder?: string;
   disabled?: boolean;
@@ -47,7 +64,8 @@ export default function CategorySelect({
     setError(null);
     try {
       const createdName = await onCreateCategory(newName.trim());
-      onChange(createdName);
+      // We only know the name at creation time; pass minimal detail
+      onChange(createdName, { name: createdName });
       setAddMode(false);
       setNewName('');
       setOpen(false);
@@ -60,6 +78,11 @@ export default function CategorySelect({
 
   const display = value || placeholder;
   const isPlaceholder = !value;
+
+  // Normalize categories into a uniform shape for rendering
+  const list: CategoryLike[] = categories.map((c) =>
+    typeof c === 'string' ? { name: c } : c
+  );
 
   return (
     <div className="relative" ref={rootRef}>
@@ -82,18 +105,21 @@ export default function CategorySelect({
         <div className="absolute left-0 right-0 z-[100] mt-1">
           <div className="w-full rounded-md border border-[#dbdbdb] bg-[#fcfcfc] shadow-lg overflow-visible">
             <div className="py-1">
-              {categories.map((c) => (
+              {list.map((c) => (
                 <OptionRow
-                  key={c}
-                  selected={value === c}
-                  label={c}
+                  key={c.name}
+                  selected={value === c.name}
+                  label={c.name}
+                  disabled={!!c.disabled}
+                  title={c.disabled ? 'Disabled by selected category' : undefined}
                   onClick={() => {
-                    onChange(c);
+                    if (c.disabled) return;
+                    onChange(c.name, c); // pass both name and full detail
                     setOpen(false);
                   }}
                 />
               ))}
-              {categories.length === 0 && (
+              {list.length === 0 && (
                 <div className="px-3 py-2 text-sm text-[#a9a9ab] select-none cursor-default">No categories yet</div>
               )}
               <div className="my-1 h-px bg-[#dbdbdb]" />
@@ -136,7 +162,11 @@ export default function CategorySelect({
                     <button
                       type="button"
                       onClick={handleCreate}
-                      className={`px-4 py-1.5 rounded-md text-white text-sm ${saving || !newName.trim() ? 'bg-[#b0b0b5] cursor-not-allowed' : 'bg-[#111827] hover:opacity-90'}`}
+                      className={`px-4 py-1.5 rounded-md text-white text-sm ${
+                        saving || !newName.trim()
+                          ? 'bg-[#b0b0b5] cursor-not-allowed'
+                          : 'bg-[#111827] hover:opacity-90'
+                      }`}
                       disabled={saving || !newName.trim()}
                     >
                       {saving ? 'Saving…' : 'Save'}
@@ -152,12 +182,35 @@ export default function CategorySelect({
   );
 }
 
-function OptionRow({ selected, label, onClick }: { selected: boolean; label: string; onClick: () => void }) {
+function OptionRow({
+  selected,
+  label,
+  onClick,
+  disabled,
+  title,
+}: {
+  selected: boolean;
+  label: string;
+  onClick: () => void;
+  disabled?: boolean;
+  title?: string;
+}) {
   return (
     <button
       type="button"
-      className={`w-full text-left px-3 py-2 text-sm ${selected ? 'bg-[#eef0ff] text-[#2e2e30]' : 'hover:bg-[#f3f4f6] text-[#2e2e30]'}`}
-      onClick={onClick}
+      title={disabled ? title : undefined}
+      className={`w-full text-left px-3 py-2 text-sm ${
+        disabled
+          ? 'opacity-50 cursor-not-allowed'
+          : selected
+          ? 'bg-[#eef0ff] text-[#2e2e30]'
+          : 'hover:bg-[#f3f4f6] text-[#2e2e30]'
+      }`}
+      onClick={() => {
+        if (disabled) return;
+        onClick();
+      }}
+      disabled={disabled}
     >
       {label}
     </button>

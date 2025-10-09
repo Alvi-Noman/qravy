@@ -19,6 +19,10 @@ export default function CategoryFormDialog({
   title,
   initialName = '',
   existingNames = [],
+  // NEW: edit-time “advanced” defaults coming from Categories page
+  initialChannel, // 'both' | 'dine-in' | 'online'
+  initialIncludedLocationIds,
+  initialExcludedLocationIds,
   onClose,
   onSubmit,
   isSubmitting = false,
@@ -27,6 +31,9 @@ export default function CategoryFormDialog({
   title: string;
   initialName?: string;
   existingNames?: string[];
+  initialChannel?: 'both' | 'dine-in' | 'online';
+  initialIncludedLocationIds?: string[];
+  initialExcludedLocationIds?: string[];
   onClose: () => void;
   onSubmit: (name: string, opts?: SubmitOptions) => void | Promise<void>;
   isSubmitting?: boolean;
@@ -44,10 +51,11 @@ export default function CategoryFormDialog({
   const { activeLocationId, channel: scopeChannel } = useScope();
 
   // Advanced controls
-  const [advancedOpen, setAdvancedOpen] = useState(false);
-  // Channels default to both checked; if scope is a single channel, favor it
-  const [chDineIn, setChDineIn] = useState(scopeChannel !== 'online');
-  const [chOnline, setChOnline] = useState(scopeChannel !== 'dine-in');
+  // — Channels default:
+  //    • on create: prefer scope channel if single, otherwise both
+  //    • on edit: respect initialChannel from props
+  const [chDineIn, setChDineIn] = useState(true);
+  const [chOnline, setChOnline] = useState(true);
 
   // Locations (only needed on All locations view)
   const locationsQuery = useQuery<Location[]>({
@@ -59,17 +67,69 @@ export default function CategoryFormDialog({
   const allLocations = locationsQuery.data ?? [];
   const [selectedBranchIds, setSelectedBranchIds] = useState<Set<string>>(new Set());
 
-  // Initialize branch selection when loaded (All locations only)
+  // Re-initialize everything when dialog opens or defaults change
   useEffect(() => {
-    if (activeLocationId) return;
-    if (open && allLocations.length && selectedBranchIds.size === 0) {
+    if (!open) return;
+
+    // Reset name field
+    reset({ name: initialName });
+
+    // ----- Channels -----
+    if (initialChannel === 'dine-in') {
+      setChDineIn(true);
+      setChOnline(false);
+    } else if (initialChannel === 'online') {
+      setChDineIn(false);
+      setChOnline(true);
+    } else if (initialChannel === 'both' || initialChannel == null) {
+      // Create or unspecified → base on scope
+      if (scopeChannel === 'dine-in') {
+        setChDineIn(true);
+        setChOnline(false);
+      } else if (scopeChannel === 'online') {
+        setChDineIn(false);
+        setChOnline(true);
+      } else {
+        setChDineIn(true);
+        setChOnline(true);
+      }
+    }
+
+    // Branches will be initialized in the effect below once locations load
+    setSelectedBranchIds(new Set()); // temporarily clear to allow proper seeding
+  }, [open, initialName, initialChannel, scopeChannel, reset]);
+
+  // Initialize branch selection once locations are loaded (All locations only).
+  // Precedence:
+  //   1) initialIncludedLocationIds → exactly those checked
+  //   2) initialExcludedLocationIds → all except those checked
+  //   3) default → all checked
+  useEffect(() => {
+    if (activeLocationId) return; // no branches UI in branch scope
+    if (!open) return;
+    if (!allLocations.length) return;
+
+    const include = (initialIncludedLocationIds ?? []).filter(Boolean);
+    const exclude = (initialExcludedLocationIds ?? []).filter(Boolean);
+
+    if (include.length > 0) {
+      setSelectedBranchIds(new Set(include));
+    } else if (exclude.length > 0) {
+      const allIds = allLocations.map((l) => l.id);
+      const keep = allIds.filter((id) => !exclude.includes(id));
+      setSelectedBranchIds(new Set(keep));
+    } else if (selectedBranchIds.size === 0) {
+      // default: select all
       setSelectedBranchIds(new Set(allLocations.map((l) => l.id)));
     }
-  }, [open, activeLocationId, allLocations, selectedBranchIds.size]);
-
-  useEffect(() => {
-    if (open) reset({ name: initialName });
-  }, [open, initialName, reset]);
+  }, [
+    open,
+    activeLocationId,
+    allLocations,
+    initialIncludedLocationIds,
+    initialExcludedLocationIds,
+    selectedBranchIds.size,
+  ]);
 
   const validateUnique = (value: string) => {
     const trimmed = value.trim();
@@ -80,6 +140,7 @@ export default function CategoryFormDialog({
     return true;
   };
 
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const [advancedError, setAdvancedError] = useState<string | null>(null);
   const busy = isSubmitting || rhfSubmitting;
 
@@ -116,6 +177,8 @@ export default function CategoryFormDialog({
         // Hide category in these branches
         opts.excludeLocationIds = unchecked;
       }
+      // If you want to seed "only these branches" use includeLocationIds instead:
+      // opts.includeLocationIds = Array.from(selectedBranchIds);
     }
 
     await onSubmit(v.name.trim(), opts);
@@ -142,11 +205,7 @@ export default function CategoryFormDialog({
     });
   }, [allLocations, selectedBranchIds]);
 
-  // Badge logic (header):
-  // - Hide when All locations + All channels
-  // - If a specific location is selected:
-  //    - both channels => show location only
-  //    - single channel => show "Location • Channel"
+  // Badge logic (header)
   const locationDisplay = useMemo(() => {
     if (!activeLocationId) return '';
     const loc = allLocations.find((l) => l.id === activeLocationId);
@@ -155,11 +214,7 @@ export default function CategoryFormDialog({
 
   const singleChannel = chDineIn !== chOnline ? (chDineIn ? 'Dine-In' : 'Online') : null;
   const shouldShowBadge = !!activeLocationId; // only when a specific location is selected
-  const badgeText = shouldShowBadge
-    ? singleChannel
-      ? `${locationDisplay} • ${singleChannel}`
-      : locationDisplay
-    : '';
+  const badgeText = shouldShowBadge ? (singleChannel ? `${locationDisplay} • ${singleChannel}` : locationDisplay) : '';
 
   return (
     <AnimatePresence>

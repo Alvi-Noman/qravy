@@ -9,6 +9,16 @@ import type { v1 } from '../../../../packages/shared/src/types';
 export type Channel = 'dine-in' | 'online';
 export type Category = v1.CategoryDTO;
 
+/** Extra fields we rely on to enforce Advanced UI rules */
+export type CategoryDetail = Category & {
+  /** Category is limited to one channel (if present); omit => both */
+  channel?: Channel;
+  /** Global category: visible only at these branches */
+  includeLocationIds?: string[];
+  /** Global category: hidden at these branches */
+  excludeLocationIds?: string[];
+};
+
 export async function getCategories(
   token: string,
   opts?: { locationId?: string; channel?: Channel }
@@ -23,6 +33,20 @@ export async function getCategories(
     headers: { Authorization: `Bearer ${token}` },
   });
   return res.data.items as Category[];
+}
+
+/**
+ * Fetch a single category by exact name so the UI can read its baseline rules
+ * (channel-only category, include/exclude branches) and disable Advanced toggles.
+ * Returns null if not found.
+ */
+export async function getCategoryByName(name: string, token: string): Promise<CategoryDetail | null> {
+  const res = await api.get('/api/v1/auth/categories', {
+    headers: { Authorization: `Bearer ${token}` },
+    params: { name },
+  });
+  const items = (res.data?.items ?? []) as CategoryDetail[];
+  return items.find((c) => c.name === name) ?? null;
 }
 
 export async function createCategory(

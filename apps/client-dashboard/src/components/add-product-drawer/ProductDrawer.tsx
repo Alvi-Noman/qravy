@@ -11,8 +11,12 @@ import {
 import { motion } from 'framer-motion';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useAuthContext } from '../../context/AuthContext';
-import CategorySelect from './CategorySelect';
-import { createCategory as apiCreateCategory, type Category } from '../../api/categories';
+import CategorySelect, { type CategoryLike as CatLike, type Channel } from './CategorySelect';
+import {
+  createCategory as apiCreateCategory,
+  getCategories,
+  type Category as FullCategory,
+} from '../../api/categories';
 import { QuestionMarkCircleIcon } from '@heroicons/react/24/outline';
 import Variations from './Variations';
 import ImageUploadZone from './ImageUploadZone';
@@ -22,6 +26,9 @@ import { useScope } from '../../context/ScopeContext';
 import { fetchLocations, type Location } from '../../api/locations';
 
 type UiVariation = { label: string; price?: string; imagePreview?: string | null; imageUrl?: string | null };
+
+// keep a local “AugCategory” aligned with CategorySelect.CategoryLike
+type AugCategory = CatLike & { id?: string };
 
 const safeRevoke = (url?: string | null) => {
   if (!url || !url.startsWith('blob:')) return;
@@ -55,7 +62,7 @@ export default function ProductDrawer({
   persistKey,
 }: {
   title: string;
-  categories: string[];
+  categories: string[]; // kept for backwards compat; we’ll prefer detailed list from API
   initial: {
     name: string;
     price: string;
@@ -66,6 +73,15 @@ export default function ProductDrawer({
     imagePreviews?: (string | null)[];
     tags?: string[];
     variations?: UiVariation[];
+
+    // --- Advanced (item-level) ---
+    channel?: 'dine-in' | 'online';
+    includeLocationIds?: string[];
+    excludeLocationIds?: string[];
+    excludeChannel?: 'dine-in' | 'online';
+    excludeAtLocationIds?: string[]; // 👈 used in edit seeding
+    excludeChannelAt?: 'dine-in' | 'online';
+    excludeChannelAtLocationIds?: string[]; // 👈 used in edit seeding
   };
   onClose: () => void;
   onSubmit: (values: {
@@ -81,7 +97,11 @@ export default function ProductDrawer({
     channel?: 'dine-in' | 'online';
     includeLocationIds?: string[];
     excludeLocationIds?: string[];
-  }) => void | Promise<void>; // allow async submit
+    // optional server-side helpers used earlier (kept if you rely on them)
+    excludeChannel?: 'dine-in' | 'online';
+    excludeChannelAt?: 'dine-in' | 'online';
+    excludeChannelAtLocationIds?: string[];
+  }) => void | Promise<void>;
   persistKey?: string;
 }) {
   const API_BASE = import.meta.env.VITE_API_BASE_URL || '';
@@ -102,12 +122,15 @@ export default function ProductDrawer({
     name: initial.name,
     price: initial.price,
     description: initial.description || '',
-    category: initial.category || '',
+    category: initial.category || '', // string still kept for payload
     compareAtPrice: initial.compareAtPrice || '',
     prepMinutes: initial.prepMinutes ?? 15,
     imageFiles: [] as (File | null)[],
     imagePreviews: initPreviews as (string | null)[],
   }));
+
+  // NEW: keep the full selected category object
+  const [selectedCategory, setSelectedCategory] = useState<AugCategory | null>(null);
 
   const [remoteUrls, setRemoteUrls] = useState<string[]>(
     (initial.imagePreviews || []).map((u) => (u && !u.startsWith('blob:') ? u : '')).slice(0, MAX_MEDIA)
@@ -120,11 +143,17 @@ export default function ProductDrawer({
   // Channels default from ScopeContext channel
   const [chDineIn, setChDineIn] = useState(scopeChannel !== 'online'); // default true unless scope is online
   const [chOnline, setChOnline] = useState(scopeChannel !== 'dine-in'); // default true unless scope is dine-in
+
+  // NEW: disable flags derived from selected category
+  const [disableDineIn, setDisableDineIn] = useState(false);
+  const [disableOnline, setDisableOnline] = useState(false);
+  const [disabledBranchIds, setDisabledBranchIds] = useState<Set<string>>(new Set());
+
   // Branch checklist (for All locations only)
   const locationsQuery = useQuery<Location[]>({
     queryKey: ['locations', token],
     queryFn: fetchLocations,
-    enabled: !!token && !activeLocationId, // we only need when All locations is selected
+    enabled: !!token && !activeLocationId,
     staleTime: 30_000,
   });
   const allLocations = locationsQuery.data ?? [];
@@ -138,13 +167,134 @@ export default function ProductDrawer({
     }
   }, [allLocations, selectedBranchIds.size, activeLocationId]);
 
+  // Load full categories (global)
+  const categoriesFullQuery = useQuery<FullCategory[]>({
+    queryKey: ['categories-full', token],
+    queryFn: () => getCategories(token as string),
+    enabled: !!token,
+    staleTime: 30_000,
+  });
+  const categoriesFull = categoriesFullQuery.data ?? [];
+
+  // NEW: Branch-available list (filtered to activeLocationId) to decide disabled state
+  const categoriesAtLocQuery = useQuery<FullCategory[]>({
+    queryKey: ['categories-at-loc', token, activeLocationId],
+    // backend supports ?locationId=...
+    queryFn: () => getCategories(token as string, { locationId: activeLocationId || undefined }),
+    enabled: !!token && !!activeLocationId, // only fetch in branch scope
+    staleTime: 30_000,
+  });
+
+  const availableAtLoc = useMemo(() => {
+    const arr = categoriesAtLocQuery.data ?? [];
+    return new Set(arr.map((c: any) => (c?._id ?? c?.id ?? c?.name)));
+  }, [categoriesAtLocQuery.data]);
+
+  // Map API categories to the shape CategorySelect understands (+ disabled in branch scope)
+  const categoriesDetailed: AugCategory[] = useMemo(() => {
+    return (categoriesFull || []).map((c) => {
+      const anyC = c as any;
+      const id = anyC?._id ?? anyC?.id ?? c.name;
+      const base: AugCategory = {
+        id,
+        name: c.name,
+        channel: anyC?.channel as Channel | undefined,
+        includeLocationIds: Array.isArray(anyC?.includeLocationIds) ? anyC.includeLocationIds : undefined,
+        excludeLocationIds: Array.isArray(anyC?.excludeLocationIds) ? anyC.excludeLocationIds : undefined,
+      };
+      if (activeLocationId) {
+        // disable if NOT available in this location (not in branch-filtered list)
+        return {
+          ...base,
+          disabled: !availableAtLoc.has(id),
+        };
+      }
+      return base;
+    });
+  }, [categoriesFull, activeLocationId, availableAtLoc]);
+
+  // If we restored a saved draft with a category name, try to hydrate selectedCategory once list arrives
+  useEffect(() => {
+    if (!values.category || selectedCategory || !categoriesDetailed.length) return;
+    const found = categoriesDetailed.find((c) => c.name === values.category);
+    if (found) setSelectedCategory(found);
+  }, [values.category, selectedCategory, categoriesDetailed]);
+
+  // track if we've already seeded advanced from the item being edited
+  const [seededAdvanced, setSeededAdvanced] = useState(false);
+
+  // Whenever selectedCategory changes, recompute disabled channels and branches.
+  // Do NOT stomp over item-level branch selection once it has been seeded.
+  useEffect(() => {
+    const cat = selectedCategory;
+
+    // Channels
+    if (!cat?.channel) {
+      setDisableDineIn(false);
+      setDisableOnline(false);
+      // do not force toggle states if user already chosen something
+    } else if (cat.channel === 'dine-in') {
+      setDisableDineIn(false);
+      setDisableOnline(true);
+      setChDineIn(true);
+      setChOnline(false);
+    } else if (cat.channel === 'online') {
+      setDisableDineIn(true);
+      setDisableOnline(false);
+      setChDineIn(false);
+      setChOnline(true);
+    }
+
+    // Branches (only in All locations view)
+    if (!activeLocationId && allLocations.length) {
+      const allIds = allLocations.map((l) => l.id);
+      const include = cat?.includeLocationIds ?? [];
+      const exclude = cat?.excludeLocationIds ?? [];
+      const dis = new Set<string>();
+
+      if (include.length > 0) {
+        // disable everything NOT included
+        allIds.forEach((id) => {
+          if (!include.includes(id)) dis.add(id);
+        });
+        // seed-only: preselect included; otherwise clamp current selection to allowed
+        if (!seededAdvanced) {
+          setSelectedBranchIds(new Set(allIds.filter((id) => include.includes(id))));
+        } else {
+          setSelectedBranchIds((prev) => new Set([...prev].filter((id) => include.includes(id))));
+        }
+      } else if (exclude.length > 0) {
+        // disable excluded only; keep previous but drop excluded
+        exclude.forEach((id) => dis.add(id));
+        setSelectedBranchIds((prev) => {
+          const start = seededAdvanced ? prev : new Set(allIds);
+          const next = new Set([...start].filter((id) => !dis.has(id)));
+          if (next.size === 0) {
+            allIds.forEach((id) => {
+              if (!dis.has(id)) next.add(id);
+            });
+          }
+          return next;
+        });
+      } else {
+        // no category restrictions
+        if (!seededAdvanced) {
+          setSelectedBranchIds((prev) => (prev.size ? prev : new Set(allIds)));
+        }
+      }
+      setDisabledBranchIds(dis);
+    } else {
+      setDisabledBranchIds(new Set());
+    }
+  }, [selectedCategory, activeLocationId, allLocations, seededAdvanced]);
+
   // Global errors
   const [localError, setLocalError] = useState<string | null>(null);
   const [varNameError, setVarNameError] = useState<string | null>(null);
   const [varImageError, setVarImageError] = useState<string | null>(null);
   const [mediaImageError, setMediaImageError] = useState<string | null>(null);
 
-  // Field-level errors (for inline highlight)
+  // Field-level errors
   const [nameErr, setNameErr] = useState<string | null>(null);
   const [priceErr, setPriceErr] = useState<string | null>(null);
   const [compareAtErr, setCompareAtErr] = useState<string | null>(null);
@@ -156,7 +306,7 @@ export default function ProductDrawer({
   // Trigger to make Variations highlight invalid prices on submit click
   const [varPriceValidateTick, setVarPriceValidateTick] = useState(0);
 
-  const createCatMut = useMutation<Category, Error, string>({
+  const createCatMut = useMutation<FullCategory, Error, string>({
     mutationFn: async (name: string) => {
       if (!token) throw new Error('Not authenticated');
       return await apiCreateCategory(name, token);
@@ -165,6 +315,7 @@ export default function ProductDrawer({
       setLocalCats((prev) => (prev.includes(cat.name) ? prev : [...prev, cat.name]));
       try {
         queryClient.invalidateQueries({ queryKey: ['categories'] });
+        queryClient.invalidateQueries({ queryKey: ['categories-full'] });
       } catch {}
       try {
         if (token) {
@@ -185,7 +336,7 @@ export default function ProductDrawer({
     },
   });
 
-  // Restore snapshot (narrow arrays before setting to satisfy TS and avoid loops)
+  // Restore snapshot
   useEffect(() => {
     try {
       const raw = sessionStorage.getItem(storageKey);
@@ -262,7 +413,7 @@ export default function ProductDrawer({
     return items;
   }, [typedVariants]);
 
-  // Variant tiles for Media grid: include CDN URLs, and include uploading blobs as "loading:" sentinels
+  // Variant tiles for Media grid
   const variantTiles = useMemo(() => {
     return (
       typedVariants
@@ -270,7 +421,7 @@ export default function ProductDrawer({
           const cdn = v.imageUrl || (v.imagePreview && !v.imagePreview.startsWith('blob:') ? v.imagePreview : null);
           if (cdn) return cdn;
           const blob = v.imagePreview && v.imagePreview.startsWith('blob:') ? v.imagePreview : null;
-          return blob ? `loading:${blob}` : null;
+          return blob ? `loading:${v.imagePreview}` : null;
         })
         .filter(Boolean) as string[]
     );
@@ -283,13 +434,11 @@ export default function ProductDrawer({
     return base.filter((u) => !seen.has(u));
   }, [values.imagePreviews, variantUrls]);
 
-  // ORDER: [all variant tiles (including loading: sentinels)] + [all base images]
   const galleryPreviews = useMemo(() => {
     const merged = [...variantTiles, ...galleryBase];
     return merged.length === 0 ? [null] : merged;
   }, [variantTiles, galleryBase]);
 
-  // Non-blob URLs currently shown in Media (Upload Zone), excluding variation images
   const mediaUrls = useMemo(
     () => galleryBase.filter((u): u is string => !!u && !u.startsWith('blob:')),
     [galleryBase]
@@ -299,20 +448,16 @@ export default function ProductDrawer({
   const priceNum = toNumber(values.price);
   const compareAtNum = values.compareAtPrice ? Number(values.compareAtPrice) : undefined;
 
-  // If any variations exist, main price is informational (disabled)
   const hasAnyVariants = typedVariants.length > 0;
   const allowMainPrice = !hasAnyVariants;
 
   const hasMainPrice = Number.isFinite(priceNum) && priceNum > 0;
 
-  // Keep Save enabled (only disable during saving or category creation)
   const isSaveDisabled = createCatMut.isPending || saving;
 
   function saveSnapshot() {
     try {
       const scrubBlob = (u: string | null) => (u && u.startsWith('blob:') ? null : u);
-
-      // Only store stable URLs; remove File refs
       const { imageFiles: _drop, ...restValues } = values;
       const snapValues = {
         ...restValues,
@@ -386,7 +531,7 @@ export default function ProductDrawer({
     requestAnimationFrame(() => setTimeout(scrollErrorIntoView, 0));
   }, [scrollErrorIntoView]);
 
-  // Observe dynamic error changes inside the drawer (e.g., Variations row errors)
+  // Observe dynamic error changes inside the drawer
   useEffect(() => {
     const root = scrollRef.current;
     if (!root) return;
@@ -421,7 +566,6 @@ export default function ProductDrawer({
       }
     });
 
-    // Only observe aria-invalid changes (not class)
     observer.observe(root, {
       childList: true,
       subtree: true,
@@ -437,7 +581,6 @@ export default function ProductDrawer({
     let hasError = false;
     setLocalError(null);
 
-    // Name
     if (!values.name.trim()) {
       setNameErr('Name is required.');
       hasError = true;
@@ -445,9 +588,7 @@ export default function ProductDrawer({
       setNameErr(null);
     }
 
-    // Pricing
     if (hasAnyVariants) {
-      // Invalid if empty or non-numeric
       const invalid = typedVariants.some((v) => {
         const s = (v.price ?? '').trim();
         if (s === '') return true;
@@ -455,15 +596,12 @@ export default function ProductDrawer({
         return !Number.isFinite(n);
       });
 
-      // Trigger row validations in Variations (shows "Enter a number")
       setVarPriceValidateTick((t) => t + 1);
       if (invalid) hasError = true;
 
-      // No main price validation needed
       setPriceErr(null);
       setCompareAtErr(null);
     } else {
-      // Require product price
       if (!values.price || !Number.isFinite(priceNum) || priceNum <= 0) {
         setPriceErr('Enter a product price.');
         hasError = true;
@@ -471,7 +609,6 @@ export default function ProductDrawer({
         setPriceErr(null);
       }
 
-      // Compare-at must be valid and ≥ price (if present)
       if ((values.compareAtPrice ?? '').trim() !== '') {
         if (Number.isNaN(compareAtNum as number)) {
           setCompareAtErr('Enter a valid number.');
@@ -487,7 +624,6 @@ export default function ProductDrawer({
       }
     }
 
-    // Advanced validations
     const channelsUnchecked = !chDineIn && !chOnline;
     if (channelsUnchecked) {
       setLocalError('Select at least one channel (Dine-In or Online) in Advanced.');
@@ -495,14 +631,12 @@ export default function ProductDrawer({
     }
 
     if (!activeLocationId) {
-      // All locations: ensure at least one branch selected
       if (allLocations.length && selectedBranchIds.size === 0) {
         setLocalError('Select at least one branch in Advanced.');
         hasError = true;
       }
     }
 
-    // Block submit when we already have known variation/global issues
     if (varNameError || varImageError || mediaImageError) hasError = true;
 
     return !hasError;
@@ -542,7 +676,6 @@ export default function ProductDrawer({
       description: values.description?.trim() || undefined,
       category: values.category || undefined,
       media,
-      // IMPORTANT: always include variations. [] explicitly clears on backend.
       variations,
       tags: tags.length ? tags : undefined,
     };
@@ -552,48 +685,32 @@ export default function ProductDrawer({
       if (compareAtNum !== undefined) payload.compareAtPrice = compareAtNum;
     }
 
-    // -------------------- CHANNEL + LOCATION EXCLUSIONS (NEW) --------------------
+    // -------------------- CHANNEL + LOCATION EXCLUSIONS --------------------
     const exactlyOneChannel = chDineIn !== chOnline;
 
-    console.log('EXCLUSION CHECK', {
-      chDineIn,
-      chOnline,
-      exactlyOneChannel,
-      activeLocationId,
-      payloadBefore: { ...payload },
-    });
-
     if (exactlyOneChannel) {
-      // the one the user kept ON
       const checked: 'dine-in' | 'online' = chDineIn ? 'dine-in' : 'online';
-      // the one the user turned OFF
       const unchecked: 'dine-in' | 'online' = chDineIn ? 'online' : 'dine-in';
 
-      // keep your current “seed to one channel” behavior
       payload.channel = checked;
 
-      // add the actual exclusion fields the backend needs
       const pAny = payload as any;
       if (activeLocationId) {
-        // location AND channel exclusion
         pAny.excludeChannelAt = unchecked;
         pAny.excludeChannelAtLocationIds = [activeLocationId];
       } else {
-        // channel-only (global) exclusion
         pAny.excludeChannel = unchecked;
       }
     }
-    // ---------------------------------------------------------------------------
 
-    // Advanced -> branches (All locations view only)
     if (!activeLocationId && allLocations.length) {
       const allIds = allLocations.map((l) => l.id);
       const unchecked = allIds.filter((id) => !selectedBranchIds.has(id));
       if (unchecked.length > 0) {
-        // We use exclude list for unchecked branches
         payload.excludeLocationIds = unchecked;
       }
     }
+    // ----------------------------------------------------------------------
 
     clearSnapshot();
     setSaving(true);
@@ -604,14 +721,14 @@ export default function ProductDrawer({
     try {
       const maybe = onSubmit(payload);
       if (isPromise(maybe)) {
-        await Promise.all([maybe, minDelay]); // wait for success + min duration
+        await Promise.all([maybe, minDelay]);
         try {
           await queryClient.invalidateQueries({
             predicate: (q) => Array.isArray(q.queryKey) && q.queryKey[0] === 'tenant',
           });
         } catch {}
         setSaving(false);
-        onClose(); // trigger slide-out
+        onClose();
       } else {
         await minDelay;
         setSaving(false);
@@ -624,7 +741,6 @@ export default function ProductDrawer({
     }
   };
 
-  // Also auto-scroll whenever a tracked error becomes present
   useEffect(() => {
     if (
       nameErr ||
@@ -651,18 +767,14 @@ export default function ProductDrawer({
   ]);
 
   const handleBackdropClick = () => {
-    if (saving) return; // block closing during saving
+    if (saving) return;
     saveSnapshot();
     onClose();
   };
 
-  // Remount key for ImageUploadZone to flush local previews on rejection
   const [mediaSyncKey, setMediaSyncKey] = useState(0);
-
-  // Remount key for Variations to clear any row imageError when Media changes (e.g., deletion)
   const [variationsSyncKey, setVariationsSyncKey] = useState(0);
 
-  // Pin upload targets across pick/upload
   const pendingTargetsRef = useRef<
     Map<
       number,
@@ -671,7 +783,6 @@ export default function ProductDrawer({
     >
   >(new Map());
 
-  // Map merged gallery index -> underlying base index in values.imagePreviews
   const resolveBaseIndexFromMerged = useCallback(
     (mergedIndex: number) => {
       const original = values.imagePreviews || [];
@@ -767,7 +878,6 @@ export default function ProductDrawer({
           [idx]?.idx2;
         if (realIdx === undefined) return prev;
 
-        // Pin exact variant slot
         pendingTargetsRef.current.set(i, { kind: 'variant', realIdx });
 
         const prevPreview = next[realIdx].imagePreview;
@@ -780,7 +890,6 @@ export default function ProductDrawer({
       return;
     }
 
-    // Base tile or "add" tile (after variants)
     const baseRealIdx = resolveBaseIndexFromMerged(i);
     const originalLength = values.imagePreviews.length;
     const added = baseRealIdx >= originalLength;
@@ -853,7 +962,6 @@ export default function ProductDrawer({
       return;
     }
 
-    // Fallback (no pinned target)
     const baseIdx = resolveBaseIndexFromMerged(i);
     const existsInVariants = variantUrls.includes(cdnUrl);
     const existsInBase = (values.imagePreviews || []).some(
@@ -950,6 +1058,107 @@ export default function ProductDrawer({
     setUiVariations((prev) => (deepEqual(prev, list) ? prev : list));
   }, []);
 
+  // --- Seed Advanced from the item we’re editing (runs once) ---
+  // Place this AFTER the category-boundaries effect so category rules still win.
+  useEffect(() => {
+    const hasAdvanced =
+      !!initial.channel ||
+      !!initial.excludeChannel ||
+      (initial.includeLocationIds && initial.includeLocationIds.length > 0) ||
+      (initial.excludeLocationIds && initial.excludeLocationIds.length > 0) ||
+      (initial.excludeChannelAt &&
+        initial.excludeChannelAtLocationIds &&
+        initial.excludeChannelAtLocationIds.length > 0) ||
+      (initial.excludeAtLocationIds && initial.excludeAtLocationIds.length > 0);
+
+    if (!hasAdvanced) return;
+
+    // ----- Channels -----
+    // Priority order:
+    // 1) Branch-scoped exclusion (excludeChannelAt for THIS location)
+    // 2) Global exclusion (excludeChannel)
+    // 3) Single-channel assignment (channel)
+    // 4) Default = both true
+    let nextDineIn = true;
+    let nextOnline = true;
+
+    const isBranch = !!activeLocationId;
+    const isExcludedHere =
+      isBranch &&
+      initial.excludeChannelAt &&
+      Array.isArray(initial.excludeChannelAtLocationIds) &&
+      initial.excludeChannelAtLocationIds.includes(activeLocationId);
+
+    if (isExcludedHere) {
+      if (initial.excludeChannelAt === 'dine-in') {
+        nextDineIn = false;
+        nextOnline = true;
+      } else if (initial.excludeChannelAt === 'online') {
+        nextDineIn = true;
+        nextOnline = false;
+      }
+    } else if (initial.excludeChannel === 'dine-in') {
+      nextDineIn = false;
+      nextOnline = true;
+    } else if (initial.excludeChannel === 'online') {
+      nextDineIn = true;
+      nextOnline = false;
+    } else if (initial.channel === 'dine-in') {
+      nextDineIn = true;
+      nextOnline = false;
+    } else if (initial.channel === 'online') {
+      nextDineIn = false;
+      nextOnline = true;
+    } // else keep both true
+
+    setChDineIn(nextDineIn);
+    setChOnline(nextOnline);
+
+    // ----- Branches (All locations view only) -----
+    if (!activeLocationId && allLocations.length) {
+      const allIds = allLocations.map((l) => l.id);
+
+      // 1) Start from include/exclude lists
+      let selected = (() => {
+        if (Array.isArray(initial.includeLocationIds) && initial.includeLocationIds.length > 0) {
+          return new Set(initial.includeLocationIds.filter((id) => allIds.includes(id)));
+        }
+        if (Array.isArray(initial.excludeLocationIds) && initial.excludeLocationIds.length > 0) {
+          const excluded = new Set(initial.excludeLocationIds);
+          return new Set(allIds.filter((id) => !excluded.has(id)));
+        }
+        return new Set(allIds);
+      })();
+
+      // 2) Subtract item-level exclusions (this was missing)
+      const toSubtract = new Set<string>();
+
+      // excluded everywhere at those locations
+      if (Array.isArray(initial.excludeAtLocationIds)) {
+        for (const id of initial.excludeAtLocationIds) toSubtract.add(id);
+      }
+
+      // excluded for a channel at those locations → show as unchecked in edit UI
+      if (
+        initial.excludeChannelAt &&
+        Array.isArray(initial.excludeChannelAtLocationIds) &&
+        initial.excludeChannelAtLocationIds.length > 0
+      ) {
+        for (const id of initial.excludeChannelAtLocationIds) toSubtract.add(id);
+      }
+
+      if (toSubtract.size > 0) {
+        selected = new Set([...selected].filter((id) => !toSubtract.has(id)));
+      }
+
+      setSelectedBranchIds(selected);
+    }
+
+    // mark that we’ve seeded item-level choices so category effect won’t overwrite them
+    setSeededAdvanced(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initial, activeLocationId, allLocations.length]);
+
   return (
     <div className="fixed inset-0 z-50">
       <motion.div
@@ -972,7 +1181,6 @@ export default function ProductDrawer({
         <div className="flex items-center justify-between px-5 py-4 border-b border-[#dbdbdb] sticky top-0 bg-[#fcfcfc]">
           <div className="flex items-center gap-2">
             <h3 className="text-lg font-semibold text-[#2e2e30]">{title}</h3>
-            {/* Local scope badge (hide on All locations + All channels) */}
             {activeLocationId ? (
               (() => {
                 const locationDisplay = (() => {
@@ -1094,8 +1302,16 @@ export default function ProductDrawer({
               <CategorySelect
                 label="Category"
                 value={values.category || ''}
-                categories={localCats}
-                onChange={(val: string) => setValues((prev) => ({ ...prev, category: val }))}
+                // IMPORTANT: pass detailed objects if available, else fallback to simple names
+                categories={
+                  categoriesDetailed.length
+                    ? categoriesDetailed
+                    : (localCats ?? []).map<AugCategory>((n) => ({ name: n }))
+                }
+                onChange={(name, detail) => {
+                  setValues((prev) => ({ ...prev, category: name }));
+                  setSelectedCategory(detail ? (detail as AugCategory) : null);
+                }}
                 onCreateCategory={async (name: string) => (await createCatMut.mutateAsync(name)).name}
                 placeholder="Select a Category"
               />
@@ -1117,7 +1333,7 @@ export default function ProductDrawer({
             <Field>
               <Label className="mb-2">Media</Label>
               <ImageUploadZone
-                key={mediaSyncKey} // keep instance stable during uploads
+                key={mediaSyncKey}
                 previews={galleryPreviews}
                 readOnlyCount={0}
                 maxCount={MAX_MEDIA}
@@ -1146,7 +1362,6 @@ export default function ProductDrawer({
                 if (url) removeUrlEverywhere(url);
               }}
             />
-            {/* Only show global image error; duplicate-name error is hidden here */}
             {varImageError && (
               <div className="text-sm text-red-600" role="alert" aria-live="polite">
                 {varImageError}
@@ -1173,19 +1388,23 @@ export default function ProductDrawer({
                   <div>
                     <div className="text-sm font-medium text-[#2e2e30] mb-1">Channels</div>
                     <div className="flex items-center gap-4">
-                      <label className="inline-flex items-center gap-2">
+                      <label className={`inline-flex items-center gap-2 ${disableDineIn ? 'opacity-60' : ''}`}>
                         <input
                           type="checkbox"
                           checked={chDineIn}
                           onChange={(e) => setChDineIn(e.currentTarget.checked)}
+                          disabled={disableDineIn}
+                          title={disableDineIn ? 'Disabled by selected category' : undefined}
                         />
                         <span className="text-sm text-[#2e2e30]">Dine-In</span>
                       </label>
-                      <label className="inline-flex items-center gap-2">
+                      <label className={`inline-flex items-center gap-2 ${disableOnline ? 'opacity-60' : ''}`}>
                         <input
                           type="checkbox"
                           checked={chOnline}
                           onChange={(e) => setChOnline(e.currentTarget.checked)}
+                          disabled={disableOnline}
+                          title={disableOnline ? 'Disabled by selected category' : undefined}
                         />
                         <span className="text-sm text-[#2e2e30]">Online</span>
                       </label>
@@ -1207,11 +1426,19 @@ export default function ProductDrawer({
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1">
                           {allLocations.map((loc) => {
                             const checked = selectedBranchIds.has(loc.id);
+                            const isDisabled = disabledBranchIds.has(loc.id);
                             return (
-                              <label key={loc.id} className="inline-flex items-center gap-2">
+                              <label
+                                key={loc.id}
+                                className={`inline-flex items-center gap-2 ${
+                                  isDisabled ? 'opacity-60 cursor-not-allowed' : ''
+                                }`}
+                                title={isDisabled ? 'Disabled by selected category' : undefined}
+                              >
                                 <input
                                   type="checkbox"
                                   checked={checked}
+                                  disabled={isDisabled}
                                   onChange={(e) => {
                                     const next = new Set(selectedBranchIds);
                                     if (e.currentTarget.checked) next.add(loc.id);

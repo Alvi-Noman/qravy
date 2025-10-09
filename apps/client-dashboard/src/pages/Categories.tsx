@@ -16,7 +16,9 @@ import {
   useState,
 } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
+import { useQuery } from '@tanstack/react-query';
 import type { Category } from '../api/categories';
+import { getCategoryByName } from '../api/categories';
 import { useCategories } from '../components/categories/useCategories';
 import { BulkActionsBar } from '../components/categories';
 import CategoriesToolbar from '../components/categories/CategoriesToolbar';
@@ -25,7 +27,8 @@ import CategoryListSkeleton from '../components/categories/CategoryListSkeleton'
 import { TagIcon } from '@heroicons/react/24/outline';
 import Can from '../components/Can';
 import { usePermissions } from '../context/PermissionsContext';
-import { useScope } from '../context/ScopeContext'; // NEW
+import { useScope } from '../context/ScopeContext';
+import { useAuthContext } from '../context/AuthContext';
 
 const CategoryList = lazy(() => import('../components/categories/CategoryList'));
 const CategoryFormDialog = lazy(() => import('../components/categories/CategoryFormDialog'));
@@ -112,7 +115,8 @@ export default function CategoriesPage() {
   const canDelete = has('categories:delete');
   const canToggleVisibility = has('categories:toggleVisibility');
 
-  const { activeLocationId, channel: scopeChannel } = useScope(); // NEW
+  const { activeLocationId, channel: scopeChannel } = useScope();
+  const { token } = useAuthContext();
 
   // Read/write URL query to drive Add Category dialog
   const [searchParams, setSearchParams] = useSearchParams();
@@ -226,7 +230,7 @@ export default function CategoriesPage() {
         return cs === 'all' || cs === scopeChannel;
       });
       // 2) Active items: keep categories with no items; hide only when we know all items are off
-      //list = list.filter((c) => activeByName.get(c.name) !== false);
+      // list = list.filter((c) => activeByName.get(c.name) !== false);
     }
 
     if (sortBy === 'name-asc') list.sort((a, b) => a.name.localeCompare(b.name));
@@ -301,6 +305,20 @@ export default function CategoriesPage() {
   };
 
   const loading = categoriesQuery.isLoading;
+
+  // ----- Detail query for Advanced defaults when editing -----
+  const detailQuery = useQuery({
+    queryKey: ['category-detail', editing?.id],
+    queryFn: () => getCategoryByName(editing!.name, token as string),
+    enabled: !!editing && !!token,
+    staleTime: 10_000,
+  });
+
+  // Normalize detail → dialog props
+  const initialChannelProp =
+    (detailQuery.data?.channel as 'dine-in' | 'online' | undefined) ?? 'both';
+  const initialIncludedProp = detailQuery.data?.includeLocationIds;
+  const initialExcludedProp = detailQuery.data?.excludeLocationIds;
 
   // Handlers (always pass functions; guard inside by capability)
   const onClickAdd = () => {
@@ -481,6 +499,17 @@ export default function CategoriesPage() {
                         : existingNames
                     }
                     isSubmitting={createMut.isPending || renameMut.isPending}
+                    // Advanced defaults when editing: reflect true channel/branch rules
+                    {...(editing
+                      ? {
+                          initialChannel:
+                            initialChannelProp === 'dine-in' || initialChannelProp === 'online'
+                              ? (initialChannelProp as 'dine-in' | 'online')
+                              : 'both',
+                          initialIncludedLocationIds: initialIncludedProp,
+                          initialExcludedLocationIds: initialExcludedProp,
+                        }
+                      : {})}
                     onClose={() => {
                       setOpenForm(false);
                       const sp = new URLSearchParams(searchParams);
@@ -525,7 +554,6 @@ export default function CategoriesPage() {
 
                       // Branch-scope removal -> call delete API with current scope
                       if ('scope' in opts && opts.scope === 'branch') {
-                        // Ensure mode is explicitly provided to satisfy typing
                         deleteMut.mutate(
                           { id: deleteTarget.id, mode: 'cascade' },
                           { onSuccess: () => setOpenDelete(false) }
