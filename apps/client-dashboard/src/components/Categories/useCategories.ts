@@ -287,29 +287,83 @@ export function useCategories() {
     },
   });
 
-  // ----- UPDATED: support Advanced options on edit -----
+  // ----- FIXED: location-scoped channel changes should use overlay, not global update -----
   type RenameOpts = {
     channel?: Channel | 'both';
     includeLocationIds?: string[];
     excludeLocationIds?: string[];
     hardExclude?: boolean;
   };
+
   const renameMut = useMutation({
-    mutationFn: async ({ id, newName, opts }: { id: string; newName: string; opts?: RenameOpts }) => {
+    mutationFn: async ({
+      id,
+      newName,
+      opts,
+    }: {
+      id: string;
+      newName: string;
+      opts?: RenameOpts;
+    }) => {
       const current = findById(id);
       if (!current) throw new Error('Category not found.');
       const trimmed = newName.trim();
       if (!trimmed) throw new Error('Name is required.');
+
+      // Are we acting inside a specific location?
+      const isBranchScoped = !!locationIdForQuery;
+
+      // If we're in a location scope, DO NOT let channel edits flip the global channelScope.
+      // Strip channel from the payload we send to updateCategory; we'll translate it to overlays.
+      const desiredChannel = isBranchScoped ? opts?.channel : undefined;
+      const { channel: _omit, ...optsWithoutChannel } = opts ?? {};
+
+      // If name is unchanged, still allow advanced opts (minus channel in branch scope) to be pushed.
       if (trimmed.toLowerCase() === current.name.toLowerCase()) {
-        // Name unchanged → still allow Advanced options to be pushed
-        return updateCategory(id, current.name, token as string, opts);
+        const res = await updateCategory(
+          id,
+          current.name,
+          token as string,
+          isBranchScoped ? (optsWithoutChannel as RenameOpts) : opts
+        );
+
+        // Apply per-location/channel overlay if the dialog attempted a channel change in branch scope.
+        if (isBranchScoped && desiredChannel) {
+          const idList = [id];
+          if (desiredChannel === 'both') {
+            await Promise.allSettled([
+              bulkSetCategoryVisibility(idList, true, token as string, locationIdForQuery, 'dine-in'),
+              bulkSetCategoryVisibility(idList, true, token as string, locationIdForQuery, 'online'),
+            ]);
+          } else if (desiredChannel === 'dine-in') {
+            await Promise.allSettled([
+              bulkSetCategoryVisibility(idList, true, token as string, locationIdForQuery, 'dine-in'),
+              bulkSetCategoryVisibility(idList, false, token as string, locationIdForQuery, 'online'),
+            ]);
+          } else if (desiredChannel === 'online') {
+            await Promise.allSettled([
+              bulkSetCategoryVisibility(idList, false, token as string, locationIdForQuery, 'dine-in'),
+              bulkSetCategoryVisibility(idList, true, token as string, locationIdForQuery, 'online'),
+            ]);
+          }
+        }
+
+        return res;
       }
+
+      // Name is changing — keep uniqueness checks in current list
       if (findByName(trimmed)) throw new Error('A category with this name already exists.');
 
-      const updated = await updateCategory(id, trimmed, token as string, opts);
+      // Update the category name (and advanced opts except channel in branch scope)
+      const updated = await updateCategory(
+        id,
+        trimmed,
+        token as string,
+        isBranchScoped ? (optsWithoutChannel as RenameOpts) : opts
+      );
 
-      const oldName = current.name;
       // Optimistic items rename in current scope
+      const oldName = current.name;
       queryClient.setQueryData<TMenuItem[]>(
         itemsKeyCurrent as any,
         (prev) =>
@@ -318,24 +372,45 @@ export function useCategories() {
           )
       );
 
-      // Persist in backend for items currently in scope
+      // Persist item category rename in backend for items currently in scope
       const list =
         queryClient.getQueryData<TMenuItem[]>(itemsKeyCurrent as any) ??
         (await getMenuItems(token as string, {
           locationId: locationIdForQuery,
           channel: channelForQuery,
         }));
+
       await Promise.allSettled(
         list
           .filter((it) => it.category === oldName)
           .map((it) => updateMenuItem(it.id, { category: updated.name }, token as string))
       );
 
+      // Apply per-location/channel overlay if user changed channel while in a branch scope
+      if (isBranchScoped && desiredChannel) {
+        const idList = [id];
+        if (desiredChannel === 'both') {
+          await Promise.allSettled([
+            bulkSetCategoryVisibility(idList, true, token as string, locationIdForQuery, 'dine-in'),
+            bulkSetCategoryVisibility(idList, true, token as string, locationIdForQuery, 'online'),
+          ]);
+        } else if (desiredChannel === 'dine-in') {
+          await Promise.allSettled([
+            bulkSetCategoryVisibility(idList, true, token as string, locationIdForQuery, 'dine-in'),
+            bulkSetCategoryVisibility(idList, false, token as string, locationIdForQuery, 'online'),
+          ]);
+        } else if (desiredChannel === 'online') {
+          await Promise.allSettled([
+            bulkSetCategoryVisibility(idList, false, token as string, locationIdForQuery, 'dine-in'),
+            bulkSetCategoryVisibility(idList, true, token as string, locationIdForQuery, 'online'),
+          ]);
+        }
+      }
+
       return updated;
     },
     onSuccess: (_updated) => {
-      // ❗ Do NOT locally merge the returned doc; it lacks overlay/tombstone info.
-      // Invalidate all categories caches for this token so listCategories recomputes overlays.
+      // Do NOT merge locally; refetch to respect overlays/tombstones
       queryClient.invalidateQueries({
         predicate: (q) => {
           const k = q.queryKey as any[];
@@ -351,7 +426,7 @@ export function useCategories() {
       toastError((e as any)?.message || 'Failed to rename category');
     },
   });
-  // -----------------------------------------------------
+  // -----------------------------------------------------------------------------------------
 
   // Helpers for scoped category deletions (optimistic cache updates)
   const filterOutCatId =
@@ -370,7 +445,7 @@ export function useCategories() {
     queryClient.getQueriesData<Category[]>({ queryKey: ['categories', token] }).forEach(([key, data]) => {
       if (!Array.isArray(data)) return;
       const k = key as any[];
-      const cacheChan = k[3] as string;
+           const cacheChan = k[3] as string;
       if (cacheChan === chan) {
         queryClient.setQueryData<Category[]>(key as any, filterOutCatId(id));
       }
@@ -579,21 +654,35 @@ export function useCategories() {
         (prev) => (prev ?? []).filter((c) => c.id !== id)
       ) as Category[] | undefined;
 
-      const noneLeft = !next || next.length === 0;
-      if (noneLeft) {
-        queryClient.setQueryData<TenantDTO>(['tenant', token], (prev) =>
-          prev
-            ? {
-                ...prev,
-                onboardingProgress: {
-                  hasCategory: false,
-                  hasMenuItem: prev.onboardingProgress?.hasMenuItem ?? false,
-                  checklist: prev.onboardingProgress?.checklist,
-                },
-              }
-            : prev
-        );
+      // 🔁 NEW: Recompute tenant "hasCategory" globally (across ALL lids/channels),
+      // so the checklist reflects deletes done from a branch scope as well.
+      // We look through every categories cache for this token; if none have any rows,
+      // we flip hasCategory to false. Otherwise keep it true.
+      const allCatCaches = queryClient.getQueriesData<Category[]>({ queryKey: ['categories', token] });
+      let anyCategoryLeftAnywhere = false;
+      for (const [_key, data] of allCatCaches) {
+        if (Array.isArray(data) && data.length > 0) {
+          anyCategoryLeftAnywhere = true;
+          break;
+        }
       }
+
+      queryClient.setQueryData<TenantDTO>(['tenant', token], (prev) =>
+        prev
+          ? {
+              ...prev,
+              onboardingProgress: {
+                hasCategory: anyCategoryLeftAnywhere, // ✅ reflects global state
+                hasMenuItem: prev.onboardingProgress?.hasMenuItem ?? false,
+                checklist: prev.onboardingProgress?.checklist,
+              },
+            }
+          : prev
+      );
+
+      // Optional: nudge the "All locations" caches if this id vanished everywhere
+      // (keeps the All-locations tabs perfectly in sync without a hard refetch)
+      purgeFromAllLocationsIfAbsentEverywhere(id);
 
       // Refresh items/tenant in current scope
       queryClient.invalidateQueries({ queryKey: itemsKeyCurrent as any });
