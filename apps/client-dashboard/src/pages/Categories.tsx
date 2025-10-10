@@ -307,11 +307,19 @@ export default function CategoriesPage() {
   const loading = categoriesQuery.isLoading;
 
   // ----- Detail query for Advanced defaults when editing -----
+  const [detailNonce, setDetailNonce] = useState(0);
+  useEffect(() => {
+    if (openForm && editing) setDetailNonce((n) => n + 1); // force fresh read each time you open
+  }, [openForm, editing?.id]);
+
   const detailQuery = useQuery({
-    queryKey: ['category-detail', editing?.id],
+    queryKey: ['category-detail', token, editing?.name, detailNonce],
     queryFn: () => getCategoryByName(editing!.name, token as string),
     enabled: !!editing && !!token,
-    staleTime: 10_000,
+    staleTime: 0,
+    refetchOnMount: 'always',
+    refetchOnReconnect: 'always',
+    refetchOnWindowFocus: false,
   });
 
   // Normalize detail → dialog props
@@ -506,8 +514,9 @@ export default function CategoriesPage() {
                             initialChannelProp === 'dine-in' || initialChannelProp === 'online'
                               ? (initialChannelProp as 'dine-in' | 'online')
                               : 'both',
-                          initialIncludedLocationIds: initialIncludedProp,
-                          initialExcludedLocationIds: initialExcludedProp,
+                          // ✅ pass both include and exclude props from detail
+                          initialIncludedLocationIds: initialIncludedProp ?? [],
+                          initialExcludedLocationIds: initialExcludedProp ?? [],
                         }
                       : {})}
                     onClose={() => {
@@ -518,9 +527,18 @@ export default function CategoriesPage() {
                     }}
                     onSubmit={async (name, opts) => {
                       if (editing) {
+                        // ⬇️ Pass Advanced options through to rename
                         const updated = await renameMut.mutateAsync({
                           id: editing.id,
                           newName: name,
+                          opts: {
+                            channel: opts?.channel, // 'both' | 'dine-in' | 'online'
+                            includeLocationIds: opts?.includeLocationIds,
+                            excludeLocationIds: opts?.excludeLocationIds,
+                            // pass through if dialog provides hardExclude
+                            // @ts-expect-error - optional from dialog
+                            hardExclude: (opts as any)?.hardExclude,
+                          },
                         });
                         setOpenForm(false);
                         const sp = new URLSearchParams(searchParams);

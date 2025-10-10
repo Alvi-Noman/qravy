@@ -165,10 +165,9 @@ export function useCategories() {
     let existsSomewhere = false;
     for (const [key, data] of entries) {
       const k = key as any[];
-      // shape: ['categories', token, lidKey, chanKey]
       if (!Array.isArray(k) || k[0] !== 'categories' || k[1] !== token) continue;
       const lid = k[2];
-      if (lid === 'all') continue; // skip the All-Locations caches during presence check
+      if (lid === 'all') continue; // skip All-Locations during presence check
       if (Array.isArray(data) && data.some((c) => c.id === catId)) {
         existsSomewhere = true;
         break;
@@ -227,7 +226,7 @@ export function useCategories() {
   // Create category (supports Advanced: channel + include/exclude lists)
   type CreateOpts = {
     locationId?: string;
-    channel?: Channel;
+    channel?: Channel | 'both'; // allow 'both' in UI, we normalize before calling API
     includeLocationIds?: string[];
     excludeLocationIds?: string[];
   };
@@ -237,28 +236,35 @@ export function useCategories() {
     mutationFn: async (vars) => {
       const name = typeof vars === 'string' ? vars : vars.name;
       const formOpts = typeof vars === 'string' ? undefined : vars.opts;
+
       const trimmed = name.trim();
       if (!trimmed) throw new Error('Name is required.');
       if (findByName(trimmed)) throw new Error('A category with this name already exists.');
 
-      const chosenChannel = formOpts?.channel ?? channelForQuery;
+      // Normalize channel: 'both' => omit (server treats omitted as BOTH)
+      const rawChannel = formOpts?.channel ?? channelForQuery;
+      const normalizedChannel = rawChannel === 'both' ? undefined : rawChannel;
+
       const chosenLocationId = formOpts?.locationId ?? locationIdForQuery;
 
       return createCategory(trimmed, token as string, {
         locationId: chosenLocationId || undefined,
-        channel: chosenChannel || undefined,
+        channel: normalizedChannel || undefined, // only 'dine-in' | 'online'; omit for BOTH
         includeLocationIds: formOpts?.includeLocationIds,
         excludeLocationIds: formOpts?.excludeLocationIds,
       });
     },
-    onSuccess: (created) => {
-      // Optimistically add in the current scope (server will filter in other scopes)
-      queryClient.setQueryData<Category[]>(
-        catsKeyCurrent as any,
-        (prev) => [...(prev ?? []), created].sort((a, b) => a.name.localeCompare(b.name))
-      );
+    onSuccess: (_created) => {
+      // Don’t optimistically insert: overlays/channelScope might hide it in current view.
+      // Instead, refetch all category caches for this tenant to get authoritative visibility.
+      queryClient.invalidateQueries({
+        predicate: (q) => {
+          const k = q.queryKey as any[];
+          return Array.isArray(k) && k[0] === 'categories' && k[1] === token;
+        },
+      });
 
-      // Onboarding
+      // Onboarding: mark that tenant now has a category
       queryClient.setQueryData<TenantDTO>(['tenant', token], (prev) =>
         prev
           ? {
@@ -273,14 +279,6 @@ export function useCategories() {
       );
       queryClient.invalidateQueries({ queryKey: ['tenant', token] });
 
-      // Invalidate all category queries for this tenant so other scopes refresh
-      queryClient.invalidateQueries({
-        predicate: (q) => {
-          const k = q.queryKey as any[];
-          return Array.isArray(k) && k[0] === 'categories' && k[1] === token;
-        },
-      });
-
       toastSuccess('Category added');
       broadcast();
     },
@@ -289,16 +287,26 @@ export function useCategories() {
     },
   });
 
+  // ----- UPDATED: support Advanced options on edit -----
+  type RenameOpts = {
+    channel?: Channel | 'both';
+    includeLocationIds?: string[];
+    excludeLocationIds?: string[];
+    hardExclude?: boolean;
+  };
   const renameMut = useMutation({
-    mutationFn: async ({ id, newName }: { id: string; newName: string }) => {
+    mutationFn: async ({ id, newName, opts }: { id: string; newName: string; opts?: RenameOpts }) => {
       const current = findById(id);
       if (!current) throw new Error('Category not found.');
       const trimmed = newName.trim();
       if (!trimmed) throw new Error('Name is required.');
-      if (trimmed.toLowerCase() === current.name.toLowerCase()) return current;
+      if (trimmed.toLowerCase() === current.name.toLowerCase()) {
+        // Name unchanged → still allow Advanced options to be pushed
+        return updateCategory(id, current.name, token as string, opts);
+      }
       if (findByName(trimmed)) throw new Error('A category with this name already exists.');
 
-      const updated = await updateCategory(id, trimmed, token as string);
+      const updated = await updateCategory(id, trimmed, token as string, opts);
 
       const oldName = current.name;
       // Optimistic items rename in current scope
@@ -325,30 +333,17 @@ export function useCategories() {
 
       return updated;
     },
-    onSuccess: (updated) => {
-      // Update categories UI
-      queryClient.setQueryData<Category[]>(
-        catsKeyCurrent as any,
-        (prev) =>
-          (prev ?? [])
-            .map((c) => (c.id === updated.id ? updated : c))
-            .sort((a, b) => a.name.localeCompare(b.name))
-      );
-
-      // Ensure All-locations views refetch
+    onSuccess: (_updated) => {
+      // ❗ Do NOT locally merge the returned doc; it lacks overlay/tombstone info.
+      // Invalidate all categories caches for this token so listCategories recomputes overlays.
       queryClient.invalidateQueries({
         predicate: (q) => {
           const k = q.queryKey as any[];
-          return (
-            Array.isArray(k) &&
-            (k[0] === 'categories' || k[0] === 'menu-items') &&
-            k[1] === token &&
-            k[2] === 'all'
-          );
+          return Array.isArray(k) && k[0] === 'categories' && k[1] === token;
         },
       });
 
-      toastSuccess('Category renamed');
+      toastSuccess('Category updated');
       broadcast();
     },
     onError: (e) => {
@@ -356,6 +351,7 @@ export function useCategories() {
       toastError((e as any)?.message || 'Failed to rename category');
     },
   });
+  // -----------------------------------------------------
 
   // Helpers for scoped category deletions (optimistic cache updates)
   const filterOutCatId =
@@ -567,16 +563,12 @@ export function useCategories() {
       const isChannelScoped = !!channelForQuery;
 
       if (isGlobalView && !isChannelScoped) {
-        // Delete items everywhere
         removeItemsEverywhereByCategory(deletedName);
       } else if (isGlobalView && isChannelScoped) {
-        // Delete items only from this channel across all lids
         removeItemsByCategoryFromChannelAcrossAllLids(channelForQuery!, deletedName);
       } else if (!isGlobalView && isChannelScoped) {
-        // Delete items only in this location + channel
         removeItemsByCategoryInCurrentLidChannel(deletedName);
       } else {
-        // Location only: delete items in both channels for this lid
         removeItemsByCategoryInCurrentLidBothChannels(deletedName);
       }
       // ---------------------------------------------------------------------
@@ -644,7 +636,7 @@ export function useCategories() {
     },
   });
 
-  // Category visibility per-branch/per-channel (overlay) — used for "Remove from this location" and show/hide
+  // Category visibility per-branch/per-channel (overlay)
   const bulkVisibilityMut = useMutation<
     { visible: boolean; matchedCount: number; modifiedCount: number },
     Error,
@@ -694,7 +686,7 @@ export function useCategories() {
     },
   });
 
-  // Toggle availability for all items in a category (branch/channel-aware) with cross-scope patching
+  // Toggle availability for all items in a category (branch/channel-aware)
   const availabilityMut = useMutation<
     { name: string; active: boolean; matchedCount: number; modifiedCount: number },
     Error,

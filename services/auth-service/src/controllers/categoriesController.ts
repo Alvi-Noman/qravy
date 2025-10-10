@@ -85,7 +85,9 @@ export async function listCategories(req: Request, res: Response, next: NextFunc
       return scope && scope !== 'all' ? scope : undefined;
     };
 
+    // -----------------------------
     // BRANCH VIEW
+    // -----------------------------
     if (locId) {
       const visQuery: any = {
         tenantId: tenantOid,
@@ -114,23 +116,19 @@ export async function listCategories(req: Request, res: Response, next: NextFunc
 
       const isVisibleInBranch = (cat: CategoryDoc, ch: 'dine-in' | 'online'): boolean => {
         if (!channelAllowed(cat, ch)) return false;
-        const ov = overlayByCat.get(cat._id!.toString())?.get(ch);
-        if (ov !== undefined) return ov;
-        return true; // baseline visible
+        const catKey = cat._id!.toString();
+
+        if (removedByCat.get(catKey)?.has(ch)) return false; // hard tombstone wins
+
+        const ov = overlayByCat.get(catKey)?.get(ch);
+        return ov !== undefined ? ov : true; // baseline visible
       };
 
       const filtered = docs.filter((cat) => {
-        const removedSet = removedByCat.get(cat._id!.toString());
-        if (qCh) {
-          if (removedSet?.has(qCh)) return false;
-          return isVisibleInBranch(cat, qCh);
-        }
-        const fullyRemoved = removedSet && (['dine-in', 'online'] as const).every((c) => removedSet.has(c));
-        if (fullyRemoved) return false;
+        if (qCh) return isVisibleInBranch(cat, qCh);
         return isVisibleInBranch(cat, 'dine-in') || isVisibleInBranch(cat, 'online');
       });
 
-      // Return DTO + channel (branch view doesn’t return per-location arrays)
       const items = filtered.map((cat) => {
         const dto = toCategoryDTO(cat) as any;
         dto.channel = pickChannel(cat);
@@ -140,7 +138,9 @@ export async function listCategories(req: Request, res: Response, next: NextFunc
       return res.ok({ items });
     }
 
-    // GLOBAL VIEW (ALL LOCATIONS): hide categories that don't exist in any location/channel
+    // -----------------------------
+    // GLOBAL VIEW (ALL LOCATIONS)
+    // -----------------------------
     const locDocs = await locationsCol().find({ tenantId: tenantOid }, { projection: { _id: 1 } }).toArray();
     const locIds = locDocs.map((l: any) => l._id as ObjectId);
     const locCount = locIds.length;
@@ -154,7 +154,9 @@ export async function listCategories(req: Request, res: Response, next: NextFunc
 
     const overlaysAll = await categoryVisibilityCol().find(visQueryAll).toArray();
 
+    // per-cat → per-channel → per-location → visible:boolean
     const overlayByCatAll = new Map<string, Map<'dine-in' | 'online', Map<string, boolean>>>();
+    // per-cat → per-channel → Set<locationId> of removed tombstones
     const removedByCatAll = new Map<string, Map<'dine-in' | 'online', Set<string>>>();
 
     for (const v of overlaysAll as any[]) {
@@ -185,29 +187,27 @@ export async function listCategories(req: Request, res: Response, next: NextFunc
 
       for (const lid of locIds) {
         const key = lid.toString();
-        if (removedLocs.has(key)) continue;
+        if (removedLocs.has(key)) continue; // hard removed here
         const ov = perChLoc.get(key);
-        const finalVisible = ov !== undefined ? ov : true; // baseline visible = true
+        const finalVisible = ov !== undefined ? ov : true; // baseline visible
         if (finalVisible) return true;
       }
       return false;
     };
 
     const filteredGlobal = docs.filter((cat) => {
-      if (qCh) {
-        return existsAnywhereForChannel(cat, qCh);
-      }
+      if (qCh) return existsAnywhereForChannel(cat, qCh);
       return existsAnywhereForChannel(cat, 'dine-in') || existsAnywhereForChannel(cat, 'online');
     });
 
-    // Summarize per-category restrictions for the UI
+    // ---- CHANGE STARTS HERE: includeLocationIds now surfaced for GLOBAL VIEW ----
     const summarizeRestrictions = (cat: CategoryDoc) => {
       const catKey = cat._id!.toString();
 
-      // channel
+      // channel (single-channel categories surface the channel; 'both' -> undefined)
       const channel = pickChannel(cat);
 
-      // excludeLocationIds: union of removed tombstones across both channels
+      // excludeLocationIds = union of tombstones across both channels
       const removedChMap = removedByCatAll.get(catKey);
       const excl = new Set<string>();
       if (removedChMap) {
@@ -217,12 +217,29 @@ export async function listCategories(req: Request, res: Response, next: NextFunc
         }
       }
 
+      // includeLocationIds = any explicit visible:true overlays (both channels)
+      const ovChMap = overlayByCatAll.get(catKey);
+      const inc = new Set<string>();
+      if (ovChMap) {
+        for (const ch of (['dine-in', 'online'] as const)) {
+          const locMap = ovChMap.get(ch);
+          if (!locMap) continue;
+          for (const [lid, vis] of locMap.entries()) {
+            if (vis === true) inc.add(lid);
+          }
+        }
+      }
+
+      // Only surface arrays when there is any restriction; otherwise omit (undefined)
+      const hasAnyRestriction = inc.size > 0 || excl.size > 0;
+
       return {
         channel,
-        excludeLocationIds: Array.from(excl),
-        // includeLocationIds intentionally omitted (cannot infer strict-whitelist reliably)
+        includeLocationIds: hasAnyRestriction ? Array.from(inc) : undefined,
+        excludeLocationIds: hasAnyRestriction ? Array.from(excl) : undefined,
       };
     };
+    // ---- CHANGE ENDS HERE ----
 
     const items = filteredGlobal.map((cat) => {
       const dto = toCategoryDTO(cat) as any;
@@ -392,21 +409,192 @@ export async function updateCategory(req: Request, res: Response, next: NextFunc
     if (!canWrite(req.user?.role)) return res.fail(403, 'Forbidden');
 
     const { id } = req.params;
-    const { name } = (req.body || {}) as { name: string };
     if (!ObjectId.isValid(id)) return res.fail(400, 'Invalid id');
 
-    const filter = { _id: new ObjectId(id), tenantId: new ObjectId(tenantId) };
+    // Advanced fields (all optional)
+    const {
+      name,
+      channel,                 // 'dine-in' | 'online' | 'both' | (omitted => do not change)
+      includeLocationIds,      // GLOBAL overlays
+      excludeLocationIds,      // GLOBAL overlays
+    } = (req.body || {}) as {
+      name?: string;
+      channel?: 'dine-in' | 'online' | 'both';
+      includeLocationIds?: string[];
+      excludeLocationIds?: string[];
+    };
+
+    const channelWasExplicit = Object.prototype.hasOwnProperty.call(req.body ?? {}, 'channel');
+    const hasInclude = Array.isArray(includeLocationIds) && includeLocationIds.length > 0;
+    const hasExclude = Array.isArray(excludeLocationIds) && excludeLocationIds.length > 0;
+
+    if (name == null && !channelWasExplicit && !hasInclude && !hasExclude) {
+      return res.fail(400, 'Nothing to update');
+    }
+
+    const tenantOid = new ObjectId(tenantId);
+    const filter = { _id: new ObjectId(id), tenantId: tenantOid };
+
     const before = await categoriesCol().findOne(filter);
     if (!before) return res.fail(404, 'Category not found');
 
-    const doc = await categoriesCol().findOneAndUpdate(
-      filter,
-      { $set: { name: String(name || '').trim(), updatedAt: new Date() } },
-      { returnDocument: 'after' }
-    );
+    const now = new Date();
 
+    // --- 1) Prepare core field updates (name + channelScope) ---
+    const updateSet: Record<string, any> = { updatedAt: now };
+    if (typeof name === 'string') updateSet.name = String(name || '').trim();
+
+    const prevScope = ((before as any).channelScope as 'all' | 'dine-in' | 'online' | undefined) ?? 'all';
+    let nextScope = prevScope;
+
+    if (channelWasExplicit) {
+      if (channel === 'dine-in' || channel === 'online') {
+        nextScope = channel;
+      } else {
+        // 'both' (or nullish) ⇒ 'all'
+        nextScope = 'all';
+      }
+      updateSet.channelScope = nextScope;
+    }
+
+    // --- 1a) If category is branch-scoped and caller provided include/exclude,
+    //          promote category to GLOBAL so overlays make sense.
+    const wasBranchScoped = (before as any).scope === 'location';
+    if (wasBranchScoped && (hasInclude || hasExclude)) {
+      updateSet.scope = 'all';
+      updateSet.locationId = null;
+    }
+
+    // Apply the core update
+    await categoriesCol().updateOne(filter, { $set: updateSet });
+
+    // Re-read updated document for accurate DTO + ids
+    const doc = await categoriesCol().findOne(filter);
     if (!doc) return res.fail(404, 'Category not found');
 
+    // --- 1b) Widen single-channel → BOTH: only clear tombstones on the newly-added channel
+    //         AND only at locations explicitly included in this same request.
+    if (prevScope !== 'all' && nextScope === 'all') {
+      const newlyIncluded: 'dine-in' | 'online' = prevScope === 'dine-in' ? 'online' : 'dine-in';
+
+      if (hasInclude) {
+        const includeRaw = (includeLocationIds ?? [])
+          .filter(Boolean)
+          .filter((s) => ObjectId.isValid(s))
+          .map((s) => new ObjectId(s));
+
+        if (includeRaw.length) {
+          const allowedSet = new Set(
+            (
+              await locationsCol()
+                .find({ _id: { $in: includeRaw }, tenantId: tenantOid }, { projection: { _id: 1 } })
+                .toArray()
+            ).map((l: any) => l._id.toString())
+          );
+
+          const lidsToClear = includeRaw.filter((oid) => allowedSet.has(oid.toString()));
+
+          if (lidsToClear.length) {
+            await categoryVisibilityCol().updateMany(
+              {
+                tenantId: tenantOid,
+                categoryId: doc._id!,
+                channel: newlyIncluded,
+                locationId: { $in: lidsToClear },
+                removed: true,
+              },
+              { $unset: { removed: '' }, $set: { updatedAt: now } }
+            );
+          }
+        }
+      }
+      // No include list → do not clear any tombstones implicitly.
+    }
+
+    // --- 2) Per-location overlays (GLOBAL categories only) ---
+    // After the optional promotion above, check scope again:
+    const isGlobalNow = (doc as any).scope !== 'location';
+
+    if (isGlobalNow && (hasInclude || hasExclude)) {
+      // Validate locations belong to tenant
+      const toOids = (ids?: string[]) =>
+        (ids ?? [])
+          .filter(Boolean)
+          .filter((s) => ObjectId.isValid(s))
+          .map((s) => new ObjectId(s));
+
+      const rawIds = [...toOids(includeLocationIds), ...toOids(excludeLocationIds)];
+      const allowed = new Set(
+        (
+          await locationsCol()
+            .find({ _id: { $in: rawIds }, tenantId: tenantOid }, { projection: { _id: 1 } })
+            .toArray()
+        ).map((l: any) => l._id.toString())
+      );
+
+      const includeIds = hasInclude ? toOids(includeLocationIds).filter((oid) => allowed.has(oid.toString())) : [];
+      const excludeIds = hasExclude ? toOids(excludeLocationIds).filter((oid) => allowed.has(oid.toString())) : [];
+
+      // Seed channel overlays: if caller set a single channel, use it; else both.
+      const seedChannels: Array<'dine-in' | 'online'> =
+        channelWasExplicit && (channel === 'dine-in' || channel === 'online')
+          ? [channel]
+          : (['dine-in', 'online'] as const);
+
+      const ops: any[] = [];
+
+      // include → visible:true (clear any tombstone)
+      for (const lid of includeIds) {
+        for (const c of seedChannels) {
+          ops.push({
+            updateOne: {
+              filter: { tenantId: tenantOid, categoryId: doc._id!, locationId: lid, channel: c },
+              update: {
+                $set: { visible: true, updatedAt: now },
+                $unset: { removed: '' },
+                $setOnInsert: {
+                  tenantId: tenantOid,
+                  categoryId: doc._id!,
+                  locationId: lid,
+                  channel: c,
+                  createdAt: now,
+                },
+              },
+              upsert: true,
+            },
+          });
+        }
+      }
+
+      // exclude → removed:true (clear visible)
+      for (const lid of excludeIds) {
+        for (const c of seedChannels) {
+          ops.push({
+            updateOne: {
+              filter: { tenantId: tenantOid, categoryId: doc._id!, locationId: lid, channel: c },
+              update: {
+                $set: { removed: true, updatedAt: now },
+                $unset: { visible: '' },
+                $setOnInsert: {
+                  tenantId: tenantOid,
+                  categoryId: doc._id!,
+                  locationId: lid,
+                  channel: c,
+                  createdAt: now,
+                },
+              },
+              upsert: true,
+            },
+          });
+        }
+      }
+
+      if (ops.length) {
+        await categoryVisibilityCol().bulkWrite(ops, { ordered: false });
+      }
+    }
+
+    // --- 3) Audit + respond ---
     await auditLog({
       userId,
       action: 'CATEGORY_UPDATE',

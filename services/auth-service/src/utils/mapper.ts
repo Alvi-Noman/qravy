@@ -31,6 +31,8 @@ export function toMenuItemDTO(
   doc: MenuItemDoc,
   extras?: Partial<v1.MenuItemDTO>
 ): v1.MenuItemDTO {
+  const scope = (doc as any).channelScope as 'dine-in' | 'online' | 'all' | undefined;
+
   const base: v1.MenuItemDTO = {
     id: toId(doc._id),
     name: doc.name,
@@ -57,6 +59,9 @@ export function toMenuItemDTO(
       online: doc.visibility?.online ?? true,
     },
 
+    // NEW: baseline channel scope
+    channel: scope === 'all' || scope == null ? 'both' : scope,
+
     createdAt: doc.createdAt.toISOString(),
     updatedAt: doc.updatedAt.toISOString(),
     hidden: !!doc.hidden,
@@ -67,11 +72,28 @@ export function toMenuItemDTO(
   return { ...base, ...(extras ?? {}) };
 }
 
-/** Map a CategoryDoc into a CategoryDTO. */
-export function toCategoryDTO(doc: CategoryDoc): v1.CategoryDTO {
+/** Local extension of CategoryDTO with advanced fields */
+export type CategoryDTOWithExtras = v1.CategoryDTO & {
+  channel?: 'dine-in' | 'online' | 'both';
+  includeLocationIds?: string[];
+  excludeLocationIds?: string[];
+};
+
+/** Map a CategoryDoc into a CategoryDTO with extras. */
+export function toCategoryDTO(doc: CategoryDoc): CategoryDTOWithExtras {
+  const scope = (doc as any).channelScope as 'dine-in' | 'online' | 'all' | undefined;
+
   return {
     id: toId(doc._id),
     name: doc.name,
+
+    // NEW: expose channelScope to client
+    channel: scope === 'all' || scope == null ? 'both' : scope,
+
+    // Optional overlays (only present for global categories)
+    includeLocationIds: (doc as any).includeLocationIds?.map(toId),
+    excludeLocationIds: (doc as any).excludeLocationIds?.map(toId),
+
     createdAt: doc.createdAt.toISOString(),
     updatedAt: doc.updatedAt.toISOString(),
   };
@@ -79,8 +101,6 @@ export function toCategoryDTO(doc: CategoryDoc): v1.CategoryDTO {
 
 /**
  * Map a TenantDoc into a TenantDTO.
- * Supports onboarding status, plan info, trial info, subscription status,
- * plus optional cancellation and payment metadata (non-sensitive).
  */
 export function toTenantDTO(doc: TenantDoc): v1.TenantDTO {
   const paymentUpdatedAt =
@@ -127,12 +147,10 @@ export function toTenantDTO(doc: TenantDoc): v1.TenantDTO {
         }
       : undefined,
 
-    // optional cancellation metadata
     cancelRequestedAt: doc.cancelRequestedAt ? doc.cancelRequestedAt.toISOString() : null,
     cancelEffectiveAt: doc.cancelEffectiveAt ? doc.cancelEffectiveAt.toISOString() : null,
     cancelAtPeriodEnd: typeof doc.cancelAtPeriodEnd === 'boolean' ? doc.cancelAtPeriodEnd : null,
 
-    // payment metadata (non-sensitive)
     hasCardOnFile: !!doc.hasCardOnFile,
     payment: doc.payment
       ? {

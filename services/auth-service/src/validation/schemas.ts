@@ -4,7 +4,9 @@
 import { z } from 'zod';
 
 const objectId = z.string().regex(/^[a-fA-F0-9]{24}$/, 'Invalid id');
-const channelEnum = z.enum(['dine-in', 'online']);
+export const channelEnum = z.enum(['dine-in', 'online']);
+// NEW: category channel can also allow "both"
+export const categoryChannelEnum = z.enum(['dine-in', 'online', 'both']);
 
 const variationSchema = z.object({
   name: z.string().min(1, 'Variation name is required'),
@@ -122,7 +124,11 @@ export const menuItemSchema = z
     }
 
     // Light coupling checks for the new fields (non-blocking but helpful)
-    if (Array.isArray(data.excludeChannelAtLocationIds) && data.excludeChannelAtLocationIds.length > 0 && !data.excludeChannelAt) {
+    if (
+      Array.isArray(data.excludeChannelAtLocationIds) &&
+      data.excludeChannelAtLocationIds.length > 0 &&
+      !data.excludeChannelAt
+    ) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['excludeChannelAt'],
@@ -165,7 +171,11 @@ export const menuItemUpdateSchema = z
         message: 'compareAtPrice must be >= price',
       });
     }
-    if (Array.isArray(data.excludeChannelAtLocationIds) && data.excludeChannelAtLocationIds.length > 0 && !data.excludeChannelAt) {
+    if (
+      Array.isArray(data.excludeChannelAtLocationIds) &&
+      data.excludeChannelAtLocationIds.length > 0 &&
+      !data.excludeChannelAt
+    ) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['excludeChannelAt'],
@@ -207,7 +217,7 @@ export const categorySchema = z
     // owner/admin can create branch-only categories
     locationId: objectId.optional(),
     // per-channel category creation (belongs to this channel only)
-    channel: channelEnum.optional(),
+    channel: categoryChannelEnum.optional(), // ✅ changed
     // for global categories, target branches explicitly
     includeLocationIds: z.array(objectId).optional(),
     excludeLocationIds: z.array(objectId).optional(),
@@ -227,14 +237,46 @@ export const categorySchema = z
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['includeLocationIds'],
-        message: 'include/excludeLocationIds are only valid when creating a global category (omit locationId)',
+        message:
+          'include/excludeLocationIds are only valid when creating a global category (omit locationId)',
       });
     }
   });
 
-export const categoryUpdateSchema = z.object({
-  name: z.string().min(1, 'Name is required'),
-});
+/**
+ * Advanced Edit: allow channel + include/exclude locations on update.
+ * All fields are optional; at least one must be provided.
+ */
+export const categoryUpdateSchema = z
+  .object({
+    name: z.string().min(1, 'Name is required').optional(),
+    channel: categoryChannelEnum.optional(), // ✅ changed
+    includeLocationIds: z.array(objectId).optional(),
+    excludeLocationIds: z.array(objectId).optional(),
+  })
+  .superRefine((data, ctx) => {
+    const hasInclude = Array.isArray(data.includeLocationIds) && data.includeLocationIds.length > 0;
+    const hasExclude = Array.isArray(data.excludeLocationIds) && data.excludeLocationIds.length > 0;
+    if (hasInclude && hasExclude) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['includeLocationIds'],
+        message: 'Provide only one of includeLocationIds or excludeLocationIds, not both',
+      });
+    }
+    if (
+      data.name === undefined &&
+      data.channel === undefined &&
+      !hasInclude &&
+      !hasExclude
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['_'],
+        message: 'At least one field (name, channel, includeLocationIds, excludeLocationIds) must be provided to update',
+      });
+    }
+  });
 
 /** Optional single-item toggles */
 export const menuItemToggleSchema = z.object({
@@ -258,6 +300,8 @@ export const listMenuItemsQuerySchema = z.object({
 export const listCategoriesQuerySchema = z.object({
   locationId: objectId.optional(),
   channel: channelEnum.optional(),
+  // allow fetching specific category by name (used by getCategoryByName)
+  name: z.string().optional(),
 });
 
 /** NEW: Bulk category visibility (per-branch, per-channel) */
@@ -266,6 +310,8 @@ export const bulkCategoryVisibilitySchema = z.object({
   visible: z.boolean(),
   locationId: objectId.optional(),
   channel: channelEnum.optional(),
+  // optional: true exclusion/tombstone (matches controller support)
+  hardExclude: z.boolean().optional(),
 });
 
 /**

@@ -81,10 +81,83 @@ export async function createCategory(
   return res.data.item as Category;
 }
 
-export async function updateCategory(id: string, name: string, token: string): Promise<Category> {
+/**
+ * Update a category.
+ *
+ * Backward-compatible overloads:
+ *  - Legacy rename (current callers): updateCategory(id, name, token, opts?)
+ *  - Advanced patch only:           updateCategory(id, token, patch)
+ *
+ * Patch fields:
+ *  - name?: string
+ *  - channel?: 'dine-in' | 'online' | 'both'  (explicit 'both' widens to both channels)
+ *  - includeLocationIds?: string[]
+ *  - excludeLocationIds?: string[]
+ *  - hardExclude?: boolean
+ */
+export async function updateCategory(
+  id: string,
+  a: string,
+  b?: string | {
+    channel?: Channel | 'both';
+    includeLocationIds?: string[];
+    excludeLocationIds?: string[];
+    hardExclude?: boolean;
+  },
+  c?: {
+    channel?: Channel | 'both';
+    includeLocationIds?: string[];
+    excludeLocationIds?: string[];
+    hardExclude?: boolean;
+  }
+): Promise<Category> {
+  // Overload resolution
+  let token: string;
+  let name: string | undefined;
+  let opts:
+    | {
+        channel?: Channel | 'both';
+        includeLocationIds?: string[];
+        excludeLocationIds?: string[];
+        hardExclude?: boolean;
+      }
+    | undefined;
+
+  if (typeof b === 'string') {
+    // Signature: (id, name, token, opts?)
+    name = a;
+    token = b;
+    opts = c;
+  } else {
+    // Signature: (id, token, patch)
+    token = a;
+    opts = b;
+    name = opts && (opts as any).name; // allow passing name inside patch if desired
+  }
+
+  const uniq = (arr?: string[]) => Array.from(new Set((arr ?? []).filter(Boolean)));
+
+  const body: any = {};
+  const trimmed = (name ?? '').trim();
+  if (trimmed) body.name = trimmed;
+
+  // IMPORTANT: If caller provided channel (including 'both'), send it explicitly.
+  if (opts && Object.prototype.hasOwnProperty.call(opts, 'channel')) {
+    body.channel = opts.channel;
+  }
+
+  const include = uniq(opts?.includeLocationIds);
+  const exclude = uniq(opts?.excludeLocationIds);
+  if (include.length) body.includeLocationIds = include;
+  if (exclude.length) body.excludeLocationIds = exclude;
+
+  if (typeof opts?.hardExclude === 'boolean') {
+    body.hardExclude = opts.hardExclude;
+  }
+
   const res = await api.post(
     `/api/v1/auth/categories/${encodeURIComponent(id)}/update`,
-    { name },
+    body,
     { headers: { Authorization: `Bearer ${token}` } }
   );
   return res.data.item as Category;
@@ -125,11 +198,13 @@ export async function bulkSetCategoryVisibility(
   visible: boolean,
   token: string,
   locationId?: string,
-  channel?: Channel
+  channel?: Channel,
+  hardExclude?: boolean
 ): Promise<BulkVisibilityResult> {
   const body: any = { ids, visible };
   if (locationId) body.locationId = locationId;
   if (channel) body.channel = channel;
+  if (typeof hardExclude === 'boolean') body.hardExclude = hardExclude;
 
   const res = await api.post('/api/v1/auth/categories/bulk/visibility', body, {
     headers: { Authorization: `Bearer ${token}` },

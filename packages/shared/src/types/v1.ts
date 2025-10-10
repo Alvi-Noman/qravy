@@ -36,18 +36,14 @@ export interface MenuItemDTO {
     online?: boolean;
   };
 
+  /** Baseline channel scope */
+  channel?: 'dine-in' | 'online' | 'both';
+
   /** ---------- Advanced availability/exclusion hints for editor ---------- */
-  // If exactly one channel is globally excluded at baseline
   excludeChannel?: 'dine-in' | 'online';
-
-  // Locations where the item is excluded entirely (both channels)
   excludeAtLocationIds?: string[];
-
-  // Per-location channel exclusion (tombstones)
   excludeChannelAt?: 'dine-in' | 'online';
   excludeChannelAtLocationIds?: string[];
-
-  // (Optional future use) explicit allow-list / deny-list
   includeLocationIds?: string[];
   excludeLocationIds?: string[];
 
@@ -60,6 +56,14 @@ export interface MenuItemDTO {
 export interface CategoryDTO {
   id: string;
   name: string;
+
+  /** Baseline channel scope */
+  channel?: 'dine-in' | 'online' | 'both';
+
+  /** Optional overlays (only present for global categories) */
+  includeLocationIds?: string[];
+  excludeLocationIds?: string[];
+
   createdAt: string;
   updatedAt: string;
 }
@@ -168,13 +172,8 @@ export interface TenantDTO {
   hasCardOnFile?: boolean;
   payment?: TenantPaymentDTO;
 
-  // Optional: expose profile if you want to include it in broader tenant fetches
   billingProfile?: BillingProfileDTO;
-
-  // Onboarding progress (server-computed)
   onboardingProgress?: TenantOnboardingProgressDTO;
-
-  // Restaurant info (no counts here)
   restaurantInfo?: RestaurantInfoDTO;
 
   createdAt: string;

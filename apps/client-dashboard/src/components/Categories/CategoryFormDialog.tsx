@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { AnimatePresence, motion } from 'framer-motion';
 import { useQuery } from '@tanstack/react-query';
@@ -8,7 +8,7 @@ import { fetchLocations, type Location } from '../../api/locations';
 type FormValues = { name: string };
 
 type SubmitOptions = {
-  channel?: 'dine-in' | 'online';
+  channel?: 'dine-in' | 'online' | 'both';
   includeLocationIds?: string[];
   excludeLocationIds?: string[];
   locationId?: string;
@@ -19,7 +19,7 @@ export default function CategoryFormDialog({
   title,
   initialName = '',
   existingNames = [],
-  // NEW: edit-time “advanced” defaults coming from Categories page
+  // Edit defaults coming from Categories page
   initialChannel, // 'both' | 'dine-in' | 'online'
   initialIncludedLocationIds,
   initialExcludedLocationIds,
@@ -50,10 +50,7 @@ export default function CategoryFormDialog({
 
   const { activeLocationId, channel: scopeChannel } = useScope();
 
-  // Advanced controls
-  // — Channels default:
-  //    • on create: prefer scope channel if single, otherwise both
-  //    • on edit: respect initialChannel from props
+  // Channel checkboxes (must NOT touch branches)
   const [chDineIn, setChDineIn] = useState(true);
   const [chOnline, setChOnline] = useState(true);
 
@@ -61,28 +58,29 @@ export default function CategoryFormDialog({
   const locationsQuery = useQuery<Location[]>({
     queryKey: ['locations'],
     queryFn: fetchLocations,
-    enabled: !activeLocationId, // only fetch when All locations
+    enabled: !activeLocationId,
     staleTime: 30000,
   });
   const allLocations = locationsQuery.data ?? [];
-  const [selectedBranchIds, setSelectedBranchIds] = useState<Set<string>>(new Set());
 
-  // Re-initialize everything when dialog opens or defaults change
+  // Branch selection state
+  const [selectedBranchIds, setSelectedBranchIds] = useState<Set<string>>(new Set());
+  const [branchesTouched, setBranchesTouched] = useState(false);
+
+  // Initialize channels & name per open (do not touch branches here)
   useEffect(() => {
     if (!open) return;
 
-    // Reset name field
     reset({ name: initialName });
 
-    // ----- Channels -----
     if (initialChannel === 'dine-in') {
       setChDineIn(true);
       setChOnline(false);
     } else if (initialChannel === 'online') {
       setChDineIn(false);
       setChOnline(true);
-    } else if (initialChannel === 'both' || initialChannel == null) {
-      // Create or unspecified → base on scope
+    } else {
+      // 'both' or undefined → follow scope channel, else both
       if (scopeChannel === 'dine-in') {
         setChDineIn(true);
         setChOnline(false);
@@ -95,22 +93,38 @@ export default function CategoryFormDialog({
       }
     }
 
-    // Branches will be initialized in the effect below once locations load
-    setSelectedBranchIds(new Set()); // temporarily clear to allow proper seeding
+    // user hasn’t touched branches yet for this open
+    setBranchesTouched(false);
   }, [open, initialName, initialChannel, scopeChannel, reset]);
 
-  // Initialize branch selection once locations are loaded (All locations only).
-  // Precedence:
-  //   1) initialIncludedLocationIds → exactly those checked
-  //   2) initialExcludedLocationIds → all except those checked
-  //   3) default → all checked
+  /**
+   * Reseed branches whenever:
+   *  - dialog is open
+   *  - we’re in All locations (no activeLocationId)
+   *  - locations are loaded
+   *  - AND the incoming include/exclude (or locations) change
+   *  - BUT only if the user has not manually changed the branch checkboxes (branchesTouched=false)
+   *
+   * This fixes the “looks right immediately after save, but wrong after refresh”
+   * because the first paint used default selection, then props arrived later.
+   */
+  const lastSeedSigRef = useRef<string>('');
   useEffect(() => {
-    if (activeLocationId) return; // no branches UI in branch scope
     if (!open) return;
+    if (activeLocationId) return; // single-location view: branch UI hidden
     if (!allLocations.length) return;
+    if (branchesTouched) return; // don't override user edits
 
     const include = (initialIncludedLocationIds ?? []).filter(Boolean);
     const exclude = (initialExcludedLocationIds ?? []).filter(Boolean);
+
+    // Build a signature of inputs; if unchanged, don’t reseed
+    const sig = JSON.stringify({
+      locs: allLocations.map((l) => l.id).sort(),
+      inc: [...include].sort(),
+      exc: [...exclude].sort(),
+    });
+    if (sig === lastSeedSigRef.current) return;
 
     if (include.length > 0) {
       setSelectedBranchIds(new Set(include));
@@ -118,17 +132,19 @@ export default function CategoryFormDialog({
       const allIds = allLocations.map((l) => l.id);
       const keep = allIds.filter((id) => !exclude.includes(id));
       setSelectedBranchIds(new Set(keep));
-    } else if (selectedBranchIds.size === 0) {
+    } else {
       // default: select all
       setSelectedBranchIds(new Set(allLocations.map((l) => l.id)));
     }
+
+    lastSeedSigRef.current = sig;
   }, [
     open,
     activeLocationId,
     allLocations,
     initialIncludedLocationIds,
     initialExcludedLocationIds,
-    selectedBranchIds.size,
+    branchesTouched,
   ]);
 
   const validateUnique = (value: string) => {
@@ -145,14 +161,12 @@ export default function CategoryFormDialog({
   const busy = isSubmitting || rhfSubmitting;
 
   const submit = async (v: FormValues) => {
-    // Validate advanced selections
     setAdvancedError(null);
 
     if (!chDineIn && !chOnline) {
       setAdvancedError('Select at least one channel (Dine-In or Online).');
       return;
     }
-
     if (!activeLocationId && allLocations.length && selectedBranchIds.size === 0) {
       setAdvancedError('Select at least one branch.');
       return;
@@ -160,25 +174,35 @@ export default function CategoryFormDialog({
 
     const opts: SubmitOptions = {};
 
-    // Channel: if exactly one checked, set that channel. If both, omit (defaults to both).
-    if (chDineIn !== chOnline) {
-      opts.channel = chDineIn ? 'dine-in' : 'online';
-    }
+    // Channels (independent from branches)
+    opts.channel = chDineIn && chOnline ? 'both' : chDineIn ? 'dine-in' : 'online';
 
-    // Branches:
-    // - If on a specific branch (sidebar), scope category to that locationId.
-    // - If All locations, derive exclude list for unchecked branches.
+    // Branch logic
     if (activeLocationId) {
       opts.locationId = activeLocationId;
     } else if (allLocations.length) {
       const allIds = allLocations.map((l) => l.id);
+      const checked = Array.from(selectedBranchIds);
       const unchecked = allIds.filter((id) => !selectedBranchIds.has(id));
-      if (unchecked.length > 0) {
-        // Hide category in these branches
-        opts.excludeLocationIds = unchecked;
+
+      const initiallyExcluded = new Set((initialExcludedLocationIds ?? []).filter(Boolean));
+      const initiallyIncluded = new Set((initialIncludedLocationIds ?? []).filter(Boolean));
+
+      if (unchecked.length === 0) {
+        // If there was any prior restriction, send an explicit include-all to clear tombstones
+        if (initiallyExcluded.size > 0 || initiallyIncluded.size > 0) {
+          opts.includeLocationIds = allIds;
+        }
+      } else {
+        const anyCheckedWasPreviouslyExcluded = checked.some((id) => initiallyExcluded.has(id));
+        if (anyCheckedWasPreviouslyExcluded) {
+          // re-include those checked ones (clears tombstones for them)
+          opts.includeLocationIds = checked;
+        } else {
+          // exclude the unchecked ones
+          opts.excludeLocationIds = unchecked;
+        }
       }
-      // If you want to seed "only these branches" use includeLocationIds instead:
-      // opts.includeLocationIds = Array.from(selectedBranchIds);
     }
 
     await onSubmit(v.name.trim(), opts);
@@ -197,6 +221,7 @@ export default function CategoryFormDialog({
               if (e.currentTarget.checked) next.add(loc.id);
               else next.delete(loc.id);
               setSelectedBranchIds(next);
+              setBranchesTouched(true);
             }}
           />
           <span className="text-sm text-[#2e2e30]">{loc.name}</span>
@@ -205,7 +230,6 @@ export default function CategoryFormDialog({
     });
   }, [allLocations, selectedBranchIds]);
 
-  // Badge logic (header)
   const locationDisplay = useMemo(() => {
     if (!activeLocationId) return '';
     const loc = allLocations.find((l) => l.id === activeLocationId);
@@ -213,8 +237,12 @@ export default function CategoryFormDialog({
   }, [activeLocationId, allLocations]);
 
   const singleChannel = chDineIn !== chOnline ? (chDineIn ? 'Dine-In' : 'Online') : null;
-  const shouldShowBadge = !!activeLocationId; // only when a specific location is selected
-  const badgeText = shouldShowBadge ? (singleChannel ? `${locationDisplay} • ${singleChannel}` : locationDisplay) : '';
+  const shouldShowBadge = !!activeLocationId;
+  const badgeText = shouldShowBadge
+    ? singleChannel
+      ? `${locationDisplay} • ${singleChannel}`
+      : locationDisplay
+    : '';
 
   return (
     <AnimatePresence>
@@ -266,7 +294,6 @@ export default function CategoryFormDialog({
               ) : null}
             </div>
 
-            {/* Advanced collapsible */}
             <div className="mt-4">
               <button
                 type="button"
@@ -278,7 +305,6 @@ export default function CategoryFormDialog({
 
               {advancedOpen && (
                 <div className="mt-3 space-y-4 rounded-md border border-[#e6e6e8] bg-white p-3">
-                  {/* Channels */}
                   <div>
                     <div className="text-sm font-medium text-[#2e2e30] mb-1">Channels</div>
                     <div className="flex items-center gap-4">
@@ -301,7 +327,6 @@ export default function CategoryFormDialog({
                     </div>
                   </div>
 
-                  {/* Branches */}
                   {!activeLocationId ? (
                     <div>
                       <div className="text-sm font-medium text-[#2e2e30] mb-1">Branches</div>
@@ -324,7 +349,9 @@ export default function CategoryFormDialog({
               )}
             </div>
 
-            {advancedError ? <div className="mt-2 text-sm text-red-600">{advancedError}</div> : null}
+            {advancedError ? (
+              <div className="mt-2 text-sm text-red-600">{advancedError}</div>
+            ) : null}
 
             <div className="mt-5 flex items-center justify-end gap-2">
               <button
