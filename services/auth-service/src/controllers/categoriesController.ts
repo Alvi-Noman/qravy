@@ -61,20 +61,14 @@ export async function listCategories(req: Request, res: Response, next: NextFunc
     const locId = getTargetLocationId(req);
     const qCh = parseChannel(req.query.channel);
 
-    // Fetch base category docs (respect channelScope if qCh is set)
+    // Fetch base category docs (do NOT pre-filter by channelScope)
     const orTerms: any[] = [{ scope: 'all' }, { scope: { $exists: false } }];
     if (locId) {
       orTerms.push({ scope: 'location', locationId: locId });
     } else {
       orTerms.push({ scope: 'location' }); // include branch-scoped for global view too
     }
-
     const baseFilter: any = { tenantId: tenantOid, $or: orTerms };
-    if (qCh) {
-      baseFilter.$and = [
-        { $or: [{ channelScope: 'all' }, { channelScope: qCh }, { channelScope: { $exists: false } }] },
-      ];
-    }
 
     const docs = await categoriesCol().find(baseFilter).sort({ name: 1 }).toArray();
     if (docs.length === 0) return res.ok({ items: [] });
@@ -210,7 +204,7 @@ export async function listCategories(req: Request, res: Response, next: NextFunc
       return existsAnywhereForChannel(cat, 'dine-in') || existsAnywhereForChannel(cat, 'online');
     });
 
-    // ---- include/exclude summaries for GLOBAL VIEW ----
+    // summaries for GLOBAL VIEW
     const summarizeRestrictions = (cat: CategoryDoc) => {
       const catKey = cat._id!.toString();
 
@@ -943,71 +937,120 @@ export async function bulkSetCategoryVisibility(req: Request, res: Response, nex
     const ch = parseChannel(channel);
     const chs = ch ? [ch] as const : (['dine-in', 'online'] as const);
 
+    // Resolve effective location
     const effectiveLocId =
       getTargetLocationId(req) ||
       (locationId && ObjectId.isValid(locationId) ? new ObjectId(locationId) : null);
+    if (isBranch(req) && !effectiveLocId) return res.fail(409, 'Location not set');
 
-    if (isBranch(req) && !effectiveLocId) {
-      return res.fail(409, 'Location not set');
-    }
-
-    // --- helpers ---
-    const writeSoftVisible = async (locIds: ObjectId[] | null) => {
-      if (visible === true) {
-        const filterBase = {
-          tenantId: tenantOid,
-          categoryId: { $in: oids },
-          channel: { $in: chs },
-        } as any;
-        if (locIds) filterBase.locationId = { $in: locIds };
-        else if (effectiveLocId) filterBase.locationId = effectiveLocId;
-
-        // ✅ Clear tombstones when turning visible again
-        await categoryVisibilityCol().updateMany(
-          { ...filterBase, removed: true },
-          { $unset: { removed: '' }, $set: { updatedAt: now } }
-        );
-
-        // ✅ Remove any soft visibility overrides so baseline (visible) applies
-        await categoryVisibilityCol().deleteMany(filterBase);
-      } else {
-        const idsToUse = locIds ?? (effectiveLocId ? [effectiveLocId] : []);
-        if (idsToUse.length > 0) {
-          const ops: any[] = [];
-          for (const catId of oids) {
-            for (const lid of idsToUse) {
-              for (const c of chs) {
-                ops.push({
-                  updateOne: {
-                    filter: { tenantId: tenantOid, categoryId: catId, locationId: lid, channel: c },
-                    update: {
-                      $set: { visible: false, updatedAt: now },
-                      $unset: { removed: '' },
-                      $setOnInsert: {
-                        tenantId: tenantOid,
-                        categoryId: catId,
-                        locationId: lid,
-                        channel: c,
-                        createdAt: now,
-                      },
-                    },
-                    upsert: true,
-                  },
-                });
-              }
-            }
-          }
-          if (ops.length) await categoryVisibilityCol().bulkWrite(ops, { ordered: false });
-        }
-      }
+    // Helper to build a filter over (tenant, cats, channels, locations)
+    const buildFilter = (locIds: ObjectId[] | null) => {
+      const f: any = { tenantId: tenantOid, categoryId: { $in: oids }, channel: { $in: chs } };
+      if (locIds) f.locationId = { $in: locIds };
+      else if (effectiveLocId) f.locationId = effectiveLocId;
+      return f;
     };
 
-    const writeHardExclude = async (locIds: ObjectId[] | null) => {
-      const idsToUse = locIds ?? (effectiveLocId ? [effectiveLocId] : []);
-      if (idsToUse.length === 0) return;
+    // Write helpers
+    const includeEverywhere = async (locIds: ObjectId[] | null) => {
+      const base = buildFilter(locIds);
+      // 1) Clear any tombstones for these triplets
+      await categoryVisibilityCol().updateMany(
+        { ...base, removed: true },
+        { $unset: { removed: '' }, $set: { updatedAt: now } }
+      );
+      // 2) Clear any soft-hides
+      await categoryVisibilityCol().updateMany(
+        { ...base, visible: false },
+        { $set: { visible: true, updatedAt: now }, $unset: { removed: '' } }
+      );
+      // 3) Upsert positive include overlays to guarantee presence
+      const locsForUpsert: ObjectId[] =
+        (base.locationId && base.locationId.$in) ? base.locationId.$in :
+        (base.locationId ? [base.locationId] : []);
+      if (locsForUpsert.length === 0 && !effectiveLocId) return;
+
       const ops: any[] = [];
+      const locLoop = locsForUpsert.length ? locsForUpsert : [effectiveLocId!];
       for (const catId of oids) {
-        for (const lid of idsToUse) {
+        for (const lid of locLoop) {
+          for (const c of chs) {
+            ops.push({
+              updateOne: {
+                filter: { tenantId: tenantOid, categoryId: catId, locationId: lid, channel: c },
+                update: {
+                  $set: { visible: true, updatedAt: now },
+                  $unset: { removed: '' },
+                  $setOnInsert: {
+                    tenantId: tenantOid,
+                    categoryId: catId,
+                    locationId: lid,
+                    channel: c,
+                    createdAt: now,
+                  },
+                },
+                upsert: true,
+              },
+            });
+          }
+        }
+      }
+      if (ops.length) await categoryVisibilityCol().bulkWrite(ops, { ordered: false });
+    };
+
+    const softHideEverywhere = async (locIds: ObjectId[] | null) => {
+      const base = buildFilter(locIds);
+      // clear tombstones -> we’re setting a soft hide, not hard delete
+      await categoryVisibilityCol().updateMany(
+        { ...base, removed: true },
+        { $unset: { removed: '' }, $set: { updatedAt: now } }
+      );
+      // upsert visible:false
+      const locsForUpsert: ObjectId[] =
+        (base.locationId && base.locationId.$in) ? base.locationId.$in :
+        (base.locationId ? [base.locationId] : []);
+      if (locsForUpsert.length === 0 && !effectiveLocId) return;
+
+      const ops: any[] = [];
+      const locLoop = locsForUpsert.length ? locsForUpsert : [effectiveLocId!];
+      for (const catId of oids) {
+        for (const lid of locLoop) {
+          for (const c of chs) {
+            ops.push({
+              updateOne: {
+                filter: { tenantId: tenantOid, categoryId: catId, locationId: lid, channel: c },
+                update: {
+                  $set: { visible: false, updatedAt: now },
+                  $unset: { removed: '' },
+                  $setOnInsert: {
+                    tenantId: tenantOid,
+                    categoryId: catId,
+                    locationId: lid,
+                    channel: c,
+                    createdAt: now,
+                  },
+                },
+                upsert: true,
+              },
+            });
+          }
+        }
+      }
+      if (ops.length) await categoryVisibilityCol().bulkWrite(ops, { ordered: false });
+    };
+
+    const hardExcludeEverywhere = async (locIds: ObjectId[] | null) => {
+      const base = buildFilter(locIds);
+      // upsert removed:true and clear visible
+      const locsForUpsert: ObjectId[] =
+        (base.locationId && base.locationId.$in) ? base.locationId.$in :
+        (base.locationId ? [base.locationId] : []);
+      if (locsForUpsert.length === 0 && !effectiveLocId) return;
+
+      const ops: any[] = [];
+      const locLoop = locsForUpsert.length ? locsForUpsert : [effectiveLocId!];
+      for (const catId of oids) {
+        for (const lid of locLoop) {
           for (const c of chs) {
             ops.push({
               updateOne: {
@@ -1032,13 +1075,15 @@ export async function bulkSetCategoryVisibility(req: Request, res: Response, nex
       if (ops.length) await categoryVisibilityCol().bulkWrite(ops, { ordered: false });
     };
 
-    // --- branch-specific ---
+    // Branch path
     if (effectiveLocId) {
       if (hardExclude === true) {
-        await writeHardExclude(null);
+        await hardExcludeEverywhere(null);
+      } else if (visible === true) {
+        await includeEverywhere(null);
       } else {
-        // ✅ Clear tombstones first if visible turned true OR hardExclude explicitly false
-        if (visible === true || hardExclude === false) {
+        // visible === false (soft hide) — also respects hardExclude===false to de-tombstone
+        if (hardExclude === false) {
           await categoryVisibilityCol().updateMany(
             {
               tenantId: tenantOid,
@@ -1050,13 +1095,10 @@ export async function bulkSetCategoryVisibility(req: Request, res: Response, nex
             { $unset: { removed: '' }, $set: { updatedAt: now } }
           );
         }
-        await writeSoftVisible(null);
+        await softHideEverywhere(null);
       }
 
-      const docs = await categoriesCol()
-        .find({ _id: { $in: oids }, tenantId: tenantOid })
-        .toArray();
-
+      const docs = await categoriesCol().find({ _id: { $in: oids }, tenantId: tenantOid }).toArray();
       await auditLog({
         userId,
         action: 'CATEGORY_BULK_VISIBILITY',
@@ -1072,17 +1114,16 @@ export async function bulkSetCategoryVisibility(req: Request, res: Response, nex
       });
     }
 
-    // --- all locations ---
-    const locDocs = await locationsCol()
-      .find({ tenantId: tenantOid }, { projection: { _id: 1 } })
-      .toArray();
+    // All locations path
+    const locDocs = await locationsCol().find({ tenantId: tenantOid }, { projection: { _id: 1 } }).toArray();
     const allLocIds = locDocs.map((l: any) => l._id as ObjectId);
 
     if (hardExclude === true) {
-      await writeHardExclude(allLocIds);
+      await hardExcludeEverywhere(allLocIds);
+    } else if (visible === true) {
+      await includeEverywhere(allLocIds);
     } else {
-      // ✅ same restore logic globally
-      if (visible === true || hardExclude === false) {
+      if (hardExclude === false) {
         await categoryVisibilityCol().updateMany(
           {
             tenantId: tenantOid,
@@ -1094,13 +1135,10 @@ export async function bulkSetCategoryVisibility(req: Request, res: Response, nex
           { $unset: { removed: '' }, $set: { updatedAt: now } }
         );
       }
-      await writeSoftVisible(allLocIds);
+      await softHideEverywhere(allLocIds);
     }
 
-    const docs = await categoriesCol()
-      .find({ _id: { $in: oids }, tenantId: tenantOid })
-      .toArray();
-
+    const docs = await categoriesCol().find({ _id: { $in: oids }, tenantId: tenantOid }).toArray();
     await auditLog({
       userId,
       action: 'CATEGORY_BULK_VISIBILITY',
