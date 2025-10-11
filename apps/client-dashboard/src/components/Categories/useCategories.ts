@@ -287,7 +287,7 @@ export function useCategories() {
     },
   });
 
-  // ----- FIXED: location-scoped channel changes should use overlay, not global update -----
+  // ----- FIXED: location-scoped channel changes should use overlay + force refetch of branch caches -----
   type RenameOpts = {
     channel?: Channel | 'both';
     includeLocationIds?: string[];
@@ -310,15 +310,13 @@ export function useCategories() {
       const trimmed = newName.trim();
       if (!trimmed) throw new Error('Name is required.');
 
-      // Are we acting inside a specific location?
       const isBranchScoped = !!locationIdForQuery;
 
-      // If we're in a location scope, DO NOT let channel edits flip the global channelScope.
-      // Strip channel from the payload we send to updateCategory; we'll translate it to overlays.
+      // Don’t let channel propagate globally when in a branch; apply via overlays instead.
       const desiredChannel = isBranchScoped ? opts?.channel : undefined;
       const { channel: _omit, ...optsWithoutChannel } = opts ?? {};
 
-      // If name is unchanged, still allow advanced opts (minus channel in branch scope) to be pushed.
+      // If name unchanged, still push advanced opts (minus channel for branch scope)
       if (trimmed.toLowerCase() === current.name.toLowerCase()) {
         const res = await updateCategory(
           id,
@@ -327,23 +325,23 @@ export function useCategories() {
           isBranchScoped ? (optsWithoutChannel as RenameOpts) : opts
         );
 
-        // Apply per-location/channel overlay if the dialog attempted a channel change in branch scope.
+        // Apply overlays for this branch if user changed channels
         if (isBranchScoped && desiredChannel) {
-          const idList = [id];
+          const ids = [id];
           if (desiredChannel === 'both') {
             await Promise.allSettled([
-              bulkSetCategoryVisibility(idList, true, token as string, locationIdForQuery, 'dine-in'),
-              bulkSetCategoryVisibility(idList, true, token as string, locationIdForQuery, 'online'),
+              bulkSetCategoryVisibility(ids, true, token as string, locationIdForQuery, 'dine-in'),
+              bulkSetCategoryVisibility(ids, true, token as string, locationIdForQuery, 'online'),
             ]);
           } else if (desiredChannel === 'dine-in') {
             await Promise.allSettled([
-              bulkSetCategoryVisibility(idList, true, token as string, locationIdForQuery, 'dine-in'),
-              bulkSetCategoryVisibility(idList, false, token as string, locationIdForQuery, 'online'),
+              bulkSetCategoryVisibility(ids, true, token as string, locationIdForQuery, 'dine-in'),
+              bulkSetCategoryVisibility(ids, false, token as string, locationIdForQuery, 'online'),
             ]);
           } else if (desiredChannel === 'online') {
             await Promise.allSettled([
-              bulkSetCategoryVisibility(idList, false, token as string, locationIdForQuery, 'dine-in'),
-              bulkSetCategoryVisibility(idList, true, token as string, locationIdForQuery, 'online'),
+              bulkSetCategoryVisibility(ids, false, token as string, locationIdForQuery, 'dine-in'),
+              bulkSetCategoryVisibility(ids, true, token as string, locationIdForQuery, 'online'),
             ]);
           }
         }
@@ -351,10 +349,9 @@ export function useCategories() {
         return res;
       }
 
-      // Name is changing — keep uniqueness checks in current list
+      // Name changed → keep uniqueness within current list
       if (findByName(trimmed)) throw new Error('A category with this name already exists.');
 
-      // Update the category name (and advanced opts except channel in branch scope)
       const updated = await updateCategory(
         id,
         trimmed,
@@ -362,7 +359,7 @@ export function useCategories() {
         isBranchScoped ? (optsWithoutChannel as RenameOpts) : opts
       );
 
-      // Optimistic items rename in current scope
+      // Optimistic item rename within the current scope
       const oldName = current.name;
       queryClient.setQueryData<TMenuItem[]>(
         itemsKeyCurrent as any,
@@ -372,51 +369,73 @@ export function useCategories() {
           )
       );
 
-      // Persist item category rename in backend for items currently in scope
+      // Persist item renames for items currently in scope
       const list =
         queryClient.getQueryData<TMenuItem[]>(itemsKeyCurrent as any) ??
         (await getMenuItems(token as string, {
           locationId: locationIdForQuery,
           channel: channelForQuery,
         }));
-
       await Promise.allSettled(
         list
           .filter((it) => it.category === oldName)
           .map((it) => updateMenuItem(it.id, { category: updated.name }, token as string))
       );
 
-      // Apply per-location/channel overlay if user changed channel while in a branch scope
+      // Apply overlays (branch scope channel change)
       if (isBranchScoped && desiredChannel) {
-        const idList = [id];
+        const ids = [id];
         if (desiredChannel === 'both') {
           await Promise.allSettled([
-            bulkSetCategoryVisibility(idList, true, token as string, locationIdForQuery, 'dine-in'),
-            bulkSetCategoryVisibility(idList, true, token as string, locationIdForQuery, 'online'),
+            bulkSetCategoryVisibility(ids, true, token as string, locationIdForQuery, 'dine-in'),
+            bulkSetCategoryVisibility(ids, true, token as string, locationIdForQuery, 'online'),
           ]);
         } else if (desiredChannel === 'dine-in') {
           await Promise.allSettled([
-            bulkSetCategoryVisibility(idList, true, token as string, locationIdForQuery, 'dine-in'),
-            bulkSetCategoryVisibility(idList, false, token as string, locationIdForQuery, 'online'),
+            bulkSetCategoryVisibility(ids, true, token as string, locationIdForQuery, 'dine-in'),
+            bulkSetCategoryVisibility(ids, false, token as string, locationIdForQuery, 'online'),
           ]);
         } else if (desiredChannel === 'online') {
           await Promise.allSettled([
-            bulkSetCategoryVisibility(idList, false, token as string, locationIdForQuery, 'dine-in'),
-            bulkSetCategoryVisibility(idList, true, token as string, locationIdForQuery, 'online'),
+            bulkSetCategoryVisibility(ids, false, token as string, locationIdForQuery, 'dine-in'),
+            bulkSetCategoryVisibility(ids, true, token as string, locationIdForQuery, 'online'),
           ]);
         }
       }
 
       return updated;
     },
-    onSuccess: (_updated) => {
-      // Do NOT merge locally; refetch to respect overlays/tombstones
+    onSuccess: async (_updated, vars) => {
+      // Force-refresh the exact caches that reflect per-branch/per-channel visibility
+      queryClient.invalidateQueries({ queryKey: catsKeyCurrent as any });
+      queryClient.invalidateQueries({ queryKey: catsKeyAll as any });
+      queryClient.invalidateQueries({ queryKey: catsKeyDineIn as any });
+      queryClient.invalidateQueries({ queryKey: catsKeyOnline as any });
+
+      // Also kick all categories caches for this tenant (safe catch-all)
       queryClient.invalidateQueries({
         predicate: (q) => {
           const k = q.queryKey as any[];
           return Array.isArray(k) && k[0] === 'categories' && k[1] === token;
         },
       });
+
+      // Small optimistic UX: if we’re in a branch scope and user selected a single channel,
+      // remove the row immediately when the current view is the *other* channel.
+      const desiredChannel = (vars as any)?.opts?.channel as Channel | 'both' | undefined;
+      if (locationIdForQuery && desiredChannel && desiredChannel !== 'both') {
+        if (desiredChannel === 'dine-in' && chanKey === 'online') {
+          queryClient.setQueryData<Category[]>(
+            catsKeyCurrent as any,
+            (prev) => (prev ?? []).filter((c) => c.id !== (vars as any).id)
+          );
+        } else if (desiredChannel === 'online' && chanKey === 'dine-in') {
+          queryClient.setQueryData<Category[]>(
+            catsKeyCurrent as any,
+            (prev) => (prev ?? []).filter((c) => c.id !== (vars as any).id)
+          );
+        }
+      }
 
       toastSuccess('Category updated');
       broadcast();

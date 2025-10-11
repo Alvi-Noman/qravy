@@ -507,6 +507,8 @@ export default function CategoriesPage() {
                         : existingNames
                     }
                     isSubmitting={createMut.isPending || renameMut.isPending}
+                    /* ✅ pass the id so the dialog can read overlay flags for the current branch */
+                    initialCategoryId={editing?.id}
                     // Advanced defaults when editing: reflect true channel/branch rules
                     {...(editing
                       ? {
@@ -536,7 +538,6 @@ export default function CategoriesPage() {
                             includeLocationIds: opts?.includeLocationIds,
                             excludeLocationIds: opts?.excludeLocationIds,
                             // pass through if dialog provides hardExclude
-                            // @ts-expect-error - optional from dialog
                             hardExclude: (opts as any)?.hardExclude,
                           },
                         });

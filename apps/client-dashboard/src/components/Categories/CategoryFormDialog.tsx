@@ -1,9 +1,12 @@
+// apps/client-dashboard/src/components/categories/CategoryFormDialog.tsx
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { AnimatePresence, motion } from 'framer-motion';
 import { useQuery } from '@tanstack/react-query';
 import { useScope } from '../../context/ScopeContext';
 import { fetchLocations, type Location } from '../../api/locations';
+import { useAuthContext } from '../../context/AuthContext';
+import { getCategories, type Category } from '../../api/categories';
 
 type FormValues = { name: string };
 
@@ -14,6 +17,48 @@ type SubmitOptions = {
   locationId?: string;
 };
 
+// Subscribe to the per-branch channel lists so the dialog updates as soon as data arrives
+function useChannelFlagsForCategory(categoryId: string | undefined, open: boolean) {
+  const { token } = useAuthContext();
+  const { activeLocationId } = useScope();
+  const lidKey = activeLocationId || 'all';
+
+  // only query when dialog is open, in a branch scope, and we have a category id
+  const enabled = !!open && !!token && !!activeLocationId && !!categoryId;
+
+  const dineInQ = useQuery<Category[]>({
+    queryKey: ['categories', token, lidKey, 'dine-in'],
+    enabled,
+    queryFn: () =>
+      getCategories(token as string, {
+        locationId: activeLocationId as string,
+        channel: 'dine-in',
+      }),
+    staleTime: 0,
+    refetchOnWindowFocus: false,
+  });
+
+  const onlineQ = useQuery<Category[]>({
+    queryKey: ['categories', token, lidKey, 'online'],
+    enabled,
+    queryFn: () =>
+      getCategories(token as string, {
+        locationId: activeLocationId as string,
+        channel: 'online',
+      }),
+    staleTime: 0,
+    refetchOnWindowFocus: false,
+  });
+
+  // Return undefined until data is present so the caller can avoid seeding with wrong values
+  const dineIn =
+    enabled && dineInQ.data ? dineInQ.data.some((c) => c.id === categoryId) : undefined;
+  const online =
+    enabled && onlineQ.data ? onlineQ.data.some((c) => c.id === categoryId) : undefined;
+
+  return { dineIn, online };
+}
+
 export default function CategoryFormDialog({
   open,
   title,
@@ -23,6 +68,8 @@ export default function CategoryFormDialog({
   initialChannel, // 'both' | 'dine-in' | 'online'
   initialIncludedLocationIds,
   initialExcludedLocationIds,
+  // When editing an existing category, pass its id so we can read overlays
+  initialCategoryId,
   onClose,
   onSubmit,
   isSubmitting = false,
@@ -34,6 +81,7 @@ export default function CategoryFormDialog({
   initialChannel?: 'both' | 'dine-in' | 'online';
   initialIncludedLocationIds?: string[];
   initialExcludedLocationIds?: string[];
+  initialCategoryId?: string;
   onClose: () => void;
   onSubmit: (name: string, opts?: SubmitOptions) => void | Promise<void>;
   isSubmitting?: boolean;
@@ -49,6 +97,9 @@ export default function CategoryFormDialog({
   });
 
   const { activeLocationId, channel: scopeChannel } = useScope();
+
+  // Read current per-branch channel presence (only meaningful when editing in a branch)
+  const { dineIn, online } = useChannelFlagsForCategory(initialCategoryId, open);
 
   // Channel checkboxes (must NOT touch branches)
   const [chDineIn, setChDineIn] = useState(true);
@@ -73,29 +124,60 @@ export default function CategoryFormDialog({
 
     reset({ name: initialName });
 
-    if (initialChannel === 'dine-in') {
-      setChDineIn(true);
-      setChOnline(false);
-    } else if (initialChannel === 'online') {
-      setChDineIn(false);
-      setChOnline(true);
+    // If we're in a specific location and editing an existing category, prefer overlay flags
+    if (
+      activeLocationId &&
+      initialCategoryId &&
+      typeof dineIn === 'boolean' &&
+      typeof online === 'boolean'
+    ) {
+      setChDineIn(dineIn);
+      setChOnline(online);
     } else {
-      // 'both' or undefined → follow scope channel, else both
-      if (scopeChannel === 'dine-in') {
+      // Fall back to incoming initialChannel/scope rules
+      if (initialChannel === 'dine-in') {
         setChDineIn(true);
         setChOnline(false);
-      } else if (scopeChannel === 'online') {
+      } else if (initialChannel === 'online') {
         setChDineIn(false);
         setChOnline(true);
       } else {
-        setChDineIn(true);
-        setChOnline(true);
+        // 'both' or undefined → follow scope channel, else both
+        if (scopeChannel === 'dine-in') {
+          setChDineIn(true);
+          setChOnline(false);
+        } else if (scopeChannel === 'online') {
+          setChDineIn(false);
+          setChOnline(true);
+        } else {
+          setChDineIn(true);
+          setChOnline(true);
+        }
       }
     }
 
     // user hasn’t touched branches yet for this open
     setBranchesTouched(false);
-  }, [open, initialName, initialChannel, scopeChannel, reset]);
+  }, [
+    open,
+    initialName,
+    initialChannel,
+    scopeChannel,
+    reset,
+    activeLocationId,
+    initialCategoryId,
+    dineIn,
+    online,
+  ]);
+
+  // Re-sync channel checkboxes if overlay-driven flags change while dialog is open
+  useEffect(() => {
+    if (!open) return;
+    if (activeLocationId && initialCategoryId) {
+      if (typeof dineIn === 'boolean') setChDineIn(dineIn);
+      if (typeof online === 'boolean') setChOnline(online);
+    }
+  }, [open, activeLocationId, initialCategoryId, dineIn, online]);
 
   /**
    * Reseed branches whenever:
@@ -178,9 +260,9 @@ export default function CategoryFormDialog({
     opts.channel = chDineIn && chOnline ? 'both' : chDineIn ? 'dine-in' : 'online';
 
     // Branch logic
-    if (activeLocationId) {
-      opts.locationId = activeLocationId;
-    } else if (allLocations.length) {
+    opts.locationId = activeLocationId ?? undefined;
+
+    if (!activeLocationId && allLocations.length) {
       const allIds = allLocations.map((l) => l.id);
       const checked = Array.from(selectedBranchIds);
       const unchecked = allIds.filter((id) => !selectedBranchIds.has(id));
