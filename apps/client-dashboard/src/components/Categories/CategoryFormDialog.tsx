@@ -187,8 +187,10 @@ export default function CategoryFormDialog({
    *  - AND the incoming include/exclude (or locations) change
    *  - BUT only if the user has not manually changed the branch checkboxes (branchesTouched=false)
    *
-   * This fixes the “looks right immediately after save, but wrong after refresh”
-   * because the first paint used default selection, then props arrived later.
+   * In All-locations edit:
+   * - For single-base-channel categories (initialChannel === 'dine-in' | 'online'),
+   *   ignore includeLocationIds that originated from overlays on the *other* channel.
+   *   Default to "all selected" unless there are explicit excludes.
    */
   const lastSeedSigRef = useRef<string>('');
   useEffect(() => {
@@ -205,18 +207,27 @@ export default function CategoryFormDialog({
       locs: allLocations.map((l) => l.id).sort(),
       inc: [...include].sort(),
       exc: [...exclude].sort(),
+      ch: initialChannel ?? 'both',
     });
     if (sig === lastSeedSigRef.current) return;
 
-    if (include.length > 0) {
-      setSelectedBranchIds(new Set(include));
-    } else if (exclude.length > 0) {
-      const allIds = allLocations.map((l) => l.id);
+    const allIds = allLocations.map((l) => l.id);
+    const isSingleBaseChannel = initialChannel === 'dine-in' || initialChannel === 'online';
+
+    if (exclude.length > 0) {
       const keep = allIds.filter((id) => !exclude.includes(id));
       setSelectedBranchIds(new Set(keep));
+    } else if (include.length > 0) {
+      // If the category is single-channel by *base* scope, do not let a one-off
+      // include list (likely from the other channel) drive the seed selection.
+      if (isSingleBaseChannel) {
+        setSelectedBranchIds(new Set(allIds));
+      } else {
+        setSelectedBranchIds(new Set(include));
+      }
     } else {
       // default: select all
-      setSelectedBranchIds(new Set(allLocations.map((l) => l.id)));
+      setSelectedBranchIds(new Set(allIds));
     }
 
     lastSeedSigRef.current = sig;
@@ -227,6 +238,7 @@ export default function CategoryFormDialog({
     initialIncludedLocationIds,
     initialExcludedLocationIds,
     branchesTouched,
+    initialChannel,
   ]);
 
   const validateUnique = (value: string) => {

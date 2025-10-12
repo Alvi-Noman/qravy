@@ -185,7 +185,70 @@ export function useCategories() {
     });
   }
 
-  // Cross-scope patchers (mirror useMenuItems) — used only for item availability-by-category
+  // ✅ Ensure "All locations" caches reflect a branch-scoped channel enable immediately
+  function ensureAllLocationsCacheReflectsBranchChange(params: {
+    catId: string;
+    lid: string;                      // locationId where channel changed
+    changedChannel: Channel | 'both'; // what was set in the branch dialog
+  }) {
+    const { catId, lid, changedChannel } = params;
+
+    const allKeys = [
+      ['categories', token, 'all', 'all'],
+      ['categories', token, 'all', 'dine-in'],
+      ['categories', token, 'all', 'online'],
+    ] as const;
+
+    for (const key of allKeys) {
+      const list = queryClient.getQueryData<Category[]>(key as any);
+      if (!Array.isArray(list)) continue;
+
+      const idx = list.findIndex((c) => c.id === catId);
+      if (idx < 0) continue;
+
+      const current = list[idx] as any;
+
+      const includeSet = new Set<string>((current.includeLocationIds ?? []).filter(Boolean));
+      const excludeSet = new Set<string>((current.excludeLocationIds ?? []).filter(Boolean));
+
+      // Turning ON a channel in a branch => that branch must be included globally
+      includeSet.add(lid);
+      excludeSet.delete(lid);
+
+      // Channel presence badge on All-locations row (optimistic)
+      const old = current.channelStatus ?? { dineIn: true, online: true };
+      const nextStatus = { ...old };
+      if (changedChannel === 'dine-in') nextStatus.dineIn = true;
+      else if (changedChannel === 'online') nextStatus.online = true;
+      else if (changedChannel === 'both') {
+        nextStatus.dineIn = true;
+        nextStatus.online = true;
+      }
+
+      const nextChannel =
+        nextStatus.dineIn && nextStatus.online
+          ? undefined
+          : nextStatus.dineIn
+          ? 'dine-in'
+          : nextStatus.online
+          ? 'online'
+          : undefined;
+
+      const patched = {
+        ...current,
+        channelStatus: nextStatus,
+        channel: nextChannel,
+        includeLocationIds: Array.from(includeSet),
+        excludeLocationIds: Array.from(excludeSet),
+      };
+
+      const next = list.slice();
+      next[idx] = patched as Category;
+      queryClient.setQueryData<Category[]>(key as any, next);
+    }
+  }
+
+  // Cross-scope patchers (used only for item availability-by-category)
   function patchAllScopesByCategory(
     name: string,
     active: boolean,
@@ -437,6 +500,15 @@ export function useCategories() {
         }
       }
 
+      // ✅ mirror branch channel enable into All-locations caches immediately
+      if (locationIdForQuery && desiredChannel) {
+        ensureAllLocationsCacheReflectsBranchChange({
+          catId: (vars as any).id,
+          lid: locationIdForQuery,
+          changedChannel: desiredChannel,
+        });
+      }
+
       toastSuccess('Category updated');
       broadcast();
     },
@@ -464,7 +536,7 @@ export function useCategories() {
     queryClient.getQueriesData<Category[]>({ queryKey: ['categories', token] }).forEach(([key, data]) => {
       if (!Array.isArray(data)) return;
       const k = key as any[];
-           const cacheChan = k[3] as string;
+      const cacheChan = k[3] as string;
       if (cacheChan === chan) {
         queryClient.setQueryData<Category[]>(key as any, filterOutCatId(id));
       }
@@ -472,7 +544,7 @@ export function useCategories() {
     // Do not touch 'all' lists; the category may still exist in the other channel.
   }
 
-  // ---------- NEW: item removal helpers to mirror backend cascades ----------
+  // ---------- item removal helpers to mirror backend cascades ----------
   const filterOutItemsByCategory =
     (name: string) =>
     (prev: TMenuItem[] | undefined): TMenuItem[] | undefined =>
@@ -668,15 +740,12 @@ export function useCategories() {
       // ---------------------------------------------------------------------
 
       // Keep previous behavior for onboarding based on current scope list emptiness
-      const next = queryClient.setQueryData<Category[]>(
+      queryClient.setQueryData<Category[]>(
         catsKeyCurrent as any,
         (prev) => (prev ?? []).filter((c) => c.id !== id)
-      ) as Category[] | undefined;
+      );
 
-      // 🔁 NEW: Recompute tenant "hasCategory" globally (across ALL lids/channels),
-      // so the checklist reflects deletes done from a branch scope as well.
-      // We look through every categories cache for this token; if none have any rows,
-      // we flip hasCategory to false. Otherwise keep it true.
+      // 🔁 Recompute tenant "hasCategory" globally
       const allCatCaches = queryClient.getQueriesData<Category[]>({ queryKey: ['categories', token] });
       let anyCategoryLeftAnywhere = false;
       for (const [_key, data] of allCatCaches) {
@@ -691,7 +760,7 @@ export function useCategories() {
           ? {
               ...prev,
               onboardingProgress: {
-                hasCategory: anyCategoryLeftAnywhere, // ✅ reflects global state
+                hasCategory: anyCategoryLeftAnywhere,
                 hasMenuItem: prev.onboardingProgress?.hasMenuItem ?? false,
                 checklist: prev.onboardingProgress?.checklist,
               },
@@ -699,8 +768,7 @@ export function useCategories() {
           : prev
       );
 
-      // Optional: nudge the "All locations" caches if this id vanished everywhere
-      // (keeps the All-locations tabs perfectly in sync without a hard refetch)
+      // Optional: nudge the "All-locations" caches if this id vanished everywhere
       purgeFromAllLocationsIfAbsentEverywhere(id);
 
       // Refresh items/tenant in current scope
@@ -709,7 +777,7 @@ export function useCategories() {
       queryClient.invalidateQueries({ queryKey: onIndicatorKey as any });
       queryClient.invalidateQueries({ queryKey: ['tenant', token] });
 
-      // 🔁 Invalidate ALL category caches (any lid/channel) after server-side delete/tombstone
+      // Invalidate ALL category caches
       queryClient.invalidateQueries({
         predicate: (q) => {
           const k = q.queryKey as any[];
@@ -778,7 +846,8 @@ export function useCategories() {
       });
       if (e instanceof Error) toastError(e.message);
     },
-    onSuccess: ({ visible, matchedCount, modifiedCount }) => {
+    // reflect branch "enable" immediately in All-locations caches
+    onSuccess: ({ visible, matchedCount, modifiedCount }, vars) => {
       // Refresh categories (visibility affects lists)
       queryClient.invalidateQueries({
         predicate: (q) => {
@@ -786,6 +855,20 @@ export function useCategories() {
           return Array.isArray(k) && k[0] === 'categories' && k[1] === token;
         },
       });
+
+      // If this was a branch-scoped "visible:true" operation with a specific channel,
+      // mirror those includes into All-locations caches now.
+      if (visible === true && locationIdForQuery && (vars?.channel ?? channelForQuery)) {
+        const changedChan = (vars?.channel ?? channelForQuery)!;
+        (vars?.ids ?? []).forEach((id) =>
+          ensureAllLocationsCacheReflectsBranchChange({
+            catId: id,
+            lid: locationIdForQuery,
+            changedChannel: changedChan,
+          })
+        );
+      }
+
       const chan = channelForQuery ? (channelForQuery === 'dine-in' ? ' • Dine-In' : ' • Online') : '';
       const loc = locationIdForQuery ? ' in this location' : ' across all locations';
       const verb = visible ? 'Shown' : 'Hidden';
