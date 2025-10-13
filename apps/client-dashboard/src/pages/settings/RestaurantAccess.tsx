@@ -11,6 +11,8 @@ import {
   LinkIcon,
   CheckCircleIcon,
   PlusIcon,
+  PencilSquareIcon,
+  TrashIcon,
 } from '@heroicons/react/24/outline';
 import api from '../../api/auth';
 
@@ -61,10 +63,14 @@ export default function RestaurantAccess(): JSX.Element {
   const [devices, setDevices] = useState<Device[]>([]);
   const [query, setQuery] = useState('');
 
-  // Email input/error state
+  // Email input/error state (used for add + edit)
   const centralEmailRef = useRef<HTMLInputElement>(null);
-  const emailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(settings.centralEmail);
+  const isValidEmail = (v: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v.trim());
   const [emailError, setEmailError] = useState<string | null>(null);
+
+  // Modern SaaS inline modes for central email
+  const [mode, setMode] = useState<'idle' | 'editing' | 'confirm-remove'>('idle');
+  const [emailDraft, setEmailDraft] = useState<string>('');
 
   useEffect(() => {
     let mounted = true;
@@ -76,6 +82,7 @@ export default function RestaurantAccess(): JSX.Element {
         setLocations(locs);
         setDevices(devs);
         setSettings((prev) => ({ ...prev, ...s }));
+        setEmailDraft(s.centralEmail || '');
       } finally {
         setLoading(false);
       }
@@ -87,36 +94,74 @@ export default function RestaurantAccess(): JSX.Element {
 
   // Clear error as user fixes input
   useEffect(() => {
-    if (emailError && emailValid) setEmailError(null);
-  }, [settings.centralEmail, emailError, emailValid]);
+    if (emailError && isValidEmail(emailDraft)) setEmailError(null);
+  }, [emailDraft, emailError]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     return devices.filter((d) => {
       if (!q) return true;
-      const hay = [
-        d.label || '',
-        d.locationName || '',
-        d.os || '',
-        d.browser || '',
-      ]
-        .join(' ')
-        .toLowerCase();
+      const hay = [d.label || '', d.locationName || '', d.os || '', d.browser || ''].join(' ').toLowerCase();
       return hay.includes(q);
     });
   }, [devices, query]);
 
-  const handleSaveSettings = async () => {
-    // Validate on click; show error if invalid
-    if (!emailValid) {
+  // ADD (when no email yet)
+  const handleAddEmail = async () => {
+    const val = emailDraft.trim();
+    if (!isValidEmail(val)) {
       setEmailError('Please enter a valid email (for example: name@domain.com).');
       centralEmailRef.current?.focus();
       return;
     }
     setSavingSettings(true);
     try {
-      const updated = await updateAccessSettings(settings);
+      const updated = await updateAccessSettings({ ...settings, centralEmail: val });
       setSettings(updated);
+      setEmailDraft(updated.centralEmail);
+      setMode('idle');
+    } finally {
+      setSavingSettings(false);
+    }
+  };
+
+  // EDIT (when email exists)
+  const startEdit = () => {
+    setEmailDraft(settings.centralEmail || '');
+    setMode('editing');
+    setTimeout(() => centralEmailRef.current?.focus(), 0);
+  };
+  const cancelEdit = () => {
+    setEmailDraft(settings.centralEmail || '');
+    setMode('idle');
+    setEmailError(null);
+  };
+  const saveEdit = async () => {
+    const val = emailDraft.trim();
+    if (!isValidEmail(val)) {
+      setEmailError('Please enter a valid email (for example: name@domain.com).');
+      return;
+    }
+    setSavingSettings(true);
+    try {
+      const updated = await updateAccessSettings({ ...settings, centralEmail: val });
+      setSettings(updated);
+      setMode('idle');
+    } finally {
+      setSavingSettings(false);
+    }
+  };
+
+  // REMOVE
+  const confirmRemove = () => setMode('confirm-remove');
+  const cancelRemove = () => setMode('idle');
+  const removeEmail = async () => {
+    setSavingSettings(true);
+    try {
+      const updated = await updateAccessSettings({ ...settings, centralEmail: '' });
+      setSettings(updated);
+      setEmailDraft('');
+      setMode('idle');
     } finally {
       setSavingSettings(false);
     }
@@ -138,10 +183,10 @@ export default function RestaurantAccess(): JSX.Element {
     );
   }
 
+  const hasEmail = !!settings.centralEmail;
   const showEmailError = !!emailError;
 
   return (
-    // Mark the page wrapper so we can read its bottom padding (pb-6)
     <div className="grid gap-4 pb-6" data-page-wrapper>
       {/* Title only */}
       <div>
@@ -149,7 +194,6 @@ export default function RestaurantAccess(): JSX.Element {
       </div>
 
       {/* Two-column layout: left "How it works" and right content */}
-      {/* Mark the section grid so the left panel can measure from this top edge */}
       <div className="grid gap-6 lg:grid-cols-3" data-section-grid>
         {/* Left: static "How it works" panel (sticky) */}
         <aside className="lg:sticky lg:top-0 lg:self-start">
@@ -158,49 +202,171 @@ export default function RestaurantAccess(): JSX.Element {
 
         {/* Right: main content */}
         <section className="lg:col-span-2 space-y-6">
-          {/* Email card (emphasized) */}
+          {/* Email card (modern SaaS states) */}
           <div className="rounded-xl border-2 border-slate-900/10 bg-white p-5 shadow-md">
             <h3 className="text-[16px] font-semibold text-slate-900">Set up central access email</h3>
             <p className="mt-1 text-[12.5px] text-slate-700">
-              Use one email for all locations. Staff select their location once per device during login, and our system links that device to the chosen location.
+              Use one email for all locations. Staff select their location once per device during login, and our system
+              links that device to the chosen location.
             </p>
 
-            <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center">
-              <div className="relative grow">
-                <EnvelopeIcon className="pointer-events-none absolute left-2.5 top-3 h-5 w-5 text-slate-400" />
-                <input
-                  ref={centralEmailRef}
-                  value={settings.centralEmail}
-                  onChange={(e) => setSettings((s) => ({ ...s, centralEmail: e.target.value }))}
-                  placeholder="central-access@yourbrand.com"
-                  aria-invalid={showEmailError}
-                  aria-describedby={showEmailError ? 'centralEmailError' : undefined}
-                  className={`w-full h-11 rounded-md border pl-10 pr-3 text-[14px] focus:outline-none ${
-                    showEmailError ? 'border-rose-500' : 'border-[#e2e2e2]'
-                  }`}
-                />
+            {/* --- No email yet: ADD --- */}
+            {!hasEmail && mode !== 'confirm-remove' && (
+              <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center">
+                <div className="relative grow">
+                  <EnvelopeIcon className="pointer-events-none absolute left-2.5 top-3 h-5 w-5 text-slate-400" />
+                  <input
+                    ref={centralEmailRef}
+                    value={emailDraft}
+                    onChange={(e) => setEmailDraft(e.target.value)}
+                    placeholder="central-access@yourbrand.com"
+                    aria-invalid={showEmailError}
+                    aria-describedby={showEmailError ? 'centralEmailError' : undefined}
+                    className={`w-full h-11 rounded-md border pl-10 pr-3 text-[14px] focus:outline-none ${
+                      showEmailError ? 'border-rose-500' : 'border-[#e2e2e2]'
+                    }`}
+                    disabled={savingSettings}
+                  />
+                </div>
+                <button
+                  className="inline-flex h-11 min-w-[120px] items-center justify-center rounded-md bg-[#2e2e30] px-5 text-[13px] font-semibold text-white hover:bg-[#1f1f21] disabled:opacity-60 disabled:cursor-not-allowed transition"
+                  onClick={handleAddEmail}
+                  disabled={savingSettings || !emailDraft.trim()}
+                >
+                  {savingSettings ? (
+                    'Adding…'
+                  ) : (
+                    <>
+                      <PlusIcon className="mr-2 h-5 w-5" aria-hidden="true" />
+                      Add
+                    </>
+                  )}
+                </button>
               </div>
+            )}
 
-              <button
-                className="inline-flex h-11 min-w-[120px] items-center justify-center rounded-md bg-[#2e2e30] px-5 text-[13px] font-semibold text-white hover:bg-[#1f1f21] disabled:opacity-60 disabled:cursor-not-allowed transition"
-                onClick={handleSaveSettings}
-                disabled={savingSettings}
-              >
-                {savingSettings ? (
-                  'Adding…'
-                ) : (
-                  <>
-                    <PlusIcon className="mr-2 h-5 w-5" aria-hidden="true" />
-                    Add
-                  </>
-                )}
-              </button>
-            </div>
-
-            {showEmailError && (
+            {/* Inline error */}
+            {!hasEmail && showEmailError && (
               <p id="centralEmailError" className="mt-1 text-[11.5px] text-rose-600">
                 {emailError}
               </p>
+            )}
+
+            {/* --- Email exists: VIEW / EDIT / REMOVE --- */}
+            {hasEmail && mode !== 'confirm-remove' && (
+              <div className="mt-4 flex flex-col gap-3">
+                {/* VIEW state */}
+                {mode === 'idle' && (
+                  <div className="flex items-center justify-between rounded-xl border border-[#eaeaea] bg-[#fafafa] p-3">
+                    <div className="flex items-center gap-3">
+                      <div className="grid h-9 w-9 place-items-center rounded-full bg-slate-900 text-white">
+                        <EnvelopeIcon className="h-4 w-4" />
+                      </div>
+                      <div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="text-[14px] font-medium text-slate-900">{settings.centralEmail}</span>
+                          <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-[2px] text-[11px] font-medium text-emerald-700 ring-1 ring-emerald-200">
+                            <CheckCircleIcon className="h-3.5 w-3.5" />
+                            Active
+                          </span>
+                          {settings.emailVerified && (
+                            <span className="inline-flex items-center gap-1 rounded-full bg-sky-50 px-2 py-[2px] text-[11px] font-medium text-sky-700 ring-1 ring-sky-200">
+                              <CheckCircleIcon className="h-3.5 w-3.5" />
+                              Verified
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-[12px] text-slate-500">Used across all locations</div>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={startEdit}
+                        disabled={savingSettings}
+                        className="inline-flex items-center gap-1 rounded-lg border border-[#e6e6e6] bg-white px-3 py-1.5 text-[12px] hover:bg-slate-50 disabled:opacity-60"
+                      >
+                        <PencilSquareIcon className="h-4 w-4" />
+                        Change
+                      </button>
+                      <button
+                        onClick={confirmRemove}
+                        disabled={savingSettings}
+                        className="inline-flex items-center gap-1 rounded-lg border border-[#ffe1e1] bg-white px-3 py-1.5 text-[12px] text-red-600 hover:bg-red-50 disabled:opacity-60"
+                      >
+                        <TrashIcon className="h-4 w-4" />
+                        Remove
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* EDIT state */}
+                {mode === 'editing' && (
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+                    <div className="relative grow">
+                      <EnvelopeIcon className="pointer-events-none absolute left-2.5 top-3 h-5 w-5 text-slate-400" />
+                      <input
+                        ref={centralEmailRef}
+                        value={emailDraft}
+                        onChange={(e) => setEmailDraft(e.target.value)}
+                        placeholder="central-access@yourbrand.com"
+                        className={`w-full h-11 rounded-md border pl-10 pr-3 text-[14px] focus:outline-none ${
+                          showEmailError ? 'border-rose-500' : 'border-[#e2e2e2]'
+                        }`}
+                        disabled={savingSettings}
+                      />
+                      {showEmailError && (
+                        <p className="mt-1 text-[11.5px] text-rose-600">{emailError}</p>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={saveEdit}
+                        disabled={savingSettings || !emailDraft.trim()}
+                        className="inline-flex h-11 items-center justify-center rounded-md bg-[#2e2e30] px-4 text-[13px] font-semibold text-white hover:bg-[#1f1f21] disabled:opacity-60"
+                      >
+                        {savingSettings ? 'Saving…' : 'Save'}
+                      </button>
+                      <button
+                        onClick={cancelEdit}
+                        disabled={savingSettings}
+                        className="inline-flex h-11 items-center justify-center rounded-md border border-[#e6e6e6] bg-white px-4 text-[13px] hover:bg-slate-50 disabled:opacity-60"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* REMOVE confirm */}
+            {mode === 'confirm-remove' && (
+              <div className="mt-4 rounded-lg border border-[#ffe1e1] bg-red-50 p-3">
+                <div className="text-[13px] font-medium text-red-700">
+                  Remove central email?
+                </div>
+                <div className="mt-1 text-[12px] text-red-700/90">
+                  Devices won’t be able to sign in with the central email until you add one again.
+                </div>
+                <div className="mt-3 flex items-center gap-2">
+                  <button
+                    onClick={removeEmail}
+                    disabled={savingSettings}
+                    className="inline-flex items-center gap-1 rounded-md bg-red-600 px-3 py-1.5 text-[12px] font-semibold text-white hover:bg-red-700 disabled:opacity-60"
+                  >
+                    <TrashIcon className="h-4 w-4" />
+                    Remove
+                  </button>
+                  <button
+                    onClick={cancelRemove}
+                    disabled={savingSettings}
+                    className="rounded-md border border-[#e6e6e6] bg-white px-3 py-1.5 text-[12px] hover:bg-slate-50 disabled:opacity-60"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
             )}
           </div>
 
@@ -228,7 +394,7 @@ export default function RestaurantAccess(): JSX.Element {
               </div>
             </div>
 
-            {/* Minimal table: Device, Location, OS/Browser (Last seen removed) */}
+            {/* Minimal table: Device, Location, OS/Browser */}
             <div className="mt-3 overflow-x-auto">
               <table className="w-full text-left">
                 <thead className="text-[12px] text-slate-600">
@@ -330,20 +496,16 @@ function HowItWorksPanel() {
 
       const scrollerRect = scroller.getBoundingClientRect();
 
-      // Use the section grid top as the reference start
       const sectionGrid = panel.closest('[data-section-grid]') as HTMLElement | null;
       const gridTopFromScrollerTop = sectionGrid
         ? sectionGrid.getBoundingClientRect().top - scrollerRect.top
         : panel.getBoundingClientRect().top - scrollerRect.top;
 
-      // Read the page wrapper bottom padding (pb-6) so both sides match
       const pageWrapper = panel.closest('[data-page-wrapper]') as HTMLElement | null;
       const bottomPad = pageWrapper ? parseFloat(getComputedStyle(pageWrapper).paddingBottom || '0') : 0;
 
-      // Available height from grid top to bottom of scroller, minus page bottom padding
       const available = scroller.clientHeight - gridTopFromScrollerTop - bottomPad;
 
-      // Ensure we never cut below natural content height
       const natural = contentRef.current?.scrollHeight ?? 0;
 
       const next = Math.max(available, natural);
@@ -352,7 +514,6 @@ function HowItWorksPanel() {
 
     update();
 
-    // Keep it in sync on resize/scroll and when content reflows
     const ro = new ResizeObserver(update);
     ro.observe(scroller);
     if (contentRef.current) ro.observe(contentRef.current);
@@ -382,7 +543,6 @@ function HowItWorksPanel() {
             const Icon = s.icon as any;
             return (
               <li key={s.title} className="relative mb-12 last:mb-0 pl-6">
-                {/* Filled brand-black circle with white icon */}
                 <span className="absolute left-[-15px] top-1.5 inline-flex h-6 w-6 items-center justify-center rounded-full bg-[#2e2e30]">
                   <Icon className="h-3.5 w-3.5 text-white" aria-hidden="true" />
                 </span>
@@ -428,12 +588,10 @@ function Modal({
 /* --- API helpers (placeholder endpoints; wire to your backend) --- */
 async function getLocations(): Promise<Location[]> {
   const res = await api.get('/api/v1/locations');
-  // Expecting: { items: [{ id, name }, ...] }
   return res.data?.items || [];
 }
 async function listDevices(): Promise<Device[]> {
   const res = await api.get('/api/v1/access/devices');
-  // Expecting: { items: Device[] }
   return (res.data?.items || []).map((d: any) => ({
     ...d,
     lastSeenAt: d.lastSeenAt || d.updatedAt || new Date().toISOString(),

@@ -1,3 +1,4 @@
+// MagicLink.tsx
 import { useEffect, useRef, useState } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
@@ -47,14 +48,12 @@ export default function MagicLink() {
 
   useEffect(() => {
     if (isSuccess && data?.token && data.user) {
-      // Save the freshly verified token/user and set session (for UI)
       setVerifiedToken(data.token);
       setVerifiedUser(data.user);
       login(data.token, data.user);
 
       (async () => {
         try {
-          // 1) Fast path: recognized device (central) -> select tenant -> dashboard
           const lookupRes = await fetch(`${API_BASE_URL}/api/v1/access/devices/lookup`, {
             method: 'GET',
             headers: { Authorization: `Bearer ${data.token}` },
@@ -85,7 +84,6 @@ export default function MagicLink() {
             }
           }
 
-          // 2) Central-email list: use the same freshly verified token (no interceptor/refresh)
           const wsRes = await fetch(`${API_BASE_URL}/api/v1/access/workspaces`, {
             method: 'GET',
             headers: { Authorization: `Bearer ${data.token}` },
@@ -96,16 +94,13 @@ export default function MagicLink() {
           const items: Workspace[] = wsJson?.items || [];
 
           if (items.length > 0) {
-            // Central flow: show Workspaces [Join] -> Select Location
             setWorkspaces(items);
             return;
           }
 
-          // 3) Owner/admin flow: no central workspaces
           const u = data.user;
           navigate(u.tenantId ? '/dashboard' : '/create-restaurant', { replace: true });
         } catch {
-          // Owner/admin fallback
           const u = data.user;
           navigate(u.tenantId ? '/dashboard' : '/create-restaurant', { replace: true });
         }
@@ -122,7 +117,6 @@ export default function MagicLink() {
       if (!verifiedUser || !verifiedToken) return;
       setJoining(tenantId);
 
-      // Use freshly verified token to bind session to the selected tenant
       const sel = await fetch(`${API_BASE_URL}/api/v1/access/select-tenant`, {
         method: 'POST',
         headers: {
@@ -141,7 +135,6 @@ export default function MagicLink() {
       await login(nextToken, { ...verifiedUser, tenantId, isOnboarded: true });
       await reloadUser();
 
-      // Next step: select branch for this device
       navigate('/access/select-location', { replace: true });
     } catch {
       setJoining(null);
@@ -155,15 +148,9 @@ export default function MagicLink() {
 
   return (
     <div className="min-h-screen w-full bg-[#fcfcfc] font-inter flex items-center justify-center px-4">
-      {status === 'pending' && (
-        <div className="w-full max-w-lg rounded-2xl border border-[#ececec] bg-white p-6 text-center">
-          <div className="text-sm text-slate-700">Verifying…</div>
-        </div>
-      )}
-
       {status === 'error' && <AuthErrorScreen />}
 
-      {status === 'success' && (
+      {status === 'success' && workspaces.length > 0 && (
         <div className="w-full max-w-lg rounded-2xl border border-[#ececec] bg-white p-6 shadow">
           <h1 className="text-center text-[18px] font-semibold text-slate-900">
             You have access to these workspaces
@@ -193,12 +180,6 @@ export default function MagicLink() {
                 </button>
               </div>
             ))}
-
-            {workspaces.length === 0 && (
-              <div className="text-center text-[13px] text-slate-600">
-                No workspaces available for this email.
-              </div>
-            )}
           </div>
         </div>
       )}

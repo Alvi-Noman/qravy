@@ -183,7 +183,7 @@ export default function AIAssistantPanel({
       label: 'Set Up Restaurant Access',
       description: 'Give your team access so they can manage your menu and orders from each location.',
       cta: 'Set Up Access',
-      href: '/settings/team',
+      href: '/settings/Access',
       done: false,
     },
     {
