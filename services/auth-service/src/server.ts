@@ -1,4 +1,4 @@
-import { env } from '../../../packages/config/validateEnv.js';
+import { env } from '@muvance/config/validateEnv';
 import app from './app.js';
 import { MongoClient } from 'mongodb';
 import logger from './utils/logger.js';

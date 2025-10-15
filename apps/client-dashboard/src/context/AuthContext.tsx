@@ -19,6 +19,9 @@ export interface AuthUser {
   isVerified?: boolean;
   isOnboarded?: boolean;
   tenantId?: string | null;
+  capabilities?: string[];
+  role?: 'owner' | 'admin' | 'editor' | 'viewer';
+  sessionType?: 'member' | 'branch';
 }
 
 export type SessionInfo = {
@@ -42,6 +45,29 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 type RefreshResponse = { token?: string | null; user?: AuthUser | null };
 type MeResponse = { user: AuthUser; session?: SessionInfo | null };
 
+/** Safely merge an incoming user into previous, preserving capabilities if missing */
+function mergeUser(prev: AuthUser | null, incoming?: AuthUser | null): AuthUser | null {
+  if (!incoming && !prev) return null;
+  if (!incoming) return prev; // nothing to merge
+  const capabilities = incoming.capabilities ?? prev?.capabilities;
+  // We assert AuthUser because API `incoming` should always include required fields like `id`/`email`
+  const merged: AuthUser = {
+    ...(prev ?? ({} as AuthUser)),
+    ...incoming,
+    capabilities,
+  } as AuthUser;
+  return merged;
+}
+
+/** Derive client session shape from a user if possible (before /me returns). */
+function sessionFromUser(u?: AuthUser | null): SessionInfo | null {
+  if (!u?.sessionType) return null;
+  return {
+    type: u.sessionType === 'branch' ? 'central' : 'member',
+    locationId: null,
+  };
+}
+
 export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const [token, setTokenState] = useState<string | null>(null);
   const [user, setUser] = useState<AuthUser | null>(null);
@@ -64,8 +90,8 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     if (!t) return;
     try {
       const me = await getMe<MeResponse>(t);
-      setUser(me.user);
-      setSession(me.session ?? null);
+      setUser((prev) => mergeUser(prev, me.user));
+      setSession(me.session ?? sessionFromUser(me.user));
     } catch {
       setUser(null);
       setSession(null);
@@ -79,26 +105,31 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       const newToken = data.token ?? null;
       setToken(newToken);
 
-      if (data.user) {
-        setUser(data.user);
-        // fetch session details
+      if (data.user != null) {
+        // Merge provided user (may or may not include capabilities)
+        setUser((prev) => mergeUser(prev, data.user));
+        // Proactively derive a session from user in case /me isn't called or fails
+        setSession((prev) => prev ?? sessionFromUser(data.user));
+
+        // Optionally pull latest session/profile if we have a token
         if (newToken) {
           try {
             const me = await getMe<MeResponse>(newToken);
-            setUser(me.user);
-            setSession(me.session ?? null);
+            setUser((prev) => mergeUser(prev, me.user));
+            setSession(me.session ?? sessionFromUser(me.user));
           } catch {
-            setSession(null);
+            // keep any derived session if we had one
           }
         } else {
+          // no token -> clear session
           setSession(null);
         }
       } else if (newToken) {
-        // fallback: fetch user + session with new token
+        // Fallback: fetch user + session with new token
         try {
           const me = await getMe<MeResponse>(newToken);
-          setUser(me.user);
-          setSession(me.session ?? null);
+          setUser((prev) => mergeUser(prev, me.user));
+          setSession(me.session ?? sessionFromUser(me.user));
         } catch {
           setUser(null);
           setSession(null);
@@ -121,7 +152,9 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     (tok: string, usr: AuthUser): void => {
       setToken(tok);
       setUser(usr);
-      // session will be populated on next getMe/refresh
+      // Seed session immediately from user while /me loads
+      setSession(sessionFromUser(usr));
+      // session will be finalized on next getMe/refresh
     },
     [setToken]
   );

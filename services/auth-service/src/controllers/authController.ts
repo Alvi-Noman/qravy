@@ -8,12 +8,14 @@ import { sendMagicLinkEmail } from '../utils/email.js';
 import logger from '../utils/logger.js';
 import crypto from 'crypto';
 import type { UserDoc, RefreshToken } from '../models/User.js';
+import { computeCapabilities } from '@muvance/shared/utils/policy';
 
 config();
 
 let db: Db | null = null;
 
 type AccessClaims = { id: string; email: string } & JwtPayload;
+type Role = 'owner' | 'admin' | 'editor' | 'viewer';
 
 function isJwtPayloadWithIdEmail(payload: unknown): payload is AccessClaims {
   if (!payload || typeof payload !== 'object') return false;
@@ -46,6 +48,52 @@ function cleanupTokens(tokens: RefreshToken[] | undefined): RefreshToken[] {
 
 function generateMagicLinkToken(): string {
   return crypto.randomBytes(32).toString('hex');
+}
+
+/** Resolve a user's role (owner/admin/editor/viewer) from tenant ownership or memberships. */
+async function resolveUserRoleAndTenantInfo(user: UserDoc): Promise<{
+  role: Role | undefined;
+  tenantIdStr: string | null;
+  isOnboarded: boolean;
+}> {
+  let tenantIdStr: string | null = null;
+  let isOnboarded = false;
+  let role: Role | undefined = undefined;
+
+  if (user.tenantId) {
+    tenantIdStr = (user.tenantId as ObjectId).toString();
+
+    const tenant = await client
+      .db('authDB')
+      .collection('tenants')
+      .findOne({ _id: user.tenantId as ObjectId });
+
+    isOnboarded = Boolean(tenant?.onboardingCompleted);
+
+    // If this user is the tenant owner
+    if (tenant?.ownerId && (tenant.ownerId as ObjectId).toString() === (user._id as ObjectId).toString()) {
+      role = 'owner';
+    } else {
+      // Otherwise use membership role
+      const membership = await client
+        .db('authDB')
+        .collection('memberships')
+        .findOne({
+          tenantId: user.tenantId as ObjectId,
+          userId: user._id as ObjectId,
+          status: 'active',
+        });
+
+      if (membership && ['owner', 'admin', 'editor', 'viewer'].includes(membership.role)) {
+        role = membership.role as Role;
+      } else {
+        // Safe fallback if they belong to tenant but no explicit role
+        role = 'viewer';
+      }
+    }
+  }
+
+  return { role, tenantIdStr, isOnboarded };
 }
 
 export const sendMagicLink = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
@@ -131,15 +179,35 @@ export const verifyMagicLink = async (req: Request, res: Response, next: NextFun
       { $set: { isVerified: true }, $unset: { magicLinkToken: '', magicLinkTokenExpires: '' } }
     );
 
+    // ---- Resolve tenant + role, then compute capabilities
+    const { role, tenantIdStr, isOnboarded } = await resolveUserRoleAndTenantInfo(user);
+
+    // Dashboard login ⇒ member session
+    const sessionType: 'member' | 'branch' = 'member';
+
+    const capabilities = computeCapabilities({
+      role,
+      sessionType,
+    });
+
+    // ---- Sign access token with role + sessionType (+ tenantId)
     const accessToken = jwt.sign(
-      { id: (user._id as ObjectId).toString(), email: user.email },
+      {
+        id: (user._id as ObjectId).toString(),
+        email: user.email,
+        tenantId: tenantIdStr ?? undefined,
+        role,
+        sessionType,
+      },
       process.env.JWT_SECRET!,
       { expiresIn: '15m' }
     );
 
+    // Refresh token (keeps tenantId sticky if present)
     const refreshTokenValue = generateRefreshToken({
       id: (user._id as ObjectId).toString(),
       email: user.email,
+      ...(tenantIdStr ? { tenantId: tenantIdStr } : {}),
     });
 
     const tokenId = crypto.randomUUID();
@@ -175,18 +243,7 @@ export const verifyMagicLink = async (req: Request, res: Response, next: NextFun
       maxAge: 30 * 24 * 60 * 60 * 1000,
     });
 
-    // Compute tenantId and isOnboarded from tenant doc (not from user.isOnboarded)
-    let tenantIdStr: string | null = null;
-    let isOnboarded = false;
-    if (user.tenantId) {
-      tenantIdStr = (user.tenantId as ObjectId).toString();
-      const tenant = await client
-        .db('authDB')
-        .collection('tenants')
-        .findOne({ _id: user.tenantId as ObjectId });
-      isOnboarded = Boolean(tenant?.onboardingCompleted);
-    }
-
+    // ---- Return user with caps so UI can render correctly
     res.ok({
       token: accessToken,
       user: {
@@ -195,6 +252,9 @@ export const verifyMagicLink = async (req: Request, res: Response, next: NextFun
         isVerified: true,
         tenantId: tenantIdStr,
         isOnboarded,
+        role,
+        sessionType,
+        capabilities,
       },
     });
   } catch (error) {
@@ -297,12 +357,18 @@ export const refreshToken = async (req: Request, res: Response, next: NextFuncti
       { $set: { refreshTokens: cleanedTokens } }
     );
 
-    // Access token also carries tenantId from refresh payload (fallback to DB if set)
+    // Resolve role again (owner/admin/editor/viewer) from tenant/membership
+    const { role } = await resolveUserRoleAndTenantInfo(user);
+    const sessionType: 'member' | 'branch' = 'member'; // dashboard refresh ⇒ member
+
+    // Access token carries tenantId (from refresh payload or DB), plus role + sessionType
     const newAccessToken = jwt.sign(
       {
         id: (user._id as ObjectId).toString(),
         email: user.email,
         tenantId: tenantIdFromRefresh ?? (user.tenantId ? (user.tenantId as ObjectId).toString() : undefined),
+        role,
+        sessionType,
       },
       process.env.JWT_SECRET!,
       { expiresIn: '15m' }

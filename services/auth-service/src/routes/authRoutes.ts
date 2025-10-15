@@ -118,8 +118,8 @@ router.get('/sessions', authenticateJWT, async (req: Request, res: Response) => 
   return res.ok({ sessions });
 });
 
-// Me
-router.get('/me', authenticateJWT, async (req: Request, res: Response) => {
+// Me  ✅ add applyScope + include role/sessionType/capabilities
+router.get('/me', authenticateJWT, applyScope, async (req: Request, res: Response) => {
   const userId = req.user?.id;
   if (!userId) return res.fail(401, 'Unauthorized');
 
@@ -147,6 +147,11 @@ router.get('/me', authenticateJWT, async (req: Request, res: Response) => {
   const isCentral = !req.user?.role;
   const locationId = req.user?.locationId ?? null;
 
+  // NEW: expose RBAC info produced by applyScope/auth
+  const role = req.user?.role as 'owner' | 'admin' | 'editor' | 'viewer' | undefined;
+  const sessionType = (req.user as any)?.sessionType as 'member' | 'branch' | undefined;
+  const capabilities = (req.user as any)?.capabilities as string[] | undefined;
+
   return res.ok({
     user: {
       id: user._id?.toString() || '',
@@ -154,6 +159,9 @@ router.get('/me', authenticateJWT, async (req: Request, res: Response) => {
       isVerified: !!user.isVerified,
       tenantId: tenantIdStr,
       isOnboarded,
+      role,           
+      sessionType,   
+      capabilities,   
     },
     session: {
       type: isCentral ? 'central' : 'member',

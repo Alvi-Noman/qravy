@@ -12,6 +12,7 @@ type JwtUserPayload = JwtPayload & {
   email: string;
   tenantId?: string;
   role?: 'owner' | 'admin' | 'editor' | 'viewer';
+  sessionType?: 'member' | 'branch'; // 👈 pass-through for scope.ts
   locationId?: string;
 };
 
@@ -79,7 +80,7 @@ export async function authenticateJWT(req: Request, res: Response, next: NextFun
       return;
     }
 
-    const payload = decoded as JwtPayload & { tenantId?: string };
+    const payload = decoded as JwtUserPayload;
     const id = typeof payload.id === 'string' ? payload.id : undefined;
     const email = typeof payload.email === 'string' ? payload.email : undefined;
 
@@ -94,19 +95,23 @@ export async function authenticateJWT(req: Request, res: Response, next: NextFun
     const tokenTenantId = typeof payload.tenantId === 'string' ? payload.tenantId : undefined;
 
     // Try to resolve via membership; if none, keep the tenantId from token/header (central email flow)
-    const { tenantId: resolvedTenantId, role } = await resolveTenantAndRole(
+    const { tenantId: resolvedTenantId, role: resolvedRole } = await resolveTenantAndRole(
       id,
       headerTenantId || tokenTenantId
     );
 
     const finalTenantId = resolvedTenantId || tokenTenantId || headerTenantId;
 
+    // Role/sessionType from token should win (admins/owners set at login/refresh)
+    const roleFromToken = payload.role;
+    const sessionTypeFromToken = payload.sessionType;
+
     // If this is a central session (no role) and we have a tenant, try to bind device -> location via cookie
     let locationIdFromDevice: string | undefined;
     try {
       const cookies = (req as any).cookies as Record<string, string> | undefined;
       const cookieDeviceKey = (cookies?.deviceKey || '').trim();
-      if (!role && finalTenantId && cookieDeviceKey) {
+      if (!roleFromToken && !resolvedRole && finalTenantId && cookieDeviceKey) {
         const db = client.db('authDB');
         const dev = await db
           .collection<DeviceDoc>('devices')
@@ -128,8 +133,9 @@ export async function authenticateJWT(req: Request, res: Response, next: NextFun
       id,
       email,
       tenantId: finalTenantId,
-      role,
-      locationId: locationIdFromDevice,
+      role: roleFromToken ?? resolvedRole,     // 👈 prefer token role
+      sessionType: sessionTypeFromToken,       // 👈 pass through
+      locationId: locationIdFromDevice ?? payload.locationId,
     };
     next();
   } catch {

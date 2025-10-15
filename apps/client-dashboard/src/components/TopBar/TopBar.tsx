@@ -7,6 +7,7 @@ import { BellIcon, SparklesIcon } from '@heroicons/react/24/outline';
 import TopbarSearch from './TopbarSearch';
 import TopbarProfileMenu from './TopbarProfileMenu';
 import { useProgress } from '../../context/ProgressContext.js';
+import { useAuthContext } from '../../context/AuthContext';
 
 type NotificationItem = { id: string; title: string; desc: string; time: string; seen: boolean };
 
@@ -20,6 +21,7 @@ const DUMMY_NOTIFICATIONS: NotificationItem[] = [
 
 export default function TopBar({ onAIClick }: { onAIClick?: () => void }): JSX.Element {
   const { active } = useProgress();
+  const { session, user } = useAuthContext();
 
   const [isLive, setIsLive] = useState(true);
   const [notifOpen, setNotifOpen] = useState(false);
@@ -49,6 +51,10 @@ export default function TopBar({ onAIClick }: { onAIClick?: () => void }): JSX.E
     };
   }, [notifOpen]);
 
+  // Make Digital Menu completely inert for *branch devices* or *central sessions*
+  const digitalMenuDisabled =
+    user?.sessionType === 'branch' || session?.type === 'central';
+
   return (
     <div className="sticky top-0 z-30 border-b border-[#ececec] bg-[#fcfcfc]/95 backdrop-blur">
       <div className="relative">
@@ -58,6 +64,7 @@ export default function TopBar({ onAIClick }: { onAIClick?: () => void }): JSX.E
             onChange={(next) => setIsLive(next)}
             scopeLabel="Main Location"
             viewMenuHref="/menu"
+            disabled={digitalMenuDisabled}
           />
 
           <TopbarSearch className="ml-auto mr-2 w-[28rem] md:w-[40rem]" />
@@ -98,11 +105,13 @@ function DigitalMenuStatus({
   onChange,
   scopeLabel,
   viewMenuHref,
+  disabled = false,
 }: {
   isLive: boolean;
   onChange?: (next: boolean) => void;
   scopeLabel?: string;
   viewMenuHref?: string;
+  disabled?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [isLive, setIsLive] = useState(isLiveProp);
@@ -131,6 +140,11 @@ function DigitalMenuStatus({
     };
   }, [open]);
 
+  // If disabled flips true while open, close it
+  useEffect(() => {
+    if (disabled && open) setOpen(false);
+  }, [disabled, open]);
+
   const applyChange = async (next: boolean) => {
     setBusy(true);
     setError(null);
@@ -147,14 +161,19 @@ function DigitalMenuStatus({
   };
 
   return (
-    <div className="relative" ref={ref}>
+    <div className={`relative ${disabled ? 'pointer-events-none select-none' : ''}`} ref={ref}>
       <button
         type="button"
         aria-haspopup="dialog"
         aria-expanded={open}
-        onClick={() => setOpen((v) => !v)}
+        aria-disabled={disabled}
+        onClick={() => {
+          if (disabled) return;
+          setOpen((v) => !v);
+        }}
         title="Manage digital menu visibility"
         className="inline-flex items-center gap-2 rounded-md px-2.5 py-1.5 text-[13px] text-slate-700 hover:bg-[#f6f6f6]"
+        style={disabled ? { pointerEvents: 'none' } : undefined} // looks same, just inert
       >
         <span className="font-medium">Digital Menu</span>
         <span className="text-slate-400">•</span>
@@ -165,7 +184,7 @@ function DigitalMenuStatus({
       </button>
 
       <AnimatePresence>
-        {open && (
+        {open && !disabled && (
           <motion.div
             initial={{ opacity: 0, y: 8 }}
             animate={{ opacity: 1, y: 0 }}

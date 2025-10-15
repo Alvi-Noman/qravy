@@ -38,7 +38,9 @@ export default function MagicLink() {
   const [joining, setJoining] = useState<string | null>(null);
   const [verifiedUser, setVerifiedUser] = useState<AuthUser | null>(null);
   const [verifiedToken, setVerifiedToken] = useState<string>('');
+  const [hardError, setHardError] = useState<boolean>(false);
 
+  // 1) Try the normal magic-link verify first
   const { data, isPending, isSuccess, isError } = useQuery<VerifyResponse, Error>({
     queryKey: ['verify-magic-link', token],
     queryFn: () => verifyMagicLink<VerifyResponse>(token),
@@ -46,71 +48,115 @@ export default function MagicLink() {
     retry: false,
   });
 
+  // Shared post-login flow (used by both magic-link and admin-invite)
+  const runPostLogin = async (accessToken: string, user: AuthUser) => {
+    try {
+      // Device lookup (auto-select tenant if the device already belongs to one)
+      const lookupRes = await fetch(`${API_BASE_URL}/api/v1/access/devices/lookup`, {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${accessToken}` },
+        credentials: 'include',
+      });
+
+      if (lookupRes.ok) {
+        const lookup: DeviceLookup = await lookupRes.json();
+        if (lookup && 'found' in lookup && lookup.found) {
+          const sel = await fetch(`${API_BASE_URL}/api/v1/access/select-tenant`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${accessToken}`,
+            },
+            credentials: 'include',
+            body: JSON.stringify({ tenantId: lookup.tenantId }),
+          });
+          if (sel.ok) {
+            const selJson = await sel.json();
+            const nextToken = selJson?.token as string | undefined;
+            if (nextToken) {
+              await login(nextToken, { ...user, tenantId: lookup.tenantId, isOnboarded: true });
+              await reloadUser();
+              navigate('/dashboard', { replace: true });
+              return;
+            }
+          }
+        }
+      }
+
+      // Otherwise show workspaces (for central email users), or route by tenantId
+      const wsRes = await fetch(`${API_BASE_URL}/api/v1/access/workspaces`, {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${accessToken}` },
+        credentials: 'include',
+      });
+
+      if (wsRes.ok) {
+        const wsJson = await wsRes.json();
+        const items: Workspace[] = wsJson?.items || [];
+        if (items.length > 0) {
+          setWorkspaces(items);
+          return;
+        }
+      }
+
+      // Default: if user has tenantId go dashboard, else onboarding
+      navigate(user.tenantId ? '/dashboard' : '/create-restaurant', { replace: true });
+    } catch {
+      navigate(user.tenantId ? '/dashboard' : '/create-restaurant', { replace: true });
+    }
+  };
+
+  // 2) Handle success of normal magic-link
   useEffect(() => {
     if (isSuccess && data?.token && data.user) {
       setVerifiedToken(data.token);
       setVerifiedUser(data.user);
       login(data.token, data.user);
-
-      (async () => {
-        try {
-          const lookupRes = await fetch(`${API_BASE_URL}/api/v1/access/devices/lookup`, {
-            method: 'GET',
-            headers: { Authorization: `Bearer ${data.token}` },
-            credentials: 'include',
-          });
-          if (lookupRes.ok) {
-            const lookup: DeviceLookup = await lookupRes.json();
-            if (lookup && 'found' in lookup && lookup.found) {
-              const sel = await fetch(`${API_BASE_URL}/api/v1/access/select-tenant`, {
-                method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json',
-                  Authorization: `Bearer ${data.token}`,
-                },
-                credentials: 'include',
-                body: JSON.stringify({ tenantId: lookup.tenantId }),
-              });
-              if (sel.ok) {
-                const selJson = await sel.json();
-                const nextToken = selJson?.token as string | undefined;
-                if (nextToken) {
-                  await login(nextToken, { ...data.user, tenantId: lookup.tenantId, isOnboarded: true });
-                  await reloadUser();
-                  navigate('/dashboard', { replace: true });
-                  return;
-                }
-              }
-            }
-          }
-
-          const wsRes = await fetch(`${API_BASE_URL}/api/v1/access/workspaces`, {
-            method: 'GET',
-            headers: { Authorization: `Bearer ${data.token}` },
-            credentials: 'include',
-          });
-          if (!wsRes.ok) throw new Error('workspaces failed');
-          const wsJson = await wsRes.json();
-          const items: Workspace[] = wsJson?.items || [];
-
-          if (items.length > 0) {
-            setWorkspaces(items);
-            return;
-          }
-
-          const u = data.user;
-          navigate(u.tenantId ? '/dashboard' : '/create-restaurant', { replace: true });
-        } catch {
-          const u = data.user;
-          navigate(u.tenantId ? '/dashboard' : '/create-restaurant', { replace: true });
-        }
-      })();
+      runPostLogin(data.token, data.user);
     }
-
     return () => {
       if (timeoutRef.current) clearTimeout(timeoutRef.current);
     };
-  }, [isSuccess, data, login, reloadUser, navigate]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isSuccess, data]);
+
+  // 3) Fallback: if magic-link verify fails, try admin invite confirm
+  useEffect(() => {
+    const runFallback = async () => {
+      if (!token || !isError) return;
+
+      try {
+        const res = await fetch(
+          `${API_BASE_URL}/api/v1/access/confirm-invite?inviteToken=${encodeURIComponent(token)}`,
+          { method: 'GET', credentials: 'include' }
+        );
+
+        if (!res.ok) {
+          setHardError(true);
+          return;
+        }
+
+        const json = await res.json();
+        const accessToken = json?.token as string | undefined;
+        const user = json?.user as AuthUser | undefined;
+
+        if (!accessToken || !user) {
+          setHardError(true);
+          return;
+        }
+
+        setVerifiedToken(accessToken);
+        setVerifiedUser(user);
+        await login(accessToken, user);
+        await runPostLogin(accessToken, user);
+      } catch {
+        setHardError(true);
+      }
+    };
+
+    runFallback();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isError, token]);
 
   const onJoin = async (tenantId: string) => {
     try {
@@ -144,7 +190,7 @@ export default function MagicLink() {
   };
 
   const status: 'pending' | 'success' | 'error' =
-    isPending ? 'pending' : isSuccess ? 'success' : isError ? 'error' : 'pending';
+    isPending ? 'pending' : isSuccess ? 'success' : hardError ? 'error' : 'pending';
 
   return (
     <div className="min-h-screen w-full bg-[#fcfcfc] font-inter flex items-center justify-center px-4">

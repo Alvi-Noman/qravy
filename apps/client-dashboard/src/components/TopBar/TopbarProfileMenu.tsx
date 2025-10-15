@@ -1,3 +1,4 @@
+// apps/client-dashboard/src/components/topbar/TopbarProfileMenu.tsx
 import { useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
@@ -34,7 +35,7 @@ export default function TopbarProfileMenu({
   restaurantName = 'Your Restaurant',
   restaurantEmail,
 }: TopbarProfileMenuProps): JSX.Element {
-  const { user, logout } = useAuthContext();
+  const { user, session, logout } = useAuthContext();
   const email = restaurantEmail || user?.email || 'contact@example.com';
   const navigate = useNavigate();
   const location = useLocation();
@@ -57,7 +58,8 @@ export default function TopbarProfileMenu({
     setOpen(false);
   }, [location.pathname]);
 
-  const items: MenuItem[] = [
+  // Build the full menu first (for non-branch users)
+  const baseItems: MenuItem[] = [
     {
       key: 'upgrade',
       label: 'Upgrade Plan',
@@ -75,7 +77,7 @@ export default function TopbarProfileMenu({
       key: 'settings',
       label: 'Settings',
       icon: Cog6ToothIcon,
-      onClick: () => navigate('/settings'), // <-- routed here
+      onClick: () => navigate('/settings'),
     },
     {
       key: 'help',
@@ -97,6 +99,14 @@ export default function TopbarProfileMenu({
       danger: true,
     },
   ];
+
+  // Your “branch accounts” map to session.type === 'central'
+  const isBranchAccount = session?.type === 'central';
+
+  // If branch account → only Help + Logout; else show everything
+  const items: MenuItem[] = isBranchAccount
+    ? baseItems.filter((it) => it.key === 'help' || it.key === 'logout')
+    : baseItems;
 
   return (
     <div ref={rootRef} className="relative">

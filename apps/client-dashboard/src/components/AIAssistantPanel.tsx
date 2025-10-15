@@ -1,3 +1,4 @@
+// apps/client-dashboard/src/components/AIAssistantPanel.tsx
 import { useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
@@ -38,6 +39,10 @@ export default function AIAssistantPanel({
   const ALWAYS_DONE_ID = 'created-account';
   // Treat locations as server-driven (cannot be manually toggled)
   const SERVER_DRIVEN_IDS = new Set(['add-category', 'add-menu-item', 'add-locations']);
+
+  // RBAC: branch accounts (session.type === 'central') are read-only here
+  const { session } = useAuthContext();
+  const readOnly = session?.type === 'central';
 
   // Server progress
   const { data: tenant, isFetching } = useTenant();
@@ -255,11 +260,17 @@ export default function AIAssistantPanel({
   const firstIncompleteId = steps.find((s) => !s.done)?.id ?? null;
 
   useEffect(() => {
+    if (readOnly) {
+      // In read-only mode, keep all steps collapsed.
+      setExpandedId(null);
+      setLastAutoExpandedId(null);
+      return;
+    }
     if (firstIncompleteId && firstIncompleteId !== lastAutoExpandedId) {
       setExpandedId(firstIncompleteId);
       setLastAutoExpandedId(firstIncompleteId);
     }
-  }, [firstIncompleteId, lastAutoExpandedId]);
+  }, [firstIncompleteId, lastAutoExpandedId, readOnly]);
 
   const allDone = steps.length > 0 && steps.every((s) => s.done);
 
@@ -271,11 +282,12 @@ export default function AIAssistantPanel({
   }, []);
 
   useEffect(() => {
+    if (readOnly) return; // never auto-open from here for branch accounts
     const anyIncomplete = steps.some((s) => !s.done);
     if (autoOpenReady && !open && anyIncomplete) {
       onRequestOpen?.();
     }
-  }, [open, steps, onRequestOpen, autoOpenReady]);
+  }, [open, steps, onRequestOpen, autoOpenReady, readOnly]);
 
   // Auto-close when all steps become done while the panel is open
   const prevAllDoneRef = useRef<boolean>(allDone);
@@ -318,12 +330,14 @@ export default function AIAssistantPanel({
   }, [open, onClose]);
 
   const toggleDone = (id: string) => {
+    if (readOnly) return;               // 🔒 branch: no toggling
     if (id === ALWAYS_DONE_ID) return;
-    if (SERVER_DRIVEN_IDS.has(id)) return; // prevent manual toggle for server-driven steps (includes locations)
+    if (SERVER_DRIVEN_IDS.has(id)) return;
     setSteps((prev) => prev.map((s) => (s.id === id ? { ...s, done: !s.done } : s)));
   };
 
   const toggleExpand = (id: string) => {
+    if (readOnly) return;               // 🔒 branch: no expand/collapse
     setExpandedId((curr) => (curr === id ? null : id));
   };
 
@@ -386,47 +400,57 @@ export default function AIAssistantPanel({
                     >
                       {/* Step header row */}
                       <div className="flex items-start gap-3 p-3">
-                        {/* Check control */}
-                        <button
-                          type="button"
-                          onClick={() => toggleDone(step.id)}
-                          aria-pressed={isDone}
-                          aria-label={isDone ? 'Mark incomplete' : 'Mark complete'}
-                          disabled={isAlwaysDone || isServerDriven}
-                          className={`mt-0.5 inline-flex h-5 w-5 items-center justify-center rounded-full border-2 transition-colors ${
-                            isDone
-                              ? 'bg-emerald-600 border-emerald-600 text-white'
-                              : 'border-slate-300 border-dotted text-transparent'
-                          } ${isAlwaysDone || isServerDriven ? 'cursor-default pointer-events-none' : ''}`}
-                          title={
-                            isAlwaysDone
-                              ? 'Completed'
-                              : isServerDriven
-                              ? 'Auto-completed from your data'
-                              : isDone
-                              ? 'Mark incomplete'
-                              : 'Mark complete'
-                          }
-                        >
-                          {isDone ? <CheckIcon className="h-3.5 w-3.5" /> : null}
-                        </button>
-
-                        {/* Title area */}
-                        <button
-                          type="button"
-                          onClick={() => toggleExpand(step.id)}
-                          aria-expanded={isExpanded}
-                          className="flex-1 text-left"
-                        >
-                          <div className={`text-sm font-medium ${isDone ? 'line-through text-slate-500' : 'text-[#2e2e30]'}`}>
-                            {step.label}
+                        {/* Check control (render as static when readOnly/serverDriven/alwaysDone) */}
+                        {readOnly || isAlwaysDone || isServerDriven ? (
+                          <div
+                            className={`mt-0.5 inline-flex h-5 w-5 items-center justify-center rounded-full border-2 ${
+                              isDone ? 'bg-emerald-600 border-emerald-600 text-white' : 'border-slate-300 border-dotted'
+                            }`}
+                            aria-hidden
+                          >
+                            {isDone ? <CheckIcon className="h-3.5 w-3.5 text-white" /> : null}
                           </div>
-                        </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => toggleDone(step.id)}
+                            aria-pressed={isDone}
+                            aria-label={isDone ? 'Mark incomplete' : 'Mark complete'}
+                            className={`mt-0.5 inline-flex h-5 w-5 items-center justify-center rounded-full border-2 transition-colors ${
+                              isDone
+                                ? 'bg-emerald-600 border-emerald-600 text-white'
+                                : 'border-slate-300 border-dotted text-transparent'
+                            }`}
+                            title={isDone ? 'Mark incomplete' : 'Mark complete'}
+                          >
+                            {isDone ? <CheckIcon className="h-3.5 w-3.5" /> : null}
+                          </button>
+                        )}
+
+                        {/* Title area (static when readOnly) */}
+                        {readOnly ? (
+                          <div className="flex-1">
+                            <div className={`text-sm font-medium ${isDone ? 'line-through text-slate-500' : 'text-[#2e2e30]'}`}>
+                              {step.label}
+                            </div>
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => toggleExpand(step.id)}
+                            aria-expanded={isExpanded}
+                            className="flex-1 text-left"
+                          >
+                            <div className={`text-sm font-medium ${isDone ? 'line-through text-slate-500' : 'text-[#2e2e30]'}`}>
+                              {step.label}
+                            </div>
+                          </button>
+                        )}
                       </div>
 
                       {/* Details + CTA */}
                       <AnimatePresence initial={false} mode="wait">
-                        {isExpanded && (
+                        {!readOnly && isExpanded && (
                           <motion.div
                             key={`details-${step.id}`}
                             initial={{ height: 0, opacity: 0 }}

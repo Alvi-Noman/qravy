@@ -9,11 +9,12 @@ import {
 } from '@heroicons/react/24/outline';
 import type { MenuItem as TMenuItem } from '../../api/menuItems';
 import { useScope } from '../../context/ScopeContext';
+import { useSatisfies } from '../../hooks/useCapability'; // 👈 NEW import
 
 export default function MenuRow({
   item,
   selected,
-  isNew = false, // highlight control
+  isNew = false,
   onToggleSelect,
   onToggleAvailability,
   onEdit,
@@ -32,7 +33,6 @@ export default function MenuRow({
   const itAny = item as any;
   const active = !(itAny.hidden || itAny.status === 'hidden');
 
-  // Variations: compute lowest price (if any)
   const variations: any[] = Array.isArray(itAny.variations) ? itAny.variations : [];
   const hasVariations = variations.length > 0;
   const variantNumericPrices: number[] = variations
@@ -77,6 +77,9 @@ export default function MenuRow({
       window.removeEventListener('scroll', onSR, true);
     };
   }, [open]);
+
+  // 👇 NEW: Hide 3-dot menu if user lacks edit/delete capabilities
+  const canShowRowMenu = useSatisfies(['menuItems:update', 'menuItems:delete'], 'any');
 
   return (
     <tr
@@ -158,8 +161,11 @@ export default function MenuRow({
         </button>
       </td>
 
+      {/* 👇 Only show RowMenu if user has edit/delete rights */}
       <td className="px-3 py-4 align-middle text-right">
-        <RowMenu item={item} onEdit={onEdit} onDuplicate={onDuplicate} onDelete={onDelete} />
+        {canShowRowMenu ? (
+          <RowMenu item={item} onEdit={onEdit} onDuplicate={onDuplicate} onDelete={onDelete} />
+        ) : null}
       </td>
     </tr>
   );
@@ -326,3 +332,4 @@ function Avatar({ name, imageUrl }: { name: string; imageUrl?: string }) {
     </div>
   );
 }
+ 

@@ -1,4 +1,10 @@
 {
   "extends": "@muvance/config/tsconfig-preset/tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "declaration": true,
+    "emitDeclarationOnly": true,
+    "outDir": "dist"
+  },
   "include": ["src"]
 }

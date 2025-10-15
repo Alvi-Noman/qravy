@@ -6,9 +6,12 @@ export type MembershipStatus = 'active' | 'invited';
 export interface MembershipDoc {
   _id?: ObjectId;
   tenantId: ObjectId;
-  userId: ObjectId;
+  userId?: ObjectId | null; 
+  email: string;            
   role: MembershipRole;
   status: MembershipStatus;
+  inviteTokenHash?: string; 
+  inviteExpiresAt?: Date;  
   createdAt: Date;
   updatedAt: Date;
 }

@@ -3,6 +3,56 @@ import { ObjectId } from 'mongodb';
 import { client } from '../db.js';
 import logger from '../utils/logger.js';
 
+/**
+ * GET /me
+ * Returns the authenticated user plus session info for the frontend.
+ * - Relies on `authenticateJWT` to populate req.user from the access token
+ * - Relies on `applyScope` to compute and attach `capabilities` (and viewAs/location)
+ * Response shape matches the frontend expectation: { user, session }
+ */
+export async function getMe(req: Request, res: Response, _next: NextFunction) {
+  const u = req.user;
+  if (!u?.id || !u.email) {
+    return res.fail(401, 'Unauthorized');
+  }
+
+  // Compute isOnboarded from tenant (if any)
+  let isOnboarded = false;
+  let tenantId: string | null = u.tenantId ?? null;
+
+  if (tenantId && ObjectId.isValid(tenantId)) {
+    const tenant = await client
+      .db('authDB')
+      .collection('tenants')
+      .findOne({ _id: new ObjectId(tenantId) });
+    isOnboarded = Boolean(tenant?.onboardingCompleted);
+  } else {
+    tenantId = null;
+  }
+
+  // Map backend session types to the frontend SessionInfo union
+  // Frontend expects: { type: 'central' | 'member', locationId? }
+  const isBranchSession = (u as any).viewAs === 'branch' || u.sessionType === 'branch';
+  const session = isBranchSession
+    ? ({ type: 'central', locationId: (u as any).locationId ?? null } as const)
+    : ({ type: 'member', locationId: null } as const);
+
+  // User payload the UI needs
+  const user = {
+    id: u.id,
+    email: u.email,
+    tenantId,
+    isOnboarded,
+    // pass through role/sessionType if present on token
+    role: (u as any).role as 'owner' | 'admin' | 'editor' | 'viewer' | undefined,
+    sessionType: u.sessionType as 'member' | 'branch' | undefined,
+    // capabilities computed by applyScope middleware
+    capabilities: (u as any).capabilities as string[] | undefined,
+  };
+
+  return res.ok({ user, session });
+}
+
 export async function deleteUser(req: Request, res: Response, next: NextFunction) {
   const userId = req.params.id;
 

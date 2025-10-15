@@ -1,4 +1,6 @@
+// services/upload-service/src/app.ts
 import express from 'express';
+import type { Request, Response } from 'express';
 import cors from 'cors';
 import rateLimit from 'express-rate-limit';
 import formidable from 'formidable';
@@ -34,7 +36,7 @@ app.use(
       .split(',')
       .map((s) => s.trim())
       .filter(Boolean),
-    credentials: true
+    credentials: true,
   })
 );
 
@@ -44,7 +46,7 @@ app.use(
     windowMs: 60_000,
     max: 20,
     standardHeaders: true,
-    legacyHeaders: false
+    legacyHeaders: false,
   })
 );
 
@@ -54,8 +56,8 @@ const s3 = new S3Client({
   forcePathStyle: true,
   credentials: {
     accessKeyId: process.env.R2_ACCESS_KEY_ID || '',
-    secretAccessKey: process.env.R2_SECRET_ACCESS_KEY || ''
-  }
+    secretAccessKey: process.env.R2_SECRET_ACCESS_KEY || '',
+  },
 });
 
 const BUCKET = process.env.R2_BUCKET || '';
@@ -74,7 +76,7 @@ const EXT_MAP = new Map([
   ['jpg', 'jpg'],
   ['png', 'png'],
   ['webp', 'webp'],
-  ['avif', 'avif']
+  ['avif', 'avif'],
 ]);
 
 function auth(req: express.Request, res: express.Response, next: express.NextFunction) {
@@ -92,7 +94,7 @@ app.post('/api/uploads/images', auth, async (req, res) => {
     const form = formidable({
       multiples: false,
       maxFileSize: 20 * 1024 * 1024,
-      allowEmptyFiles: false
+      allowEmptyFiles: false,
     });
 
     const [, files] = (await form.parse(req)) as [unknown, Record<string, FormFile | FormFile[]>];
@@ -137,7 +139,7 @@ app.post('/api/uploads/images', auth, async (req, res) => {
           Bucket: BUCKET,
           Key: key,
           Body: processed,
-          ContentType: ft.mime
+          ContentType: ft.mime,
         })
       );
     }
@@ -153,19 +155,28 @@ app.post('/api/uploads/images', auth, async (req, res) => {
         original: `${base}${T_ORIG ? `?tr=${T_ORIG}` : ''}`,
         thumbnail: `${base}?tr=${T_THUMB}`,
         medium: `${base}?tr=${T_MD}`,
-        large: `${base}?tr=${T_LG}`
-      }
+        large: `${base}?tr=${T_LG}`,
+      },
     };
 
     return res.json(payload);
-  } catch (err: any) {
-    if (err?.code === 'ETOOBIG') return res.status(413).json({ error: 'File too large (max 20MB)' });
+  } catch (err: unknown) {
+    // Type-safe guard for Node-style errors with `.code`
+    const hasCode = (e: unknown): e is { code?: string } =>
+      typeof e === 'object' && e !== null && 'code' in e;
+
+    if (hasCode(err) && err.code === 'ETOOBIG') {
+      return res.status(413).json({ error: 'File too large (max 20MB)' });
+    }
     return res.status(500).json({ error: 'Upload failed' });
   }
 });
 
-app.get('/i/*', (req, res) => {
-  const key = (req.params as any)[0] as string;
+// Type-safe params for wildcard route: '/i/*' exposes params['0']
+type WildcardParam = { 0: string };
+
+app.get('/i/*', (req: Request<WildcardParam>, res: Response) => {
+  const key = req.params['0'];
   if (!key) return res.status(400).json({ error: 'Missing key' });
 
   const { w, h, q, format, lossless, dpr, blur } = req.query;

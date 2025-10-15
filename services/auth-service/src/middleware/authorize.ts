@@ -1,5 +1,5 @@
 import type { Request, Response, NextFunction, RequestHandler } from 'express';
-import { computeCapabilities, satisfies, type SessionType } from '../utils/policy.js';
+import { computeCapabilities, satisfies, type SessionType } from '@muvance/shared/utils/policy';
 
 type MutableUser = {
   id: string;

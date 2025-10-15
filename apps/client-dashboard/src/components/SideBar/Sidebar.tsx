@@ -21,6 +21,7 @@ import {
 import { useAuthContext } from '../../context/AuthContext';
 import { useScope } from '../../context/ScopeContext';
 import { useLocations } from '../locations/useLocations';
+import { usePermissions } from '../../context/PermissionsContext';
 
 type NavItem = { name: string; to: string; icon: ElementType; end?: boolean };
 type Section = { heading: string; items: NavItem[] };
@@ -30,8 +31,29 @@ export default function Sidebar(): JSX.Element {
   const { session } = useAuthContext();
   const { activeLocationId, setActiveLocationId } = useScope();
   const { locations, locationsQuery } = useLocations();
+  const { has } = usePermissions();
 
-  const sections: Section[] = [
+  // Map each nav item to the capability it requires
+  const REQUIRES: Record<string, string> = {
+    // Manage
+    Dashboard: 'dashboard:view',
+    Orders: 'orders:read',
+    'Service Requests': 'serviceRequests:read',
+    'Menu Items': 'menuItems:read',
+    Categories: 'categories:read',
+    'Digital Menu': 'digitalMenu:view', // not in branch caps → hidden there
+    Offers: 'offers:read',
+    Customers: 'customers:read',
+    Locations: 'locations:read',
+    'Qravy Store': 'store:view',
+
+    // Insights
+    'Sales Reports': 'reports:view',
+    'Menu Performance': 'reports:menuPerformance',
+  };
+
+  // Define the full menu once…
+  const sectionsAll: Section[] = [
     {
       heading: 'Manage',
       items: [
@@ -55,6 +77,20 @@ export default function Sidebar(): JSX.Element {
       ],
     },
   ];
+
+  // …then filter by capability (branch sessions only have a limited set, so others drop out)
+  const sections: Section[] = useMemo(() => {
+    return sectionsAll
+      .map((section) => ({
+        ...section,
+        items: section.items.filter((item) => {
+          const cap = REQUIRES[item.name];
+          // If not mapped, show it only to members (safety), but we mapped all above.
+          return cap ? has(cap) : true;
+        }),
+      }))
+      .filter((section) => section.items.length > 0);
+  }, [sectionsAll, has]);
 
   const linkClass = (isActive: boolean): string =>
     `group flex items-center gap-3 rounded-md px-3 py-2.5 text-[14px] transition ${
@@ -214,9 +250,11 @@ function SidebarLocationSelect({
           <span className="truncate font-medium text-slate-900">{displayName}</span>
         </span>
 
-        <span className="ml-2 grid h-5 w-5 place-items-center rounded-full bg-slate-100 text-slate-600">
-          <ChevronDownIcon className={`h-4 w-4 transition-transform ${open ? 'rotate-180' : ''}`} />
-        </span>
+        {!isCentralSession && (
+          <span className="ml-2 grid h-5 w-5 place-items-center rounded-full bg-slate-100 text-slate-600">
+            <ChevronDownIcon className={`h-4 w-4 transition-transform ${open ? 'rotate-180' : ''}`} />
+          </span>
+        )}
       </button>
 
       <AnimatePresence>

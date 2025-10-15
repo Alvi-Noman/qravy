@@ -1,5 +1,10 @@
+// apps/client-dashboard/src/context/PermissionsContext.tsx
 import React, { createContext, useContext, useMemo } from 'react';
 import { useAuthContext } from './AuthContext';
+import {
+  hasCapability as hasCapHelper,
+  satisfies as satisfiesHelper,
+} from '../../../../packages/shared/src/utils/policy';
 
 export type Capability = string;
 
@@ -21,9 +26,10 @@ const PermissionsContext = createContext<Permissions>({
   locationId: null,
 });
 
+// ✅ Define limited branch (central device) capabilities
 const BRANCH_CAPS: Capability[] = [
+  // --- Manage ---
   'dashboard:view',
-  'reports:view',
 
   'orders:read',
   'orders:update',
@@ -37,49 +43,53 @@ const BRANCH_CAPS: Capability[] = [
   'categories:read',
   'categories:toggleVisibility',
 
-  'offers:read',
-  'offers:toggleActive',
+  // --- Insights ---
+  'reports:view', // For Sales Reports
 ];
 
 function normalizeCaps(caps: Capability[] | undefined): Capability[] {
   return Array.isArray(caps) ? Array.from(new Set(caps)) : [];
 }
 
-function hasCap(caps: Capability[], required: Capability): boolean {
-  if (!required) return false;
-  if (caps.includes('*')) return true;
-  if (caps.includes(required)) return true;
-
-  // Support resource:* wildcard (e.g., menuItems:*)
-  const [res, act] = required.split(':');
-  if (res && act && caps.includes(`${res}:*`)) return true;
-
-  return false;
-}
-
 export function PermissionsProvider({ children }: { children: React.ReactNode }) {
-  const { session } = useAuthContext();
+  const { user, session } = useAuthContext();
 
   const value = useMemo<Permissions>(() => {
-    const sessionType = session?.type === 'central' ? 'central' : session?.type === 'member' ? 'member' : 'unknown';
+    // Determine session type (central = branch device)
+    const sessionType: 'central' | 'member' | 'unknown' =
+      user?.sessionType === 'branch'
+        ? 'central'
+        : user?.sessionType === 'member'
+        ? 'member'
+        : session?.type === 'central'
+        ? 'central'
+        : session?.type === 'member'
+        ? 'member'
+        : 'unknown';
 
-    // Compute client-side capabilities:
-    // - central branch session: restricted caps
-    // - member (owner/admin/editor/viewer): allow all by default on client UI (server still enforces)
-    const capabilities =
+    // Decide which caps to apply:
+    // - central branch device → limited BRANCH_CAPS
+    // - member (owner/admin/editor/viewer) → server-supplied capabilities (or all if missing)
+    const baseCaps =
       sessionType === 'central'
-        ? normalizeCaps(BRANCH_CAPS)
-        : normalizeCaps(['*']); // member sessions see full UI; server enforces real permissions
+        ? BRANCH_CAPS
+        : normalizeCaps(user?.capabilities?.length ? user.capabilities : ['*']);
+
+    const capabilities = normalizeCaps(baseCaps);
+
+    const has = (cap: Capability) => hasCapHelper(capabilities, cap);
+    const any = (caps: Capability[]) => satisfiesHelper(capabilities, caps, 'any');
+    const all = (caps: Capability[]) => satisfiesHelper(capabilities, caps, 'all');
 
     return {
       capabilities,
-      has: (cap) => hasCap(capabilities, cap),
-      any: (caps) => (caps || []).some((c) => hasCap(capabilities, c)),
-      all: (caps) => (caps || []).every((c) => hasCap(capabilities, c)),
+      has,
+      any,
+      all,
       sessionType,
       locationId: session?.locationId ?? null,
     };
-  }, [session]);
+  }, [user, session]);
 
   return <PermissionsContext.Provider value={value}>{children}</PermissionsContext.Provider>;
 }

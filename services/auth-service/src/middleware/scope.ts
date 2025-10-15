@@ -1,7 +1,8 @@
+// services/auth-service/src/middleware/scope.ts
 import type { Request, Response, NextFunction } from 'express';
 import { ObjectId } from 'mongodb';
 import { client } from '../db.js';
-import { computeCapabilities, type SessionType } from '../utils/policy.js';
+import { computeCapabilities, type SessionType } from '@muvance/shared/utils/policy';
 
 type MutableUser = {
   id: string;
@@ -29,7 +30,9 @@ export async function applyScope(req: Request, res: Response, next: NextFunction
     return;
   }
 
-  const baseSessionType: SessionType = user.role ? 'member' : 'branch';
+  // ✅ Prefer sessionType hinted by the JWT/user if present; otherwise infer from role.
+  const hinted: SessionType | undefined = user.sessionType;
+  const baseSessionType: SessionType = hinted ?? (user.role ? 'member' : 'branch');
   user.sessionType = baseSessionType;
 
   if (baseSessionType === 'branch') {

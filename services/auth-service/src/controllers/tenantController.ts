@@ -1,6 +1,6 @@
 // services/auth-service/src/controllers/tenantController.ts
 import type { Request, Response, NextFunction } from 'express';
-import { ObjectId } from 'mongodb';
+import { ObjectId, type UpdateFilter } from 'mongodb';
 import { client } from '../db.js';
 import logger from '../utils/logger.js';
 import type { TenantDoc } from '../models/Tenant.js';
@@ -8,9 +8,10 @@ import type { UserDoc } from '../models/User.js';
 import type { MembershipDoc } from '../models/Membership.js';
 import { auditLog } from '../utils/audit.js';
 import { toTenantDTO } from '../utils/mapper.js';
-import type { v1 } from '../../../../packages/shared/src/types/index.js';
-import { restaurantOnboardingSchema } from '../validation/schemas.js'; // ADDED
+import type { v1 } from '@muvance/shared';
+import { restaurantOnboardingSchema } from '../validation/schemas.js';
 
+/* --------------------------------- Collections --------------------------------- */
 function tenantsCol() {
   return client.db('authDB').collection<TenantDoc>('tenants');
 }
@@ -21,11 +22,10 @@ function membershipsCol() {
   return client.db('authDB').collection<MembershipDoc>('memberships');
 }
 
-// Allowed final plan ids
+/* ------------------------------- Plan utilities -------------------------------- */
 const ALLOWED_PLAN_IDS = ['p1_m', 'p1_y', 'p2_m', 'p2_y'] as const;
 type AllowedPlanId = (typeof ALLOWED_PLAN_IDS)[number];
 
-// Legacy/base mapping to tier
 const LEGACY_BASE_MAP: Record<string, 'p1' | 'p2'> = {
   p1: 'p1',
   p2: 'p2',
@@ -33,7 +33,6 @@ const LEGACY_BASE_MAP: Record<string, 'p1' | 'p2'> = {
   pro: 'p2',
 };
 
-// Normalize any incoming plan to p1_m/p1_y/p2_m/p2_y
 function normalizePlanId(input?: unknown, intervalInput?: unknown): AllowedPlanId | null {
   if (!input) return null;
   const raw = String(input).trim().toLowerCase();
@@ -59,14 +58,14 @@ function normalizePlanId(input?: unknown, intervalInput?: unknown): AllowedPlanI
   return (ALLOWED_PLAN_IDS as readonly string[]).includes(normalized) ? (normalized as AllowedPlanId) : null;
 }
 
-// Trial config
+/* --------------------------------- Trial utils --------------------------------- */
 const DEFAULT_TRIAL_DAYS = Number(process.env.TRIAL_DAYS ?? 3);
 const DAY_MS = 24 * 60 * 60 * 1000;
 function addDays(date: Date, days: number) {
   return new Date(date.getTime() + days * DAY_MS);
 }
 
-// Payment meta
+/* ------------------------------ Payment metadata ------------------------------- */
 type PaymentMeta = NonNullable<TenantDoc['payment']>;
 type PaymentBrand = PaymentMeta['brand'];
 type PaymentFunding = PaymentMeta['funding'];
@@ -76,7 +75,7 @@ function hasPaymentOnFile(p?: TenantDoc['payment']): boolean {
   return !!(p && (p.defaultPaymentMethodId || (p.brand && p.last4)));
 }
 
-/* ----------------------------- Billing profile helpers ----------------------------- */
+/* -------------------------- Billing profile helpers ---------------------------- */
 function toBillingProfileDTO(bp?: TenantDoc['billingProfile']): v1.BillingProfileDTO | undefined {
   if (!bp) return undefined;
   return {
@@ -99,7 +98,7 @@ function toBillingProfileDTO(bp?: TenantDoc['billingProfile']): v1.BillingProfil
   };
 }
 
-/* ------------------------------------ Handlers ------------------------------------ */
+/* ----------------------------------- API -------------------------------------- */
 
 export async function createTenant(req: Request, res: Response, next: NextFunction) {
   try {
@@ -140,10 +139,11 @@ export async function createTenant(req: Request, res: Response, next: NextFuncti
     const ins = await tenantsCol().insertOne(doc);
     const created: TenantDoc = { ...doc, _id: ins.insertedId };
 
-    // Register owner as active member
+    // Register owner as active member (include required email)
     const member: MembershipDoc = {
       tenantId: ins.insertedId,
       userId: new ObjectId(userId),
+      email: user?.email ?? 'owner@unknown.local',
       role: 'owner',
       status: 'active',
       createdAt: now,
@@ -180,7 +180,7 @@ export async function getMyTenant(req: Request, res: Response, next: NextFunctio
     const tenant = await tenantsCol().findOne({ _id: new ObjectId(tenantId) });
     if (!tenant) return res.fail(404, 'Tenant not found');
 
-    // BACKFILL: keep hasLocations flags consistent with actual locations count
+    // BACKFILL: ensure hasLocations aligns with actual count
     try {
       const locCount = await client
         .db('authDB')
@@ -222,7 +222,7 @@ export async function getMyTenant(req: Request, res: Response, next: NextFunctio
       // ignore backfill errors to avoid blocking getMyTenant
     }
 
-    // Backfills
+    // Other backfills
     const updates: Partial<TenantDoc> = {};
     const start = tenant.trialStartedAt ?? tenant.createdAt ?? new Date();
     if (!tenant.trialStartedAt) updates.trialStartedAt = start;
@@ -261,7 +261,6 @@ export async function saveOnboardingStep(req: Request, res: Response, next: Next
     if (step === 'restaurant') {
       // Validate (no count here, only mode)
       const parsed = restaurantOnboardingSchema.parse(data);
-
       update.restaurantInfo = {
         restaurantType: parsed.restaurantType,
         country: parsed.country,
@@ -387,7 +386,7 @@ export async function subscribeTenant(req: Request, res: Response, next: NextFun
       $set.hasCardOnFile = hasPaymentOnFile(paymentMeta);
     }
 
-    const upd = await tenantsCol().updateOne({ _id: new ObjectId(tenantId) }, { $set });
+    const upd = await tenantsCol().updateOne({ _id: new ObjectId(tenantId) }, { $set } as UpdateFilter<TenantDoc>);
     if (upd.matchedCount === 0) return res.fail(404, 'Tenant not found');
 
     const updated = await tenantsCol().findOne({ _id: new ObjectId(tenantId) });
@@ -420,7 +419,7 @@ export async function cancelSubscription(req: Request, res: Response, next: Next
     const now = new Date();
     const effectiveAt = now;
 
-    const $set: Partial<TenantDoc> = {
+    const baseSet: Partial<TenantDoc> = {
       subscriptionStatus: 'none',
       cancelRequestedAt: now,
       cancelEffectiveAt: effectiveAt,
@@ -428,14 +427,16 @@ export async function cancelSubscription(req: Request, res: Response, next: Next
       updatedAt: now,
     };
 
-    // Clear stored card when cancel is immediate (delete card info)
-    const $unset: Record<string, any> = {};
+    let update: UpdateFilter<TenantDoc> = { $set: baseSet };
+
     if (mode !== 'period_end') {
-      $set.hasCardOnFile = false;
-      $unset.payment = '';
+      // clear stored card immediately
+      update = {
+        $set: { ...baseSet, hasCardOnFile: false },
+        $unset: { payment: '' }, // '' | 1 | true are valid values for $unset
+      };
     }
 
-    const update = Object.keys($unset).length ? { $set, $unset } : { $set };
     const upd = await tenantsCol().updateOne({ _id: new ObjectId(tenantId) }, update);
     if (upd.matchedCount === 0) return res.fail(404, 'Tenant not found');
 
@@ -511,7 +512,10 @@ export async function setPaymentMethodMeta(req: Request, res: Response, next: Ne
       updatedAt: now,
     };
 
-    const upd = await tenantsCol().updateOne({ _id: new ObjectId(tenantId) }, { $set });
+    const upd = await tenantsCol().updateOne(
+      { _id: new ObjectId(tenantId) },
+      { $set } as UpdateFilter<TenantDoc>
+    );
     if (upd.matchedCount === 0) return res.fail(404, 'Tenant not found');
 
     const updated = await tenantsCol().findOne({ _id: new ObjectId(tenantId) });
@@ -525,7 +529,7 @@ export async function setPaymentMethodMeta(req: Request, res: Response, next: Ne
       userAgent: req.headers['user-agent'] || 'unknown',
     });
 
-    return res.ok({ item: toTenantDTO(updated) });
+    return res.ok({ item: toBillingProfileDTO(updated.billingProfile) ?? null });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     logger.error(`setPaymentMethodMeta error: ${msg}`);
@@ -543,7 +547,10 @@ export async function clearPaymentMethod(req: Request, res: Response, next: Next
     const now = new Date();
     const upd = await tenantsCol().updateOne(
       { _id: new ObjectId(tenantId) },
-      { $unset: { payment: '' }, $set: { hasCardOnFile: false, updatedAt: now } }
+      {
+        $unset: { payment: '' },
+        $set: { hasCardOnFile: false, updatedAt: now },
+      } as UpdateFilter<TenantDoc>
     );
     if (upd.matchedCount === 0) return res.fail(404, 'Tenant not found');
 
@@ -566,7 +573,7 @@ export async function clearPaymentMethod(req: Request, res: Response, next: Next
   }
 }
 
-/* ----------------------------- Billing profile API ----------------------------- */
+/* --------------------------- Billing profile endpoints -------------------------- */
 
 export async function getBillingProfile(req: Request, res: Response, next: NextFunction) {
   try {
@@ -625,7 +632,7 @@ export async function saveBillingProfile(req: Request, res: Response, next: Next
 
     const upd = await tenantsCol().updateOne(
       { _id: new ObjectId(tenantId) },
-      { $set: { billingProfile: profile, updatedAt: now } }
+      { $set: { billingProfile: profile, updatedAt: now } } as UpdateFilter<TenantDoc>
     );
     if (upd.matchedCount === 0) return res.fail(404, 'Tenant not found');
 

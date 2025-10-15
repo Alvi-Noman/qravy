@@ -505,7 +505,13 @@ export async function listMenuItems(req: Request, res: Response, next: NextFunct
 
         const channelsToEval = qCh ? [qCh] : CHANNELS;
 
-        // --- NEW: extras for "all locations" view (accumulate across locations) ---
+        // NEW: only evaluate this item at its own branch if branch-scoped
+        const perItemLocIds: ObjectId[] =
+          d.locationId && ObjectId.isValid(d.locationId as any)
+            ? [d.locationId as ObjectId]
+            : locIds;
+
+        // --- extras for "all locations" view (accumulate across locations) ---
         const extras: any = {};
         if (d.visibility?.dineIn === false && d.visibility?.online !== false) {
           extras.excludeChannel = 'dine-in';
@@ -519,7 +525,7 @@ export async function listMenuItems(req: Request, res: Response, next: NextFunct
         const both: string[] = [];
         const onlyDI: string[] = [];
         const onlyON: string[] = [];
-        for (const lid of locIds) {
+        for (const lid of perItemLocIds) {
           const key = lid.toString();
           const a = rmDI.has(key);
           const b = rmON.has(key);
@@ -554,7 +560,8 @@ export async function listMenuItems(req: Request, res: Response, next: NextFunct
           let presentSomewhere = false;
           let anyOn = false;
 
-          for (const lid of locIds) {
+          // CHANGED: only evaluate the item on perItemLocIds
+          for (const lid of perItemLocIds) {
             const key = lid.toString();
             if (removedLocs.has(key)) continue; // per-item tombstone first
 
@@ -703,6 +710,10 @@ export async function createMenuItem(req: Request, res: Response, next: NextFunc
         body.excludeChannelAtLocationIds.length > 0,
     });
 
+    // ✅ normalize requested branch scope from payload (UI sends this when user is in a branch)
+    const requestedLocId =
+      body.locationId && ObjectId.isValid(body.locationId) ? new ObjectId(body.locationId) : null;
+
     const now = new Date();
 
     const normVariations = normalizeVariations(body.variations);
@@ -771,7 +782,7 @@ export async function createMenuItem(req: Request, res: Response, next: NextFunc
       : [];
     if (tags.length) doc.tags = tags;
 
-    // Category-first scope & channel
+    // --- Category-first scope & channel (patched previously) ---
     let allowedChannels: Array<'dine-in' | 'online'> = ['dine-in', 'online'];
     let categoryLocationId: ObjectId | null = null;
 
@@ -779,18 +790,7 @@ export async function createMenuItem(req: Request, res: Response, next: NextFunc
       doc.categoryId = resolvedCat._id;
       doc.category = resolvedCat.name;
 
-      if (resolvedCat.scope === 'location') {
-        doc.scope = 'location';
-        doc.locationId = resolvedCat.locationId ?? null;
-        categoryLocationId =
-          resolvedCat.locationId && ObjectId.isValid(resolvedCat.locationId)
-            ? (resolvedCat.locationId as ObjectId)
-            : null;
-      } else {
-        doc.scope = 'all';
-        doc.locationId = null;
-      }
-
+      // --- CHANNEL SCOPE from category (unchanged)
       const cs = resolvedCat.channelScope as 'all' | 'dine-in' | 'online' | undefined;
       if (cs === 'dine-in') {
         doc.visibility = { dineIn: true, online: false };
@@ -802,11 +802,39 @@ export async function createMenuItem(req: Request, res: Response, next: NextFunc
         doc.visibility = { dineIn: true, online: true };
         allowedChannels = ['dine-in', 'online'];
       }
+
+      // --- SCOPE from category vs requested branch scope
+      if (resolvedCat.scope === 'location') {
+        // category is pinned to a location → item must follow it
+        categoryLocationId =
+          resolvedCat.locationId && ObjectId.isValid(resolvedCat.locationId)
+            ? (resolvedCat.locationId as ObjectId)
+            : null;
+
+        // If caller tries to create under a different branch, reject to avoid cross-branch leakage
+        if (requestedLocId && categoryLocationId && requestedLocId.toString() !== categoryLocationId.toString()) {
+          return res.fail(400, 'Category belongs to another location');
+        }
+
+        doc.scope = 'location';
+        doc.locationId = categoryLocationId;
+      } else {
+        // category is GLOBAL
+        // ✅ Respect branch context if the caller provided locationId (user is in a branch scope)
+        if (requestedLocId) {
+          doc.scope = 'location';
+          doc.locationId = requestedLocId;
+        } else {
+          // no branch context → keep global
+          doc.scope = 'all';
+          doc.locationId = null;
+        }
+      }
     } else {
-      // Fallback (no category found)
-      const isBranchScoped = body.locationId && ObjectId.isValid(body.locationId);
+      // Fallback (no category found) — unchanged except we use requestedLocId if present
+      const isBranchScoped = !!requestedLocId;
       if (isBranchScoped) {
-        doc.locationId = new ObjectId(body.locationId!);
+        doc.locationId = requestedLocId;
         doc.scope = 'location';
       } else {
         doc.scope = 'all';
@@ -1121,6 +1149,7 @@ export async function updateMenuItem(req: Request, res: Response, next: NextFunc
     if (!ObjectId.isValid(id)) return res.fail(400, 'Invalid id');
 
     const body = req.body as {
+      // core fields (existing)
       name?: string;
       price?: number | string;
       compareAtPrice?: number | string;
@@ -1133,15 +1162,38 @@ export async function updateMenuItem(req: Request, res: Response, next: NextFunc
       restaurantId?: string;
       hidden?: boolean;
       status?: 'active' | 'hidden';
+
+      // NEW editing powers
+      // baseline channel update (like category channelScope semantics)
+      channel?: 'dine-in' | 'online' | 'both';
+
+      // includes/excludes (revive or tombstone)
+      includeLocationIds?: string[];               // include (available:true, clear tombstone)
+      excludeLocationIds?: string[];               // hard exclude both channels (removed:true)
+
+      excludeChannelAt?: 'dine-in' | 'online';     // target channel for per-location excludes
+      excludeChannelAtLocationIds?: string[];      // hard exclude (removed:true) for (loc, channel)
+
+      // modifiers for behavior
+      hardExclude?: boolean;       // when changing baseline to single-channel, also tombstone the OFF channel everywhere
+      reviveExcluded?: boolean;    // when including, also clear removed:true tombstones first (global or per-location)
     };
 
-    const filter = { _id: new ObjectId(id), tenantId: new ObjectId(tenantId) };
+    const tenantOid = new ObjectId(tenantId);
+    const filter = { _id: new ObjectId(id), tenantId: tenantOid };
+
     const before = await col().findOne(filter);
     if (!before) return res.fail(404, 'Item not found');
 
-    const setOps: any = { updatedAt: new Date(), updatedBy: new ObjectId(userId) };
+    const now = new Date();
+
+    // -------------------------
+    // 1) Core field updates
+    // -------------------------
+    const setOps: any = { updatedAt: now, updatedBy: new ObjectId(userId) };
 
     if (body.name !== undefined) setOps.name = String(body.name || '').trim();
+
     if (body.price !== undefined) {
       const p = num(body.price);
       if (p !== undefined && p >= 0) setOps.price = p;
@@ -1150,53 +1202,337 @@ export async function updateMenuItem(req: Request, res: Response, next: NextFunc
       const cmp = num(body.compareAtPrice);
       const ref = setOps.price ?? before.price;
       if (cmp !== undefined && ref !== undefined && cmp >= ref) setOps.compareAtPrice = cmp;
+      else if (cmp === undefined) setOps.compareAtPrice = undefined;
     }
+
     if (body.description !== undefined)
       setOps.description = typeof body.description === 'string' ? body.description : undefined;
+
     if (body.category !== undefined)
       setOps.category = typeof body.category === 'string' ? body.category : undefined;
+
     if (body.categoryId !== undefined) {
       setOps.categoryId =
         body.categoryId && ObjectId.isValid(body.categoryId)
           ? new ObjectId(body.categoryId)
           : undefined;
     }
+
     if (body.media !== undefined) {
       const media = Array.isArray(body.media)
         ? body.media.filter((u) => typeof u === 'string' && u)
         : [];
       setOps.media = media.length ? media : [];
     }
+
     if (body.variations !== undefined) {
       const norm = normalizeVariations(body.variations);
       setOps.variations = norm;
     }
+
     if (body.tags !== undefined) {
       const tags = Array.isArray(body.tags)
-        ? body.tags
-            .filter((t) => typeof t === 'string' && t.trim())
-            .map((t) => t.trim())
+        ? body.tags.filter((t) => typeof t === 'string' && t.trim()).map((t) => t.trim())
         : [];
       setOps.tags = tags;
     }
+
     if (body.restaurantId !== undefined) {
       setOps.restaurantId =
         body.restaurantId && ObjectId.isValid(body.restaurantId)
           ? new ObjectId(body.restaurantId)
           : undefined;
     }
+
     if (body.hidden !== undefined || body.status !== undefined) {
       const st: 'active' | 'hidden' =
-        body.status !== undefined ? (body.status === 'hidden' ? 'hidden' : 'active') : body.hidden ? 'hidden' : 'active';
+        body.status !== undefined
+          ? body.status === 'hidden'
+            ? 'hidden'
+            : 'active'
+          : body.hidden
+          ? 'hidden'
+          : 'active';
       setOps.status = st;
       setOps.hidden = st === 'hidden';
     }
 
-    const after = await col().findOneAndUpdate(
-      filter,
-      { $set: setOps },
-      { returnDocument: 'after', includeResultMetadata: false }
-    );
+    // Track baseline (channel) change intent
+    const channelWasExplicit = Object.prototype.hasOwnProperty.call(body, 'channel');
+    const prevDine = !!before.visibility?.dineIn;
+    const prevOnl = !!before.visibility?.online;
+    let nextDine = prevDine;
+    let nextOnl = prevOnl;
+
+    if (channelWasExplicit) {
+      if (body.channel === 'dine-in') {
+        nextDine = true;
+        nextOnl = false;
+      } else if (body.channel === 'online') {
+        nextDine = false;
+        nextOnl = true;
+      } else {
+        // 'both' or any other fallthrough => both true
+        nextDine = true;
+        nextOnl = true;
+      }
+      setOps.visibility = { dineIn: nextDine, online: nextOnl };
+    }
+
+    // Apply core update first
+    await col().updateOne(filter, { $set: setOps });
+
+    // Re-read updated doc (needed to compute seeding and overlays correctly)
+    const doc = await col().findOne(filter);
+    if (!doc) return res.fail(404, 'Item not found (post-update)');
+
+    // -------------------------
+    // 2) Overlay writes (availability/tombstones)
+    // -------------------------
+    // Helpers
+    const toOids = (ids?: string[]) =>
+      (ids ?? [])
+        .filter(Boolean)
+        .filter((s) => ObjectId.isValid(s))
+        .map((s) => new ObjectId(s));
+
+    const includeIds = toOids(body.includeLocationIds);
+    const excludeBothIds = toOids(body.excludeLocationIds);
+    const excludeChAtIds = toOids(body.excludeChannelAtLocationIds);
+    const chAt = body.excludeChannelAt;
+
+    // Validate locations belong to tenant
+    async function filterValidLocs(input: ObjectId[]): Promise<ObjectId[]> {
+      if (!input.length) return [];
+      const locs = await locationsCol()
+        .find({ _id: { $in: input }, tenantId: tenantOid }, { projection: { _id: 1 } })
+        .toArray();
+      const allowed = new Set(locs.map((l: any) => (l._id as ObjectId).toString()));
+      return input.filter((id) => allowed.has(id.toString()));
+    }
+
+    const validInclude = await filterValidLocs(includeIds);
+    const validExcludeBoth = await filterValidLocs(excludeBothIds);
+    const validExcludeChAt = await filterValidLocs(excludeChAtIds);
+
+    // Seed channels = baseline-visible channels *after* channel update
+    const seedChs: Array<'dine-in' | 'online'> = [];
+    if (doc.visibility?.dineIn) seedChs.push('dine-in');
+    if (doc.visibility?.online) seedChs.push('online');
+
+    // 2a) If baseline changed from single to both, mirror categoriesController 1b
+    if (channelWasExplicit) {
+      const prevSingle =
+        (prevDine && !prevOnl) || (!prevDine && prevOnl);
+      const nowBoth = !!doc.visibility?.dineIn && !!doc.visibility?.online;
+
+      if (prevSingle && nowBoth) {
+        const newlyIncluded: 'dine-in' | 'online' = prevDine ? 'online' : 'dine-in';
+
+        // If editor passed includeLocationIds → clear tombstones for the newly-added channel at those
+        if (validInclude.length) {
+          await availabilityCol().updateMany(
+            {
+              tenantId: tenantOid,
+              itemId: doc._id!,
+              channel: newlyIncluded,
+              locationId: { $in: validInclude },
+              removed: true,
+            },
+            { $unset: { removed: '' as const }, $set: { updatedAt: now } }
+          );
+        }
+
+        // If editor did NOT pass excludeLocationIds, write tombstones on all other branches
+        // so the newly-added channel doesn't leak everywhere via baseline.
+        if (!validExcludeBoth.length) {
+          const locDocs = await locationsCol()
+            .find({ tenantId: tenantOid }, { projection: { _id: 1 } })
+            .toArray();
+          const allIds = new Set(locDocs.map((l: any) => (l._id as ObjectId).toString()));
+          for (const oid of validInclude) allIds.delete(oid.toString());
+          const otherOids = Array.from(allIds).map((s) => new ObjectId(s));
+
+          if (otherOids.length) {
+            const ops: AnyBulkWriteOperation<ItemAvailabilityDoc>[] = otherOids.map((lid) => ({
+              updateOne: {
+                filter: {
+                  tenantId: tenantOid,
+                  itemId: doc._id!,
+                  locationId: lid,
+                  channel: newlyIncluded,
+                },
+                update: {
+                  $set: { removed: true, updatedAt: now },
+                  $unset: { available: '' as const },
+                  $setOnInsert: {
+                    tenantId: tenantOid,
+                    itemId: doc._id!,
+                    locationId: lid,
+                    channel: newlyIncluded,
+                    createdAt: now,
+                  },
+                },
+                upsert: true,
+              },
+            }));
+            await availabilityCol().bulkWrite(ops, { ordered: false });
+          }
+        }
+      }
+    }
+
+    // 2b) Exclude channel ONLY (global) via baseline + hardExclude flag
+    // If user switched baseline to single-channel AND asked for hardExclude,
+    // stamp tombstones on the OFF channel across all locations.
+    if (channelWasExplicit && body.hardExclude === true) {
+      const offChs: Array<'dine-in' | 'online'> = [];
+      if (!doc.visibility?.dineIn) offChs.push('dine-in');
+      if (!doc.visibility?.online) offChs.push('online');
+
+      if (offChs.length) {
+        // all tenant locations
+        const locDocs = await locationsCol()
+          .find({ tenantId: tenantOid }, { projection: { _id: 1 } })
+          .toArray();
+        const lids = locDocs.map((l: any) => l._id as ObjectId);
+
+        if (lids.length) {
+          const ops: AnyBulkWriteOperation<ItemAvailabilityDoc>[] = [];
+          for (const lid of lids) {
+            for (const ch of offChs) {
+              ops.push({
+                updateOne: {
+                  filter: { tenantId: tenantOid, itemId: doc._id!, locationId: lid, channel: ch },
+                  update: {
+                    $set: { removed: true, updatedAt: now },
+                    $unset: { available: '' as const },
+                    $setOnInsert: {
+                      tenantId: tenantOid,
+                      itemId: doc._id!,
+                      locationId: lid,
+                      channel: ch,
+                      createdAt: now,
+                    },
+                  },
+                  upsert: true,
+                },
+              });
+            }
+          }
+          await availabilityCol().bulkWrite(ops, { ordered: false });
+        }
+
+        // also purge any lingering available:true overlays on OFF channels (keep tombstones)
+        await availabilityCol().deleteMany({
+          tenantId: tenantOid,
+          itemId: doc._id!,
+          channel: { $in: offChs },
+          removed: { $ne: true },
+        });
+      }
+    }
+
+    // 2c) INCLUDE (revive) at locations for baseline-visible channels
+    if (validInclude.length && seedChs.length) {
+      if (body.reviveExcluded === true) {
+        // clear tombstones first (only for targeted (loc, ch))
+        await availabilityCol().updateMany(
+          {
+            tenantId: tenantOid,
+            itemId: doc._id!,
+            locationId: { $in: validInclude },
+            channel: { $in: seedChs },
+            removed: true,
+          },
+          { $unset: { removed: '' as const }, $set: { updatedAt: now } }
+        );
+      }
+      const ops: AnyBulkWriteOperation<ItemAvailabilityDoc>[] = [];
+      for (const lid of validInclude) {
+        for (const ch of seedChs) {
+          ops.push({
+            updateOne: {
+              filter: { tenantId: tenantOid, itemId: doc._id!, locationId: lid, channel: ch },
+              update: {
+                $set: { available: true, removed: false, updatedAt: now },
+                $setOnInsert: {
+                  tenantId: tenantOid,
+                  itemId: doc._id!,
+                  locationId: lid,
+                  channel: ch,
+                  createdAt: now,
+                },
+              },
+              upsert: true,
+            },
+          });
+        }
+      }
+      if (ops.length) await availabilityCol().bulkWrite(ops, { ordered: false });
+    }
+
+    // 2d) EXCLUDE location-only (both channels) → tombstones
+    if (validExcludeBoth.length) {
+      const ops: AnyBulkWriteOperation<ItemAvailabilityDoc>[] = [];
+      for (const lid of validExcludeBoth) {
+        for (const ch of (['dine-in', 'online'] as const)) {
+          ops.push({
+            updateOne: {
+              filter: { tenantId: tenantOid, itemId: doc._id!, locationId: lid, channel: ch },
+              update: {
+                $set: { removed: true, updatedAt: now },
+                $unset: { available: '' as const },
+                $setOnInsert: {
+                  tenantId: tenantOid,
+                  itemId: doc._id!,
+                  locationId: lid,
+                  channel: ch,
+                  createdAt: now,
+                },
+              },
+              upsert: true,
+            },
+          });
+        }
+      }
+      if (ops.length) await availabilityCol().bulkWrite(ops, { ordered: false });
+    }
+
+    // 2e) EXCLUDE per (channel + location) → tombstones
+    if (validExcludeChAt.length && chAt) {
+      const ops: AnyBulkWriteOperation<ItemAvailabilityDoc>[] = [];
+      for (const lid of validExcludeChAt) {
+        ops.push({
+          updateOne: {
+            filter: { tenantId: tenantOid, itemId: doc._id!, locationId: lid, channel: chAt },
+            update: {
+              $set: { removed: true, updatedAt: now },
+              $unset: { available: '' as const },
+              $setOnInsert: {
+                tenantId: tenantOid,
+                itemId: doc._id!,
+                locationId: lid,
+                channel: chAt,
+                createdAt: now,
+              },
+            },
+            upsert: true,
+          },
+        });
+      }
+      if (ops.length) await availabilityCol().bulkWrite(ops, { ordered: false });
+    }
+
+    // 2f) INCLUDE channel only (global) — when switching baseline back to include both channels,
+    //     we already handled newly-added channel in 2a. If the intent is to *revive globally*
+    //     (no location list), front-end should send bulkSetAvailability with reviveExcluded=true.
+    //     (Kept here as design note — no extra code needed.)
+
+    // -------------------------
+    // 3) Audit + respond
+    // -------------------------
+    const after = await col().findOne(filter);
     if (!after) return res.fail(404, 'Item not found');
 
     await auditLog({
@@ -1457,11 +1793,13 @@ export async function bulkSetAvailability(req: Request, res: Response, next: Nex
     if (!tenantId) return res.fail(409, 'Tenant not set');
     if (!(canWrite(req.user?.role) || isBranch(req))) return res.fail(403, 'Forbidden');
 
-    const { ids, active, locationId, channel } = req.body as {
+    const { ids, active, locationId, channel, hardExclude, reviveExcluded } = req.body as {
       ids: string[];
       active: boolean;
       locationId?: string;
       channel?: 'dine-in' | 'online';
+      hardExclude?: boolean;     // NEW: write removed:true instead of available:false
+      reviveExcluded?: boolean;  // NEW: when active===true, also clear removed:true tombstones first
     };
 
     const oids = (ids || [])
@@ -1483,11 +1821,8 @@ export async function bulkSetAvailability(req: Request, res: Response, next: Nex
         .project<{ _id: ObjectId; categoryId?: ObjectId }>({ _id: 1, categoryId: 1 })
         .toArray();
 
-      const catIds = Array.from(
-        new Set(items.map((i) => i.categoryId).filter((id): id is ObjectId => !!id))
-      );
-
-      // Pull category hard-exclusions (removed:true) for this location
+      // Category hard-exclusions (removed:true) for this location
+      const catIds = Array.from(new Set(items.map((i) => i.categoryId).filter((id): id is ObjectId => !!id)));
       const removedByCatCh = new Map<string, Set<'dine-in' | 'online'>>(); // catId -> set(ch)
       if (catIds.length) {
         const catVis = await client
@@ -1503,45 +1838,128 @@ export async function bulkSetAvailability(req: Request, res: Response, next: Nex
           .toArray();
         for (const v of catVis as any[]) {
           const key = (v.categoryId as ObjectId).toString();
-          const ch = v.channel as 'dine-in' | 'online';
+          const chv = v.channel as 'dine-in' | 'online';
           const set = removedByCatCh.get(key) ?? new Set<'dine-in' | 'online'>();
-          set.add(ch);
+          set.add(chv);
           removedByCatCh.set(key, set);
         }
       }
 
-      // Build availability ops, skipping (loc,ch) where the category is hard-removed
-      const ops: AnyBulkWriteOperation<ItemAvailabilityDoc>[] = [];
-      for (const ch of chs) {
-        for (const it of items) {
-          const catKey = it.categoryId?.toString();
-          if (catKey && removedByCatCh.get(catKey)?.has(ch)) {
-            // Category forbids this location+channel → do not allow toggling it ON/OFF here
-            continue;
-          }
-          ops.push({
-            updateOne: {
-              filter: { tenantId: tenantOid, itemId: it._id, locationId: locId, channel: ch },
-              update: {
-                $set: { available: !!active, removed: false, updatedAt: now },
-                $setOnInsert: {
-                  tenantId: tenantOid,
-                  itemId: it._id,
-                  locationId: locId,
-                  channel: ch,
-                  createdAt: now,
+      // --- A) Hard exclude path (tombstones) ---
+      if (hardExclude === true) {
+        const ops: AnyBulkWriteOperation<ItemAvailabilityDoc>[] = [];
+        for (const ch of chs) {
+          for (const it of items) {
+            ops.push({
+              updateOne: {
+                filter: { tenantId: tenantOid, itemId: it._id, locationId: locId, channel: ch },
+                update: {
+                  $set: { removed: true, updatedAt: now },
+                  $unset: { available: '' as const },
+                  $setOnInsert: {
+                    tenantId: tenantOid,
+                    itemId: it._id,
+                    locationId: locId,
+                    channel: ch,
+                    createdAt: now,
+                  },
                 },
+                upsert: true,
               },
-              upsert: true,
+            });
+          }
+        }
+        if (ops.length) await availabilityCol().bulkWrite(ops, { ordered: false });
+
+        const docs = await col().find({ _id: { $in: oids }, tenantId: tenantOid }).toArray();
+        const itemsOut = docs.map((d) => {
+          const dto = toMenuItemDTO(d);
+          // UI state is per-location; we don’t override baseline here
+          return dto;
+        });
+
+        await auditLog({
+          userId,
+          action: 'MENU_ITEM_BULK_AVAILABILITY',
+          after: itemsOut,
+          ip: req.ip || 'unknown',
+          userAgent: req.headers['user-agent'] || 'unknown',
+        });
+
+        return res.ok({ matchedCount: ops.length, modifiedCount: ops.length, items: itemsOut });
+      }
+
+      // --- B) Soft ON/OFF path (respect category boundary when turning ON) ---
+      const ops: AnyBulkWriteOperation<ItemAvailabilityDoc>[] = [];
+
+      if (active === true) {
+        // Optionally revive: clear tombstones first
+        if (reviveExcluded === true) {
+          await availabilityCol().updateMany(
+            {
+              tenantId: tenantOid,
+              itemId: { $in: items.map((i) => i._id) },
+              locationId: locId,
+              channel: { $in: chs },
+              removed: true,
             },
-          });
+            { $unset: { removed: '' as const }, $set: { updatedAt: now } }
+          );
+        }
+
+        // Upsert available:true where category is NOT hard-removed at this (loc,ch)
+        for (const ch of chs) {
+          for (const it of items) {
+            const catKey = it.categoryId?.toString();
+            if (catKey && removedByCatCh.get(catKey)?.has(ch)) {
+              // Category forbids this (loc,ch) → skip turning ON here
+              continue;
+            }
+            ops.push({
+              updateOne: {
+                filter: { tenantId: tenantOid, itemId: it._id, locationId: locId, channel: ch },
+                update: {
+                  $set: { available: true, removed: false, updatedAt: now },
+                  $setOnInsert: {
+                    tenantId: tenantOid,
+                    itemId: it._id,
+                    locationId: locId,
+                    channel: ch,
+                    createdAt: now,
+                  },
+                },
+                upsert: true,
+              },
+            });
+          }
+        }
+      } else {
+        // active === false → soft hide
+        for (const ch of chs) {
+          for (const it of items) {
+            ops.push({
+              updateOne: {
+                filter: { tenantId: tenantOid, itemId: it._id, locationId: locId, channel: ch },
+                update: {
+                  $set: { available: false, removed: false, updatedAt: now },
+                  $setOnInsert: {
+                    tenantId: tenantOid,
+                    itemId: it._id,
+                    locationId: locId,
+                    channel: ch,
+                    createdAt: now,
+                  },
+                },
+                upsert: true,
+              },
+            });
+          }
         }
       }
+
       if (ops.length) await availabilityCol().bulkWrite(ops, { ordered: false });
 
-      const docs = await col()
-        .find({ _id: { $in: oids }, tenantId: tenantOid })
-        .toArray();
+      const docs = await col().find({ _id: { $in: oids }, tenantId: tenantOid }).toArray();
       const itemsOut = docs.map((d) => {
         const dto = toMenuItemDTO(d);
         dto.hidden = !active;
@@ -1560,21 +1978,78 @@ export async function bulkSetAvailability(req: Request, res: Response, next: Nex
       return res.ok({ matchedCount: ops.length, modifiedCount: ops.length, items: itemsOut });
     }
 
-    // ----- GLOBAL BRANCH (all locations) -----
+    // ----- GLOBAL (all locations) -----
     const locDocs = await locationsCol()
       .find({ tenantId: tenantOid }, { projection: { _id: 1 } })
       .toArray();
     const locIds = locDocs.map((l: any) => l._id as ObjectId);
 
+    if (hardExclude === true) {
+      // Hard exclude everywhere for given channels
+      const ops: AnyBulkWriteOperation<ItemAvailabilityDoc>[] = [];
+      for (const itemId of oids) {
+        for (const lid of locIds) {
+          for (const ch of chs) {
+            ops.push({
+              updateOne: {
+                filter: { tenantId: tenantOid, itemId, locationId: lid, channel: ch },
+                update: {
+                  $set: { removed: true, updatedAt: now },
+                  $unset: { available: '' as const },
+                  $setOnInsert: {
+                    tenantId: tenantOid,
+                    itemId,
+                    locationId: lid,
+                    channel: ch,
+                    createdAt: now,
+                  },
+                },
+                upsert: true,
+              },
+            });
+          }
+        }
+      }
+      if (ops.length) await availabilityCol().bulkWrite(ops, { ordered: false });
+
+      const docs = await col().find({ _id: { $in: oids }, tenantId: tenantOid }).toArray();
+      const itemsOut = docs.map((d) => toMenuItemDTO(d));
+
+      await auditLog({
+        userId,
+        action: 'MENU_ITEM_BULK_AVAILABILITY',
+        after: itemsOut,
+        ip: req.ip || 'unknown',
+        userAgent: req.headers['user-agent'] || 'unknown',
+      });
+
+      return res.ok({ matchedCount: ops.length, modifiedCount: ops.length, items: itemsOut });
+    }
+
     if (active === true) {
-      // Turn ON globally by clearing only "available:false" overlays, keep tombstones
+      // Turn ON globally
       if (locIds.length > 0) {
+        // Optionally clear tombstones first (revive)
+        if (reviveExcluded === true) {
+          await availabilityCol().updateMany(
+            {
+              tenantId: tenantOid,
+              itemId: { $in: oids },
+              locationId: { $in: locIds },
+              channel: { $in: chs },
+              removed: true,
+            },
+            { $unset: { removed: '' as const }, $set: { updatedAt: now } }
+          );
+        }
+
+        // Clear only soft hides (keep tombstones unless revived above)
         await availabilityCol().deleteMany({
           tenantId: tenantOid,
           itemId: { $in: oids },
-          ...(locIds.length ? { locationId: { $in: locIds } } : {}),
+          locationId: { $in: locIds },
           channel: { $in: chs },
-          removed: { $ne: true }, // preserve hard removals
+          removed: { $ne: true }, // preserve hard removals (unless reviveExcluded handled them)
         });
       }
     } else {
@@ -1626,8 +2101,8 @@ export async function bulkSetAvailability(req: Request, res: Response, next: Nex
     });
 
     return res.ok({
-      matchedCount: docs.length,
-      modifiedCount: docs.length,
+      matchedCount: itemsOut.length,
+      modifiedCount: itemsOut.length,
       items: itemsOut,
     });
   } catch (err) {

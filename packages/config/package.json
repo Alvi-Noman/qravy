@@ -2,14 +2,20 @@
   "name": "@muvance/config",
   "version": "1.0.0",
   "private": true,
-  "main": "index.js",
   "type": "module",
   "exports": {
+    "./validateEnv": {
+      "types": "./validateEnv.d.ts",
+      "import": "./validateEnv.js"
+    },
     "./eslint-preset": "./eslint-preset/index.js",
     "./tsconfig-preset/tsconfig.json": "./tsconfig-preset/tsconfig.json",
-    "./jest-preset": "./jest-preset/index.js"
+    "./jest-preset": "./jest-preset/index.js",
+    "./prettier-preset": "./prettier-preset/index.js"
   },
   "files": [
+    "validateEnv.d.ts",
+    "validateEnv.js",
     "tsconfig-preset",
     "eslint-preset",
     "jest-preset",
