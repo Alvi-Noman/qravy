@@ -1,16 +1,39 @@
 /**
- * Email utilities
- * Handles all outgoing emails including magic links, session notifications, and admin invites.
+ * Email utilities (hybrid)
+ * - Production (or EMAIL_PROVIDER=resend): Resend API over HTTPS (works on Render)
+ * - Development (or EMAIL_PROVIDER=gmail): Gmail SMTP via Nodemailer
+ * - Dev fallback: logs email if SMTP isn't configured
  */
 
+import logger from './logger.js';
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Provider selection
+// ──────────────────────────────────────────────────────────────────────────────
+const NODE_ENV = process.env.NODE_ENV || 'development';
+const isProd = NODE_ENV === 'production';
+const PROVIDER = (process.env.EMAIL_PROVIDER || (isProd ? 'resend' : 'gmail')).toLowerCase();
+
+// ──────────────────────────────────────────────────────────────────────────────
+// RESEND (HTTPS API)
+// Env: RESEND_API_KEY, EMAIL_FROM (and optional EMAIL_REPLY_TO)
+// NOTE: production cannot send from @gmail.com; use a verified domain address,
+// or use onboarding@resend.dev while testing.
+// ──────────────────────────────────────────────────────────────────────────────
+import { Resend } from 'resend';
+
+const RESEND_API_KEY = process.env.RESEND_API_KEY;
+const RESEND_FROM = process.env.EMAIL_FROM || 'onboarding@resend.dev';
+const RESEND_REPLY_TO = process.env.EMAIL_REPLY_TO || undefined;
+
+const resend = RESEND_API_KEY ? new Resend(RESEND_API_KEY) : null;
+
+// ──────────────────────────────────────────────────────────────────────────────
+// GMAIL SMTP (DEV)
+// Env: SMTP_HOST, SMTP_PORT, SMTP_SECURE('true'|'false'),
+//      SMTP_USER, SMTP_PASS, SMTP_FROM
+// ──────────────────────────────────────────────────────────────────────────────
 import nodemailer, { Transporter } from 'nodemailer';
-import logger from './logger.js'; // shared Winston logger
-
-// -----------------------------------------------------------------------------
-// Transport bootstrap with fail-fast timeouts + pooling
-// -----------------------------------------------------------------------------
-
-const isProd = process.env.NODE_ENV === 'production';
 
 function isSmtpConfigured(): boolean {
   return Boolean(
@@ -23,13 +46,11 @@ function isSmtpConfigured(): boolean {
   );
 }
 
-function buildTransporter(): Transporter | null {
+function buildSmtpTransporter(): Transporter | null {
   if (!isSmtpConfigured()) {
     if (isProd) {
-      // In production we require SMTP to be configured
       logger.error('[SMTP] Missing configuration in production.');
     } else {
-      // In dev, we allow fallback below
       logger.warn('[SMTP] Not fully configured. Using DEV fallback (no email will be sent).');
     }
     return null;
@@ -41,32 +62,30 @@ function buildTransporter(): Transporter | null {
   const transporter = nodemailer.createTransport({
     host: process.env.SMTP_HOST,
     port,
-    secure, // true for 465 (SSL), false for 587 (STARTTLS)
+    secure, // 465:true (SSL), 587:false (STARTTLS)
     auth: {
       user: process.env.SMTP_USER,
-      pass: process.env.SMTP_PASS, // Gmail App Password (NO SPACES) or provider password
+      pass: process.env.SMTP_PASS, // 16-char Gmail App Password (no spaces)
     },
 
-    // ---- Harden against hangs (fail fast) ----
-    connectionTimeout: 10_000, // 10s to connect
-    greetingTimeout: 8_000,    // 8s to receive server greeting
-    socketTimeout: 15_000,     // 15s idle socket timeout
+    // Harden timeouts (fail fast)
+    connectionTimeout: 10_000,
+    greetingTimeout: 8_000,
+    socketTimeout: 15_000,
 
-    // ---- Pool connections to reduce TLS handshakes ----
+    // Pool to reduce TLS handshakes
     pool: true,
     maxConnections: 2,
     maxMessages: 20,
-
-    // If your provider has proper certs (Gmail/SendGrid/Mailgun), keep default TLS checks.
-    // tls: { rejectUnauthorized: true },
   });
 
   return transporter;
 }
 
-const transporter = buildTransporter();
+const smtpTransporter: Transporter | null = PROVIDER === 'gmail' ? buildSmtpTransporter() : null;
 
-// Small helper to format nodemailer errors for logs
+// ──────────────────────────────────────────────────────────────────────────────
+/** format nodemailer-ish errors for readable logs */
 function formatMailError(err: unknown): string {
   const e = err as { code?: string; responseCode?: number; command?: string; message?: string; response?: string };
   const parts = [
@@ -79,67 +98,70 @@ function formatMailError(err: unknown): string {
   return parts.join(' | ');
 }
 
-// Centralized sender with DEV fallback when SMTP is not configured and not production
-async function sendOrLogDev(to: string, subject: string, html: string): Promise<void> {
-  // In development, if SMTP isn't configured, just log and return OK
-  if (!transporter && !isProd) {
-    logger.warn(`[DEV EMAIL FALLBACK] Would send email:
-  From: ${process.env.SMTP_FROM ?? '(unset)'}
-  To:   ${to}
-  Subj: ${subject}
-  ---- HTML ----
-  ${html}
-  --------------`);
-    return;
-  }
-
-  // In production (or when SMTP configured), attempt real send
-  if (!transporter) {
-    const msg = 'SMTP not configured';
-    logger.error(`[SMTP] ${msg}`);
-    throw new Error(msg);
-  }
-
-  try {
-    await transporter.sendMail({
-      from: process.env.SMTP_FROM,
+// ──────────────────────────────────────────────────────────────────────────────
+// Core send helper — picks provider
+// ──────────────────────────────────────────────────────────────────────────────
+async function sendEmailCore(to: string, subject: string, html: string): Promise<void> {
+  // Prefer Resend in prod (or when explicitly selected)
+  if (PROVIDER === 'resend') {
+    if (!resend) throw new Error('RESEND_API_KEY missing');
+    const { error } = await resend.emails.send({
+      from: RESEND_FROM,
       to,
       subject,
       html,
+      replyTo: RESEND_REPLY_TO,
     });
-    logger.info(`Email sent to ${to} (subject="${subject}")`);
-  } catch (err) {
-    logger.error(`Failed to send email to ${to}: ${formatMailError(err)}`);
-    throw err;
+    if (error) {
+      logger.error(`Resend send failed: ${error.name} ${error.message}`);
+      throw new Error(error.message);
+    }
+    logger.info(`Email sent via Resend → ${to} (${subject})`);
+    return;
   }
+
+  // SMTP (dev/local)
+  if (smtpTransporter) {
+    try {
+      await smtpTransporter.sendMail({
+        from: process.env.SMTP_FROM,
+        to,
+        subject,
+        html,
+        ...(RESEND_REPLY_TO ? { replyTo: RESEND_REPLY_TO } : {}),
+      });
+      logger.info(`Email sent via SMTP → ${to} (${subject})`);
+      return;
+    } catch (err) {
+      logger.error(`Failed to send email to ${to}: ${formatMailError(err)}`);
+      throw err;
+    }
+  }
+
+  // Dev fallback: log the email if SMTP not configured
+  if (!isProd) {
+    logger.warn(`[DEV EMAIL FALLBACK]
+From: ${process.env.SMTP_FROM ?? RESEND_FROM}
+To:   ${to}
+Subj: ${subject}
+---- HTML ----
+${html}
+--------------`);
+    return;
+  }
+
+  throw new Error('No email provider configured');
 }
 
-// -----------------------------------------------------------------------------
-// Magic link
-// -----------------------------------------------------------------------------
-
-/**
- * Send a magic login link to the user.
- * @param {string} to - Recipient email address.
- * @param {string} magicLink - Magic login URL.
- */
+// ──────────────────────────────────────────────────────────────────────────────
+// Public API
+// ──────────────────────────────────────────────────────────────────────────────
 export async function sendMagicLinkEmail(to: string, magicLink: string) {
   const subject = 'Your Magic Login Link';
   const html = `<p>Click <a href="${magicLink}">here</a> to log in. This link will expire in 15 minutes.</p>`;
-  await sendOrLogDev(to, subject, html);
+  await sendEmailCore(to, subject, html);
 }
 
-// -----------------------------------------------------------------------------
-// Session notification
-// -----------------------------------------------------------------------------
-
-/**
- * Send a notification email for new device login or session revocation.
- * @param {string} to - Recipient email address.
- * @param {string} deviceInfo - Device information (browser/OS).
- * @param {string} ip - IP address of the device.
- * @param {'login' | 'revoked'} event - Type of session event.
- */
 export async function sendSessionNotificationEmail(
   to: string,
   deviceInfo: string,
@@ -159,26 +181,15 @@ export async function sendSessionNotificationEmail(
     <p>If this wasn't you, please secure your account immediately.</p>
   `;
 
-  await sendOrLogDev(to, subject, html);
+  await sendEmailCore(to, subject, html);
 }
 
-// -----------------------------------------------------------------------------
-// Admin Invite Email
-// -----------------------------------------------------------------------------
-
-/**
- * Send an admin access invitation email.
- * @param {string} to - Recipient email address.
- * @param {string} inviteLink - Invitation URL for accepting admin access.
- * @param {string} tenantName - Name of the tenant (restaurant).
- */
 export async function sendAdminInviteEmail(to: string, inviteLink: string, tenantName: string) {
   const subject = `Admin Access Invitation from ${tenantName}`;
   const html = `
     <div style="font-family:Arial,sans-serif;line-height:1.5;color:#222">
       <h2 style="color:#111;margin-bottom:8px;">You're invited as an Admin</h2>
       <p>${tenantName} has granted you <strong>Admin Access</strong> across all branches.</p>
-      <p>You’ll have full control over menus, locations, and users — everything an Owner can, except billing.</p>
       <p style="margin-top:16px;">
         <a href="${inviteLink}"
            style="display:inline-block;background:#111;color:#fff;padding:10px 18px;
@@ -190,6 +201,5 @@ export async function sendAdminInviteEmail(to: string, inviteLink: string, tenan
       </p>
     </div>
   `;
-
-  await sendOrLogDev(to, subject, html);
+  await sendEmailCore(to, subject, html);
 }
