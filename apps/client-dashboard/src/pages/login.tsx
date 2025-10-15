@@ -25,6 +25,7 @@ export default function Login() {
 
   // 🚨 Watch for cross-tab login events
   useEffect(() => {
+    if (typeof window === 'undefined') return;
     const onStorage = (e: StorageEvent) => {
       if (e.key === 'login' && e.newValue && user) {
         if (!user.tenantId) {

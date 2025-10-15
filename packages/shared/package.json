@@ -20,7 +20,7 @@
   "types": "./src/types/index.d.ts",
   "files": ["src"],
   "scripts": {
-    "lint": "eslint \"**/*.ts\""
+    "lint": "eslint \"**/*.{ts,tsx}\" --ignore-pattern \"**/*.d.ts\""
   },
   "devDependencies": {
     "@muvance/config": "workspace:*",

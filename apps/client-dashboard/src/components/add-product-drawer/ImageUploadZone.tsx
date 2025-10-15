@@ -76,12 +76,25 @@ const ImageUploadZone: React.FC<Props> = ({
   useEffect(() => {
     const el = primaryRef.current;
     if (!el) return;
-    const ro = new ResizeObserver((entries) => {
-      const w = entries[0]?.contentRect?.width;
-      if (w && w > 0) setPrimaryPx((prev) => (prev === Math.floor(w) ? prev : Math.floor(w)));
-    });
-    ro.observe(el);
-    return () => ro.disconnect();
+    const hasRO = typeof (window as any).ResizeObserver === 'function';
+
+    if (hasRO) {
+      const ro = new (window as any).ResizeObserver((entries: any[]) => {
+        const w = entries[0]?.contentRect?.width;
+        if (w && w > 0) setPrimaryPx((prev) => (prev === Math.floor(w) ? prev : Math.floor(w)));
+      });
+      ro.observe(el);
+      return () => ro.disconnect();
+    } else {
+      // Fallback for environments like jsdom where ResizeObserver isn't present
+      const setFromEl = () => {
+        const w = el.getBoundingClientRect().width || (el as any).clientWidth;
+        if (w && w > 0) setPrimaryPx((prev) => (prev === Math.floor(w) ? prev : Math.floor(w)));
+      };
+      setFromEl();
+      window.addEventListener('resize', setFromEl);
+      return () => window.removeEventListener('resize', setFromEl);
+    }
   }, []);
 
   const thumbPx = Math.floor((primaryPx - gapPx) / 2);
@@ -429,7 +442,7 @@ const ImageUploadZone: React.FC<Props> = ({
           {hasImage && (
             <img
               src={localPreviews[i] || ''}
-              alt="Primary image"
+              alt="Selected Preview"
               className="absolute inset-0 h-full w-full object-cover rounded-lg"
             />
           )}

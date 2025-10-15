@@ -431,6 +431,9 @@ importers:
 
   services/auth-service:
     dependencies:
+      '@muvance/config':
+        specifier: workspace:*
+        version: link:../../packages/config
       '@muvance/shared':
         specifier: workspace:*
         version: link:../../packages/shared
@@ -480,9 +483,6 @@ importers:
         specifier: ^4.0.14
         version: 4.0.14
     devDependencies:
-      '@muvance/config':
-        specifier: workspace:*
-        version: link:../../packages/config
       '@types/bcryptjs':
         specifier: ^3.0.0
         version: 3.0.0

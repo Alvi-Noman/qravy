@@ -8,9 +8,11 @@ COPY packages ./packages
 COPY services/upload-service/package.json ./services/upload-service/package.json
 
 RUN pnpm install --frozen-lockfile
-
 COPY services/upload-service ./services/upload-service
 
 WORKDIR /app/services/upload-service
+RUN pnpm build
+
+ENV NODE_ENV=production
 EXPOSE 4010
 CMD ["node", "dist/server.js"]

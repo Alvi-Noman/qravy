@@ -27,6 +27,7 @@ function renderLogin(initialRoute = '/login') {
             }
           />
           <Route path="/dashboard" element={<div>Dashboard</div>} />
+          <Route path="/create-restaurant" element={<div>Create Restaurant</div>} />
         </Routes>
       </MemoryRouter>
     </QueryClientProvider>
@@ -35,7 +36,7 @@ function renderLogin(initialRoute = '/login') {
   return { user: userEvent.setup(), ...ui };
 }
 
-async function goToEmailEntry(user: ReturnType<typeof userEvent.setup>) {
+async function goToEmailEntry(user: ReturnType<typeof userEvent['setup']>) {
   await user.click(screen.getByRole('button', { name: /continue with email/i }));
   await screen.findByRole('heading', { name: /what's your email address\?/i });
 }
@@ -166,7 +167,10 @@ describe('Login (magic link)', () => {
     server.use(
       http.post('*/api/v1/auth/refresh-token', () =>
         HttpResponse.json(
-          { token: 'refreshed-token', user: { id: '1', email: 'owner@example.com' } },
+          {
+            token: 'refreshed-token',
+            user: { id: '1', email: 'owner@example.com', tenantId: 't1' },
+          },
           { status: 200 }
         )
       )
@@ -179,9 +183,22 @@ describe('Login (magic link)', () => {
   });
 
   it('navigates to /dashboard when storage "login" event fires', async () => {
+    // Ensure user exists in context (so the storage handler path runs)
+    server.use(
+      http.post('*/api/v1/auth/refresh-token', () =>
+        HttpResponse.json(
+          {
+            token: 'refreshed-token',
+            user: { id: '1', email: 'owner@example.com', tenantId: 't1' },
+          },
+          { status: 200 }
+        )
+      )
+    );
+
     renderLogin();
 
-    await screen.findByRole('heading', { name: /log in to qravy/i });
+    await screen.findByText(/dashboard/i); // already redirected via refresh
 
     const event = new StorageEvent('storage', {
       key: 'login',

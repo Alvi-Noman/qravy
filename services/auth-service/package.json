@@ -12,6 +12,7 @@
     "lint": "eslint \"**/*.ts\""
   },
   "dependencies": {
+    "@muvance/config": "workspace:*",
     "@muvance/shared": "workspace:*",
     "@types/mongodb": "^4.0.7",
     "bcryptjs": "^3.0.2",
@@ -30,7 +31,6 @@
     "zod": "^4.0.14"
   },
   "devDependencies": {
-    "@muvance/config": "workspace:*",
     "@types/bcryptjs": "^3.0.0",
     "@types/cookie-parser": "^1.4.9",
     "@types/cors": "^2.8.17",
