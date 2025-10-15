@@ -37,6 +37,9 @@ import { client } from '../db.js';
 
 const router: Router = Router();
 
+/** Health under /api/v1/auth/health for gateway passthrough */
+router.get('/health', (_req: Request, res: Response) => res.ok({ ok: true, service: 'auth-service' }));
+
 // Magic link
 router.post('/magic-link', validateRequest(magicLinkSchema), sendMagicLink);
 router.get('/magic-link/verify', verifyMagicLink);

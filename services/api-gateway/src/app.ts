@@ -48,6 +48,7 @@ app.use(express.json({ limit: '2mb' }));
 
 // Targets from .env
 const AUTH_TARGET = process.env.AUTH_SERVICE_URL || 'http://auth-service:3001';
+logger.info(`[GATEWAY] AUTH_SERVICE_URL=${AUTH_TARGET}`);
 
 /**
  * Helper: proxy to auth-service with JSON body forwarding
@@ -59,7 +60,7 @@ function jsonProxyToAuth() {
     changeOrigin: true,
     xfwd: true,
     ws: false,
-    cookieDomainRewrite: 'localhost',
+    // cookieDomainRewrite: 'localhost', // only for local dev; disable in prod
 
     onProxyReq: (proxyReq: ClientRequest, req: Request & { body?: unknown }) => {
       // Only forward JSON bodies for mutating methods
@@ -93,9 +94,12 @@ function jsonProxyToAuth() {
     },
 
     onError(err, req, res) {
-      logger.error(`[PROXY][AUTH] ${req.method} ${req.originalUrl} -> ${AUTH_TARGET} error: ${(err as Error).message}`);
+      const code = (err as any).code || 'UNKNOWN';
+      logger.error(
+        `[PROXY][AUTH] ${req.method} ${req.originalUrl} -> ${AUTH_TARGET} error: ${code} ${(err as Error).message}`
+      );
       if (!res.headersSent) {
-        (res as Response).status(502).json({ message: 'Bad gateway (auth-service unavailable)' });
+        (res as Response).status(502).json({ message: 'Bad gateway (auth-service unavailable)', code });
       }
     },
   });

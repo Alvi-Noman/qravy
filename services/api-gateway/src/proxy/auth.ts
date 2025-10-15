@@ -11,7 +11,8 @@ export default function registerAuthProxy(app: Application) {
     changeOrigin: true,
     xfwd: true,
     ws: false,
-    cookieDomainRewrite: 'localhost',
+    // cookieDomainRewrite: 'localhost', // only for local dev; disable in prod
+
     onProxyReq: (proxyReq: ClientRequest, req: any) => {
       const method = (req.method || 'GET').toUpperCase();
       if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) return;
@@ -24,12 +25,14 @@ export default function registerAuthProxy(app: Application) {
       proxyReq.setHeader('content-length', Buffer.byteLength(body));
       proxyReq.write(body);
     },
+
     onError(err, req, res) {
+      const code = (err as any).code || 'UNKNOWN';
       logger.error(
-        `[PROXY][AUTH] ${req.method} ${req.originalUrl} -> ${AUTH_TARGET} error: ${(err as Error).message}`
+        `[PROXY][AUTH] ${req.method} ${req.originalUrl} -> ${AUTH_TARGET} error: ${code} ${(err as Error).message}`
       );
       if (!res.headersSent) {
-        (res as any).status(502).json({ message: 'Bad gateway (auth-service unavailable)' });
+        (res as any).status(502).json({ message: 'Bad gateway (auth-service unavailable)', code });
       }
     },
   });

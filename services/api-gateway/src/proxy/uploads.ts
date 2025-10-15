@@ -9,7 +9,7 @@ export default function registerUploadsProxy(app: Application): void {
   const svcToken = process.env.UPLOAD_SERVICE_TOKEN || '';
 
   app.use(
-    '/api/uploads',
+    '/api/v1/upload',
     // Handle CORS preflight quickly
     (req, res, next) => {
       if (req.method === 'OPTIONS') return res.sendStatus(204);

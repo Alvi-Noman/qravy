@@ -12,7 +12,7 @@ import axios, {
   type InternalAxiosRequestConfig
 } from 'axios';
 
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string) || 'http://localhost:8080';
+const API_BASE_URL = import.meta.env.VITE_API_URL as string;
 const REFRESH_URL = '/api/v1/auth/refresh-token';
 
 const api: AxiosInstance = axios.create({

@@ -133,7 +133,20 @@ export const sendMagicLink = async (req: Request, res: Response, next: NextFunct
       logger.info(`Updated magic link for user: ${email} from IP ${ip}`);
     }
 
-    const magicLink = `${process.env.FRONTEND_URL}/magic-link?token=${magicLinkToken}`;
+    // --- Build magic link base URL safely
+    const smtpConfigured =
+      !!process.env.SMTP_HOST && !!process.env.SMTP_USER && !!process.env.SMTP_PASS && !!process.env.SMTP_FROM;
+
+    const baseUrl = process.env.FRONTEND_URL || process.env.CORS_ORIGIN || 'http://localhost:5173';
+    const magicLink = `${baseUrl.replace(/\/$/, '')}/magic-link?token=${magicLinkToken}`;
+
+    // --- Dev-mode fallback to avoid 500 when SMTP isn't configured
+    if (!smtpConfigured && process.env.NODE_ENV !== 'production') {
+      logger.warn(`[DEV MODE] SMTP not configured; logging magic link for ${email}: ${magicLink}`);
+      res.ok({ message: 'Magic link generated (logged in server, no email in dev).' });
+      return;
+    }
+
     logger.info(`Preparing to send magic link to ${email} from IP ${ip}`);
 
     try {
