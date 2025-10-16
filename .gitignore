@@ -12,16 +12,18 @@ build/
 
 # Env files
 .env
+.env.*
 .env*.local
+!.env.example
 
-*.timestamp*
-__tests__/
+*.timestamp-*.mjs
 
 # Logs
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
+*.log
 
 # IDE / OS
 .vscode/
@@ -32,3 +34,6 @@ pnpm-debug.log*
 *.sln
 *.sw?
 .DS_Store
+
+#Others
+*.ps1 

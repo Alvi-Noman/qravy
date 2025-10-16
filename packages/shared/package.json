@@ -2,15 +2,35 @@
   "name": "@muvance/shared",
   "version": "1.0.0",
   "private": true,
-  "main": "./src/index.ts",
-  "types": "./src/index.ts",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/types/index.d.ts",
+      "import": "./src/types/index.js"
+    },
+    "./types": {
+      "types": "./src/types/index.d.ts",
+      "import": "./src/types/index.js"
+    },
+    "./utils/policy": {
+      "types": "./src/utils/policy.d.ts",
+      "import": "./src/utils/policy.js"
+    }
+  },
+  "types": "./src/types/index.d.ts",
+  "files": ["src"],
   "scripts": {
-    "lint": "eslint \"**/*.ts\""
+    "lint": "eslint \"**/*.{ts,tsx}\" --ignore-pattern \"**/*.d.ts\""
   },
   "devDependencies": {
     "@muvance/config": "workspace:*",
+    "@types/react": "18",
+    "@types/react-dom": "18",
     "eslint": "^9.9.0",
     "typescript": "^5.4.5"
   },
-  "type": "module"
+  "dependencies": {
+    "react": "18",
+    "react-dom": "18"
+  }
 }

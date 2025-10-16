@@ -4,14 +4,14 @@
     "jsx": "react-jsx",
     "lib": ["DOM", "DOM.Iterable", "ESNext"],
     "baseUrl": ".",
+    "module": "esnext",
     "moduleResolution": "bundler",
     "paths": {
       "@/*": ["./src/*"]
     },
     "allowJs": true,
     "checkJs": true,
-    "module": "esnext",
-    "types": ["vite/client", "react", "react-dom", "@types/jest", "@testing-library/jest-dom"]
+    "types": ["vite/client", "vitest/globals", "node", "@testing-library/jest-dom"]
   },
   "include": [
     "**/*.js",
@@ -24,6 +24,7 @@
   ],
   "exclude": [
     "node_modules",
+    "dist",
     "vite.config.ts",
     "jest.config.mjs",
     "postcss.config.js",
@@ -32,8 +33,6 @@
     ".prettierrc.js"
   ],
   "references": [
-    {
-      "path": "./tsconfig.node.json"
-    }
+    { "path": "./tsconfig.node.json" }
   ]
 }

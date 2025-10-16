@@ -14,30 +14,62 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # -----------------------------
+      # 1. Checkout
+      # -----------------------------
       - name: Check out code
         uses: actions/checkout@v4
         with:
           fetch-depth: 2
 
+      # -----------------------------
+      # 2. Setup pnpm
+      # -----------------------------
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
-           version: 9.4.0
+          version: 9.4.0
 
+      # -----------------------------
+      # 3. Setup Node.js
+      # -----------------------------
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'pnpm'
 
+      # -----------------------------
+      # 4. Install dependencies
+      # -----------------------------
       - name: Install dependencies
-        run: pnpm install
+        run: pnpm install --frozen-lockfile
 
+      # -----------------------------
+      # 5. Run lint
+      # -----------------------------
       - name: Run Linting
         run: pnpm lint
 
+      # -----------------------------
+      # 6. Run tests
+      # -----------------------------
       - name: Run Tests
         run: pnpm test
 
+      # -----------------------------
+      # 7. Build
+      # -----------------------------
       - name: Run Build
         run: pnpm build
+
+      # -----------------------------
+      # 8. Trigger Vercel Deploy (Option B)
+      # -----------------------------
+      - name: Trigger Vercel Deploy (Production)
+        if: github.ref == 'refs/heads/main'
+        run: |
+          echo "✅ All checks passed. Triggering Vercel deploy..."
+          curl -X POST "$VERCEL_DEPLOY_HOOK_URL"
+        env:
+          VERCEL_DEPLOY_HOOK_URL: ${{ secrets.VERCEL_DEPLOY_HOOK_URL }}

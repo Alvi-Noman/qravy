@@ -1,35 +1,501 @@
-import { useState } from 'react';
-import reactLogo from './assets/react.svg';
-import viteLogo from '/vite.svg';
-import './App.css';
+/**
+ * App entry with Auth + Progress providers and Toaster.
+ */
+import { Routes, Route, useLocation, useNavigate, Navigate } from 'react-router-dom';
+import { useEffect, lazy, Suspense } from 'react';
+import { AuthProvider, useAuthContext } from './context/AuthContext';
+import { PermissionsProvider } from './context/PermissionsContext';
+import { ScopeProvider } from './context/ScopeContext';
+import LoadingScreen from './components/LoadingScreen';
+import { ProgressProvider } from './context/ProgressContext';
+import { Toaster } from './components/Toaster';
 
+// IMPORTANT: import layouts synchronously to avoid first-visit layout jump
+import DashboardLayout from './layout/DashboardLayout';
+import SettingsLayout from './layout/SettingsLayout';
+
+// Lazy-loaded pages
+const Dashboard = lazy(() => import('./pages/Dashboard'));
+const Orders = lazy(() => import('./pages/Orders'));
+const Categories = lazy(() => import('./pages/Categories'));
+const MenuItemsPage = lazy(() => import('./pages/MenuItems'));
+const LocationsPage = lazy(() => import('./pages/Locations'));
+const Login = lazy(() => import('./pages/Login'));
+const Signup = lazy(() => import('./pages/Signup'));
+const MagicLink = lazy(() => import('./pages/MagicLink'));
+const Verify = lazy(() => import('./pages/Verify'));
+const HomeRedirect = lazy(() => import('./pages/HomeRedirect'));
+const CreateRestaurant = lazy(() => import('./pages/CreateRestaurant'));
+const Onboarding = lazy(() => import('./pages/Onboarding'));
+const ManageCategories = lazy(() => import('./pages/ManageCategories'));
+const SelectLocation = lazy(() => import('./pages/SelectLocation')); // ADD
+
+// Settings pages
+const SettingsOverview = lazy(() => import('./pages/settings/index'));
+const SettingsBranding = lazy(() => import('./pages/settings/Branding'));
+const SettingsDomain = lazy(() => import('./pages/settings/Domain'));
+const SettingsSecurity = lazy(() => import('./pages/settings/Security'));
+const SettingsNotifications = lazy(() => import('./pages/settings/Notifications'));
+const SettingsIntegrations = lazy(() => import('./pages/settings/Integrations'));
+const SettingsDeveloper = lazy(() => import('./pages/settings/Developer'));
+const SettingsTeam = lazy(() => import('./pages/settings/Team'));
+const SettingsLocalization = lazy(() => import('./pages/settings/Localization'));
+const SettingsAccessibility = lazy(() => import('./pages/settings/Accessibility'));
+const SettingsLabs = lazy(() => import('./pages/settings/Labs'));
+const SettingsPrivacy = lazy(() => import('./pages/settings/Privacy'));
+const SettingsAudit = lazy(() => import('./pages/settings/Audit'));
+const SettingsAccess = lazy(() => import('./pages/settings/RestaurantAccess')); // NEW
+
+// Plan & Billing
+const SettingsPlan = lazy(() => import('./pages/settings/Plan'));
+const SettingsBilling = lazy(() => import('./pages/settings/Billing'));
+
+// Single plan sheet (controls step via ?step=select|subscribe)
+const PlanSheet = lazy(() => import('./features/billing/pages/PlanSheet'));
+
+function RequireAuth({ children }: { children: React.ReactNode }) {
+  const { token, loading } = useAuthContext();
+  const navigate = useNavigate();
+  const location = useLocation();
+
+  useEffect(() => {
+    if (!loading && !token) {
+      navigate('/login', { replace: true, state: { from: location } });
+    }
+  }, [token, navigate, location, loading]);
+
+  if (loading) return <LoadingScreen />;
+  return token ? <>{children}</> : null;
+}
+
+function RequireVerifiedAndOnboarded({ children }: { children: React.ReactNode }) {
+  const { token, user, loading } = useAuthContext();
+  const navigate = useNavigate();
+  const location = useLocation();
+
+  useEffect(() => {
+    if (!loading) {
+      if (!token) {
+        navigate('/login', { replace: true, state: { from: location } });
+      } else if (!user?.isVerified) {
+        navigate('/login', { replace: true });
+      } else if (!user?.isOnboarded) {
+        navigate('/onboarding', { replace: true });
+      }
+    }
+  }, [token, user, loading, navigate, location]);
+
+  if (loading) return <LoadingScreen />;
+  return token && user?.isVerified && user?.isOnboarded ? <>{children}</> : null;
+}
+
+function RequireOnboarding({ children }: { children: React.ReactNode }) {
+  const { user } = useAuthContext();
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    if (user && user.isOnboarded) {
+      navigate('/dashboard');
+    }
+  }, [user, navigate]);
+
+  return <>{children}</>;
+}
 
 function App() {
-  const [count, setCount] = useState(0);
+  // NEW: Cross-tab sync bridge (BroadcastChannel -> existing events/storage)
+  useEffect(() => {
+    let menuBC: BroadcastChannel | undefined;
+    let catsBC: BroadcastChannel | undefined;
+    try {
+      if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
+        menuBC = new BroadcastChannel('menu');
+        menuBC.onmessage = () => {
+          window.dispatchEvent(new CustomEvent('menu:updated'));
+          try {
+            localStorage.setItem('menu:updated', String(Date.now()));
+          } catch {}
+        };
+        catsBC = new BroadcastChannel('categories');
+        catsBC.onmessage = () => {
+          window.dispatchEvent(new CustomEvent('categories:updated'));
+          try {
+            localStorage.setItem('categories:updated', String(Date.now()));
+          } catch {}
+        };
+      }
+    } catch {}
+    return () => {
+      try {
+        menuBC?.close();
+        catsBC?.close();
+      } catch {}
+    };
+  }, []);
+
+  // NEW: Prefetch common pages on idle to speed first navigation
+  useEffect(() => {
+    const id = window.setTimeout(() => {
+      Promise.allSettled([
+        import('./pages/MenuItems'),
+        import('./pages/Categories'),
+        import('./pages/Locations'),
+      ]);
+    }, 1200);
+    return () => window.clearTimeout(id);
+  }, []);
 
   return (
-    <>
-      <div>
-        <a href="https://vite.dev" target="_blank" rel="noreferrer">
-          <img src={viteLogo} className="logo" alt="Vite logo" />
-        </a>
-        <a href="https://react.dev" target="_blank" rel="noreferrer">
-          <img src={reactLogo} className="logo react" alt="React logo" />
-        </a>
-      </div>
-      <h1>Vite + React</h1>
-      <div className="card">
-        <button onClick={() => setCount((count) => count + 1)}>
-          count is {count}
-        </button>
-        <p>
-          Edit <code>src/App.tsx</code> and save to test HMR
-        </p>
-      </div>
-      <p className="read-the-docs">
-        Click on the Vite and React logos to learn more
-      </p>
-    </>
+    <AuthProvider>
+      <PermissionsProvider>
+        <ScopeProvider>
+          <ProgressProvider>
+            {/* No global Suspense around all Routes — avoids layout disappearing on first visit */}
+            <Routes>
+              {/* Dashboard shell with index route */}
+              <Route
+                path="/dashboard"
+                element={
+                  <RequireVerifiedAndOnboarded>
+                    <DashboardLayout />
+                  </RequireVerifiedAndOnboarded>
+                }
+              >
+                <Route
+                  index
+                  element={
+                    <Suspense fallback={null}>
+                      <Dashboard />
+                    </Suspense>
+                  }
+                />
+              </Route>
+
+              {/* Protected app routes under DashboardLayout (standard sidebar/topbar) */}
+              <Route
+                element={
+                  <RequireVerifiedAndOnboarded>
+                    <DashboardLayout />
+                  </RequireVerifiedAndOnboarded>
+                }
+              >
+                <Route
+                  path="/orders"
+                  element={
+                    <Suspense fallback={null}>
+                      <Orders />
+                    </Suspense>
+                  }
+                />
+                <Route
+                  path="/menu-items"
+                  element={
+                    <Suspense fallback={null}>
+                      <MenuItemsPage />
+                    </Suspense>
+                  }
+                />
+                <Route
+                  path="/categories"
+                  element={
+                    <Suspense fallback={null}>
+                      <Categories />
+                    </Suspense>
+                  }
+                />
+                <Route
+                  path="/categories/manage"
+                  element={
+                    <Suspense fallback={null}>
+                      <ManageCategories />
+                    </Suspense>
+                  }
+                />
+
+                {/* Real Locations route (replaces stub) */}
+                <Route
+                  path="/locations"
+                  element={
+                    <Suspense fallback={null}>
+                      <LocationsPage />
+                    </Suspense>
+                  }
+                />
+
+                {/* Add stubs for routes so the layout persists (no blank pages) */}
+                <Route path="/service-requests" element={<div className="p-6 text-sm text-slate-700">Service Requests coming soon</div>} />
+                <Route path="/offers" element={<div className="p-6 text-sm text-slate-700">Offers coming soon</div>} />
+                <Route path="/customers" element={<div className="p-6 text-sm text-slate-700">Customers coming soon</div>} />
+                <Route path="/digital-menu" element={<div className="p-6 text-sm text-slate-700">Digital Menu coming soon</div>} />
+                <Route path="/qravy-store" element={<div className="p-6 text-sm text-slate-700">Qravy Store coming soon</div>} />
+              </Route>
+
+              {/* Settings routes OUTSIDE DashboardLayout to replace the main navbar with Settings navbar */}
+              <Route
+                path="/settings"
+                element={
+                  <RequireVerifiedAndOnboarded>
+                    <SettingsLayout />
+                  </RequireVerifiedAndOnboarded>
+                }
+              >
+                <Route
+                  index
+                  element={
+                    <Suspense fallback={null}>
+                      <SettingsOverview />
+                    </Suspense>
+                  }
+                />
+
+                {/* Plan overview */}
+                <Route
+                  path="plan"
+                  element={
+                    <Suspense fallback={null}>
+                      <SettingsPlan />
+                    </Suspense>
+                  }
+                />
+
+                {/* Single plan sheet (controls step via ?step=select|subscribe) */}
+                <Route
+                  path="plan/select"
+                  element={
+                    <Suspense fallback={null}>
+                      <PlanSheet />
+                    </Suspense>
+                  }
+                />
+
+                {/* Billing settings */}
+                <Route
+                  path="billing"
+                  element={
+                    <Suspense fallback={null}>
+                      <SettingsBilling />
+                    </Suspense>
+                  }
+                />
+
+                {/* Existing settings */}
+                <Route
+                  path="branding"
+                  element={
+                    <Suspense fallback={null}>
+                      <SettingsBranding />
+                    </Suspense>
+                  }
+                />
+                <Route
+                  path="domain"
+                  element={
+                    <Suspense fallback={null}>
+                      <SettingsDomain />
+                    </Suspense>
+                  }
+                />
+                <Route
+                  path="security"
+                  element={
+                    <Suspense fallback={null}>
+                      <SettingsSecurity />
+                    </Suspense>
+                  }
+                />
+                <Route
+                  path="notifications"
+                  element={
+                    <Suspense fallback={null}>
+                      <SettingsNotifications />
+                    </Suspense>
+                  }
+                />
+                <Route
+                  path="integrations"
+                  element={
+                    <Suspense fallback={null}>
+                      <SettingsIntegrations />
+                    </Suspense>
+                  }
+                />
+                <Route
+                  path="developer"
+                  element={
+                    <Suspense fallback={null}>
+                      <SettingsDeveloper />
+                    </Suspense>
+                  }
+                />
+                <Route
+                  path="team"
+                  element={
+                    <Suspense fallback={null}>
+                      <SettingsTeam />
+                    </Suspense>
+                  }
+                />
+                <Route
+                  path="access"
+                  element={
+                    <Suspense fallback={null}>
+                      <SettingsAccess />
+                    </Suspense>
+                  }
+                />
+                <Route
+                  path="localization"
+                  element={
+                    <Suspense fallback={null}>
+                      <SettingsLocalization />
+                    </Suspense>
+                  }
+                />
+                <Route
+                  path="accessibility"
+                  element={
+                    <Suspense fallback={null}>
+                      <SettingsAccessibility />
+                    </Suspense>
+                  }
+                />
+                <Route
+                  path="labs"
+                  element={
+                    <Suspense fallback={null}>
+                      <SettingsLabs />
+                    </Suspense>
+                  }
+                />
+                <Route
+                  path="privacy"
+                  element={
+                    <Suspense fallback={null}>
+                      <SettingsPrivacy />
+                    </Suspense>
+                  }
+                />
+                <Route
+                  path="audit"
+                  element={
+                    <Suspense fallback={null}>
+                      <SettingsAudit />
+                    </Suspense>
+                  }
+                />
+
+                {/* Redirect uppercase paths (compat with current sidebar links) */}
+                <Route path="Plan" element={<Navigate to="plan" replace />} />
+                <Route path="Plan/select" element={<Navigate to="plan/select" replace />} />
+                <Route path="Plan/select/subscribe" element={<Navigate to="plan/select?step=subscribe" replace />} />
+                <Route path="Billing" element={<Navigate to="billing" replace />} />
+                <Route path="Branding" element={<Navigate to="branding" replace />} />
+                <Route path="Domain" element={<Navigate to="domain" replace />} />
+                <Route path="Security" element={<Navigate to="security" replace />} />
+                <Route path="Notifications" element={<Navigate to="notifications" replace />} />
+                <Route path="Integrations" element={<Navigate to="integrations" replace />} />
+                <Route path="Developer" element={<Navigate to="developer" replace />} />
+                <Route path="Team" element={<Navigate to="team" replace />} />
+                <Route path="Access" element={<Navigate to="access" replace />} />
+                <Route path="Localization" element={<Navigate to="localization" replace />} />
+                <Route path="Accessibility" element={<Navigate to="accessibility" replace />} />
+                <Route path="Labs" element={<Navigate to="labs" replace />} />
+                <Route path="Privacy" element={<Navigate to="privacy" replace />} />
+                <Route path="Audit" element={<Navigate to="audit" replace />} />
+              </Route>
+
+              {/* Redirect legacy /dashboard/* paths */}
+              <Route path="/dashboard/orders" element={<Navigate to="/orders" replace />} />
+              <Route path="/dashboard/menu-items" element={<Navigate to="/menu-items" replace />} />
+              <Route path="/dashboard/categories" element={<Navigate to="/categories" replace />} />
+              <Route path="/dashboard/categories/manage" element={<Navigate to="/categories/manage" replace />} />
+              <Route path="/dashboard/locations" element={<Navigate to="/locations" replace />} />
+              <Route path="/dashboard/settings" element={<Navigate to="/settings" replace />} />
+
+              {/* Auth + public routes */}
+              <Route
+                path="/login"
+                element={
+                  <Suspense fallback={<LoadingScreen />}>
+                    <Login />
+                  </Suspense>
+                }
+              />
+              <Route
+                path="/signup"
+                element={
+                  <Suspense fallback={<LoadingScreen />}>
+                    <Signup />
+                  </Suspense>
+                }
+              />
+              <Route
+                path="/magic-link"
+                element={
+                  <Suspense fallback={<LoadingScreen />}>
+                    <MagicLink />
+                  </Suspense>
+                }
+              />
+              <Route
+                path="/verify"
+                element={
+                  <Suspense fallback={<LoadingScreen />}>
+                    <Verify />
+                  </Suspense>
+                }
+              />
+
+              <Route
+                path="/access/select-location"
+                element={
+                  <RequireAuth>
+                    <Suspense fallback={<LoadingScreen />}>
+                      <SelectLocation />
+                    </Suspense>
+                  </RequireAuth>
+                }
+              />
+
+              <Route
+                path="/create-restaurant"
+                element={
+                  <RequireAuth>
+                    <Suspense fallback={<LoadingScreen />}>
+                      <CreateRestaurant />
+                    </Suspense>
+                  </RequireAuth>
+                }
+              />
+
+              <Route
+                path="/onboarding"
+                element={
+                  <RequireAuth>
+                    <RequireOnboarding>
+                      <Suspense fallback={<LoadingScreen />}>
+                        <Onboarding />
+                      </Suspense>
+                    </RequireOnboarding>
+                  </RequireAuth>
+                }
+              />
+
+              {/* Home redirect */}
+              <Route
+                path="/"
+                element={
+                  <Suspense fallback={<LoadingScreen />}>
+                    <HomeRedirect />
+                  </Suspense>
+                }
+              />
+            </Routes>
+            <Toaster />
+          </ProgressProvider>
+        </ScopeProvider>
+      </PermissionsProvider>
+    </AuthProvider>
   );
 }
 

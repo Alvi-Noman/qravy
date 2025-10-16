@@ -1,5 +1,5 @@
 import request from 'supertest';
-import app from '../app';
+import app from '../app.js';
 
 describe('API Gateway', () => {
   it('should return 200 and status "ok" for health check', async () => {

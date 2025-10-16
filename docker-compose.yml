@@ -1,0 +1,73 @@
+services:
+  auth-service:
+    build:
+      context: .
+      dockerfile: services/auth-service/Dockerfile
+    env_file:
+      - ./services/auth-service/.env
+    environment:
+      NODE_ENV: development
+      PORT: "3001"
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:5173}
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:5173}
+    working_dir: /app/services/auth-service
+    ports:
+      - "3001:3001"
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+    restart: unless-stopped
+    #volumes:
+    # - ./services/auth-service/src:/app/services/auth-service/src
+    command: ["pnpm", "run", "dev"]
+
+  upload-service:
+    build:
+      context: .
+      dockerfile: services/upload-service/Dockerfile
+    env_file:
+      - ./services/upload-service/.env
+    environment:
+      NODE_ENV: development
+      PORT: "4010"
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:5173}
+      # Force upload-service to use the same token as the gateway
+      UPLOAD_TOKEN: ${UPLOAD_SERVICE_TOKEN:?Set UPLOAD_SERVICE_TOKEN (OS env or root .env)}
+    working_dir: /app/services/upload-service
+    ports:
+      - "4010:4010"
+    depends_on:
+      - auth-service
+    restart: unless-stopped
+    #volumes:
+    # - ./services/upload-service/src:/app/services/upload-service/src
+    command: ["pnpm", "run", "dev"]
+
+  api-gateway:
+    build:
+      context: .
+      dockerfile: services/api-gateway/Dockerfile
+    env_file:
+      - ./services/api-gateway/.env
+    environment:
+      NODE_ENV: development
+      PORT: "8080"
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:5173}
+      AUTH_SERVICE_URL: http://auth-service:3001
+      UPLOAD_SERVICE_URL: http://upload-service:4010
+      # Strict: refuse to start if var is missing (no fallback!)
+      UPLOAD_SERVICE_TOKEN: ${UPLOAD_SERVICE_TOKEN:?Set UPLOAD_SERVICE_TOKEN (OS env or root .env)}
+    working_dir: /app/services/api-gateway
+    ports:
+      - "8080:8080"
+    depends_on:
+      - auth-service
+      - upload-service
+    restart: unless-stopped
+    #volumes:
+    #  - ./services/api-gateway/src:/app/services/api-gateway/src
+    command: ["pnpm", "run", "dev"]
+
+networks:
+  default:
+    driver: bridge
