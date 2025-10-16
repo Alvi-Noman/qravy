@@ -14,9 +14,9 @@ import type { TenantDTO } from '../../../../packages/shared/src/types/v1';
 import { Link } from 'react-router-dom';
 
 // Lazy load panels
-const OrdersActivity = lazy(() => import('../components/dashboard/OrdersActivity'));
-const WaiterCalls = lazy(() => import('../components/dashboard/WaiterCalls'));
-const ChannelAvailability = lazy(() => import('../components/dashboard/ChannelAvailability'));
+const OrdersActivity = lazy(() => import('../components/Dashboard/OrdersActivity'));
+const WaiterCalls = lazy(() => import('../components/Dashboard/WaiterCalls'));
+const ChannelAvailability = lazy(() => import('../components/Dashboard/ChannelAvailability'));
 
 export default function Dashboard(): JSX.Element {
   const { token } = useAuthContext();

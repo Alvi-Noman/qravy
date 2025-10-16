@@ -1,4 +1,3 @@
-// apps/client-dashboard/src/components/categories/CategoryFormDialog.tsx
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { AnimatePresence, motion } from 'framer-motion';

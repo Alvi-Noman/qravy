@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
 import { Outlet } from 'react-router-dom';
-import TopBar from '../components/topbar/TopBar';
+import TopBar from '../components/TopBar/TopBar';
 import { ScopeProvider } from '../context/ScopeContext';
-import SettingsSidebar from '../components/sidebar/SettingsSidebar';
+import SettingsSidebar from '../components/SideBar/SettingsSidebar';
 
 export default function SettingsLayout(): JSX.Element {
   // Disable any container transition on first paint (future-proof if you add one)

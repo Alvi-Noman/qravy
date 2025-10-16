@@ -19,21 +19,21 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import type { Category } from '../api/categories';
 import { getCategoryByName } from '../api/categories';
-import { useCategories } from '../components/categories/useCategories';
-import { BulkActionsBar } from '../components/categories';
-import CategoriesToolbar from '../components/categories/CategoriesToolbar';
-import CategoriesToolbarSkeleton from '../components/categories/CategoriesToolbarSkeleton';
-import CategoryListSkeleton from '../components/categories/CategoryListSkeleton';
+import { useCategories } from '../components/Categories/useCategories';
+import { BulkActionsBar } from '../components/Categories';
+import CategoriesToolbar from '../components/Categories/CategoriesToolbar';
+import CategoriesToolbarSkeleton from '../components/Categories/CategoriesToolbarSkeleton';
+import CategoryListSkeleton from '../components/Categories/CategoryListSkeleton';
 import { TagIcon } from '@heroicons/react/24/outline';
 import Can from '../components/Can';
 import { usePermissions } from '../context/PermissionsContext';
 import { useScope } from '../context/ScopeContext';
 import { useAuthContext } from '../context/AuthContext';
 
-const CategoryList = lazy(() => import('../components/categories/CategoryList'));
-const CategoryFormDialog = lazy(() => import('../components/categories/CategoryFormDialog'));
-const DeleteReassignDialog = lazy(() => import('../components/categories/DeleteReassignDialog'));
-const MergeCategoriesDialog = lazy(() => import('../components/categories/MergeCategoriesDialog'));
+const CategoryList = lazy(() => import('../components/Categories/CategoryList'));
+const CategoryFormDialog = lazy(() => import('../components/Categories/CategoryFormDialog'));
+const DeleteReassignDialog = lazy(() => import('../components/Categories/DeleteReassignDialog'));
+const MergeCategoriesDialog = lazy(() => import('../components/Categories/MergeCategoriesDialog'));
 
 type SortBy = 'name-asc' | 'created-desc' | 'most-used';
 

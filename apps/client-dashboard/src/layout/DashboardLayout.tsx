@@ -1,7 +1,6 @@
-// apps/client-dashboard/src/layout/DashboardLayout.tsx
 import { useState, useEffect, useRef, lazy, Suspense } from 'react';
 import { Outlet, Navigate, useLocation } from 'react-router-dom';
-import TopBar from '../components/topbar/TopBar';
+import TopBar from '../components/TopBar/TopBar';
 import AIAssistantPanel from '../components/AIAssistantPanel';
 import { useAuthContext } from '../context/AuthContext';
 
@@ -16,7 +15,7 @@ import { planInfoFromId } from '../api/billing';
 import { useQueryClient } from '@tanstack/react-query';
 import { subscribeAndSaveBilling } from '../api/tenant';
 
-const Sidebar = lazy(() => import('../components/sidebar/Sidebar'));
+const Sidebar = lazy(() => import('../components/SideBar/Sidebar'));
 
 const AI_PANEL_WIDTH = 380;
 

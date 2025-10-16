@@ -1,4 +1,3 @@
-// apps/client-dashboard/src/components/topbar/TopbarProfileMenu.tsx
 import { useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
