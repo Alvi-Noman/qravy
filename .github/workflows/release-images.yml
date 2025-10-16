@@ -66,9 +66,9 @@ jobs:
         with:
           context: ${{ matrix.service.context }}
           file: ${{ matrix.service.file }}
-          target: prod                     # build the production stage
+          target: prod
           push: true
-          platforms: linux/amd64           # add linux/arm64 if you really need multi-arch
+          platforms: linux/amd64
           tags: |
             ${{ matrix.service.image }}:prod
             ${{ matrix.service.image }}:${{ steps.vars.outputs.STAMP }}-${{ steps.vars.outputs.SHA_SHORT }}
@@ -80,15 +80,21 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # OPTIONAL: trigger Render deploy hooks if you add secrets
+      # OPTIONAL: trigger Render deploy hooks (only if secrets are set)
       - name: Trigger Render deploy (api-gateway)
-        if: ${{ success() && secrets.RENDER_DEPLOY_HOOK_API_GATEWAY }}
-        run: curl -fsSL -X POST "$RENDER_DEPLOY_HOOK_API_GATEWAY"
+        env:
+          RENDER_DEPLOY_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK_API_GATEWAY }}
+        if: ${{ success() && env.RENDER_DEPLOY_HOOK != '' }}
+        run: curl -fsSL -X POST "$RENDER_DEPLOY_HOOK"
 
       - name: Trigger Render deploy (auth)
-        if: ${{ success() && secrets.RENDER_DEPLOY_HOOK_AUTH }}
-        run: curl -fsSL -X POST "$RENDER_DEPLOY_HOOK_AUTH"
+        env:
+          RENDER_DEPLOY_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK_AUTH }}
+        if: ${{ success() && env.RENDER_DEPLOY_HOOK != '' }}
+        run: curl -fsSL -X POST "$RENDER_DEPLOY_HOOK"
 
       - name: Trigger Render deploy (upload)
-        if: ${{ success() && secrets.RENDER_DEPLOY_HOOK_UPLOAD }}
-        run: curl -fsSL -X POST "$RENDER_DEPLOY_HOOK_UPLOAD"
+        env:
+          RENDER_DEPLOY_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK_UPLOAD }}
+        if: ${{ success() && env.RENDER_DEPLOY_HOOK != '' }}
+        run: curl -fsSL -X POST "$RENDER_DEPLOY_HOOK"
