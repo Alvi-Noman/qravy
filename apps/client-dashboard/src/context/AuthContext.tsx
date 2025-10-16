@@ -7,7 +7,7 @@ import {
   useCallback,
   ReactNode,
 } from 'react';
-import {
+import api, {
   attachAuthInterceptor,
   getMe,
   refreshToken as apiRefreshToken,
@@ -165,13 +165,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     setUser(null);
     setSession(null);
     try {
-      await fetch(
-        `${import.meta.env.VITE_API_BASE_URL}/api/v1/auth/logout`,
-        {
-          method: 'POST',
-          credentials: 'include',
-        }
-      );
+      await api.post('/api/v1/auth/logout');
     } catch {}
   }, [setToken]);
 

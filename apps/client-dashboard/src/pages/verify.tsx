@@ -1,20 +1,28 @@
 import { useSearchParams, Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string) || '';
+import api from '../api/auth';
+import axios from 'axios';
 
 type VerifyResult = { ok: true };
 
 async function verifyEmail(token: string): Promise<VerifyResult> {
-  const res = await fetch(
-    `${API_BASE_URL}/api/v1/auth/verify-email?token=${encodeURIComponent(token)}`
-  );
-  if (!res.ok) {
-    const data: { message?: string } = await res.json().catch(() => ({} as { message?: string }));
-    throw new Error(data.message || 'Verification failed');
+  try {
+    // withCredentials is already true on `api`; params avoids manual encoding
+    await api.get('/api/v1/auth/verify-email', { params: { token } });
+    return { ok: true };
+  } catch (err) {
+    // Normalize error message for the UI
+    if (axios.isAxiosError(err)) {
+      const status = err.response?.status;
+      const msg =
+        (err.response?.data as { message?: string } | undefined)?.message ||
+        err.message ||
+        'Verification failed';
+      // bubble status code text for your getErrorMessage() matcher
+      throw new Error(status ? `${status} ${msg}` : msg);
+    }
+    throw new Error(err instanceof Error ? err.message : 'Verification failed');
   }
-  // React Query v5 requires a non-undefined return value
-  return { ok: true };
 }
 
 export default function Verify() {
@@ -31,7 +39,7 @@ export default function Verify() {
   const getErrorMessage = (): string => {
     if (!error) return '';
     const msg = error.message || '';
-    if (msg.includes('Verification failed')) {
+    if (msg.toLowerCase().includes('verification failed')) {
       return 'Verification failed. Please check your link or request a new verification email.';
     }
     if (msg.includes('429')) return 'Too many requests. Please wait and try again.';

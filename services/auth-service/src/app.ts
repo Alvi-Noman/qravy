@@ -1,3 +1,4 @@
+// services/auth-service/src/app.ts
 /**
  * Auth service app
  * - Trust proxy (so rate-limit keys use real client IPs)
@@ -13,6 +14,7 @@ import express, { type Application, type Request, type Response } from 'express'
 import rateLimit, { ValueDeterminingMiddleware } from 'express-rate-limit';
 import cookieParser from 'cookie-parser';
 import morgan from 'morgan';
+import cors from 'cors';
 
 import authRoutes from './routes/authRoutes.js';
 import menuRoutes from './routes/menuItemsRoutes.js';
@@ -30,6 +32,30 @@ const app: Application = express();
 
 /** Use the gateway's X-Forwarded-* headers for req.ip, etc. */
 app.set('trust proxy', 1);
+
+/* ---------- CORS (explicit origins + credentials) ---------- */
+const CORS_ORIGINS = (process.env.CORS_ORIGIN || 'https://localhost:5173')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+
+// Note: We do NOT throw on disallowed origins. We simply return cb(null, false)
+// so the request proceeds without CORS headers. This avoids noisy errors while
+// still keeping a strict allowlist for browsers.
+app.use(
+  cors({
+    origin: (origin, cb) => {
+      if (!origin) return cb(null, false); // non-browser / same-origin / curl → no CORS headers
+      const ok = CORS_ORIGINS.includes(origin);
+      if (ok) return cb(null, true);
+      logger.warn(`[CORS] blocked origin: ${origin}`);
+      return cb(null, false);
+    },
+    credentials: true,
+    // Good defaults; explicitly set preflight success for older browsers/proxies
+    optionsSuccessStatus: 204,
+  })
+);
 
 /** Health FIRST — never rate-limit this */
 app.get('/health', (_req: Request, res: Response) => {
@@ -55,7 +81,7 @@ const windowMs = Number(process.env.RATE_LIMIT_WINDOW_MS ?? 60_000);
 /**
  * Allow separate knobs (recommended):
  * - RATE_LIMIT_MAX_API  : mild limit for general API (default 300/window)
- * - RATE_LIMIT_MAX_AUTH : tight limit for risky auth endpoints (default 10/window)
+ * - RATE_LIMIT_MAX_AUTH : tight limit for risky auth endpoints (default 20/window)
  * Fallback to RATE_LIMIT_MAX then to sensible defaults.
  */
 const MAX_API =
@@ -91,7 +117,7 @@ const apiLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   skip: skipCommon,
-  keyGenerator: (req: Request, _res: Response) => getClientIp(req),
+  keyGenerator: (req: Request) => getClientIp(req),
 });
 
 /** Tighter limiter only for risky auth endpoints */
@@ -102,7 +128,7 @@ const authLimiter = rateLimit({
   legacyHeaders: false,
   skip: skipCommon,
   message: { message: 'Too many requests, please try again later.' },
-  keyGenerator: (req: Request, _res: Response) => getClientIp(req),
+  keyGenerator: (req: Request) => getClientIp(req),
 });
 
 /**

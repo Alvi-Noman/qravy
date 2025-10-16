@@ -1,9 +1,3 @@
-/**
- * Image URL helpers for your API redirect (/i/:key) to ImageKit.
- *
- * Env:
- * - VITE_API_BASE (defaults to http://localhost:8080)
- */
 export type ImgOpts = {
   w?: number;
   h?: number;
@@ -14,7 +8,9 @@ export type ImgOpts = {
   blur?: number; // Gaussian blur strength (ImageKit "bl-<n>")
 };
 
-const API = import.meta.env.VITE_API_BASE || 'http://localhost:8080';
+const API =
+  (import.meta.env.VITE_API_URL as string | undefined) ||
+  'https://muvance-api-gateway.onrender.com';
 
 /**
  * Build an ImageKit URL via your backend redirect (/i/:key).

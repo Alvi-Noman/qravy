@@ -3,6 +3,7 @@ import app from './app.js';
 import { MongoClient } from 'mongodb';
 import logger from './utils/logger.js';
 import { ensureUserIndexes } from './utils/initDb.js';
+import { logEmailBootInfo } from './utils/email.js';
 
 export const client = new MongoClient(env.MONGODB_URI!);
 
@@ -23,9 +24,11 @@ async function startServer() {
     // Listen on 0.0.0.0 for Docker compatibility
     server = app.listen(PORT, '0.0.0.0', () => {
       logger.info(`Auth service running on port ${PORT}`);
+      // Print email provider info at boot (helps diagnose 500s from mail)
+      logEmailBootInfo();
     });
   } catch (err) {
-    logger.error('Failed to connect to MongoDB:', err);
+    logger.error('Failed to connect to MongoDB:', err as Error);
     process.exit(1);
   }
 }

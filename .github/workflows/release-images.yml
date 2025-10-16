@@ -1,3 +1,4 @@
+# .github/workflows/release-images.yml
 name: Release Images
 
 on:
@@ -25,14 +26,14 @@ jobs:
             file: services/api-gateway/Dockerfile
             context: .
             image: ghcr.io/alvi-noman/muvance-api-gateway
-          - name: auth-service
+          - name: auth
             file: services/auth-service/Dockerfile
             context: .
-            image: ghcr.io/alvi-noman/muvance-auth-service
-          - name: upload-service
+            image: ghcr.io/alvi-noman/muvance-auth
+          - name: upload
             file: services/upload-service/Dockerfile
             context: .
-            image: ghcr.io/alvi-noman/muvance-upload-service
+            image: ghcr.io/alvi-noman/muvance-upload
 
     steps:
       - name: Checkout
@@ -65,11 +66,12 @@ jobs:
         with:
           context: ${{ matrix.service.context }}
           file: ${{ matrix.service.file }}
+          target: prod                     # build the production stage
           push: true
-          # (optional) multi-arch: linux/amd64,linux/arm64
+          platforms: linux/amd64           # add linux/arm64 if you really need multi-arch
           tags: |
-            ${{ matrix.service.image }}:${{ steps.vars.outputs.STAMP }}-${{ steps.vars.outputs.SHA_SHORT }}
             ${{ matrix.service.image }}:prod
+            ${{ matrix.service.image }}:${{ steps.vars.outputs.STAMP }}-${{ steps.vars.outputs.SHA_SHORT }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ steps.vars.outputs.SHA_FULL }}
@@ -77,3 +79,16 @@ jobs:
             org.opencontainers.image.created=${{ steps.vars.outputs.STAMP }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # OPTIONAL: trigger Render deploy hooks if you add secrets
+      - name: Trigger Render deploy (api-gateway)
+        if: ${{ success() && secrets.RENDER_DEPLOY_HOOK_API_GATEWAY }}
+        run: curl -fsSL -X POST "$RENDER_DEPLOY_HOOK_API_GATEWAY"
+
+      - name: Trigger Render deploy (auth)
+        if: ${{ success() && secrets.RENDER_DEPLOY_HOOK_AUTH }}
+        run: curl -fsSL -X POST "$RENDER_DEPLOY_HOOK_AUTH"
+
+      - name: Trigger Render deploy (upload)
+        if: ${{ success() && secrets.RENDER_DEPLOY_HOOK_UPLOAD }}
+        run: curl -fsSL -X POST "$RENDER_DEPLOY_HOOK_UPLOAD"

@@ -14,6 +14,16 @@ const NODE_ENV = process.env.NODE_ENV || 'development';
 const isProd = NODE_ENV === 'production';
 const PROVIDER = (process.env.EMAIL_PROVIDER || (isProd ? 'resend' : 'gmail')).toLowerCase();
 
+/** Exported helper so we can print this at server boot as well */
+export function logEmailBootInfo() {
+  const hasResendKey = Boolean(process.env.RESEND_API_KEY);
+  logger.info(
+    `[EMAIL-BOOT] NODE_ENV=${NODE_ENV} provider=${PROVIDER} hasResendKey=${hasResendKey}`
+  );
+}
+// Also log once on module load (in case we forget to call the helper)
+logEmailBootInfo();
+
 // ──────────────────────────────────────────────────────────────────────────────
 // RESEND (HTTPS API)
 // Env: RESEND_API_KEY, EMAIL_FROM (and optional EMAIL_REPLY_TO)
@@ -87,8 +97,16 @@ const smtpTransporter: Transporter | null = PROVIDER === 'gmail' ? buildSmtpTran
 // ──────────────────────────────────────────────────────────────────────────────
 /** format nodemailer-ish errors for readable logs */
 function formatMailError(err: unknown): string {
-  const e = err as { code?: string; responseCode?: number; command?: string; message?: string; response?: string };
+  const e = err as {
+    code?: string;
+    responseCode?: number;
+    command?: string;
+    message?: string;
+    response?: string;
+    name?: string;
+  };
   const parts = [
+    e?.name ? `name=${e.name}` : '',
     e?.code ? `code=${e.code}` : '',
     e?.responseCode ? `responseCode=${e.responseCode}` : '',
     e?.command ? `command=${e.command}` : '',
@@ -102,9 +120,12 @@ function formatMailError(err: unknown): string {
 // Core send helper — picks provider
 // ──────────────────────────────────────────────────────────────────────────────
 async function sendEmailCore(to: string, subject: string, html: string): Promise<void> {
+  logger.info(`[EMAIL-SEND] provider=${PROVIDER} to=${to} subj="${subject}"`);
+
   // Prefer Resend in prod (or when explicitly selected)
   if (PROVIDER === 'resend') {
     if (!resend) throw new Error('RESEND_API_KEY missing');
+
     const { error } = await resend.emails.send({
       from: RESEND_FROM,
       to,
@@ -112,10 +133,13 @@ async function sendEmailCore(to: string, subject: string, html: string): Promise
       html,
       replyTo: RESEND_REPLY_TO,
     });
+
     if (error) {
-      logger.error(`Resend send failed: ${error.name} ${error.message}`);
+      // Resend gives structured errors
+      logger.error(`Resend send failed: ${formatMailError(error)}`);
       throw new Error(error.message);
     }
+
     logger.info(`Email sent via Resend → ${to} (${subject})`);
     return;
   }
@@ -133,7 +157,7 @@ async function sendEmailCore(to: string, subject: string, html: string): Promise
       logger.info(`Email sent via SMTP → ${to} (${subject})`);
       return;
     } catch (err) {
-      logger.error(`Failed to send email to ${to}: ${formatMailError(err)}`);
+      logger.error(`SMTP send failed: ${formatMailError(err)}`);
       throw err;
     }
   }
@@ -190,6 +214,7 @@ export async function sendAdminInviteEmail(to: string, inviteLink: string, tenan
     <div style="font-family:Arial,sans-serif;line-height:1.5;color:#222">
       <h2 style="color:#111;margin-bottom:8px;">You're invited as an Admin</h2>
       <p>${tenantName} has granted you <strong>Admin Access</strong> across all branches.</p>
+      <p>You’ll have full control over menus, locations, and users — everything an Owner can, except billing.</p>
       <p style="margin-top:16px;">
         <a href="${inviteLink}"
            style="display:inline-block;background:#111;color:#fff;padding:10px 18px;

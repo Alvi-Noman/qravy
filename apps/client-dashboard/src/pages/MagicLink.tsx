@@ -1,12 +1,9 @@
-// MagicLink.tsx
 import { useEffect, useRef, useState } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { verifyMagicLink } from '../api/auth';
+import api, { verifyMagicLink } from '../api/auth';
 import { useAuthContext } from '../context/AuthContext';
 import AuthErrorScreen from '../components/AuthErrorScreen';
-
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string) || '';
 
 type AuthUser = {
   id: string;
@@ -52,46 +49,37 @@ export default function MagicLink() {
   const runPostLogin = async (accessToken: string, user: AuthUser) => {
     try {
       // Device lookup (auto-select tenant if the device already belongs to one)
-      const lookupRes = await fetch(`${API_BASE_URL}/api/v1/access/devices/lookup`, {
-        method: 'GET',
-        headers: { Authorization: `Bearer ${accessToken}` },
-        credentials: 'include',
+      const lookupRes = await api.get<DeviceLookup>('/api/v1/access/devices/lookup', {
+        // Authorization header will be added by the axios interceptor after login()
+        withCredentials: true,
       });
 
-      if (lookupRes.ok) {
-        const lookup: DeviceLookup = await lookupRes.json();
+      if (lookupRes.status === 200) {
+        const lookup = lookupRes.data;
         if (lookup && 'found' in lookup && lookup.found) {
-          const sel = await fetch(`${API_BASE_URL}/api/v1/access/select-tenant`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              Authorization: `Bearer ${accessToken}`,
-            },
-            credentials: 'include',
-            body: JSON.stringify({ tenantId: lookup.tenantId }),
-          });
-          if (sel.ok) {
-            const selJson = await sel.json();
-            const nextToken = selJson?.token as string | undefined;
-            if (nextToken) {
-              await login(nextToken, { ...user, tenantId: lookup.tenantId, isOnboarded: true });
-              await reloadUser();
-              navigate('/dashboard', { replace: true });
-              return;
-            }
+          const sel = await api.post<{ token?: string }>(
+            '/api/v1/access/select-tenant',
+            { tenantId: lookup.tenantId },
+            { withCredentials: true }
+          );
+          const nextToken = sel.data?.token as string | undefined;
+          if (nextToken) {
+            await login(nextToken, { ...user, tenantId: lookup.tenantId, isOnboarded: true });
+            await reloadUser();
+            navigate('/dashboard', { replace: true });
+            return;
           }
         }
       }
 
       // Otherwise show workspaces (for central email users), or route by tenantId
-      const wsRes = await fetch(`${API_BASE_URL}/api/v1/access/workspaces`, {
-        method: 'GET',
-        headers: { Authorization: `Bearer ${accessToken}` },
-        credentials: 'include',
-      });
+      const wsRes = await api.get<{ items?: Workspace[] }>(
+        '/api/v1/access/workspaces',
+        { withCredentials: true }
+      );
 
-      if (wsRes.ok) {
-        const wsJson = await wsRes.json();
+      if (wsRes.status === 200) {
+        const wsJson = wsRes.data;
         const items: Workspace[] = wsJson?.items || [];
         if (items.length > 0) {
           setWorkspaces(items);
@@ -126,17 +114,20 @@ export default function MagicLink() {
       if (!token || !isError) return;
 
       try {
-        const res = await fetch(
-          `${API_BASE_URL}/api/v1/access/confirm-invite?inviteToken=${encodeURIComponent(token)}`,
-          { method: 'GET', credentials: 'include' }
+        const res = await api.get<{ token?: string; user?: AuthUser }>(
+          '/api/v1/access/confirm-invite',
+          {
+            params: { inviteToken: token },
+            withCredentials: true,
+          }
         );
 
-        if (!res.ok) {
+        if (res.status !== 200) {
           setHardError(true);
           return;
         }
 
-        const json = await res.json();
+        const json = res.data;
         const accessToken = json?.token as string | undefined;
         const user = json?.user as AuthUser | undefined;
 
@@ -163,18 +154,14 @@ export default function MagicLink() {
       if (!verifiedUser || !verifiedToken) return;
       setJoining(tenantId);
 
-      const sel = await fetch(`${API_BASE_URL}/api/v1/access/select-tenant`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${verifiedToken}`,
-        },
-        credentials: 'include',
-        body: JSON.stringify({ tenantId }),
-      });
-      if (!sel.ok) throw new Error('Failed to join workspace');
+      const sel = await api.post<{ token?: string }>(
+        '/api/v1/access/select-tenant',
+        { tenantId },
+        { withCredentials: true }
+      );
+      if (sel.status !== 200) throw new Error('Failed to join workspace');
 
-      const selJson = await sel.json();
+      const selJson = sel.data;
       const nextToken = selJson?.token as string | undefined;
       if (!nextToken) throw new Error('No token returned');
 

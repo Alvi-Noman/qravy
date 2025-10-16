@@ -1,31 +1,51 @@
 /**
  * API client and auth endpoints.
- * - Adds Authorization on requests
- * - Single-flight refresh with a plain client (no interceptor recursion)
- * - Retries the original request after refresh
+ * - Authorization header via request interceptor
+ * - Single-flight refresh using a plain client (no interceptor recursion)
+ * - Retries the original request after a successful refresh
  */
 import axios, {
   AxiosHeaders,
   type AxiosError,
   type AxiosInstance,
   type AxiosResponse,
-  type InternalAxiosRequestConfig
+  type InternalAxiosRequestConfig,
 } from 'axios';
 
-const API_BASE_URL = import.meta.env.VITE_API_URL as string;
+const API_BASE_URL =
+  (import.meta.env.VITE_API_URL as string | undefined) ||
+  // safe fallback to your public gateway (change to https://api.qravy.com when you move)
+  'https://muvance-api-gateway.onrender.com';
+
 const REFRESH_URL = '/api/v1/auth/refresh-token';
 
+/** Primary axios instance (uses interceptors) */
 const api: AxiosInstance = axios.create({
   baseURL: API_BASE_URL,
-  withCredentials: true
+  withCredentials: true,
 });
 
+/** Plain axios instance (no interceptors) — used for refresh */
 const plain: AxiosInstance = axios.create({
   baseURL: API_BASE_URL,
-  withCredentials: true
+  withCredentials: true,
 });
 
 let refreshInFlight: Promise<void> | null = null;
+
+/** Utility: set/update Authorization header on a request config */
+function applyAuthHeader(
+  cfg: InternalAxiosRequestConfig & { _retry?: boolean },
+  token: string | null
+) {
+  if (!token) return;
+  if (cfg.headers instanceof AxiosHeaders) {
+    cfg.headers.set('Authorization', `Bearer ${token}`);
+  } else {
+    cfg.headers = AxiosHeaders.from(cfg.headers || {});
+    (cfg.headers as AxiosHeaders).set('Authorization', `Bearer ${token}`);
+  }
+}
 
 /**
  * Attach auth interceptors to axios instance.
@@ -35,24 +55,18 @@ export function attachAuthInterceptor(
   refreshAccessToken: () => Promise<void>,
   logout: () => void
 ): void {
+  // Attach Authorization on outgoing requests
   api.interceptors.request.use((config: InternalAxiosRequestConfig) => {
     const token = getToken();
-    if (token) {
-      if (config.headers instanceof AxiosHeaders) {
-        config.headers.set('Authorization', `Bearer ${token}`);
-      } else {
-        config.headers = AxiosHeaders.from(config.headers || {});
-        (config.headers as AxiosHeaders).set('Authorization', `Bearer ${token}`);
-      }
-    }
+    applyAuthHeader(config, token);
     return config;
   });
 
+  // Handle 401, refresh once, then retry original request
   api.interceptors.response.use(
     (response: AxiosResponse) => response,
     async (error: AxiosError) => {
       const original = error.config as (InternalAxiosRequestConfig & { _retry?: boolean }) | undefined;
-
       if (!original) return Promise.reject(error);
 
       const status = error.response?.status;
@@ -62,25 +76,21 @@ export function attachAuthInterceptor(
         original._retry = true;
 
         try {
-          if (!refreshInFlight) refreshInFlight = refreshAccessToken();
+          if (!refreshInFlight) {
+            refreshInFlight = refreshAccessToken();
+          }
           await refreshInFlight;
         } catch {
+          // refresh failed → clear flag, log out, surface error
           refreshInFlight = null;
           logout();
           return Promise.reject(error);
         }
+        // refresh succeeded → clear flag, re-issue with new token
         refreshInFlight = null;
 
         const token = getToken();
-        if (token) {
-          if (original.headers instanceof AxiosHeaders) {
-            original.headers.set('Authorization', `Bearer ${token}`);
-          } else {
-            original.headers = AxiosHeaders.from(original.headers || {});
-            (original.headers as AxiosHeaders).set('Authorization', `Bearer ${token}`);
-          }
-        }
-
+        applyAuthHeader(original, token);
         return api.request(original);
       }
 
@@ -119,7 +129,9 @@ export async function sendMagicLink(email: string): Promise<void> {
  */
 export async function verifyMagicLink<T = unknown>(token: string): Promise<T> {
   try {
-    const response = await api.get<T>(`/api/v1/auth/magic-link/verify?token=${encodeURIComponent(token)}`);
+    const response = await api.get<T>(
+      `/api/v1/auth/magic-link/verify?token=${encodeURIComponent(token)}`
+    );
     return response.data;
   } catch (error) {
     throw new Error(extractErrorMessage(error));
@@ -147,7 +159,7 @@ export async function getMe<T = unknown>(token?: string): Promise<T> {
  */
 export async function refreshToken<T = unknown>(): Promise<T> {
   try {
-    // No extra headers/body to avoid preflight
+    // POST with no body/headers keeps preflight minimal
     const response = await plain.post<T>(REFRESH_URL);
     return response.data;
   } catch (error) {

@@ -5,6 +5,9 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import './styles/tailwind.css';
 import App from './App';
 
+// 🧭 TEMP: Verify env loaded correctly
+console.log('VITE_API_URL =', import.meta.env.VITE_API_URL);
+
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
@@ -12,8 +15,6 @@ const queryClient = new QueryClient({
       gcTime: 30 * 60 * 1000,
       refetchOnWindowFocus: true,
       retry: 1,
-      // Do not keep previous data between scope changes
-      // (removes the brief "old state" flash)
     },
     mutations: {
       retry: 0,

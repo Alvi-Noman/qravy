@@ -104,7 +104,7 @@ export default function ProductDrawer({
   }) => void | Promise<void>;
   persistKey?: string;
 }) {
-  const API_BASE = import.meta.env.VITE_API_BASE_URL || '';
+  const API_BASE = (import.meta.env.VITE_API_URL as string) || '';
   const { token } = useAuthContext();
   const { activeLocationId, channel: scopeChannel } = useScope();
   const queryClient = useQueryClient();

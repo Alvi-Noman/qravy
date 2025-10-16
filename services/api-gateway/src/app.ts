@@ -1,3 +1,4 @@
+// services/api-gateway/src/app.ts
 /**
  * API Gateway
  */
@@ -21,22 +22,31 @@ app.use((req: Request, _res: Response, next: NextFunction) => {
   next();
 });
 
-// CORS (comma-separated origins supported)
-const CORS_ORIGINS = (process.env.CORS_ORIGIN || 'http://localhost:5173')
+/* ---------- CORS (explicit origins + credentials) ---------- */
+// Comma-separated origins, e.g. "https://app.qravy.com,https://localhost:5173"
+const CORS_ORIGINS = (process.env.CORS_ORIGIN || 'https://localhost:5173')
   .split(',')
-  .map((s) => s.trim());
+  .map((s) => s.trim())
+  .filter(Boolean);
 
+// NOTE: We do NOT throw on disallowed origins. We return cb(null, false)
+// so the request proceeds without CORS headers. This keeps logs clean
+// while still enforcing a strict browser allowlist.
 const corsOptions: cors.CorsOptions = {
   origin: (origin, cb) => {
-    if (!origin) return cb(null, true); // allow curl/mobile/no-origin
-    if (CORS_ORIGINS.includes(origin)) return cb(null, true);
-    return cb(new Error(`Not allowed by CORS: ${origin}`));
+    if (!origin) return cb(null, false); // non-browser / same-origin / curl → no CORS headers
+    const ok = CORS_ORIGINS.includes(origin);
+    if (!ok) {
+      logger.warn(`[GATEWAY CORS] blocked origin: ${origin}`);
+    }
+    return cb(null, ok);
   },
   credentials: true,
   methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'authorization', 'X-Requested-With'],
   exposedHeaders: ['ETag'],
   maxAge: 86400,
+  optionsSuccessStatus: 204,
 };
 
 app.use(cors(corsOptions));
@@ -60,7 +70,8 @@ function jsonProxyToAuth() {
     changeOrigin: true,
     xfwd: true,
     ws: false,
-    // cookieDomainRewrite: 'localhost', // only for local dev; disable in prod
+    // IMPORTANT: do NOT set cookieDomainRewrite — we want host-only cookies
+    // cookieDomainRewrite: undefined,
 
     onProxyReq: (proxyReq: ClientRequest, req: Request & { body?: unknown }) => {
       // Only forward JSON bodies for mutating methods
@@ -98,7 +109,7 @@ function jsonProxyToAuth() {
       logger.error(
         `[PROXY][AUTH] ${req.method} ${req.originalUrl} -> ${AUTH_TARGET} error: ${code} ${(err as Error).message}`
       );
-      if (!res.headersSent) {
+      if (!(res as Response).headersSent) {
         (res as Response).status(502).json({ message: 'Bad gateway (auth-service unavailable)', code });
       }
     },

@@ -1,3 +1,4 @@
+// services/auth-service/src/controllers/authController.ts
 import type { Request, Response, NextFunction } from 'express';
 import jwt, { type JwtPayload } from 'jsonwebtoken';
 import { Db, Collection, ObjectId } from 'mongodb';
@@ -50,6 +51,16 @@ function generateMagicLinkToken(): string {
   return crypto.randomBytes(32).toString('hex');
 }
 
+/** Consistent cookie options for refresh token (set and clear). */
+const REFRESH_COOKIE_NAME = 'refreshToken';
+const REFRESH_COOKIE_OPTS = {
+  httpOnly: true as const,
+  secure: true as const,             // always HTTPS; use mkcert for localhost during dev
+  sameSite: 'none' as const,         // required for cross-site requests
+  path: '/api/v1/auth',              // scope to auth routes at the gateway
+  maxAge: 30 * 24 * 60 * 60 * 1000,  // 30 days
+};
+
 /** Resolve a user's role (owner/admin/editor/viewer) from tenant ownership or memberships. */
 async function resolveUserRoleAndTenantInfo(user: UserDoc): Promise<{
   role: Role | undefined;
@@ -96,6 +107,29 @@ async function resolveUserRoleAndTenantInfo(user: UserDoc): Promise<{
   return { role, tenantIdStr, isOnboarded };
 }
 
+/** Compute the base URL for magic links using request Origin allowlist. */
+function getMagicLinkBaseUrl(req: Request): { baseUrl: string; fallbackLink?: string } {
+  const requestOrigin = (req.get('origin') || '').trim().replace(/\/$/, '');
+  const allowed = (process.env.ALLOWED_DEV_ORIGINS || 'https://localhost:5173')
+    .split(',')
+    .map(s => s.trim().replace(/\/$/, ''))
+    .filter(Boolean);
+
+  const primaryBase = (process.env.FRONTEND_URL || 'https://app.qravy.com').trim().replace(/\/$/, '');
+  const useDev = !!requestOrigin && allowed.includes(requestOrigin);
+  const baseUrl = useDev ? requestOrigin : primaryBase;
+
+  const fallbackBase = process.env.FALLBACK_FRONTEND_URL?.trim()?.replace(/\/$/, '');
+  const fallbackLink = fallbackBase ? `${fallbackBase}/magic-link?token=` : undefined;
+
+  logger.info(
+    `[magic-link] origin=${requestOrigin || 'n/a'} allowed=${useDev} base=${baseUrl}` +
+      (fallbackLink ? ` fallbackBase=${fallbackBase}` : '')
+  );
+
+  return { baseUrl, fallbackLink };
+}
+
 export const sendMagicLink = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
     const { email: rawEmail } = req.body as { email: string };
@@ -111,6 +145,7 @@ export const sendMagicLink = async (req: Request, res: Response, next: NextFunct
     const collection = await getUsersCollection();
     let user = await collection.findOne({ email });
 
+    // Create a new token every request (15 min TTL)
     const magicLinkToken = generateMagicLinkToken();
     const magicLinkTokenExpires = new Date(Date.now() + 15 * 60 * 1000);
 
@@ -133,21 +168,16 @@ export const sendMagicLink = async (req: Request, res: Response, next: NextFunct
       logger.info(`Updated magic link for user: ${email} from IP ${ip}`);
     }
 
-    // --- Build magic link base URL safely
-    const smtpConfigured =
-      !!process.env.SMTP_HOST && !!process.env.SMTP_USER && !!process.env.SMTP_PASS && !!process.env.SMTP_FROM;
+    // --- Build origin-aware magic link
+    const { baseUrl, fallbackLink } = getMagicLinkBaseUrl(req);
+    const magicLink = `${baseUrl}/magic-link?token=${magicLinkToken}`;
+    const fallbackFull = fallbackLink ? `${fallbackLink}${magicLinkToken}` : undefined;
 
-    const baseUrl = process.env.FRONTEND_URL || process.env.CORS_ORIGIN || 'http://localhost:5173';
-    const magicLink = `${baseUrl.replace(/\/$/, '')}/magic-link?token=${magicLinkToken}`;
-
-    // --- Dev-mode fallback to avoid 500 when SMTP isn't configured
-    if (!smtpConfigured && process.env.NODE_ENV !== 'production') {
-      logger.warn(`[DEV MODE] SMTP not configured; logging magic link for ${email}: ${magicLink}`);
-      res.ok({ message: 'Magic link generated (logged in server, no email in dev).' });
-      return;
-    }
-
-    logger.info(`Preparing to send magic link to ${email} from IP ${ip}`);
+    logger.info(
+      `Preparing to send magic link to ${email} from IP ${ip} (primary=${magicLink}` +
+        (fallbackFull ? `, fallback=${fallbackFull}` : '') +
+        `)`
+    );
 
     try {
       await sendMagicLinkEmail(email, magicLink);
@@ -249,12 +279,8 @@ export const verifyMagicLink = async (req: Request, res: Response, next: NextFun
 
     logger.info(`User verified magic link: ${userInfo(user)} from IP ${ip}`);
 
-    res.cookie('refreshToken', refreshTokenValue, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
-      maxAge: 30 * 24 * 60 * 60 * 1000,
-    });
+    // ---- Set refresh cookie (strict scope)
+    res.cookie(REFRESH_COOKIE_NAME, refreshTokenValue, REFRESH_COOKIE_OPTS);
 
     // ---- Return user with caps so UI can render correctly
     res.ok({
@@ -301,7 +327,7 @@ export const completeOnboarding = async (req: Request, res: Response, next: Next
 export const refreshToken = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
     const cookies = (req as unknown as { cookies?: Record<string, string> }).cookies;
-    const token = cookies?.refreshToken;
+    const token = cookies?.[REFRESH_COOKIE_NAME];
     const ip = req.ip || req.socket.remoteAddress || 'unknown';
 
     if (!token) {
@@ -387,12 +413,8 @@ export const refreshToken = async (req: Request, res: Response, next: NextFuncti
       { expiresIn: '15m' }
     );
 
-    res.cookie('refreshToken', newRefreshToken, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
-      maxAge: 30 * 24 * 60 * 60 * 1000,
-    });
+    // Rotate cookie with strict scope
+    res.cookie(REFRESH_COOKIE_NAME, newRefreshToken, REFRESH_COOKIE_OPTS);
 
     res.ok({ token: newAccessToken });
   } catch (error) {
@@ -405,10 +427,15 @@ export const refreshToken = async (req: Request, res: Response, next: NextFuncti
 export const logout = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
     const cookies = (req as unknown as { cookies?: Record<string, string> }).cookies;
-    const token = cookies?.refreshToken;
+    const token = cookies?.[REFRESH_COOKIE_NAME];
 
     if (!token) {
-      res.clearCookie('refreshToken');
+      res.clearCookie(REFRESH_COOKIE_NAME, {
+        httpOnly: true,
+        secure: true,
+        sameSite: 'none',
+        path: REFRESH_COOKIE_OPTS.path,
+      });
       res.ok({ message: 'Logged out' });
       return;
     }
@@ -417,13 +444,23 @@ export const logout = async (req: Request, res: Response, next: NextFunction): P
     try {
       payload = verifyRefreshToken(token);
     } catch {
-      res.clearCookie('refreshToken');
+      res.clearCookie(REFRESH_COOKIE_NAME, {
+        httpOnly: true,
+        secure: true,
+        sameSite: 'none',
+        path: REFRESH_COOKIE_OPTS.path,
+      });
       res.ok({ message: 'Logged out' });
       return;
     }
 
     if (!isJwtPayloadWithIdEmail(payload)) {
-      res.clearCookie('refreshToken');
+      res.clearCookie(REFRESH_COOKIE_NAME, {
+        httpOnly: true,
+        secure: true,
+        sameSite: 'none',
+        path: REFRESH_COOKIE_OPTS.path,
+      });
       res.ok({ message: 'Logged out' });
       return;
     }
@@ -431,7 +468,12 @@ export const logout = async (req: Request, res: Response, next: NextFunction): P
     const collection = await getUsersCollection();
     const user = await collection.findOne({ _id: new ObjectId((payload as any).id) });
     if (!user) {
-      res.clearCookie('refreshToken');
+      res.clearCookie(REFRESH_COOKIE_NAME, {
+        httpOnly: true,
+        secure: true,
+        sameSite: 'none',
+        path: REFRESH_COOKIE_OPTS.path,
+      });
       res.ok({ message: 'Logged out' });
       return;
     }
@@ -444,7 +486,12 @@ export const logout = async (req: Request, res: Response, next: NextFunction): P
       { $set: { refreshTokens: cleanedTokens } }
     );
 
-    res.clearCookie('refreshToken');
+    res.clearCookie(REFRESH_COOKIE_NAME, {
+      httpOnly: true,
+      secure: true,
+      sameSite: 'none',
+      path: REFRESH_COOKIE_OPTS.path,
+    });
     res.ok({ message: 'Logged out' });
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
@@ -462,7 +509,13 @@ export const logoutAll = async (req: Request, res: Response, next: NextFunction)
     }
     const collection = await getUsersCollection();
     await collection.updateOne({ _id: new ObjectId(userId) }, { $set: { refreshTokens: [] } });
-    res.clearCookie('refreshToken');
+
+    res.clearCookie(REFRESH_COOKIE_NAME, {
+      httpOnly: true,
+      secure: true,
+      sameSite: 'none',
+      path: REFRESH_COOKIE_OPTS.path,
+    });
     res.ok({ message: 'Logged out from all sessions' });
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
