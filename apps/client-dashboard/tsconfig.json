@@ -11,7 +11,15 @@
     },
     "allowJs": true,
     "checkJs": true,
-    "types": ["vite/client", "vitest/globals", "node", "@testing-library/jest-dom"]
+    "types": [
+      "vite/client",
+      "vitest/globals",
+      "node",
+      "@testing-library/jest-dom"
+    ],
+    "noImplicitAny": false,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true
   },
   "include": [
     "**/*.js",
