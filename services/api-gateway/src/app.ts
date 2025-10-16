@@ -1,4 +1,3 @@
-// services/api-gateway/src/app.ts
 /**
  * API Gateway
  */
@@ -29,28 +28,26 @@ const CORS_ORIGINS = (process.env.CORS_ORIGIN || 'https://localhost:5173')
   .map((s) => s.trim())
   .filter(Boolean);
 
-// NOTE: We do NOT throw on disallowed origins. We return cb(null, false)
-// so the request proceeds without CORS headers. This keeps logs clean
-// while still enforcing a strict browser allowlist.
 const corsOptions: cors.CorsOptions = {
   origin: (origin, cb) => {
-    if (!origin) return cb(null, false); // non-browser / same-origin / curl → no CORS headers
-    const ok = CORS_ORIGINS.includes(origin);
-    if (!ok) {
-      logger.warn(`[GATEWAY CORS] blocked origin: ${origin}`);
-    }
-    return cb(null, ok);
+    // Allow REST tools / SSR / same-origin (no Origin header)
+    if (!origin) return cb(null, true);
+    if (CORS_ORIGINS.includes(origin)) return cb(null, true);
+
+    logger.warn(`[GATEWAY CORS] blocked origin: ${origin}`);
+    return cb(new Error('Not allowed by CORS'));
   },
   credentials: true,
   methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'authorization', 'X-Requested-With'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
   exposedHeaders: ['ETag'],
   maxAge: 86400,
   optionsSuccessStatus: 204,
 };
 
+// CORS must come BEFORE all proxies
 app.use(cors(corsOptions));
-// Ensure preflight ends here with 204
+// Ensure preflight OPTIONS ends cleanly here
 app.options('*', cors(corsOptions));
 
 // Parse JSON bodies (we’ll re-forward the body in the proxy)
