@@ -47,8 +47,19 @@ const corsOptions: cors.CorsOptions = {
 
 // CORS must come BEFORE all proxies
 app.use(cors(corsOptions));
-// Ensure preflight OPTIONS ends cleanly here
 app.options('*', cors(corsOptions));
+
+/**
+ * NEW: handle all OPTIONS (preflight) requests early.
+ * This ensures preflights never reach proxy targets.
+ */
+app.use((req, res, next) => {
+  if (req.method === 'OPTIONS') {
+    res.sendStatus(204);
+    return;
+  }
+  next();
+});
 
 // Parse JSON bodies (we’ll re-forward the body in the proxy)
 app.use(express.json({ limit: '2mb' }));
@@ -68,7 +79,6 @@ function jsonProxyToAuth() {
     xfwd: true,
     ws: false,
     // IMPORTANT: do NOT set cookieDomainRewrite — we want host-only cookies
-    // cookieDomainRewrite: undefined,
 
     onProxyReq: (proxyReq: ClientRequest, req: Request & { body?: unknown }) => {
       // Only forward JSON bodies for mutating methods
