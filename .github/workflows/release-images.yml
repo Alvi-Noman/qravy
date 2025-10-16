@@ -11,6 +11,7 @@ on:
       - "pnpm-workspace.yaml"
       - "turbo.json"
       - ".github/workflows/release-images.yml"
+  workflow_dispatch: {}   # allow manual runs from the Actions tab
 
 # Needed for GHCR with the default GITHUB_TOKEN
 permissions:
@@ -26,7 +27,7 @@ jobs:
     name: Build & Push Images
     runs-on: ubuntu-latest
 
-    # Redundant but helps on some runners
+    # Redundant but harmless: ensures the job has the right perms
     permissions:
       contents: read
       packages: write
@@ -38,15 +39,16 @@ jobs:
           - name: api-gateway
             file: services/api-gateway/Dockerfile
             context: .
-            image: ghcr.io/${{ github.repository_owner }}/muvance-api-gateway
+            # ensure lowercase repo path for GHCR
+            image: ghcr.io/${{ toLower(github.repository_owner) }}/muvance-api-gateway
           - name: auth
             file: services/auth-service/Dockerfile
             context: .
-            image: ghcr.io/${{ github.repository_owner }}/muvance-auth
+            image: ghcr.io/${{ toLower(github.repository_owner) }}/muvance-auth
           - name: upload
             file: services/upload-service/Dockerfile
             context: .
-            image: ghcr.io/${{ github.repository_owner }}/muvance-upload
+            image: ghcr.io/${{ toLower(github.repository_owner) }}/muvance-upload
 
     steps:
       - name: Checkout
@@ -71,7 +73,8 @@ jobs:
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
-          username: ${{ github.repository_owner }}
+          # actor is fine for login; tags use lowercased owner above
+          username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build & Push ${{ matrix.service.name }}
@@ -81,7 +84,7 @@ jobs:
           file: ${{ matrix.service.file }}
           push: true
           platforms: linux/amd64
-          # Build final stage (no --target)
+          # Build final stage (no --target); your Dockerfiles should build prod by default
           tags: |
             ${{ matrix.service.image }}:prod
             ${{ matrix.service.image }}:${{ steps.vars.outputs.STAMP }}-${{ steps.vars.outputs.SHA_SHORT }}
@@ -93,7 +96,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # OPTIONAL: trigger Render deploy hooks — use env shim so `if:` can read it
+      # OPTIONAL: trigger Render deploy hooks — use env shim so `if:` can read it safely
       - name: Trigger Render deploy (api-gateway)
         env:
           RENDER_DEPLOY_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK_API_GATEWAY }}
