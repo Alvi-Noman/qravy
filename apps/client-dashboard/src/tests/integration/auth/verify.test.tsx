@@ -6,7 +6,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { http, HttpResponse, delay } from 'msw';
 import { server } from '../../msw/server';
 
-import Verify from '../../../pages/Verify';
+import Verify from '../../../pages/verify';
 
 function renderVerify(initialPath = '/verify?token=ok') {
   const queryClient = new QueryClient({
