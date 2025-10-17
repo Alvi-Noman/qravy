@@ -29,12 +29,10 @@ jobs:
       contents: read
       packages: write
 
+    # Hoist secrets here so we can reference env.* later (not secrets.*)
     env:
-      # If you have a PAT, put it in repo Settings → Secrets → Actions as GHCR_TOKEN
-      GHCR_PAT: ${{ secrets.GHCR_TOKEN }}
-      # If your PAT is from a different user, set GHCR_USERNAME secret accordingly.
-      # Otherwise we default to your handle for PAT mode and github.actor for GITHUB_TOKEN mode.
-      GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
+      GHCR_PAT: ${{ secrets.GHCR_TOKEN }}   # optional; fallback to GITHUB_TOKEN
+      GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }} # optional; else defaults to repo owner/actor
       RENDER_HOOK_API_GATEWAY: ${{ secrets.RENDER_DEPLOY_HOOK_API_GATEWAY }}
       RENDER_HOOK_AUTH:        ${{ secrets.RENDER_DEPLOY_HOOK_AUTH }}
       RENDER_HOOK_UPLOAD:      ${{ secrets.RENDER_DEPLOY_HOOK_UPLOAD }}
@@ -80,7 +78,7 @@ jobs:
       - name: Docker logout GHCR (cleanup)
         run: docker logout ghcr.io || true
 
-      # --- LOGIN: prefer PAT ---
+      # Prefer PAT if provided (username must match PAT owner)
       - name: Login to GHCR (PAT)
         if: ${{ env.GHCR_PAT != '' }}
         uses: docker/login-action@v3
@@ -89,7 +87,7 @@ jobs:
           username: ${{ env.GHCR_USERNAME != '' && env.GHCR_USERNAME || 'alvi-noman' }}
           password: ${{ env.GHCR_PAT }}
 
-      # --- LOGIN: fallback to the workflow GITHUB_TOKEN ---
+      # Fallback to workflow token
       - name: Login to GHCR (GITHUB_TOKEN)
         if: ${{ env.GHCR_PAT == '' }}
         uses: docker/login-action@v3
@@ -98,7 +96,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Sanity: fail fast if not logged into ghcr.io
+      # Fail fast if not logged in
       - name: Verify GHCR login
         run: |
           set -e
@@ -131,6 +129,7 @@ PY
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      # Single step to trigger Render, selecting the right hook without secrets.* in if:
       - name: Trigger Render deploy (${{ matrix.service.name }})
         shell: bash
         run: |
