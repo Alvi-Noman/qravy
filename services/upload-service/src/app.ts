@@ -181,7 +181,7 @@ app.post('/api/uploads/images', auth, async (req, res) => {
     const hasCode = (e: unknown): e is { code?: string } =>
       typeof e === 'object' && e !== null && 'code' in e;
 
-    if (hasCode(err) && (err as any).code === 'ETOOBIG') {
+    if (hasCode(err) && err.code === 'ETOOBIG') {
       return res.status(413).json({ error: 'File too large (max 20MB)' });
     }
     return res.status(500).json({ error: 'Upload failed' });

@@ -11,6 +11,10 @@
  */
 import { createProxyMiddleware } from 'http-proxy-middleware';
 import type { Application, Request, Response } from 'express';
+import type { ClientRequest } from 'http';
+import logger from '../utils/logger.js';
+
+type NodeErr = Error & { code?: string };
 
 function normBase(p: string | undefined): string {
   if (!p) return '';
@@ -27,7 +31,7 @@ export default function registerUploadsProxy(app: Application): void {
   const svcToken = process.env.UPLOAD_SERVICE_TOKEN || '';
   const base = normBase(process.env.UPLOAD_SERVICE_BASE_PATH);
 
-  console.log(
+  logger.info(
     `[GATEWAY] Mounting uploads proxy: [/api/uploads, /api/v1/upload] -> ${target}${base || ''}`
   );
 
@@ -49,14 +53,12 @@ export default function registerUploadsProxy(app: Application): void {
       // Strip the public prefix and prepend the service base (if any).
       //   /api/uploads/images       ->  (base) + /images
       //   /api/v1/upload/images     ->  (base) + /images
-      pathRewrite: (path) => {
-        const tail = path
-          .replace(/^\/api\/uploads/, '')
-          .replace(/^\/api\/v1\/upload/, '');
+      pathRewrite: (path: string) => {
+        const tail = path.replace(/^\/api\/uploads/, '').replace(/^\/api\/v1\/upload/, '');
         return `${base}${tail}`;
       },
 
-      onProxyReq: (proxyReq, req: Request) => {
+      onProxyReq: (proxyReq: ClientRequest, req: Request) => {
         // Optional: forward end-user auth (if your upload-service wants to know the user)
         const userAuth = req.headers.authorization;
         if (typeof userAuth === 'string' && userAuth) {
@@ -69,13 +71,13 @@ export default function registerUploadsProxy(app: Application): void {
         }
       },
 
-      onError: (err, _req, res: Response) => {
-        const code = (err as any).code || 'PROXY_ERROR';
-        // eslint-disable-next-line no-console
-        console.error('[UPLOAD PROXY ERROR]', err);
-        res.writeHead(502, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Upload gateway error', code }));
-      }
+      onError: (err: NodeErr, _req: Request, res: Response) => {
+        const code = err.code ?? 'PROXY_ERROR';
+        logger.error(`[UPLOAD PROXY ERROR] ${code} ${err.message}`);
+        if (!res.headersSent) {
+          res.status(502).json({ error: 'Upload gateway error', code });
+        }
+      },
     })
   );
 }

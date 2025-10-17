@@ -4,6 +4,8 @@ import { createProxyMiddleware } from 'http-proxy-middleware';
 import type { ClientRequest, IncomingMessage } from 'http';
 import logger from '../utils/logger.js';
 
+type NodeErr = Error & { code?: string };
+
 const AUTH_TARGET = process.env.AUTH_SERVICE_URL || 'http://auth-service:3001';
 
 export default function registerAuthProxy(app: Application) {
@@ -46,13 +48,13 @@ export default function registerAuthProxy(app: Application) {
       }
     },
 
-    onError(err, req, res) {
-      const code = (err as any).code || 'UNKNOWN';
+    onError(err: NodeErr, req: Request, res: Response) {
+      const code = err.code ?? 'UNKNOWN';
       logger.error(
-        `[PROXY][AUTH] ${req.method} ${req.originalUrl} -> ${AUTH_TARGET} error: ${code} ${(err as Error).message}`
+        `[PROXY][AUTH] ${req.method} ${req.originalUrl} -> ${AUTH_TARGET} error: ${code} ${err.message}`
       );
-      if (!(res as Response).headersSent) {
-        (res as Response).status(502).json({ message: 'Bad gateway (auth-service unavailable)', code });
+      if (!res.headersSent) {
+        res.status(502).json({ message: 'Bad gateway (auth-service unavailable)', code });
       }
     },
   });
