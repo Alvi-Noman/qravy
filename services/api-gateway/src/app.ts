@@ -12,7 +12,6 @@ import registerUploadsProxy from './proxy/uploads.js';
 const app: Application = express();
 
 app.set('trust proxy', 1);
-// Gateway should not generate ETags
 app.set('etag', false);
 
 // Basic request log
@@ -50,7 +49,7 @@ app.use(cors(corsOptions));
 app.options('*', cors(corsOptions));
 
 /**
- * NEW: handle all OPTIONS (preflight) requests early.
+ * Handle all OPTIONS (preflight) early.
  * This ensures preflights never reach proxy targets.
  */
 app.use((req, res, next) => {
@@ -61,7 +60,10 @@ app.use((req, res, next) => {
   next();
 });
 
-// Parse JSON bodies (we’ll re-forward the body in the proxy)
+/* >>> MOUNT UPLOADS PROXY BEFORE BODY PARSERS <<< */
+registerUploadsProxy(app);
+
+// Parse JSON bodies for normal API routes
 app.use(express.json({ limit: '2mb' }));
 
 // Targets from .env
@@ -78,7 +80,6 @@ function jsonProxyToAuth() {
     changeOrigin: true,
     xfwd: true,
     ws: false,
-    // IMPORTANT: do NOT set cookieDomainRewrite — we want host-only cookies
 
     onProxyReq: (proxyReq: ClientRequest, req: Request & { body?: unknown }) => {
       // Only forward JSON bodies for mutating methods
@@ -123,15 +124,12 @@ function jsonProxyToAuth() {
   });
 }
 
-// 1) Uploads proxy FIRST so it won’t be swallowed by the /api/v1 catch-all
-registerUploadsProxy(app);
-
-// 2) Explicit mounts to auth-service (nice for clarity & future overrides)
+// Explicit mounts to auth-service (clear & overridable later)
 app.use('/api/v1/auth', jsonProxyToAuth());
 app.use('/api/v1/locations', jsonProxyToAuth());
 app.use('/api/v1/access', jsonProxyToAuth());
 
-// 3) Catch-all for any other /api/v1/* paths served by auth-service
+// Catch-all for any other /api/v1/* paths served by auth-service
 app.use('/api/v1', jsonProxyToAuth());
 
 // Health
