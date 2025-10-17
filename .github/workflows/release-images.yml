@@ -29,6 +29,13 @@ jobs:
       contents: read
       packages: write
 
+    # Hoist all secrets into env so we can use env.* in steps/ifs
+    env:
+      GHCR_PAT: ${{ secrets.GHCR_TOKEN }}           # optional, may be empty
+      RENDER_HOOK_API_GATEWAY: ${{ secrets.RENDER_DEPLOY_HOOK_API_GATEWAY }}
+      RENDER_HOOK_AUTH:        ${{ secrets.RENDER_DEPLOY_HOOK_AUTH }}
+      RENDER_HOOK_UPLOAD:      ${{ secrets.RENDER_DEPLOY_HOOK_UPLOAD }}
+
     strategy:
       fail-fast: false
       matrix:
@@ -37,17 +44,14 @@ jobs:
             file: services/api-gateway/Dockerfile
             context: .
             image_suffix: muvance-api-gateway
-            hook_secret: RENDER_DEPLOY_HOOK_API_GATEWAY
           - name: auth
             file: services/auth-service/Dockerfile
             context: .
             image_suffix: muvance-auth
-            hook_secret: RENDER_DEPLOY_HOOK_AUTH
           - name: upload
             file: services/upload-service/Dockerfile
             context: .
             image_suffix: muvance-upload
-            hook_secret: RENDER_DEPLOY_HOOK_UPLOAD
 
     steps:
       - name: Checkout
@@ -70,22 +74,13 @@ jobs:
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
 
-      # Prefer a PAT in GHCR_TOKEN; fallback to GITHUB_TOKEN
-      - name: Login to GHCR (PAT)
-        if: ${{ secrets.GHCR_TOKEN != '' }}
+      # Single login step: prefer PAT when present, else fall back to GITHUB_TOKEN
+      - name: Login to GHCR
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ steps.ow.outputs.OWNER_LC }}
-          password: ${{ secrets.GHCR_TOKEN }}
-
-      - name: Login to GHCR (GITHUB_TOKEN fallback)
-        if: ${{ secrets.GHCR_TOKEN == '' }}
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ steps.ow.outputs.OWNER_LC }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          password: ${{ env.GHCR_PAT != '' && env.GHCR_PAT || secrets.GITHUB_TOKEN }}
 
       - name: Build & Push ${{ matrix.service.name }}
         uses: docker/build-push-action@v6
@@ -105,15 +100,26 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # Auto-trigger Render deploy for the current matrix service
+      # Trigger Render deploy for each service by picking the right hook explicitly
       - name: Trigger Render deploy (${{ matrix.service.name }})
-        env:
-          HOOK: ${{ secrets[matrix.service.hook_secret] }}
-        if: ${{ env.HOOK != '' }}
+        shell: bash
         run: |
-          # retry a few times in case Render is briefly busy
+          case "${{ matrix.service.name }}" in
+            api-gateway) HOOK="${{ env.RENDER_HOOK_API_GATEWAY }}";;
+            auth)        HOOK="${{ env.RENDER_HOOK_AUTH }}";;
+            upload)      HOOK="${{ env.RENDER_HOOK_UPLOAD }}";;
+          esac
+
+          if [ -z "$HOOK" ]; then
+            echo "No deploy hook configured for ${{ matrix.service.name }} — skipping."
+            exit 0
+          fi
+
           for i in 1 2 3; do
-            curl -fsS -X POST "$HOOK" && exit 0
+            if curl -fsS -X POST "$HOOK"; then
+              echo "Triggered Render deploy for ${{ matrix.service.name }}"
+              exit 0
+            fi
             echo "Retry $i..."
             sleep 3
           done
