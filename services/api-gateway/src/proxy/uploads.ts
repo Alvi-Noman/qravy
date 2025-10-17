@@ -25,7 +25,7 @@ function normBase(p: string | undefined): string {
 export default function registerUploadsProxy(app: Application): void {
   const target = process.env.UPLOAD_SERVICE_URL || 'http://upload-service:4010';
   const svcToken = process.env.UPLOAD_SERVICE_TOKEN || '';
-  const base = normBase(process.env.UPLOAD_SERVICE_BASE_PATH); // <- NEW
+  const base = normBase(process.env.UPLOAD_SERVICE_BASE_PATH);
 
   console.log(
     `[GATEWAY] Mounting uploads proxy: [/api/uploads, /api/v1/upload] -> ${target}${base || ''}`
@@ -57,14 +57,15 @@ export default function registerUploadsProxy(app: Application): void {
       },
 
       onProxyReq: (proxyReq, req: Request) => {
-        // Optional: forward end-user auth
+        // Optional: forward end-user auth (if your upload-service wants to know the user)
         const userAuth = req.headers.authorization;
         if (typeof userAuth === 'string' && userAuth) {
           proxyReq.setHeader('x-user-authorization', userAuth);
         }
-        // Service-to-service token
+        // Service-to-service token (send both header formats)
         if (svcToken) {
           proxyReq.setHeader('authorization', `Bearer ${svcToken}`);
+          proxyReq.setHeader('x-upload-token', svcToken);
         }
       },
 

@@ -30,16 +30,24 @@ type FormFile = { filepath: string; originalFilename?: string | null };
 const app: import('express').Express = express();
 app.set('trust proxy', 1);
 
+// ----- CORS -----
+const origins = (process.env.CORS_ORIGIN || '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+
 app.use(
   cors({
-    origin: (process.env.CORS_ORIGIN || '')
-      .split(',')
-      .map((s) => s.trim())
-      .filter(Boolean),
+    origin: origins,
     credentials: true,
+    // allow service token header too
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'x-upload-token'],
+    exposedHeaders: ['ETag'],
+    maxAge: 86400,
   })
 );
 
+// ----- Basic rate limit on API prefix -----
 app.use(
   '/api/',
   rateLimit({
@@ -50,6 +58,7 @@ app.use(
   })
 );
 
+// ----- Storage clients / config -----
 const s3 = new S3Client({
   region: 'auto',
   endpoint: process.env.R2_ENDPOINT,
@@ -79,16 +88,23 @@ const EXT_MAP = new Map([
   ['avif', 'avif'],
 ]);
 
+// ----- Auth: accept Bearer or x-upload-token -----
 function auth(req: express.Request, res: express.Response, next: express.NextFunction) {
   if (!UPLOAD_TOKEN) return res.status(500).json({ error: 'Server misconfigured' });
-  const header = req.headers.authorization || '';
-  const token = header.startsWith('Bearer ') ? header.slice(7) : '';
-  if (token !== UPLOAD_TOKEN) return res.status(401).json({ error: 'Unauthorized' });
+
+  const raw = req.get('authorization') || req.get('x-upload-token') || '';
+  const token = raw.startsWith('Bearer ') ? raw.slice(7) : raw;
+
+  if (!token || token !== UPLOAD_TOKEN) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
   next();
 }
 
+// ----- Health -----
 app.get('/health', (_req, res) => res.json({ ok: true }));
 
+// ----- Upload endpoint -----
 app.post('/api/uploads/images', auth, async (req, res) => {
   try {
     const form = formidable({
@@ -165,7 +181,7 @@ app.post('/api/uploads/images', auth, async (req, res) => {
     const hasCode = (e: unknown): e is { code?: string } =>
       typeof e === 'object' && e !== null && 'code' in e;
 
-    if (hasCode(err) && err.code === 'ETOOBIG') {
+    if (hasCode(err) && (err as any).code === 'ETOOBIG') {
       return res.status(413).json({ error: 'File too large (max 20MB)' });
     }
     return res.status(500).json({ error: 'Upload failed' });
