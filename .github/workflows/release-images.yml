@@ -13,6 +13,7 @@ on:
       - ".github/workflows/release-images.yml"
   workflow_dispatch: {}
 
+# Needed for GHCR + checkout
 permissions:
   contents: read
   packages: write
@@ -29,9 +30,9 @@ jobs:
       contents: read
       packages: write
 
-    # Hoist all secrets into env so we can use env.* in steps/ifs
+    # Hoist secrets to env so we can use them in if/steps
     env:
-      GHCR_PAT: ${{ secrets.GHCR_TOKEN }}           # optional, may be empty
+      GHCR_PAT: ${{ secrets.GHCR_TOKEN }}   # optional; leave empty to use GITHUB_TOKEN
       RENDER_HOOK_API_GATEWAY: ${{ secrets.RENDER_DEPLOY_HOOK_API_GATEWAY }}
       RENDER_HOOK_AUTH:        ${{ secrets.RENDER_DEPLOY_HOOK_AUTH }}
       RENDER_HOOK_UPLOAD:      ${{ secrets.RENDER_DEPLOY_HOOK_UPLOAD }}
@@ -74,13 +75,26 @@ jobs:
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
 
-      # Single login step: prefer PAT when present, else fall back to GITHUB_TOKEN
-      - name: Login to GHCR
+      - name: Docker logout GHCR (cleanup)
+        run: docker logout ghcr.io || true
+
+      # Prefer PAT if provided
+      - name: Login to GHCR (PAT)
+        if: ${{ env.GHCR_PAT != '' }}
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
-          username: ${{ steps.ow.outputs.OWNER_LC }}
-          password: ${{ env.GHCR_PAT != '' && env.GHCR_PAT || secrets.GITHUB_TOKEN }}
+          username: ${{ github.actor }}
+          password: ${{ env.GHCR_PAT }}
+
+      # Fallback to the workflow's GITHUB_TOKEN
+      - name: Login to GHCR (GITHUB_TOKEN)
+        if: ${{ env.GHCR_PAT == '' }}
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build & Push ${{ matrix.service.name }}
         uses: docker/build-push-action@v6
@@ -100,7 +114,6 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # Trigger Render deploy for each service by picking the right hook explicitly
       - name: Trigger Render deploy (${{ matrix.service.name }})
         shell: bash
         run: |
@@ -108,13 +121,11 @@ jobs:
             api-gateway) HOOK="${{ env.RENDER_HOOK_API_GATEWAY }}";;
             auth)        HOOK="${{ env.RENDER_HOOK_AUTH }}";;
             upload)      HOOK="${{ env.RENDER_HOOK_UPLOAD }}";;
-          esac
-
+          end
           if [ -z "$HOOK" ]; then
             echo "No deploy hook configured for ${{ matrix.service.name }} — skipping."
             exit 0
           fi
-
           for i in 1 2 3; do
             if curl -fsS -X POST "$HOOK"; then
               echo "Triggered Render deploy for ${{ matrix.service.name }}"
