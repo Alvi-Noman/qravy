@@ -1,15 +1,35 @@
 /**
- * @file Uploads proxy
- * Forwards uploads to the upload-service and supports both:
- *   - /api/uploads/*
- *   - /api/v1/upload/*   (legacy)
+ * @file Uploads proxy (flexible base path)
+ * Supports public client paths:
+ *   - /api/uploads/*    (recommended)
+ *   - /api/v1/upload/*  (legacy)
+ *
+ * Rewrites to the upload-service with an optional base prefix:
+ *   UPLOAD_SERVICE_BASE_PATH =
+ *     ""                -> target sees "/images"
+ *     "/api/uploads"    -> target sees "/api/uploads/images"
  */
 import { createProxyMiddleware } from 'http-proxy-middleware';
 import type { Application, Request, Response } from 'express';
 
+function normBase(p: string | undefined): string {
+  if (!p) return '';
+  // ensure leading slash, no trailing slash
+  let s = p.trim();
+  if (!s.startsWith('/')) s = '/' + s;
+  if (s !== '/' && s.endsWith('/')) s = s.slice(0, -1);
+  if (s === '/') return ''; // treat bare "/" as empty base
+  return s;
+}
+
 export default function registerUploadsProxy(app: Application): void {
   const target = process.env.UPLOAD_SERVICE_URL || 'http://upload-service:4010';
   const svcToken = process.env.UPLOAD_SERVICE_TOKEN || '';
+  const base = normBase(process.env.UPLOAD_SERVICE_BASE_PATH); // <- NEW
+
+  console.log(
+    `[GATEWAY] Mounting uploads proxy: [/api/uploads, /api/v1/upload] -> ${target}${base || ''}`
+  );
 
   app.use(
     ['/api/uploads', '/api/v1/upload'],
@@ -23,26 +43,26 @@ export default function registerUploadsProxy(app: Application): void {
       changeOrigin: true,
       xfwd: true,
       logLevel: 'debug',
-
-      // Increase timeouts for larger files or slow networks
       timeout: 5 * 60 * 1000,
       proxyTimeout: 5 * 60 * 1000,
 
-      // Strip whichever prefix matched so target sees clean routes:
-      //   /api/uploads/images       -> /images
-      //   /api/v1/upload/images     -> /images
-      pathRewrite: (path) =>
-        path
+      // Strip the public prefix and prepend the service base (if any).
+      //   /api/uploads/images       ->  (base) + /images
+      //   /api/v1/upload/images     ->  (base) + /images
+      pathRewrite: (path) => {
+        const tail = path
           .replace(/^\/api\/uploads/, '')
-          .replace(/^\/api\/v1\/upload/, ''),
+          .replace(/^\/api\/v1\/upload/, '');
+        return `${base}${tail}`;
+      },
 
       onProxyReq: (proxyReq, req: Request) => {
-        // Forward end-user auth if you want the upload-service to know the user
+        // Optional: forward end-user auth
         const userAuth = req.headers.authorization;
         if (typeof userAuth === 'string' && userAuth) {
           proxyReq.setHeader('x-user-authorization', userAuth);
         }
-        // Service-to-service token (expected by upload-service)
+        // Service-to-service token
         if (svcToken) {
           proxyReq.setHeader('authorization', `Bearer ${svcToken}`);
         }
