@@ -13,7 +13,6 @@ on:
       - ".github/workflows/release-images.yml"
   workflow_dispatch: {}
 
-# Needed for GHCR + checkout
 permissions:
   contents: read
   packages: write
@@ -30,9 +29,12 @@ jobs:
       contents: read
       packages: write
 
-    # Hoist secrets to env so we can use them in if/steps
     env:
-      GHCR_PAT: ${{ secrets.GHCR_TOKEN }}   # optional; leave empty to use GITHUB_TOKEN
+      # If you have a PAT, put it in repo Settings → Secrets → Actions as GHCR_TOKEN
+      GHCR_PAT: ${{ secrets.GHCR_TOKEN }}
+      # If your PAT is from a different user, set GHCR_USERNAME secret accordingly.
+      # Otherwise we default to your handle for PAT mode and github.actor for GITHUB_TOKEN mode.
+      GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
       RENDER_HOOK_API_GATEWAY: ${{ secrets.RENDER_DEPLOY_HOOK_API_GATEWAY }}
       RENDER_HOOK_AUTH:        ${{ secrets.RENDER_DEPLOY_HOOK_AUTH }}
       RENDER_HOOK_UPLOAD:      ${{ secrets.RENDER_DEPLOY_HOOK_UPLOAD }}
@@ -78,16 +80,16 @@ jobs:
       - name: Docker logout GHCR (cleanup)
         run: docker logout ghcr.io || true
 
-      # Prefer PAT if provided
+      # --- LOGIN: prefer PAT ---
       - name: Login to GHCR (PAT)
         if: ${{ env.GHCR_PAT != '' }}
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
-          username: ${{ github.actor }}
+          username: ${{ env.GHCR_USERNAME != '' && env.GHCR_USERNAME || 'alvi-noman' }}
           password: ${{ env.GHCR_PAT }}
 
-      # Fallback to the workflow's GITHUB_TOKEN
+      # --- LOGIN: fallback to the workflow GITHUB_TOKEN ---
       - name: Login to GHCR (GITHUB_TOKEN)
         if: ${{ env.GHCR_PAT == '' }}
         uses: docker/login-action@v3
@@ -95,6 +97,21 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Sanity: fail fast if not logged into ghcr.io
+      - name: Verify GHCR login
+        run: |
+          set -e
+          test -f ~/.docker/config.json || { echo "No Docker config.json found"; exit 1; }
+          python3 - <<'PY'
+import json, os, sys
+p = os.path.expanduser("~/.docker/config.json")
+d = json.load(open(p))
+auths = sorted((d.get("auths") or {}).keys())
+print("Auth registries:", auths)
+if "https://ghcr.io" not in auths and "ghcr.io" not in auths:
+    print("ERROR: Not logged into ghcr.io", file=sys.stderr); sys.exit(1)
+PY
 
       - name: Build & Push ${{ matrix.service.name }}
         uses: docker/build-push-action@v6
@@ -121,11 +138,13 @@ jobs:
             api-gateway) HOOK="${{ env.RENDER_HOOK_API_GATEWAY }}";;
             auth)        HOOK="${{ env.RENDER_HOOK_AUTH }}";;
             upload)      HOOK="${{ env.RENDER_HOOK_UPLOAD }}";;
-          end
+          esac
+
           if [ -z "$HOOK" ]; then
             echo "No deploy hook configured for ${{ matrix.service.name }} — skipping."
             exit 0
           fi
+
           for i in 1 2 3; do
             if curl -fsS -X POST "$HOOK"; then
               echo "Triggered Render deploy for ${{ matrix.service.name }}"
