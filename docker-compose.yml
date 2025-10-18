@@ -8,8 +8,10 @@ services:
     environment:
       NODE_ENV: development
       PORT: "3001"
-      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:5173}
-      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:5173}
+      # 👇 allow HTTPS Vite origin
+      CORS_ORIGIN: ${CORS_ORIGIN:-https://localhost:5173}
+      # 👇 magic-link base in dev (matches your HTTPS Vite)
+      FRONTEND_URL: ${FRONTEND_URL:-https://localhost:5173}
     working_dir: /app/services/auth-service
     ports:
       - "3001:3001"
@@ -30,7 +32,8 @@ services:
     environment:
       NODE_ENV: development
       PORT: "4010"
-      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:5173}
+      # 👇 allow HTTPS Vite origin
+      CORS_ORIGIN: ${CORS_ORIGIN:-https://localhost:5173}
       # Force upload-service to use the same token as the gateway
       UPLOAD_TOKEN: ${UPLOAD_SERVICE_TOKEN:?Set UPLOAD_SERVICE_TOKEN (OS env or root .env)}
     working_dir: /app/services/upload-service
@@ -52,11 +55,15 @@ services:
     environment:
       NODE_ENV: development
       PORT: "8080"
-      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:5173}
+      # 👇 Local dev is now HTTPS on Vite, so allow that origin
+      CORS_ORIGIN: "https://localhost:5173,http://localhost:5173"
       AUTH_SERVICE_URL: http://auth-service:3001
       UPLOAD_SERVICE_URL: http://upload-service:4010
       # Strict: refuse to start if var is missing (no fallback!)
       UPLOAD_SERVICE_TOKEN: ${UPLOAD_SERVICE_TOKEN:?Set UPLOAD_SERVICE_TOKEN (OS env or root .env)}
+      # 👇 Enable HTTPS inside the container (server auto-falls back to HTTP if missing)
+      SSL_KEY_PATH: /app/certs/localhost-key.pem
+      SSL_CERT_PATH: /app/certs/localhost.pem
     working_dir: /app/services/api-gateway
     ports:
       - "8080:8080"
@@ -66,6 +73,9 @@ services:
     restart: unless-stopped
     #volumes:
     #  - ./services/api-gateway/src:/app/services/api-gateway/src
+    # 👇 Mount your mkcert-generated certs (read-only)
+    volumes:
+      - ./certs:/app/certs:ro
     command: ["pnpm", "run", "dev"]
 
 networks:
