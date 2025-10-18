@@ -124,7 +124,7 @@ function getMagicLinkBaseUrl(req: Request): { baseUrl: string; fallbackLink?: st
 
   logger.info(
     `[magic-link] origin=${requestOrigin || 'n/a'} allowed=${useDev} base=${baseUrl}` +
-      (fallbackLink ? `, fallbackBase=${fallbackBase}` : '')
+      (fallbackLink ? ` fallbackBase=${fallbackBase}` : '')
   );
 
   return { baseUrl, fallbackLink };
@@ -138,7 +138,6 @@ export const sendMagicLink = async (req: Request, res: Response, next: NextFunct
 
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
       logger.warn(`Invalid email address attempt: ${rawEmail} from IP ${ip}`);
-      // @ts-ignore
       res.fail(400, 'Invalid email address.');
       return;
     }
@@ -177,7 +176,7 @@ export const sendMagicLink = async (req: Request, res: Response, next: NextFunct
     logger.info(
       `Preparing to send magic link to ${email} from IP ${ip} (primary=${magicLink}` +
         (fallbackFull ? `, fallback=${fallbackFull}` : '') +
-        ')'
+        `)`
     );
 
     try {
@@ -186,12 +185,10 @@ export const sendMagicLink = async (req: Request, res: Response, next: NextFunct
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       logger.error(`Error sending magic link email to ${email}: ${msg}`);
-      // @ts-ignore
       res.fail(500, 'Failed to send magic link email.');
       return;
     }
 
-    // @ts-ignore
     res.ok({ message: 'Magic link sent. Please check your email.' });
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
@@ -207,7 +204,6 @@ export const verifyMagicLink = async (req: Request, res: Response, next: NextFun
 
     if (!token || typeof token !== 'string') {
       logger.warn(`Invalid magic link token received from IP ${ip}`);
-      // @ts-ignore
       res.fail(400, 'Invalid or expired magic link.');
       return;
     }
@@ -217,7 +213,6 @@ export const verifyMagicLink = async (req: Request, res: Response, next: NextFun
 
     if (!user || !user.magicLinkTokenExpires || user.magicLinkTokenExpires < new Date()) {
       logger.warn(`Attempt to use invalid or expired magic link from IP ${ip}`);
-      // @ts-ignore
       res.fail(400, 'Invalid or expired magic link.');
       return;
     }
@@ -288,7 +283,6 @@ export const verifyMagicLink = async (req: Request, res: Response, next: NextFun
     res.cookie(REFRESH_COOKIE_NAME, refreshTokenValue, REFRESH_COOKIE_OPTS);
 
     // ---- Return user with caps so UI can render correctly
-    // @ts-ignore
     res.ok({
       token: accessToken,
       user: {
@@ -311,13 +305,9 @@ export const verifyMagicLink = async (req: Request, res: Response, next: NextFun
 
 export const completeOnboarding = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
-    // @ts-ignore
     const userId = req.user?.id;
-    // @ts-ignore
     const tenantId = req.user?.tenantId;
-    // @ts-ignore
     if (!userId) return void res.fail(401, 'Unauthorized');
-    // @ts-ignore
     if (!tenantId) return void res.fail(409, 'Tenant not set');
 
     await client
@@ -326,7 +316,6 @@ export const completeOnboarding = async (req: Request, res: Response, next: Next
       .updateOne({ _id: new ObjectId(tenantId) }, { $set: { onboardingCompleted: true, updatedAt: new Date() } });
 
     logger.info(`Tenant onboarding completed: ${tenantId} by user ${userId}`);
-    // @ts-ignore
     res.ok({ message: 'Onboarding complete' });
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
@@ -342,7 +331,6 @@ export const refreshToken = async (req: Request, res: Response, next: NextFuncti
     const ip = req.ip || req.socket.remoteAddress || 'unknown';
 
     if (!token) {
-      // @ts-ignore
       res.fail(401, 'No refresh token provided');
       return;
     }
@@ -351,13 +339,11 @@ export const refreshToken = async (req: Request, res: Response, next: NextFuncti
     try {
       payload = verifyRefreshToken(token);
     } catch {
-      // @ts-ignore
       res.fail(401, 'Invalid or expired refresh token');
       return;
     }
 
     if (!isJwtPayloadWithIdEmail(payload)) {
-      // @ts-ignore
       res.fail(401, 'Invalid or expired refresh token');
       return;
     }
@@ -368,7 +354,6 @@ export const refreshToken = async (req: Request, res: Response, next: NextFuncti
     const collection = await getUsersCollection();
     const user = await collection.findOne({ _id: new ObjectId((payload as any).id) });
     if (!user) {
-      // @ts-ignore
       res.fail(401, 'User not found');
       return;
     }
@@ -378,7 +363,6 @@ export const refreshToken = async (req: Request, res: Response, next: NextFuncti
     const providedTokenHash = hashToken(token);
     const existingTokenIndex = cleanedTokens.findIndex((t) => t.tokenHash === providedTokenHash);
     if (existingTokenIndex === -1) {
-      // @ts-ignore
       res.fail(401, 'Refresh token not recognized');
       return;
     }
@@ -432,7 +416,6 @@ export const refreshToken = async (req: Request, res: Response, next: NextFuncti
     // Rotate cookie with strict scope
     res.cookie(REFRESH_COOKIE_NAME, newRefreshToken, REFRESH_COOKIE_OPTS);
 
-    // @ts-ignore
     res.ok({ token: newAccessToken });
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
@@ -453,7 +436,6 @@ export const logout = async (req: Request, res: Response, next: NextFunction): P
         sameSite: 'none',
         path: REFRESH_COOKIE_OPTS.path,
       });
-      // @ts-ignore
       res.ok({ message: 'Logged out' });
       return;
     }
@@ -468,7 +450,6 @@ export const logout = async (req: Request, res: Response, next: NextFunction): P
         sameSite: 'none',
         path: REFRESH_COOKIE_OPTS.path,
       });
-      // @ts-ignore
       res.ok({ message: 'Logged out' });
       return;
     }
@@ -480,7 +461,6 @@ export const logout = async (req: Request, res: Response, next: NextFunction): P
         sameSite: 'none',
         path: REFRESH_COOKIE_OPTS.path,
       });
-      // @ts-ignore
       res.ok({ message: 'Logged out' });
       return;
     }
@@ -494,7 +474,6 @@ export const logout = async (req: Request, res: Response, next: NextFunction): P
         sameSite: 'none',
         path: REFRESH_COOKIE_OPTS.path,
       });
-      // @ts-ignore
       res.ok({ message: 'Logged out' });
       return;
     }
@@ -513,7 +492,6 @@ export const logout = async (req: Request, res: Response, next: NextFunction): P
       sameSite: 'none',
       path: REFRESH_COOKIE_OPTS.path,
     });
-    // @ts-ignore
     res.ok({ message: 'Logged out' });
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
@@ -524,10 +502,8 @@ export const logout = async (req: Request, res: Response, next: NextFunction): P
 
 export const logoutAll = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
-    // @ts-ignore
     const userId = req.user?.id;
     if (!userId) {
-      // @ts-ignore
       res.fail(401, 'Unauthorized');
       return;
     }
@@ -540,7 +516,6 @@ export const logoutAll = async (req: Request, res: Response, next: NextFunction)
       sameSite: 'none',
       path: REFRESH_COOKIE_OPTS.path,
     });
-    // @ts-ignore
     res.ok({ message: 'Logged out from all sessions' });
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
@@ -551,17 +526,14 @@ export const logoutAll = async (req: Request, res: Response, next: NextFunction)
 
 export const revokeSession = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
-    // @ts-ignore
     const userId = req.user?.id;
     const { tokenId } = req.body as { tokenId?: string };
 
     if (!userId) {
-      // @ts-ignore
       res.fail(401, 'Unauthorized');
       return;
     }
     if (!tokenId) {
-      // @ts-ignore
       res.fail(400, 'tokenId is required');
       return;
     }
@@ -569,7 +541,6 @@ export const revokeSession = async (req: Request, res: Response, next: NextFunct
     const collection = await getUsersCollection();
     const user = await collection.findOne({ _id: new ObjectId(userId) });
     if (!user) {
-      // @ts-ignore
       res.fail(404, 'User not found');
       return;
     }
@@ -577,7 +548,6 @@ export const revokeSession = async (req: Request, res: Response, next: NextFunct
     const newTokens = (user.refreshTokens ?? []).filter((t) => t.tokenId !== tokenId);
     await collection.updateOne({ _id: user._id as ObjectId }, { $set: { refreshTokens: newTokens } });
 
-    // @ts-ignore
     res.ok({ message: 'Session revoked' });
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
