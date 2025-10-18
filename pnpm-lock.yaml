@@ -48,7 +48,7 @@ importers:
       '@heroicons/react':
         specifier: ^2.2.0
         version: 2.2.0(react@18.3.1)
-      '@muvance/shared':
+      '@qravy/shared':
         specifier: workspace:*
         version: link:../../packages/shared
       '@tanstack/react-query':
@@ -82,7 +82,7 @@ importers:
       '@eslint/js':
         specifier: ^9.9.0
         version: 9.32.0
-      '@muvance/config':
+      '@qravy/config':
         specifier: workspace:*
         version: link:../../packages/config
       '@testing-library/jest-dom':
@@ -157,7 +157,7 @@ importers:
 
   apps/erp-dashboard:
     dependencies:
-      '@muvance/shared':
+      '@qravy/shared':
         specifier: workspace:*
         version: link:../../packages/shared
       '@tanstack/react-query':
@@ -182,7 +182,7 @@ importers:
       '@eslint/js':
         specifier: ^9.9.0
         version: 9.32.0
-      '@muvance/config':
+      '@qravy/config':
         specifier: workspace:*
         version: link:../../packages/config
       '@testing-library/jest-dom':
@@ -301,7 +301,7 @@ importers:
         specifier: '18'
         version: 18.3.1(react@18.3.1)
     devDependencies:
-      '@muvance/config':
+      '@qravy/config':
         specifier: workspace:*
         version: link:../config
       '@types/react':
@@ -319,7 +319,7 @@ importers:
 
   services/api-gateway:
     dependencies:
-      '@muvance/shared':
+      '@qravy/shared':
         specifier: workspace:*
         version: link:../../packages/shared
       '@types/mongodb':
@@ -368,7 +368,7 @@ importers:
         specifier: ^4.0.14
         version: 4.0.14
     devDependencies:
-      '@muvance/config':
+      '@qravy/config':
         specifier: workspace:*
         version: link:../../packages/config
       '@types/bcryptjs':
@@ -431,10 +431,10 @@ importers:
 
   services/auth-service:
     dependencies:
-      '@muvance/config':
+      '@qravy/config':
         specifier: workspace:*
         version: link:../../packages/config
-      '@muvance/shared':
+      '@qravy/shared':
         specifier: workspace:*
         version: link:../../packages/shared
       '@types/mongodb':
@@ -577,7 +577,7 @@ importers:
         specifier: ^0.33.4
         version: 0.33.5
     devDependencies:
-      '@muvance/config':
+      '@qravy/config':
         specifier: workspace:*
         version: link:../../packages/config
       '@types/cors':

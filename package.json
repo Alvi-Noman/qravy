@@ -1,8 +1,8 @@
 {
-  "name": "muvance",
+  "name": "qravy",
   "private": true,
   "version": "1.0.0",
-  "description": "Muvance Monorepo",
+  "description": "qravy Monorepo",
   "scripts": {
     "build": "turbo run build",
     "dev": "turbo run dev --parallel",

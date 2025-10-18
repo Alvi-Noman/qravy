@@ -1,7 +1,7 @@
 // apps/client-dashboard/eslint.config.js
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import sharedPreset from '@muvance/config/eslint-preset';
+import sharedPreset from '@qravy/config/eslint-preset';
 import pluginReact from 'eslint-plugin-react';
 import pluginReactHooks from 'eslint-plugin-react-hooks';
 import tsEslintParser from '@typescript-eslint/parser';

@@ -1,5 +1,5 @@
 {
-  "name": "@muvance/auth-service",
+  "name": "@qravy/auth-service",
   "version": "1.0.0",
   "private": true,
   "type": "module",
@@ -12,8 +12,8 @@
     "lint": "eslint \"**/*.ts\""
   },
   "dependencies": {
-    "@muvance/config": "workspace:*",
-    "@muvance/shared": "workspace:*",
+    "@qravy/config": "workspace:*",
+    "@qravy/shared": "workspace:*",
     "@types/mongodb": "^4.0.7",
     "bcryptjs": "^3.0.2",
     "cookie-parser": "^1.4.7",

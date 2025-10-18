@@ -9,7 +9,7 @@ import { sendMagicLinkEmail } from '../utils/email.js';
 import logger from '../utils/logger.js';
 import crypto from 'crypto';
 import type { UserDoc, RefreshToken } from '../models/User.js';
-import { computeCapabilities } from '@muvance/shared/utils/policy';
+import { computeCapabilities } from '@qravy/shared/utils/policy';
 
 config();
 

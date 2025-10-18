@@ -1,5 +1,5 @@
 {
-  "extends": "@muvance/config/tsconfig-preset/tsconfig.json",
+  "extends": "@qravy/config/tsconfig-preset/tsconfig.json",
   "compilerOptions": {
     "jsx": "react-jsx",
     "lib": ["DOM", "DOM.Iterable", "ESNext"],

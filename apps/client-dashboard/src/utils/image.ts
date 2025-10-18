@@ -10,7 +10,7 @@ export type ImgOpts = {
 
 const API =
   (import.meta.env.VITE_API_URL as string | undefined) ||
-  'https://muvance-api-gateway.onrender.com';
+  'https://qravy-api-gateway.onrender.com';
 
 /**
  * Build an ImageKit URL via your backend redirect (/i/:key).

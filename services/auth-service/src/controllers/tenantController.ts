@@ -8,7 +8,7 @@ import type { UserDoc } from '../models/User.js';
 import type { MembershipDoc } from '../models/Membership.js';
 import { auditLog } from '../utils/audit.js';
 import { toTenantDTO } from '../utils/mapper.js';
-import type { v1 } from '@muvance/shared';
+import type { v1 } from '@qravy/shared';
 import { restaurantOnboardingSchema } from '../validation/schemas.js';
 
 /* --------------------------------- Collections --------------------------------- */

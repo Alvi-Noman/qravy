@@ -1,7 +1,7 @@
 // services/auth-service/eslint.config.js
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import sharedPreset from '@muvance/config/eslint-preset';
+import sharedPreset from '@qravy/config/eslint-preset';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);

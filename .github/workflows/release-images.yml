@@ -46,15 +46,15 @@ jobs:
           - name: api-gateway
             file: services/api-gateway/Dockerfile
             context: .
-            image_suffix: muvance-api-gateway
+            image_suffix: qravy-api-gateway
           - name: auth
             file: services/auth-service/Dockerfile
             context: .
-            image_suffix: muvance-auth
+            image_suffix: qravy-auth
           - name: upload
             file: services/upload-service/Dockerfile
             context: .
-            image_suffix: muvance-upload
+            image_suffix: qravy-upload
 
     steps:
       - name: Checkout

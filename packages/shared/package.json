@@ -1,5 +1,5 @@
 {
-  "name": "@muvance/shared",
+  "name": "@qravy/shared",
   "version": "1.0.0",
   "private": true,
   "type": "module",
@@ -23,7 +23,7 @@
     "lint": "eslint \"**/*.{ts,tsx}\" --ignore-pattern \"**/*.d.ts\""
   },
   "devDependencies": {
-    "@muvance/config": "workspace:*",
+    "@qravy/config": "workspace:*",
     "@types/react": "18",
     "@types/react-dom": "18",
     "eslint": "^9.9.0",

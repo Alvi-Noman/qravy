@@ -3,7 +3,7 @@
  * - ignoreUndefined: drop undefined fields instead of writing null
  */
 import { MongoClient } from 'mongodb';
-import { env } from '@muvance/config/validateEnv';
+import { env } from '@qravy/config/validateEnv';
 
 export const client = new MongoClient(env.MONGODB_URI!, {
   ignoreUndefined: true,

@@ -4,7 +4,7 @@ import type { MenuItemDoc } from '../models/MenuItem.js';
 import type { CategoryDoc } from '../models/Category.js';
 import type { TenantDoc } from '../models/Tenant.js';
 import type { UserDoc } from '../models/User.js';
-import type { v1 } from '@muvance/shared';
+import type { v1 } from '@qravy/shared';
 
 /** Convert a MongoDB ObjectId to a string. */
 function toId(id?: ObjectId): string {

@@ -1,3 +1,3 @@
-import prettierConfig from '@muvance/config/prettier-preset';
+import prettierConfig from '@qravy/config/prettier-preset';
 
 export default prettierConfig;

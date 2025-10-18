@@ -1,4 +1,4 @@
-import { env } from '@muvance/config/validateEnv';
+import { env } from '@qravy/config/validateEnv';
 import app from './app.js';
 import { MongoClient } from 'mongodb';
 import logger from './utils/logger.js';

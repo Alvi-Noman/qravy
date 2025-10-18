@@ -1,4 +1,4 @@
-import basePreset from '@muvance/config/jest-preset';
+import basePreset from '@qravy/config/jest-preset';
 
 export default {
   ...basePreset,

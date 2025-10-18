@@ -1,5 +1,5 @@
 // services/auth-service/jest.config.mjs
-import basePreset from '@muvance/config/jest-preset';
+import basePreset from '@qravy/config/jest-preset';
 
 export default {
   ...basePreset,
@@ -34,9 +34,9 @@ export default {
 
   moduleNameMapper: {
     '^@/(.*)$': '<rootDir>/src/$1',
-    '^@muvance/config/validateEnv$': '<rootDir>/src/__mocks__/validateEnvMock.ts',
-    '^@muvance/shared/utils/policy$': '<rootDir>/../../packages/shared/src/utils/policy.ts',
-    '^@muvance/shared$': '<rootDir>/../../packages/shared/src/types/index.ts',
+    '^@qravy/config/validateEnv$': '<rootDir>/src/__mocks__/validateEnvMock.ts',
+    '^@qravy/shared/utils/policy$': '<rootDir>/../../packages/shared/src/utils/policy.ts',
+    '^@qravy/shared$': '<rootDir>/../../packages/shared/src/types/index.ts',
     '^(\\.{1,2}/.*)\\.js$': '$1',
   },
 

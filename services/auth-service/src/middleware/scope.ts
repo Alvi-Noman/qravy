@@ -2,7 +2,7 @@
 import type { Request, Response, NextFunction } from 'express';
 import { ObjectId } from 'mongodb';
 import { client } from '../db.js';
-import { computeCapabilities, type SessionType } from '@muvance/shared/utils/policy';
+import { computeCapabilities, type SessionType } from '@qravy/shared/utils/policy';
 
 type MutableUser = {
   id: string;

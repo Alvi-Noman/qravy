@@ -1,6 +1,6 @@
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import basePreset from '@muvance/config/jest-preset';
+import basePreset from '@qravy/config/jest-preset';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);

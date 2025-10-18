@@ -1,5 +1,5 @@
 {
-  "extends": "@muvance/config/tsconfig-preset/tsconfig.json",
+  "extends": "@qravy/config/tsconfig-preset/tsconfig.json",
   "compilerOptions": {
     "rootDir": "src",
     "declaration": true,
