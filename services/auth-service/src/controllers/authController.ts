@@ -1,5 +1,5 @@
 // services/auth-service/src/controllers/authController.ts
-import type { Request, Response, NextFunction } from 'express';
+import type { Request, Response, NextFunction, CookieOptions } from 'express';
 import jwt, { type JwtPayload } from 'jsonwebtoken';
 import { Db, Collection, ObjectId } from 'mongodb';
 import { config } from 'dotenv';
@@ -54,12 +54,29 @@ function generateMagicLinkToken(): string {
 /** Consistent cookie options for refresh token (set and clear). */
 const REFRESH_COOKIE_NAME = 'refreshToken';
 const REFRESH_COOKIE_OPTS = {
-  httpOnly: true as const,
-  secure: true as const,             // always HTTPS; use mkcert for localhost during dev
-  sameSite: 'none' as const,         // required for cross-site requests
-  path: '/api/v1/auth',              // scope to auth routes at the gateway
-  maxAge: 30 * 24 * 60 * 60 * 1000,  // 30 days
-};
+  httpOnly: true,
+  secure: true,             // always HTTPS; use mkcert for localhost during dev (prod default)
+  sameSite: 'none' as 'none' | 'lax' | 'strict',
+  path: '/api/v1/auth',
+  maxAge: 30 * 24 * 60 * 60 * 1000,
+} satisfies CookieOptions;
+
+/**
+ * Request-aware cookie options:
+ * - http localhost → secure=false, sameSite='lax'
+ * - https behind gateway (Render/Vercel) → secure=true, sameSite='none'
+ */
+function cookieOptsFor(req: Request): CookieOptions {
+  const isSecure = req.secure || req.get('x-forwarded-proto') === 'https';
+  const opts: CookieOptions = {
+    httpOnly: true,
+    secure: isSecure,
+    sameSite: isSecure ? 'none' : 'lax',
+    path: '/api/v1/auth',
+    maxAge: 30 * 24 * 60 * 60 * 1000,
+  };
+  return opts;
+}
 
 /** Resolve a user's role (owner/admin/editor/viewer) from tenant ownership or memberships. */
 async function resolveUserRoleAndTenantInfo(user: UserDoc): Promise<{
@@ -81,11 +98,9 @@ async function resolveUserRoleAndTenantInfo(user: UserDoc): Promise<{
 
     isOnboarded = Boolean(tenant?.onboardingCompleted);
 
-    // If this user is the tenant owner
     if (tenant?.ownerId && (tenant.ownerId as ObjectId).toString() === (user._id as ObjectId).toString()) {
       role = 'owner';
     } else {
-      // Otherwise use membership role
       const membership = await client
         .db('authDB')
         .collection('memberships')
@@ -98,7 +113,6 @@ async function resolveUserRoleAndTenantInfo(user: UserDoc): Promise<{
       if (membership && ['owner', 'admin', 'editor', 'viewer'].includes(membership.role)) {
         role = membership.role as Role;
       } else {
-        // Safe fallback if they belong to tenant but no explicit role
         role = 'viewer';
       }
     }
@@ -110,7 +124,7 @@ async function resolveUserRoleAndTenantInfo(user: UserDoc): Promise<{
 /** Compute the base URL for magic links using request Origin allowlist. */
 function getMagicLinkBaseUrl(req: Request): { baseUrl: string; fallbackLink?: string } {
   const requestOrigin = (req.get('origin') || '').trim().replace(/\/$/, '');
-  const allowed = (process.env.ALLOWED_DEV_ORIGINS || 'https://localhost:5173')
+  const allowed = (process.env.ALLOWED_DEV_ORIGINS || 'http://localhost:5173')
     .split(',')
     .map(s => s.trim().replace(/\/$/, ''))
     .filter(Boolean);
@@ -145,7 +159,6 @@ export const sendMagicLink = async (req: Request, res: Response, next: NextFunct
     const collection = await getUsersCollection();
     let user = await collection.findOne({ email });
 
-    // Create a new token every request (15 min TTL)
     const magicLinkToken = generateMagicLinkToken();
     const magicLinkTokenExpires = new Date(Date.now() + 15 * 60 * 1000);
 
@@ -168,7 +181,6 @@ export const sendMagicLink = async (req: Request, res: Response, next: NextFunct
       logger.info(`Updated magic link for user: ${email} from IP ${ip}`);
     }
 
-    // --- Build origin-aware magic link
     const { baseUrl, fallbackLink } = getMagicLinkBaseUrl(req);
     const magicLink = `${baseUrl}/magic-link?token=${magicLinkToken}`;
     const fallbackFull = fallbackLink ? `${fallbackLink}${magicLinkToken}` : undefined;
@@ -222,10 +234,8 @@ export const verifyMagicLink = async (req: Request, res: Response, next: NextFun
       { $set: { isVerified: true }, $unset: { magicLinkToken: '', magicLinkTokenExpires: '' } }
     );
 
-    // ---- Resolve tenant + role, then compute capabilities
     const { role, tenantIdStr, isOnboarded } = await resolveUserRoleAndTenantInfo(user);
 
-    // Dashboard login ⇒ member session
     const sessionType: 'member' | 'branch' = 'member';
 
     const capabilities = computeCapabilities({
@@ -233,7 +243,6 @@ export const verifyMagicLink = async (req: Request, res: Response, next: NextFun
       sessionType,
     });
 
-    // ---- Sign access token with role + sessionType (+ tenantId)
     const accessToken = jwt.sign(
       {
         id: (user._id as ObjectId).toString(),
@@ -246,7 +255,6 @@ export const verifyMagicLink = async (req: Request, res: Response, next: NextFun
       { expiresIn: '15m' }
     );
 
-    // Refresh token (keeps tenantId sticky if present)
     const refreshTokenValue = generateRefreshToken({
       id: (user._id as ObjectId).toString(),
       email: user.email,
@@ -279,10 +287,9 @@ export const verifyMagicLink = async (req: Request, res: Response, next: NextFun
 
     logger.info(`User verified magic link: ${userInfo(user)} from IP ${ip}`);
 
-    // ---- Set refresh cookie (strict scope)
-    res.cookie(REFRESH_COOKIE_NAME, refreshTokenValue, REFRESH_COOKIE_OPTS);
+    // Set refresh cookie with request-aware flags
+    res.cookie(REFRESH_COOKIE_NAME, refreshTokenValue, cookieOptsFor(req));
 
-    // ---- Return user with caps so UI can render correctly
     res.ok({
       token: accessToken,
       user: {
@@ -358,7 +365,6 @@ export const refreshToken = async (req: Request, res: Response, next: NextFuncti
       return;
     }
 
-    // Recognize only stored refresh tokens
     const cleanedTokens = cleanupTokens(user.refreshTokens);
     const providedTokenHash = hashToken(token);
     const existingTokenIndex = cleanedTokens.findIndex((t) => t.tokenHash === providedTokenHash);
@@ -368,7 +374,6 @@ export const refreshToken = async (req: Request, res: Response, next: NextFuncti
     }
     cleanedTokens.splice(existingTokenIndex, 1);
 
-    // Issue a new refresh token and keep tenantId sticky
     const newRefreshToken = generateRefreshToken({
       id: (user._id as ObjectId).toString(),
       email: user.email,
@@ -396,11 +401,9 @@ export const refreshToken = async (req: Request, res: Response, next: NextFuncti
       { $set: { refreshTokens: cleanedTokens } }
     );
 
-    // Resolve role again (owner/admin/editor/viewer) from tenant/membership
     const { role } = await resolveUserRoleAndTenantInfo(user);
-    const sessionType: 'member' | 'branch' = 'member'; // dashboard refresh ⇒ member
+    const sessionType: 'member' | 'branch' = 'member';
 
-    // Access token carries tenantId (from refresh payload or DB), plus role + sessionType
     const newAccessToken = jwt.sign(
       {
         id: (user._id as ObjectId).toString(),
@@ -413,8 +416,8 @@ export const refreshToken = async (req: Request, res: Response, next: NextFuncti
       { expiresIn: '15m' }
     );
 
-    // Rotate cookie with strict scope
-    res.cookie(REFRESH_COOKIE_NAME, newRefreshToken, REFRESH_COOKIE_OPTS);
+    // Rotate cookie with request-aware flags
+    res.cookie(REFRESH_COOKIE_NAME, newRefreshToken, cookieOptsFor(req));
 
     res.ok({ token: newAccessToken });
   } catch (error) {
@@ -430,12 +433,7 @@ export const logout = async (req: Request, res: Response, next: NextFunction): P
     const token = cookies?.[REFRESH_COOKIE_NAME];
 
     if (!token) {
-      res.clearCookie(REFRESH_COOKIE_NAME, {
-        httpOnly: true,
-        secure: true,
-        sameSite: 'none',
-        path: REFRESH_COOKIE_OPTS.path,
-      });
+      res.clearCookie(REFRESH_COOKIE_NAME, cookieOptsFor(req));
       res.ok({ message: 'Logged out' });
       return;
     }
@@ -444,23 +442,13 @@ export const logout = async (req: Request, res: Response, next: NextFunction): P
     try {
       payload = verifyRefreshToken(token);
     } catch {
-      res.clearCookie(REFRESH_COOKIE_NAME, {
-        httpOnly: true,
-        secure: true,
-        sameSite: 'none',
-        path: REFRESH_COOKIE_OPTS.path,
-      });
+      res.clearCookie(REFRESH_COOKIE_NAME, cookieOptsFor(req));
       res.ok({ message: 'Logged out' });
       return;
     }
 
     if (!isJwtPayloadWithIdEmail(payload)) {
-      res.clearCookie(REFRESH_COOKIE_NAME, {
-        httpOnly: true,
-        secure: true,
-        sameSite: 'none',
-        path: REFRESH_COOKIE_OPTS.path,
-      });
+      res.clearCookie(REFRESH_COOKIE_NAME, cookieOptsFor(req));
       res.ok({ message: 'Logged out' });
       return;
     }
@@ -468,12 +456,7 @@ export const logout = async (req: Request, res: Response, next: NextFunction): P
     const collection = await getUsersCollection();
     const user = await collection.findOne({ _id: new ObjectId((payload as any).id) });
     if (!user) {
-      res.clearCookie(REFRESH_COOKIE_NAME, {
-        httpOnly: true,
-        secure: true,
-        sameSite: 'none',
-        path: REFRESH_COOKIE_OPTS.path,
-      });
+      res.clearCookie(REFRESH_COOKIE_NAME, cookieOptsFor(req));
       res.ok({ message: 'Logged out' });
       return;
     }
@@ -486,12 +469,7 @@ export const logout = async (req: Request, res: Response, next: NextFunction): P
       { $set: { refreshTokens: cleanedTokens } }
     );
 
-    res.clearCookie(REFRESH_COOKIE_NAME, {
-      httpOnly: true,
-      secure: true,
-      sameSite: 'none',
-      path: REFRESH_COOKIE_OPTS.path,
-    });
+    res.clearCookie(REFRESH_COOKIE_NAME, cookieOptsFor(req));
     res.ok({ message: 'Logged out' });
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
@@ -510,12 +488,7 @@ export const logoutAll = async (req: Request, res: Response, next: NextFunction)
     const collection = await getUsersCollection();
     await collection.updateOne({ _id: new ObjectId(userId) }, { $set: { refreshTokens: [] } });
 
-    res.clearCookie(REFRESH_COOKIE_NAME, {
-      httpOnly: true,
-      secure: true,
-      sameSite: 'none',
-      path: REFRESH_COOKIE_OPTS.path,
-    });
+    res.clearCookie(REFRESH_COOKIE_NAME, cookieOptsFor(req));
     res.ok({ message: 'Logged out from all sessions' });
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
