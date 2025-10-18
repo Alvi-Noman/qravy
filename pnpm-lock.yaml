@@ -34,7 +34,7 @@ importers:
         specifier: ^5.8.3
         version: 5.8.3
 
-  apps/client-dashboard:
+  apps/braincell:
     dependencies:
       '@dnd-kit/core':
         specifier: ^6.3.1
@@ -155,7 +155,7 @@ importers:
         specifier: ^3.6.20
         version: 3.6.20
 
-  apps/erp-dashboard:
+  apps/tastebud:
     dependencies:
       '@qravy/shared':
         specifier: workspace:*
