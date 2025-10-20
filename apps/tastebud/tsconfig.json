@@ -13,9 +13,7 @@
     "checkJs": true,
     "types": [
       "vite/client",
-      "vitest/globals",
-      "node",
-      "@testing-library/jest-dom"
+      "node"
     ],
     "noImplicitAny": false,
     "forceConsistentCasingInFileNames": true,

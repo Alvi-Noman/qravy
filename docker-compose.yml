@@ -78,6 +78,24 @@ services:
       - ./certs:/app/certs:ro
     command: ["pnpm", "run", "dev"]
 
+  storefront-host:
+    build:
+      context: .
+      dockerfile: services/storefront-host/Dockerfile
+    env_file:
+      - ./services/storefront-host/.env
+    environment:
+      NODE_ENV: development
+      PORT: "8090"
+      TASTEBUD_DEV_URL: http://host.docker.internal:5174   # Vite on host
+      GATEWAY_URL: http://api-gateway:8080
+      CORS_ORIGIN: "http://localhost:5174,https://localhost:5174"
+    ports:
+      - "8090:8090"
+    depends_on:
+      - api-gateway
+    restart: unless-stopped
+
 networks:
   default:
     driver: bridge
