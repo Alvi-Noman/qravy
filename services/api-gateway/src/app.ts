@@ -24,7 +24,7 @@ app.use((req: Request, _res: Response, next: NextFunction) => {
 
 /* ───────────────────────────── CORS (allow-list + wildcard) ───────────────────────────── */
 // Comma-separated exact origins, e.g. "https://app.qravy.com,https://localhost:5173"
-const RAW_ORIGINS = (process.env.CORS_ORIGIN || 'https://localhost:5173')
+const RAW_ORIGINS = (process.env.CORS_ORIGIN || 'http://localhost:5173,http://localhost:5174')
   .split(',')
   .map((s) => s.trim())
   .filter(Boolean);
@@ -36,17 +36,30 @@ function isAllowedOrigin(origin?: string): boolean {
   // Exact match first (scheme + host + optional port)
   if (RAW_ORIGINS.includes(origin)) return true;
 
-  // Programmatic wildcard for your multi-tenant domains (adjust as needed)
+  // Programmatic wildcard handling
   try {
     const url = new URL(origin);
-    if (url.protocol !== 'https:') {
-      // if you want to allow http during dev, add http origins to CORS_ORIGIN explicitly
-      return false;
-    }
-    const { hostname } = url;
-    const roots = ['qravy.com', 'onqravy.com'];
-    if (roots.some((root) => hostname === root || hostname.endsWith(`.${root}`))) {
+    const { protocol, hostname, port } = url;
+
+    // ---- Production multi-tenant roots: only HTTPS allowed ----
+    const prodRoots = ['qravy.com', 'onqravy.com'];
+    if (
+      protocol === 'https:' &&
+      prodRoots.some((root) => hostname === root || hostname.endsWith(`.${root}`))
+    ) {
       return true;
+    }
+
+    // ---- Dev convenience: localhost and *.lvh.me allowed over HTTP/HTTPS on common dev ports ----
+    const devPorts = new Set(['3000', '3001', '5173', '5174', '', null as any, undefined as any]);
+    const isDevPort = devPorts.has(port as any);
+
+    // localhost:<devPort>
+    if ((hostname === 'localhost' || hostname === '127.0.0.1') && isDevPort) return true;
+
+    // *.lvh.me:<devPort> (lvh.me resolves to 127.0.0.1, useful for subdomain testing)
+    if (hostname === 'lvh.me' || hostname.endsWith('.lvh.me')) {
+      if (isDevPort) return true;
     }
   } catch {
     // malformed Origin
@@ -71,11 +84,6 @@ const corsOptions: cors.CorsOptions = {
 // IMPORTANT: CORS MUST come before any proxies/body-parsers
 app.use(cors(corsOptions));
 app.options('*', cors(corsOptions));
-
-/**
- * ⛔ Removed the manual “OPTIONS 204 early” handler:
- * It returned 204 without CORS headers, breaking preflights.
- */
 
 /* >>> MOUNT UPLOADS PROXY BEFORE BODY PARSERS <<< */
 registerUploadsProxy(app);
@@ -147,6 +155,7 @@ app.use('/api/v1/locations', jsonProxyToAuth());
 app.use('/api/v1/access', jsonProxyToAuth());
 
 // Catch-all for any other /api/v1/* paths served by auth-service
+// (includes /api/v1/public/**)
 app.use('/api/v1', jsonProxyToAuth());
 
 // Health

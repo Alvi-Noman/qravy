@@ -10,10 +10,8 @@ const baseURL =
   (typeof window !== 'undefined' && window.__STORE__?.apiBase) || '/api/v1';
 
 function resolveChannelFromPath(pathname: string): Channel {
-  return pathname.toLowerCase().startsWith('/dine-in') ||
-    pathname.toLowerCase().includes('/dine-in')
-    ? 'dine-in'
-    : 'online';
+  const p = pathname.toLowerCase();
+  return p.startsWith('/dine-in') || p.includes('/dine-in') ? 'dine-in' : 'online';
 }
 
 function useRuntimeRoute() {
@@ -57,25 +55,36 @@ async function fetchPublicMenu(params: {
     withCredentials: true,
     params: {
       subdomain: params.subdomain,
-      branch: params.branch ?? undefined,
+      branch: params.branch ?? undefined, // don't send null
       channel: params.channel,
     },
   });
-  return data.items as v1.MenuItemDTO[];
+  // Always return an array
+  return (data?.items as v1.MenuItemDTO[] | undefined) ?? [];
 }
 
 export default function RestaurantPage() {
   const { subdomain, branchSlug, channel } = useRuntimeRoute();
 
-  // If we have no subdomain at all, gently send user to a demo route (or your home).
+  // Early redirect if no subdomain; keep hooks order stable by relying on enabled below.
   if (!subdomain) {
     return <Navigate to="/t/demo" replace />;
   }
 
-  const queryKey = ['publicMenu', { subdomain, branchSlug, channel }];
+  // Normalize branch to undefined for cleaner queryKey & params
+  const normalizedBranch = branchSlug || undefined;
+
+  const queryKey = ['publicMenu', { subdomain, branchSlug: normalizedBranch, channel }];
+
   const { data, isLoading, isError, error, refetch, isFetching } = useQuery({
     queryKey,
-    queryFn: () => fetchPublicMenu({ subdomain, branch: branchSlug, channel }),
+    enabled: Boolean(subdomain), // <- prevents firing with null/undefined
+    queryFn: () =>
+      fetchPublicMenu({
+        subdomain: subdomain!, // safe because enabled guards execution
+        branch: normalizedBranch,
+        channel,
+      }),
     staleTime: 30_000,
     refetchOnWindowFocus: false,
   });
@@ -87,10 +96,10 @@ export default function RestaurantPage() {
         <div>
           <h1 className="text-2xl font-semibold">
             {subdomain}
-            {branchSlug ? <span className="text-gray-500"> · {branchSlug}</span> : null}
+            {normalizedBranch ? <span className="text-gray-500"> · {normalizedBranch}</span> : null}
           </h1>
           <p className="text-sm text-gray-500">
-            Channel:{' '}
+            Channel{' '}
             <span className="inline-flex items-center rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium">
               {channel}
             </span>
@@ -100,11 +109,7 @@ export default function RestaurantPage() {
         <div className="flex items-center gap-2">
           {/* Channel toggle as links to keep URL the source of truth */}
           <Link
-            to={
-              branchSlug
-                ? `/t/${subdomain}/branch/${branchSlug}`
-                : `/t/${subdomain}`
-            }
+            to={normalizedBranch ? `/t/${subdomain}/branch/${normalizedBranch}` : `/t/${subdomain}`}
             className={`rounded-lg px-3 py-1.5 text-sm font-medium ring-1 ring-inset ${
               channel === 'online'
                 ? 'bg-black text-white ring-black'
@@ -115,8 +120,8 @@ export default function RestaurantPage() {
           </Link>
           <Link
             to={
-              branchSlug
-                ? `/t/${subdomain}/branch/${branchSlug}/dine-in`
+              normalizedBranch
+                ? `/t/${subdomain}/branch/${normalizedBranch}/dine-in`
                 : `/t/${subdomain}/dine-in`
             }
             className={`rounded-lg px-3 py-1.5 text-sm font-medium ring-1 ring-inset ${
@@ -151,45 +156,51 @@ export default function RestaurantPage() {
         </div>
       ) : (
         <div className="grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-4">
-          {(data ?? []).map((item) => (
-            <article
-              key={item.id}
-              className="group flex flex-col overflow-hidden rounded-xl border border-gray-200 bg-white"
-            >
-              {item.media?.[0] ? (
-                <img
-                  src={item.media[0]}
-                  alt={item.name}
-                  loading="lazy"
-                  className="aspect-[4/3] w-full object-cover transition-transform group-hover:scale-[1.02]"
-                />
-              ) : (
-                <div className="aspect-[4/3] w-full bg-gray-100" />
-              )}
-              <div className="flex flex-1 flex-col p-3">
-                <h3 className="line-clamp-2 text-sm font-medium">{item.name}</h3>
-                {typeof item.price === 'number' ? (
-                  <p className="mt-1 text-sm text-gray-700">${item.price.toFixed(2)}</p>
-                ) : item.variations?.length ? (
-                  <p className="mt-1 text-sm text-gray-700">
-                    from $
-                    {Math.min(
-                      ...item.variations
-                        .map((v) => (typeof v.price === 'number' ? v.price : Number.POSITIVE_INFINITY))
-                        .filter((n) => Number.isFinite(n))
-                    ).toFixed(2)}
-                  </p>
+          {(data ?? []).map((item) => {
+            // Compute a safe "from $" price from variations
+            let minVarPrice: number | undefined;
+            if (Array.isArray(item.variations) && item.variations.length) {
+              const nums = item.variations
+                .map((v) => (typeof v.price === 'number' ? v.price : Number.POSITIVE_INFINITY))
+                .filter((n) => Number.isFinite(n));
+              if (nums.length) minVarPrice = Math.min(...nums);
+            }
+
+            return (
+              <article
+                key={item.id}
+                className="group flex flex-col overflow-hidden rounded-xl border border-gray-200 bg-white"
+              >
+                {item.media?.[0] ? (
+                  <img
+                    src={item.media[0]}
+                    alt={item.name}
+                    loading="lazy"
+                    className="aspect-[4/3] w-full object-cover transition-transform group-hover:scale-[1.02]"
+                  />
                 ) : (
-                  <div className="mt-1 h-4" />
+                  <div className="aspect-[4/3] w-full bg-gray-100" />
                 )}
-                {item.status === 'hidden' && (
-                  <span className="mt-2 w-fit rounded-full bg-yellow-50 px-2 py-0.5 text-xs font-medium text-yellow-700 ring-1 ring-yellow-200">
-                    Unavailable
-                  </span>
-                )}
-              </div>
-            </article>
-          ))}
+                <div className="flex flex-1 flex-col p-3">
+                  <h3 className="line-clamp-2 text-sm font-medium">{item.name}</h3>
+
+                  {typeof item.price === 'number' ? (
+                    <p className="mt-1 text-sm text-gray-700">${item.price.toFixed(2)}</p>
+                  ) : typeof minVarPrice === 'number' ? (
+                    <p className="mt-1 text-sm text-gray-700">from ${minVarPrice.toFixed(2)}</p>
+                  ) : (
+                    <div className="mt-1 h-4" />
+                  )}
+
+                  {item.status === 'hidden' && (
+                    <span className="mt-2 w-fit rounded-full bg-yellow-50 px-2 py-0.5 text-xs font-medium text-yellow-700 ring-1 ring-yellow-200">
+                      Unavailable
+                    </span>
+                  )}
+                </div>
+              </article>
+            );
+          })}
         </div>
       )}
     </div>

@@ -1,4 +1,5 @@
-import express, { type Application, type Request, type Response } from 'express';
+// services/storefront-host/src/app.ts
+import express, { type Application, type Request } from 'express';
 import cors from 'cors';
 import morgan from 'morgan';
 import { createProxyMiddleware } from 'http-proxy-middleware';
@@ -11,15 +12,11 @@ const GATEWAY_URL = process.env.GATEWAY_URL || 'http://localhost:8080';
 // ---- CORS allow-list
 const RAW_ORIGINS = (process.env.CORS_ORIGIN || '')
   .split(',')
-  .map(s => s.trim())
+  .map((s) => s.trim())
   .filter(Boolean);
 
-// Define a local type for the origin callback. This avoids relying on cors's named types.
-type OriginAllow =
-  | boolean
-  | string
-  | RegExp
-  | Array<string | RegExp>;
+// Local type for the origin callback (avoid importing cors types)
+type OriginAllow = boolean | string | RegExp | Array<string | RegExp>;
 type OriginCallback = (err: Error | null, allow?: OriginAllow) => void;
 type CustomOrigin = (origin: string | undefined, cb: OriginCallback) => void;
 
@@ -32,7 +29,7 @@ const corsOrigin: CustomOrigin = (origin, cb) => {
     if (
       url.protocol === 'https:' &&
       ['qravy.com', 'onqravy.com'].some(
-        root => url.hostname === root || url.hostname.endsWith(`.${root}`)
+        (root) => url.hostname === root || url.hostname.endsWith(`.${root}`)
       )
     ) {
       return cb(null, true);
@@ -58,8 +55,8 @@ export function createApp(): Application {
     xfwd: true,
     ws: false,
     on: {
-      proxyReq(proxyReq: ClientRequest, req: IncomingMessage, _res: ServerResponse) {
-        // Cast to Express req only when needed
+      proxyReq(proxyReq: ClientRequest, req: IncomingMessage) {
+        // Cast only where needed to access Express body
         const eReq = req as unknown as Request & { body?: unknown };
 
         const method = (eReq.method || 'GET').toUpperCase();
@@ -77,19 +74,18 @@ export function createApp(): Application {
       },
       proxyRes(proxyRes: IncomingMessage, _req: IncomingMessage, res: ServerResponse) {
         try {
-          if ((proxyRes as any).headers) {
-            const h = (proxyRes as any).headers as Record<string, string | string[] | undefined>;
-            delete h.etag;
-            delete h['last-modified'];
-            h['cache-control'] = 'no-store';
+          if (proxyRes.headers) {
+            delete proxyRes.headers.etag;
+            delete proxyRes.headers['last-modified'];
+            proxyRes.headers['cache-control'] = 'no-store';
           }
           res.removeHeader('ETag');
           res.setHeader('Cache-Control', 'no-store');
         } catch {
           /* noop */
         }
-      }
-    }
+      },
+    },
   });
   app.use('/api/v1', apiProxy);
 
@@ -103,7 +99,7 @@ export function createApp(): Application {
       selfHandleResponse: true, // we will possibly rewrite HTML
       on: {
         proxyRes: async (proxyRes: IncomingMessage, req: IncomingMessage, res: ServerResponse) => {
-          const headers = (proxyRes as any).headers as Record<string, string | string[] | undefined>;
+          const headers = proxyRes.headers as Record<string, string | string[] | undefined>;
           const contentType = (headers?.['content-type'] || '').toString();
           const isHtml = contentType.includes('text/html');
 
@@ -116,14 +112,20 @@ export function createApp(): Application {
 
           // collect HTML
           const chunks: Buffer[] = [];
-          proxyRes.on('data', (c: Buffer) => chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c)));
+          proxyRes.on('data', (c: Buffer) =>
+            chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c))
+          );
           proxyRes.on('end', async () => {
             const raw = Buffer.concat(chunks).toString('utf8');
 
             // Build a URL from the incoming request to parse path/query safely
-            const host = (req.headers['x-forwarded-host'] as string | undefined) ?? (req.headers.host ?? 'localhost');
-            const reqUrl = new URL(req.url || '/', `http://${host}`);
-            const pathname = reqUrl.pathname.toLowerCase();
+            const host =
+              (req.headers['x-forwarded-host'] as string | undefined) ??
+              (req.headers.host ?? 'localhost');
+            const proto =
+              (req.headers['x-forwarded-proto'] as string | undefined) ?? 'http';
+            const reqUrl = new URL(req.url || '/', `${proto}://${host}`);
+            const pathname = (reqUrl.pathname || '/').toLowerCase();
             const search = reqUrl.searchParams;
 
             const tenant = resolveTenantFromHost(host);
@@ -134,14 +136,14 @@ export function createApp(): Application {
               subdomain: tenant,
               channel,
               branch,
-              apiBase: '/api/v1'
+              apiBase: '/api/v1',
             });
 
             res.setHeader('Content-Type', 'text/html; charset=utf-8');
             res.end(html);
           });
-        }
-      }
+        },
+      },
     })
   );
 

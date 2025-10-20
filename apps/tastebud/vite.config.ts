@@ -1,15 +1,11 @@
-// apps/tastebud/vitest.config.ts
-import { defineConfig } from 'vitest/config';
+// apps/tastebud/vite.config.ts
+import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
 export default defineConfig({
   plugins: [react()],
-  test: {
-    globals: true,
-    environment: 'jsdom',
-    setupFiles: ['src/vitest.setup.ts'],
-    coverage: {
-      provider: 'v8'
-    }
-  }
+  server: {
+    host: true,   // allow subdomain testing like pizza.lvh.me
+    port: 5174,   // force 5174
+  },
 });

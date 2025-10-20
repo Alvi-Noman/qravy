@@ -8,9 +8,7 @@ services:
     environment:
       NODE_ENV: development
       PORT: "3001"
-      # 👇 allow HTTPS Vite origin
       CORS_ORIGIN: ${CORS_ORIGIN:-https://localhost:5173}
-      # 👇 magic-link base in dev (matches your HTTPS Vite)
       FRONTEND_URL: ${FRONTEND_URL:-https://localhost:5173}
     working_dir: /app/services/auth-service
     ports:
@@ -32,9 +30,7 @@ services:
     environment:
       NODE_ENV: development
       PORT: "4010"
-      # 👇 allow HTTPS Vite origin
       CORS_ORIGIN: ${CORS_ORIGIN:-https://localhost:5173}
-      # Force upload-service to use the same token as the gateway
       UPLOAD_TOKEN: ${UPLOAD_SERVICE_TOKEN:?Set UPLOAD_SERVICE_TOKEN (OS env or root .env)}
     working_dir: /app/services/upload-service
     ports:
@@ -55,13 +51,12 @@ services:
     environment:
       NODE_ENV: development
       PORT: "8080"
-      # 👇 Local dev is now HTTPS on Vite, so allow that origin
-      CORS_ORIGIN: "https://localhost:5173,http://localhost:5173"
+      # Allow both your HTTPS dev app (5173) and Tastebud dev (5174),
+      # plus the storefront-host origin (8090) that browsers will hit.
+      CORS_ORIGIN: "https://localhost:5173,http://localhost:5173,https://localhost:5174,http://localhost:5174,https://localhost:8090,http://localhost:8090"
       AUTH_SERVICE_URL: http://auth-service:3001
       UPLOAD_SERVICE_URL: http://upload-service:4010
-      # Strict: refuse to start if var is missing (no fallback!)
       UPLOAD_SERVICE_TOKEN: ${UPLOAD_SERVICE_TOKEN:?Set UPLOAD_SERVICE_TOKEN (OS env or root .env)}
-      # 👇 Enable HTTPS inside the container (server auto-falls back to HTTP if missing)
       SSL_KEY_PATH: /app/certs/localhost-key.pem
       SSL_CERT_PATH: /app/certs/localhost.pem
     working_dir: /app/services/api-gateway
@@ -73,7 +68,6 @@ services:
     restart: unless-stopped
     #volumes:
     #  - ./services/api-gateway/src:/app/services/api-gateway/src
-    # 👇 Mount your mkcert-generated certs (read-only)
     volumes:
       - ./certs:/app/certs:ro
     command: ["pnpm", "run", "dev"]
@@ -87,9 +81,12 @@ services:
     environment:
       NODE_ENV: development
       PORT: "8090"
-      TASTEBUD_DEV_URL: http://host.docker.internal:5174   # Vite on host
+      # Vite is running on the host at 5174 (HTTP is fine for dev)
+      TASTEBUD_DEV_URL: http://host.docker.internal:5174
       GATEWAY_URL: http://api-gateway:8080
+      # Only needed if another origin (not 8090 itself) will call the host.
       CORS_ORIGIN: "http://localhost:5174,https://localhost:5174"
+    working_dir: /repo/services/storefront-host
     ports:
       - "8090:8090"
     depends_on:

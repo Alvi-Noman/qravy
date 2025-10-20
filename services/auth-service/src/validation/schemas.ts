@@ -323,3 +323,9 @@ export const restaurantOnboardingSchema = z.object({
   address: z.string().min(1, 'address is required'),
   locationMode: z.enum(['single', 'multiple']).optional(),
 });
+
+export const publicMenuQuerySchema = z.object({
+  subdomain: z.string().min(1),
+  branch: z.string().optional(),
+  channel: channelEnum.optional(),
+});
