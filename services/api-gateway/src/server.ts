@@ -26,13 +26,13 @@ function tryLoadTLS() {
 
 const tls = tryLoadTLS();
 
-const server = tls
-  ? https.createServer(tls, app)
-  : http.createServer(app);
+const server = tls ? https.createServer(tls, app) : http.createServer(app);
 
 server.listen(PORT, '0.0.0.0', () => {
   logger.info(
-    `API Gateway running on ${tls ? 'HTTPS' : 'HTTP'}://localhost:${PORT} in ${process.env.NODE_ENV || 'development'}`
+    `API Gateway running on ${tls ? 'HTTPS' : 'HTTP'}://localhost:${PORT} in ${
+      process.env.NODE_ENV || 'development'
+    }`
   );
 });
 

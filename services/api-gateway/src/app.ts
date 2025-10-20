@@ -22,19 +22,41 @@ app.use((req: Request, _res: Response, next: NextFunction) => {
   next();
 });
 
-/* ---------- CORS (explicit origins + credentials) ---------- */
-// Comma-separated origins, e.g. "https://app.qravy.com,https://localhost:5173"
-const CORS_ORIGINS = (process.env.CORS_ORIGIN || 'https://localhost:5173')
+/* ───────────────────────────── CORS (allow-list + wildcard) ───────────────────────────── */
+// Comma-separated exact origins, e.g. "https://app.qravy.com,https://localhost:5173"
+const RAW_ORIGINS = (process.env.CORS_ORIGIN || 'https://localhost:5173')
   .split(',')
   .map((s) => s.trim())
   .filter(Boolean);
 
+function isAllowedOrigin(origin?: string): boolean {
+  // Allow SSR/tools (no Origin header)
+  if (!origin) return true;
+
+  // Exact match first (scheme + host + optional port)
+  if (RAW_ORIGINS.includes(origin)) return true;
+
+  // Programmatic wildcard for your multi-tenant domains (adjust as needed)
+  try {
+    const url = new URL(origin);
+    if (url.protocol !== 'https:') {
+      // if you want to allow http during dev, add http origins to CORS_ORIGIN explicitly
+      return false;
+    }
+    const { hostname } = url;
+    const roots = ['qravy.com', 'onqravy.com'];
+    if (roots.some((root) => hostname === root || hostname.endsWith(`.${root}`))) {
+      return true;
+    }
+  } catch {
+    // malformed Origin
+  }
+  return false;
+}
+
 const corsOptions: cors.CorsOptions = {
   origin: (origin, cb) => {
-    // Allow REST tools / SSR / same-origin (no Origin header)
-    if (!origin) return cb(null, true);
-    if (CORS_ORIGINS.includes(origin)) return cb(null, true);
-
+    if (isAllowedOrigin(origin)) return cb(null, true);
     logger.warn(`[GATEWAY CORS] blocked origin: ${origin}`);
     return cb(new Error('Not allowed by CORS'));
   },
@@ -46,21 +68,14 @@ const corsOptions: cors.CorsOptions = {
   optionsSuccessStatus: 204,
 };
 
-// CORS must come BEFORE all proxies
+// IMPORTANT: CORS MUST come before any proxies/body-parsers
 app.use(cors(corsOptions));
 app.options('*', cors(corsOptions));
 
 /**
- * Handle all OPTIONS (preflight) early.
- * This ensures preflights never reach proxy targets.
+ * ⛔ Removed the manual “OPTIONS 204 early” handler:
+ * It returned 204 without CORS headers, breaking preflights.
  */
-app.use((req, res, next) => {
-  if (req.method === 'OPTIONS') {
-    res.sendStatus(204);
-    return;
-  }
-  next();
-});
 
 /* >>> MOUNT UPLOADS PROXY BEFORE BODY PARSERS <<< */
 registerUploadsProxy(app);
