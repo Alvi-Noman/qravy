@@ -1,3 +1,4 @@
+// services/auth-service/src/utils/initDb.ts
 import { MongoClient } from 'mongodb';
 import logger from './logger.js';
 
@@ -313,6 +314,60 @@ function categoryVisibilityJsonSchema() {
   };
 }
 
+/** ---------- NEW: Orders collection validator ---------- */
+function ordersJsonSchema() {
+  return {
+    $jsonSchema: {
+      bsonType: 'object',
+      required: ['tenantId', 'channel', 'status', 'items', 'createdAt', 'updatedAt'],
+      additionalProperties: true,
+      properties: {
+        _id: { bsonType: 'objectId' },
+        tenantId: { bsonType: 'objectId' },
+        channel: { enum: ['dine-in', 'online'] },
+        status: { bsonType: 'string' }, // placed | paid | preparing | completed | cancelled | ...
+        items: {
+          bsonType: 'array',
+          minItems: 1,
+          items: {
+            bsonType: 'object',
+            required: ['itemId', 'qty'],
+            additionalProperties: true,
+            properties: {
+              itemId: { bsonType: 'objectId' },
+              qty: { bsonType: ['int', 'long', 'double', 'decimal'] },
+              variation: { bsonType: ['string', 'null'] },
+              notes: { bsonType: ['string', 'null'] },
+            },
+          },
+        },
+        dineIn: {
+          bsonType: ['object', 'null'],
+          properties: {
+            tableNumber: { bsonType: ['string', 'null'] },
+          },
+        },
+        online: {
+          bsonType: ['object', 'null'],
+          properties: {
+            customer: {
+              bsonType: ['object', 'null'],
+              properties: {
+                name: { bsonType: ['string', 'null'] },
+                phone: { bsonType: ['string', 'null'] },
+                address: { bsonType: ['string', 'null'] },
+              },
+            },
+          },
+        },
+        notes: { bsonType: ['string', 'null'] },
+        createdAt: { bsonType: 'date' },
+        updatedAt: { bsonType: 'date' },
+      },
+    },
+  };
+}
+
 type MongoErrorLike = { code?: number; codeName?: string; message?: string };
 
 function isNamespaceNotFound(e: unknown): e is MongoErrorLike {
@@ -440,7 +495,18 @@ export async function ensureUserIndexes(client: MongoClient): Promise<void> {
   );
   logger.info('Ensured unique index on categoryVisibility(tenantId,categoryId,locationId,channel)');
 
-  // Validators
+  // ✅ NEW: Orders
+  await ensureValidator(client, 'orders', ordersJsonSchema());
+  logger.info('Applied validator to orders');
+  const orders = db.collection('orders');
+  await orders.createIndex({ tenantId: 1, createdAt: -1 }, { name: 'ix_orders_tenant_created' });
+  logger.info('Ensured index on orders.tenantId,createdAt');
+  await orders.createIndex({ tenantId: 1, status: 1, createdAt: -1 }, { name: 'ix_orders_tenant_status_created' });
+  logger.info('Ensured index on orders.tenantId,status,createdAt');
+  await orders.createIndex({ tenantId: 1, channel: 1, createdAt: -1 }, { name: 'ix_orders_tenant_channel_created' });
+  logger.info('Ensured index on orders.tenantId,channel,createdAt');
+
+  // Validators (make sure these remain last to cover first-run create scenarios)
   await ensureValidator(client, 'users', userJsonSchema());
   await ensureValidator(client, 'tenants', tenantJsonSchema());
   await ensureValidator(client, 'memberships', membershipJsonSchema());

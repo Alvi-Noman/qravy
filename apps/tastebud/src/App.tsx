@@ -1,35 +1,69 @@
-import { useState } from 'react';
-import reactLogo from './assets/react.svg';
-import viteLogo from '/vite.svg';
-import './App.css';
+import { Routes, Route, Navigate } from 'react-router-dom';
+import { Suspense } from 'react';
+import { CartProvider } from './context/CartContext';
 
-function App() {
-  const [count, setCount] = useState(0);
+// Pages
+import Home from './pages/Home';
+import CheckoutDineIn from './pages/CheckoutDineIn';
+import CheckoutOnline from './pages/CheckoutOnline';
+import OrderPlaced from './pages/OrderPlaced';
 
-  return (
-    <>
-      <div>
-        <a href="https://vite.dev" target="_blank" rel="noreferrer">
-          <img src={viteLogo} className="logo" alt="Vite logo" />
-        </a>
-        <a href="https://react.dev" target="_blank" rel="noreferrer">
-          <img src={reactLogo} className="logo react" alt="React logo" />
-        </a>
-      </div>
-      <h1>Vite + React</h1>
-      <div className="card">
-        <button onClick={() => setCount((count) => count + 1)}>
-          count is {count}
-        </button>
-        <p>
-          Edit <code>src/App.tsx</code> and save to test HMR
-        </p>
-      </div>
-      <p className="read-the-docs">
-        Click on the Vite and React logos to learn more
-      </p>
-    </>
-  );
+// Optional: a tiny fallback to keep UX consistent with braincell
+function Fallback() {
+  return <div className="p-6 text-sm text-slate-600">Loading…</div>;
 }
 
-export default App;
+/**
+ * Storefront App shell:
+ * - Uses CartProvider (channel-aware)
+ * - Router structure mirrors your other app
+ */
+export default function App() {
+  return (
+    <CartProvider>
+      <Routes>
+        <Route
+          path="/"
+          element={
+            <Suspense fallback={<Fallback />}>
+              <Home />
+            </Suspense>
+          }
+        />
+
+        {/* Dine-In checkout (auto table via ?table=12) */}
+        <Route
+          path="/checkout/dine-in"
+          element={
+            <Suspense fallback={<Fallback />}>
+              <CheckoutDineIn />
+            </Suspense>
+          }
+        />
+
+        {/* Online checkout */}
+        <Route
+          path="/checkout/online"
+          element={
+            <Suspense fallback={<Fallback />}>
+              <CheckoutOnline />
+            </Suspense>
+          }
+        />
+
+        {/* Confirmation */}
+        <Route
+          path="/order/placed"
+          element={
+            <Suspense fallback={<Fallback />}>
+              <OrderPlaced />
+            </Suspense>
+          }
+        />
+
+        {/* Legacy/typo guard examples */}
+        <Route path="/checkout" element={<Navigate to="/" replace />} />
+      </Routes>
+    </CartProvider>
+  );
+}

@@ -11,12 +11,16 @@
     "format": "prettier --write \"**/*.{ts,tsx,md,json}\""
   },
   "devDependencies": {
+    "@testing-library/jest-dom": "^6.9.1",
+    "@types/node": "^24.8.1",
     "nodemon": "^3.1.10",
     "prettier": "^3.2.5",
     "ts-node": "^10.9.2",
     "tsx": "^4.20.3",
     "turbo": "^2.5.5",
-    "typescript": "^5.8.3"
+    "typescript": "^5.8.3",
+    "vite": "^5.0.0",
+    "vitest": "^3.2.4"
   },
   "packageManager": "pnpm@9.4.0",
   "type": "module",
