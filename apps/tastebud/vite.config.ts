@@ -1,19 +1,24 @@
-import { defineConfig } from 'vite'
-import react from '@vitejs/plugin-react'
+import { defineConfig } from 'vite';
+import react from '@vitejs/plugin-react';
 
-const DEV_PORT = Number(process.env.VITE_DEV_PORT || process.env.PORT || 3007)
+const DEV_PORT = Number(process.env.VITE_DEV_PORT ?? process.env.PORT ?? 3007);
 
 export default defineConfig({
   plugins: [react()],
   server: {
-    host: true,          // switch to '127.0.0.1' if your firewall blocks 0.0.0.0
+    host: true,          // 0.0.0.0 so Docker/container can reach it
     port: DEV_PORT,
-    strictPort: true,    // don't silently try other ports
+    strictPort: true,
     cors: true,
+    allowedHosts: [
+      'localhost',
+      '127.0.0.1',
+      'host.docker.internal', // allow storefront-host proxy
+    ],
     hmr: {
-      host: 'localhost', // ok for local dev; if you reverse-proxy, set your host
-      port: DEV_PORT,    // <<< THIS stops Vite from trying 5173 for HMR
+      host: 'localhost',
+      port: DEV_PORT,
       protocol: 'ws',
     },
   },
-})
+});

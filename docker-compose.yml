@@ -83,6 +83,7 @@ services:
       GATEWAY_URL: https://api-gateway:8080
       # Allow local Vite + storefront origins
       CORS_ORIGIN: "http://localhost:3007,https://localhost:3007,http://localhost:8090,https://localhost:8090,http://localhost:5501,https://localhost:5501"
+      NODE_TLS_REJECT_UNAUTHORIZED: "0"
     ports:
       - "8090:8090"
     depends_on:

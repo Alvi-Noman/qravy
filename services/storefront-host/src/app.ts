@@ -4,13 +4,14 @@ import cors from 'cors';
 import morgan from 'morgan';
 import { createProxyMiddleware, responseInterceptor } from 'http-proxy-middleware';
 import type { ClientRequest, IncomingMessage, ServerResponse } from 'http';
+import https from 'https';
 
 const PORT = Number(process.env.PORT || 8090);
 
 // IMPORTANT:
 // - No localhost fallback here. In dev, set TASTEBUD_DEV_URL explicitly
 //   to http://host.docker.internal:<vite-port> so the container can reach Vite.
-const TASTEBUD_DEV_URL = process.env.TASTEBUD_DEV_URL;
+const TASTEBUD_DEV_URL = process.env.TASTEBUD_DEV_URL as string;
 
 // Prefer Docker service name for container-to-container in dev.
 const GATEWAY_URL = process.env.GATEWAY_URL || 'http://api-gateway:8080';
@@ -29,7 +30,8 @@ const corsOrigin: CustomOrigin = (origin, cb) => {
   if (!origin) return cb(null, true);
   if (RAW_ORIGINS.includes(origin)) return cb(null, true);
   try {
-    const url = new URL(origin);
+    // cast is safe because we return above when !origin
+    const url = new URL(origin as string);
     if (
       url.protocol === 'https:' &&
       ['qravy.com', 'onqravy.com'].some(
@@ -75,9 +77,16 @@ export function createApp(): Application {
     changeOrigin: true,
     xfwd: true,
     ws: false,
+
+    // We’re calling an HTTPS gateway with a local mkcert cert.
+    // Two belts & suspenders to avoid resets:
     secure: false,
-    proxyTimeout: 15000,
-    timeout: 15000,
+    agent: GATEWAY_URL.startsWith('https://')
+      ? new https.Agent({ rejectUnauthorized: false })
+      : undefined,
+
+    proxyTimeout: 30000,
+    timeout: 30000,
 
     pathRewrite: (_path, req) => {
       const base = (req as any).baseUrl || ''; // "/api"
@@ -179,13 +188,22 @@ export function createApp(): Application {
             (req.headers.host ?? 'localhost');
           const proto =
             (req.headers['x-forwarded-proto'] as string | undefined) ?? 'http';
-          const reqUrl = new URL((req.url || '/'), `${proto}://${host}`);
+
+          // Make TS happy: both args are strings
+          const urlPath: string = typeof req.url === 'string' ? req.url : '/';
+          const reqUrl = new URL(urlPath, `${proto}://${host}`);
+
           const pathname = (reqUrl.pathname || '/').toLowerCase();
           const search = reqUrl.searchParams;
 
-          const tenant = resolveTenantFromHost(host);
+          // subdomain (prod via host) or /t/:subdomain (dev path)
+          const tenant = parseTenant(host, pathname);
+
+          // channel from path or ?channel=
           const channel = parseChannel(pathname, search);
-          const branch = search.get('branch');
+
+          // branch from /t/:sub/branch/:slug  OR  first segment (prod style)  OR  ?branch=
+          const branch = parseBranch(pathname, search);
 
           const html = injectRuntime(raw, {
             subdomain: tenant,
@@ -221,6 +239,17 @@ function resolveTenantFromHost(hostHeader: string | undefined): string | null {
   return null;
 }
 
+function parseTenant(hostHeader: string | undefined, pathname: string): string | null {
+  const fromHost = resolveTenantFromHost(hostHeader);
+  if (fromHost) return fromHost;
+
+  // dev path: /t/:subdomain(/...)
+  const m = pathname.match(/^\/t\/([^/]+)/);
+  const sub = m?.[1];
+  if (sub) return decodeURIComponent(sub);
+  return null;
+}
+
 function parseChannel(
   pathname: string,
   search: URLSearchParams
@@ -230,6 +259,23 @@ function parseChannel(
   const q = (search.get('channel') || '').toLowerCase();
   if (q === 'dine-in' || q === 'online') return q as 'dine-in' | 'online';
   return null;
+}
+
+function parseBranch(pathname: string, search: URLSearchParams): string | null {
+  // 1) /t/:sub/branch/:slug (dev routes)
+  const m1 = pathname.match(/^\/t\/[^/]+\/branch\/([^/]+)/);
+  const slug = m1?.[1];
+  if (slug) return decodeURIComponent(slug);
+
+  // 2) prod-style: first segment IF not channel/api/t
+  const seg1 = pathname.split('/')[1] || '';
+  if (seg1 && !['dine-in', 'online', 't', 'api'].includes(seg1)) {
+    return decodeURIComponent(seg1);
+  }
+
+  // 3) fallback from query
+  const q = search.get('branch');
+  return q ? q : null;
 }
 
 function injectRuntime(html: string, payload: {
