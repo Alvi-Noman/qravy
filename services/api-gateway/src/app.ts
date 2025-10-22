@@ -16,6 +16,9 @@ const app: Application = express();
 app.set('trust proxy', 1);
 app.set('etag', false);
 
+// ── Health FIRST so nothing can swallow it ─────────────────────────────────────
+app.get('/health', (_req: Request, res: Response) => res.status(200).json({ status: 'ok' }));
+
 // Basic request log
 app.use((req: Request, _res: Response, next: NextFunction) => {
   logger.http(`[API Gateway] ${req.method} ${req.originalUrl}`);
@@ -23,25 +26,23 @@ app.use((req: Request, _res: Response, next: NextFunction) => {
 });
 
 /* ───────────────────────────── CORS (allow-list + wildcard) ───────────────────────────── */
-// Comma-separated exact origins, e.g. "https://app.qravy.com,https://localhost:5173"
-const RAW_ORIGINS = (process.env.CORS_ORIGIN || 'http://localhost:5173,http://localhost:5174')
+// Comma-separated exact origins.
+// Default covers your current dev: Vite on 3007 and storefront-host on 8090 (http/https).
+const RAW_ORIGINS = (process.env.CORS_ORIGIN ||
+  'http://localhost:3007,https://localhost:3007,http://localhost:8090,https://localhost:8090')
   .split(',')
   .map((s) => s.trim())
   .filter(Boolean);
 
 function isAllowedOrigin(origin?: string): boolean {
-  // Allow SSR/tools (no Origin header)
-  if (!origin) return true;
+  if (!origin) return true; // SSR/tools/no Origin -> allow
 
-  // Exact match first (scheme + host + optional port)
   if (RAW_ORIGINS.includes(origin)) return true;
 
-  // Programmatic wildcard handling
   try {
     const url = new URL(origin);
     const { protocol, hostname, port } = url;
 
-    // ---- Production multi-tenant roots: only HTTPS allowed ----
     const prodRoots = ['qravy.com', 'onqravy.com'];
     if (
       protocol === 'https:' &&
@@ -50,14 +51,24 @@ function isAllowedOrigin(origin?: string): boolean {
       return true;
     }
 
-    // ---- Dev convenience: localhost and *.lvh.me allowed over HTTP/HTTPS on common dev ports ----
-    const devPorts = new Set(['3000', '3001', '5173', '5174', '', null as any, undefined as any]);
+    // Dev allowances for localhost/lvh.me
+    const devPorts = new Set([
+      '3000',
+      '3001',
+      '3007', // <-- Vite (current)
+      '5173',
+      '5174',
+      '5179', // <-- alternative Vite we tried
+      '8090', // <-- storefront-host
+      '', // some browsers omit explicit port for defaults
+      null as any,
+      undefined as any,
+    ]);
+
     const isDevPort = devPorts.has(port as any);
 
-    // localhost:<devPort>
     if ((hostname === 'localhost' || hostname === '127.0.0.1') && isDevPort) return true;
 
-    // *.lvh.me:<devPort> (lvh.me resolves to 127.0.0.1, useful for subdomain testing)
     if (hostname === 'lvh.me' || hostname.endsWith('.lvh.me')) {
       if (isDevPort) return true;
     }
@@ -81,7 +92,7 @@ const corsOptions: cors.CorsOptions = {
   optionsSuccessStatus: 204,
 };
 
-// IMPORTANT: CORS MUST come before any proxies/body-parsers
+// CORS before any proxies/body-parsers
 app.use(cors(corsOptions));
 app.options('*', cors(corsOptions));
 
@@ -107,7 +118,6 @@ function jsonProxyToAuth() {
     ws: false,
 
     onProxyReq: (proxyReq: ClientRequest, req: Request & { body?: unknown }) => {
-      // Only forward JSON bodies for mutating methods
       const method = (req.method || 'GET').toUpperCase();
       if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) return;
 
@@ -123,7 +133,6 @@ function jsonProxyToAuth() {
     },
 
     onProxyRes(proxyRes: IncomingMessage, _req: Request, res: Response) {
-      // Prevent caching on proxied JSON responses
       try {
         if (proxyRes.headers) {
           delete proxyRes.headers.etag;
@@ -149,17 +158,66 @@ function jsonProxyToAuth() {
   });
 }
 
-// Explicit mounts to auth-service (clear & overridable later)
+/**
+ * Public proxy: forward /api/v1/public/* as-is to auth-service
+ * (No path rewrite; auth-service expects /api/v1/public/*)
+ */
+function publicProxyToAuth() {
+  return createProxyMiddleware({
+    target: AUTH_TARGET,
+    changeOrigin: true,
+    xfwd: true,
+    ws: false,
+
+    onProxyReq: (proxyReq: ClientRequest, req: Request & { body?: unknown }) => {
+      const method = (req.method || 'GET').toUpperCase();
+      if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) return;
+
+      const hasBody = req.body && Object.keys(req.body as object).length > 0;
+      if (!hasBody) return;
+
+      const ct = (proxyReq.getHeader('content-type') as string | undefined) || '';
+      if (!ct.includes('application/json')) return;
+
+      const body = JSON.stringify(req.body);
+      proxyReq.setHeader('content-length', Buffer.byteLength(body));
+      proxyReq.write(body);
+    },
+
+    onProxyRes(proxyRes: IncomingMessage, _req: Request, res: Response) {
+      try {
+        if (proxyRes.headers) {
+          delete proxyRes.headers.etag;
+          delete proxyRes.headers['last-modified'];
+          proxyRes.headers['cache-control'] = 'no-store';
+        }
+        res.removeHeader('ETag');
+        res.setHeader('Cache-Control', 'no-store');
+      } catch {
+        /* noop */
+      }
+    },
+
+    onError(err: NodeErr, req: Request, res: Response) {
+      const code = err.code ?? 'UNKNOWN';
+      logger.error(
+        `[PROXY][PUBLIC] ${req.method} ${req.originalUrl} -> ${AUTH_TARGET} error: ${code} ${err.message}`
+      );
+      if (!res.headersSent) {
+        res.status(502).json({ message: 'Bad gateway (auth-service unavailable)', code });
+      }
+    },
+  });
+}
+
+// Explicit mounts to auth-service
+app.use('/api/v1/public', publicProxyToAuth());  // forward as-is (no rewrite)
 app.use('/api/v1/auth', jsonProxyToAuth());
 app.use('/api/v1/locations', jsonProxyToAuth());
 app.use('/api/v1/access', jsonProxyToAuth());
 
-// Catch-all for any other /api/v1/* paths served by auth-service
-// (includes /api/v1/public/**)
+// Catch-all for other /api/v1/* (includes non-public)
 app.use('/api/v1', jsonProxyToAuth());
-
-// Health
-app.get('/health', (_req: Request, res: Response) => res.status(200).json({ status: 'ok' }));
 
 // Dev 404 tracer for unhandled API routes (outside /api/v1)
 if (process.env.NODE_ENV !== 'production') {

@@ -575,16 +575,16 @@ importers:
         specifier: ^4.17.21
         version: 4.17.23
       '@types/morgan':
-        specifier: ^1.9.10
+        specifier: ^1.9.9
         version: 1.9.10
       '@types/node':
-        specifier: ^20.12.12
+        specifier: ^20.11.30
         version: 20.19.9
       tsx:
-        specifier: ^4.15.7
+        specifier: ^4.7.0
         version: 4.20.3
       typescript:
-        specifier: ^5.5.4
+        specifier: ^5.4.0
         version: 5.8.3
 
   services/upload-service:

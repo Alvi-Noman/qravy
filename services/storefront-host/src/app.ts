@@ -2,12 +2,18 @@
 import express, { type Application, type Request } from 'express';
 import cors from 'cors';
 import morgan from 'morgan';
-import { createProxyMiddleware } from 'http-proxy-middleware';
+import { createProxyMiddleware, responseInterceptor } from 'http-proxy-middleware';
 import type { ClientRequest, IncomingMessage, ServerResponse } from 'http';
 
 const PORT = Number(process.env.PORT || 8090);
-const TASTEBUD_DEV_URL = process.env.TASTEBUD_DEV_URL || 'http://localhost:5174';
-const GATEWAY_URL = process.env.GATEWAY_URL || 'http://localhost:8080';
+
+// IMPORTANT:
+// - No localhost fallback here. In dev, set TASTEBUD_DEV_URL explicitly
+//   to http://host.docker.internal:<vite-port> so the container can reach Vite.
+const TASTEBUD_DEV_URL = process.env.TASTEBUD_DEV_URL;
+
+// Prefer Docker service name for container-to-container in dev.
+const GATEWAY_URL = process.env.GATEWAY_URL || 'http://api-gateway:8080';
 
 // ---- CORS allow-list
 const RAW_ORIGINS = (process.env.CORS_ORIGIN || '')
@@ -15,15 +21,13 @@ const RAW_ORIGINS = (process.env.CORS_ORIGIN || '')
   .map((s) => s.trim())
   .filter(Boolean);
 
-// Local type for the origin callback (avoid importing cors types)
 type OriginAllow = boolean | string | RegExp | Array<string | RegExp>;
 type OriginCallback = (err: Error | null, allow?: OriginAllow) => void;
 type CustomOrigin = (origin: string | undefined, cb: OriginCallback) => void;
 
 const corsOrigin: CustomOrigin = (origin, cb) => {
-  if (!origin) return cb(null, true); // SSR/tools/no Origin -> allow
+  if (!origin) return cb(null, true);
   if (RAW_ORIGINS.includes(origin)) return cb(null, true);
-
   try {
     const url = new URL(origin);
     if (
@@ -35,12 +39,19 @@ const corsOrigin: CustomOrigin = (origin, cb) => {
       return cb(null, true);
     }
   } catch {
-    // ignore parse errors
+    /* ignore */
   }
   return cb(new Error('Not allowed by CORS'));
 };
 
 export function createApp(): Application {
+  if (!TASTEBUD_DEV_URL) {
+    // Fail fast with a helpful message instead of silently pointing at the wrong place.
+    throw new Error(
+      '[storefront-host] Missing TASTEBUD_DEV_URL. Set it to http://host.docker.internal:<vite-port> in services/storefront-host/.env'
+    );
+  }
+
   const app = express();
 
   app.set('trust proxy', 1);
@@ -48,16 +59,46 @@ export function createApp(): Application {
   app.use(cors({ origin: corsOrigin, credentials: true }));
   app.use(express.json());
 
-  /* ========================= API proxy -> Gateway ========================= */
+  console.log(
+    `[storefront-host] PORT=${PORT} GATEWAY_URL=${GATEWAY_URL} TASTEBUD_DEV_URL=${TASTEBUD_DEV_URL}`
+  );
+
+  // Health
+  app.get('/health', (_req, res) => res.status(200).json({ status: 'ok' }));
+
+  /* ========================= API proxy -> Gateway =========================
+   * Mount at /api. Express sets baseUrl="/api" and url="/v1/...".
+   * We must forward baseUrl + url so the gateway receives "/api/v1/...".
+   */
   const apiProxy = createProxyMiddleware({
     target: GATEWAY_URL,
     changeOrigin: true,
     xfwd: true,
     ws: false,
+    secure: false,
+    proxyTimeout: 15000,
+    timeout: 15000,
+
+    pathRewrite: (_path, req) => {
+      const base = (req as any).baseUrl || ''; // "/api"
+      const url = req.url || '';               // "/v1/..."
+      return `${base}${url}`;
+    },
+
     on: {
       proxyReq(proxyReq: ClientRequest, req: IncomingMessage) {
-        // Cast only where needed to access Express body
         const eReq = req as unknown as Request & { body?: unknown };
+
+        // Drop cookies/auth for public endpoints to avoid 431s
+        const rawUrl = (eReq.originalUrl || eReq.url || '').toLowerCase();
+        if (rawUrl.startsWith('/api/v1/public/')) {
+          proxyReq.removeHeader('cookie');
+          proxyReq.removeHeader('authorization');
+        }
+
+        if (!proxyReq.getHeader('accept')) {
+          proxyReq.setHeader('accept', 'application/json');
+        }
 
         const method = (eReq.method || 'GET').toUpperCase();
         if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) return;
@@ -72,6 +113,7 @@ export function createApp(): Application {
         proxyReq.setHeader('content-length', Buffer.byteLength(body));
         proxyReq.write(body);
       },
+
       proxyRes(proxyRes: IncomingMessage, _req: IncomingMessage, res: ServerResponse) {
         try {
           if (proxyRes.headers) {
@@ -85,9 +127,33 @@ export function createApp(): Application {
           /* noop */
         }
       },
+
+      error(err, _req, res) {
+        const sres = res as unknown as ServerResponse;
+        if (typeof (sres as any)?.setHeader === 'function' && typeof (sres as any)?.end === 'function') {
+          if (!(sres as any).headersSent) {
+            sres.statusCode = 502;
+            sres.setHeader('Content-Type', 'application/json');
+            sres.end(
+              JSON.stringify({
+                message: 'Bad gateway (storefront-host could not reach API gateway)',
+                code: (err as any).code || 'E_PROXY',
+              })
+            );
+          }
+        } else {
+          try {
+            (res as any)?.end?.();
+          } catch {
+            /* noop */
+          }
+        }
+      },
     },
   });
-  app.use('/api/v1', apiProxy);
+
+  // Mount proxy at /api — upstream will receive /api/v1/... because of pathRewrite above.
+  app.use('/api', apiProxy);
 
   /* ========================= Frontend proxy -> Tastebud dev ========================= */
   app.use(
@@ -96,53 +162,41 @@ export function createApp(): Application {
       target: TASTEBUD_DEV_URL,
       changeOrigin: true,
       ws: true,
-      selfHandleResponse: true, // we will possibly rewrite HTML
+      secure: false,
+      selfHandleResponse: true,
       on: {
-        proxyRes: async (proxyRes: IncomingMessage, req: IncomingMessage, res: ServerResponse) => {
-          const headers = proxyRes.headers as Record<string, string | string[] | undefined>;
-          const contentType = (headers?.['content-type'] || '').toString();
-          const isHtml = contentType.includes('text/html');
+        proxyRes: responseInterceptor(async (buffer, proxyRes, req, res) => {
+          // Detect HTML using proxy response headers (more reliable than res.getHeader here)
+          const ctHeader =
+            (proxyRes.headers?.['content-type'] as string | undefined) ||
+            res.getHeader('content-type')?.toString() ||
+            '';
+          if (!ctHeader.includes('text/html')) return buffer;
 
-          if (!isHtml) {
-            // passthrough for assets
-            res.writeHead((proxyRes as any).statusCode || 200, headers as any);
-            (proxyRes as any).pipe(res);
-            return;
-          }
+          const raw = buffer.toString('utf8');
+          const host =
+            (req.headers['x-forwarded-host'] as string | undefined) ??
+            (req.headers.host ?? 'localhost');
+          const proto =
+            (req.headers['x-forwarded-proto'] as string | undefined) ?? 'http';
+          const reqUrl = new URL((req.url || '/'), `${proto}://${host}`);
+          const pathname = (reqUrl.pathname || '/').toLowerCase();
+          const search = reqUrl.searchParams;
 
-          // collect HTML
-          const chunks: Buffer[] = [];
-          proxyRes.on('data', (c: Buffer) =>
-            chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c))
-          );
-          proxyRes.on('end', async () => {
-            const raw = Buffer.concat(chunks).toString('utf8');
+          const tenant = resolveTenantFromHost(host);
+          const channel = parseChannel(pathname, search);
+          const branch = search.get('branch');
 
-            // Build a URL from the incoming request to parse path/query safely
-            const host =
-              (req.headers['x-forwarded-host'] as string | undefined) ??
-              (req.headers.host ?? 'localhost');
-            const proto =
-              (req.headers['x-forwarded-proto'] as string | undefined) ?? 'http';
-            const reqUrl = new URL(req.url || '/', `${proto}://${host}`);
-            const pathname = (reqUrl.pathname || '/').toLowerCase();
-            const search = reqUrl.searchParams;
-
-            const tenant = resolveTenantFromHost(host);
-            const channel = parseChannel(pathname, search);
-            const branch = search.get('branch');
-
-            const html = injectRuntime(raw, {
-              subdomain: tenant,
-              channel,
-              branch,
-              apiBase: '/api/v1',
-            });
-
-            res.setHeader('Content-Type', 'text/html; charset=utf-8');
-            res.end(html);
+          const html = injectRuntime(raw, {
+            subdomain: tenant,
+            channel,
+            branch,
+            apiBase: '/api/v1',
           });
-        },
+
+          res.setHeader('Content-Type', 'text/html; charset=utf-8');
+          return html;
+        }),
       },
     })
   );
@@ -185,7 +239,6 @@ function injectRuntime(html: string, payload: {
   apiBase: string;
 }): string {
   const snippet = `<script>window.__STORE__=${JSON.stringify(payload)};</script>`;
-
   if (html.includes('</head>')) return html.replace('</head>', `${snippet}\n</head>`);
   if (html.includes('</body>')) return html.replace('</body>', `${snippet}\n</body>`);
   return `${snippet}\n${html}`;

@@ -30,7 +30,9 @@ COPY --from=deps /repo/services/storefront-host/node_modules ./services/storefro
 
 # compile
 WORKDIR /repo/services/storefront-host
-RUN pnpm run build
+# ⛑️ Build + verify dist/server.js exists
+RUN pnpm run build \
+  && node -e "require('fs').accessSync('dist/server.js')"
 
 # ---------- runtime (slim, prod deps only)
 FROM node:20-alpine
@@ -47,4 +49,4 @@ RUN corepack enable && corepack prepare pnpm@9.12.0 --activate \
   && pnpm install --prod --frozen-lockfile || pnpm install --prod
 
 EXPOSE 8090
-CMD ["node", "dist/server.js"]
+CMD ["node", "/app/dist/server.js"]

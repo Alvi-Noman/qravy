@@ -23,6 +23,7 @@ import userRoutes from './routes/userRoutes.js';
 import locationRoutes from './routes/locationRoutes.js';
 import accessRoutes from './routes/accessRoutes.js';
 import categoriesRoutes from './routes/categoriesRoutes.js';
+import publicRoutes from './routes/publicRoutes.js'; // ✅ added
 
 import logger from './utils/logger.js';
 import { responseFormatter } from './middleware/response.js';
@@ -39,9 +40,7 @@ const CORS_ORIGINS = (process.env.CORS_ORIGIN || 'https://localhost:5173')
   .map((s) => s.trim())
   .filter(Boolean);
 
-// Note: We do NOT throw on disallowed origins. We simply return cb(null, false)
-// so the request proceeds without CORS headers. This avoids noisy errors while
-// still keeping a strict allowlist for browsers.
+// We do NOT throw on disallowed origins; we just skip CORS headers.
 app.use(
   cors({
     origin: (origin, cb) => {
@@ -52,7 +51,6 @@ app.use(
       return cb(null, false);
     },
     credentials: true,
-    // Good defaults; explicitly set preflight success for older browsers/proxies
     optionsSuccessStatus: 204,
   })
 );
@@ -144,6 +142,8 @@ app.use('/api/v1/auth/magic-link', authLimiter);
 app.use('/api/v1', apiLimiter);
 
 /* ---------- Routes ---------- */
+// Mount public routes at /api/v1 so router.get('/public/menu') → /api/v1/public/menu
+app.use('/api/v1', publicRoutes);          // ✅ fixed mount
 app.use('/api/v1/auth', authRoutes);
 app.use('/api/v1/menu', menuRoutes);
 app.use('/api/v1/tenant', tenantRoutes);
