@@ -20,13 +20,13 @@ export default function AppRouter() {
             {/* ================== Dev-style routes (path tenant) ==================
                 http://localhost:5174/t/<subdomain>                   -> online
                 http://localhost:5174/t/<subdomain>/dine-in           -> dine-in
-                http://localhost:5174/t/<subdomain>/branch/<slug>     -> branch online
-                http://localhost:5174/t/<subdomain>/branch/<slug>/dine-in -> branch dine-in
+                http://localhost:5174/t/<subdomain>/<branchSlug>      -> branch online   (no /branch)
+                http://localhost:5174/t/<subdomain>/<branchSlug>/dine-in -> branch dine-in (no /branch)
             */}
             <Route path="/t/:subdomain" element={<Restaurant />} />
             <Route path="/t/:subdomain/dine-in" element={<Restaurant />} />
-            <Route path="/t/:subdomain/branch/:branchSlug" element={<Restaurant />} />
-            <Route path="/t/:subdomain/branch/:branchSlug/dine-in" element={<Restaurant />} />
+            <Route path="/t/:subdomain/:branchSlug" element={<Restaurant />} />
+            <Route path="/t/:subdomain/:branchSlug/dine-in" element={<Restaurant />} />
             {/* Optional helper: /t/:subdomain/online -> /t/:subdomain */}
             <Route path="/t/:subdomain/online" element={<Navigate replace to=".." />} />
 

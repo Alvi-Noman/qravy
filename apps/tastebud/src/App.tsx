@@ -1,8 +1,7 @@
-import { Suspense } from 'react';
-import { Routes, Route, Navigate, useParams } from 'react-router-dom';
-import './App.css';
-import Home from './pages/Home';
-import Restaurant from './pages/Restaurant';
+import { Suspense } from "react";
+import { Routes, Route, Navigate, useParams } from "react-router-dom";
+import Home from "./pages/Home";
+import Restaurant from "./pages/Restaurant";
 
 function RedirectToTenant() {
   const { subdomain } = useParams();
@@ -19,6 +18,12 @@ export default function App() {
         {/* Tenant storefront routes */}
         <Route path="/t/:subdomain" element={<Restaurant />} />
         <Route path="/t/:subdomain/dine-in" element={<Restaurant />} />
+
+        {/* NEW: branch without /branch prefix */}
+        <Route path="/t/:subdomain/:branch" element={<Restaurant />} />
+        <Route path="/t/:subdomain/:branch/dine-in" element={<Restaurant />} />
+
+        {/* Legacy routes still supported (kept for compatibility) */}
         <Route path="/t/:subdomain/branch/:branchSlug" element={<Restaurant />} />
         <Route path="/t/:subdomain/branch/:branchSlug/dine-in" element={<Restaurant />} />
 

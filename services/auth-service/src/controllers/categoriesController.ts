@@ -52,6 +52,307 @@ function channelAllowed(cat: CategoryDoc, ch: 'dine-in' | 'online'): boolean {
   return scope === ch;
 }
 
+/* -------------------------------------------------------------------------- */
+/*                          PRIVATE: core listing logic                        */
+/* -------------------------------------------------------------------------- */
+async function listCategoriesCore(opts: {
+  tenantOid: ObjectId;
+  locId: ObjectId | null;
+  qCh: 'dine-in' | 'online' | undefined;
+}) {
+  const { tenantOid, locId, qCh } = opts;
+
+  // Fetch base category docs (do NOT pre-filter by channelScope)
+  const orTerms: any[] = [{ scope: 'all' }, { scope: { $exists: false } }];
+  if (locId) {
+    orTerms.push({ scope: 'location', locationId: locId });
+  } else {
+    orTerms.push({ scope: 'location' }); // include branch-scoped for global view too
+  }
+  const baseFilter: any = { tenantId: tenantOid, $or: orTerms };
+
+  const docs = await categoriesCol().find(baseFilter).sort({ name: 1 }).toArray();
+  if (docs.length === 0) return [];
+
+  // helper to surface channel from channelScope (only for display fallback)
+  const pickChannel = (cat: CategoryDoc): ('dine-in' | 'online' | undefined) => {
+    const scope = (cat as any).channelScope as 'all' | 'dine-in' | 'online' | undefined;
+    return scope && scope !== 'all' ? scope : undefined;
+  };
+
+  // -----------------------------
+  // BRANCH VIEW
+  // -----------------------------
+  if (locId) {
+    const visQuery: any = {
+      tenantId: tenantOid,
+      locationId: locId,
+      categoryId: { $in: docs.map((d) => d._id!).filter(Boolean) },
+    };
+    if (qCh) visQuery.channel = qCh;
+
+    const visOverlays = await categoryVisibilityCol().find(visQuery).toArray();
+
+    const overlayByCat = new Map<string, Map<'dine-in' | 'online', boolean>>();
+    const removedByCat = new Map<string, Set<'dine-in' | 'online'>>();
+    for (const v of visOverlays as any[]) {
+      const catKey = v.categoryId.toString();
+      const ch = v.channel as 'dine-in' | 'online';
+      if (v.removed === true) {
+        const set = removedByCat.get(catKey) ?? new Set<'dine-in' | 'online'>();
+        set.add(ch);
+        removedByCat.set(catKey, set);
+      } else {
+        const m = overlayByCat.get(catKey) ?? new Map<'dine-in' | 'online', boolean>();
+        m.set(ch, !!v.visible);
+        overlayByCat.set(catKey, m);
+      }
+    }
+
+    const isVisibleInBranch = (cat: CategoryDoc, ch: 'dine-in' | 'online'): boolean => {
+      const catKey = cat._id!.toString();
+
+      // hard tombstone wins
+      if (removedByCat.get(catKey)?.has(ch)) return false;
+
+      const ov = overlayByCat.get(catKey)?.get(ch);
+      // overlay (visible/hidden) overrides channelScope
+      if (ov !== undefined) return ov;
+
+      // baseline (no overlay): fall back to channelScope
+      return channelAllowed(cat, ch);
+    };
+
+    const filtered = docs.filter((cat) => {
+      if (qCh) return isVisibleInBranch(cat, qCh);
+      return isVisibleInBranch(cat, 'dine-in') || isVisibleInBranch(cat, 'online');
+    });
+
+    const items = filtered.map((cat) => {
+      const dineIn = isVisibleInBranch(cat, 'dine-in');
+      const online = isVisibleInBranch(cat, 'online');
+
+      const dto = toCategoryDTO(cat) as any;
+
+      // explicit availability flags for UI
+      dto.channelStatus = { dineIn, online };
+
+      // synthesize dto.channel to match existing UI expectations
+      dto.channel =
+        dineIn && online
+          ? undefined
+          : dineIn
+          ? 'dine-in'
+          : online
+          ? 'online'
+          : undefined;
+
+      // fallback (kept for backward compatibility where UI reads only `channel`)
+      if (!dto.channel && !(dineIn || online)) {
+        dto.channel = pickChannel(cat);
+      }
+
+      return dto;
+    });
+
+    return items;
+  }
+
+  // -----------------------------
+  // GLOBAL VIEW (ALL LOCATIONS)
+  // -----------------------------
+  const locDocs = await locationsCol().find({ tenantId: tenantOid }, { projection: { _id: 1 } }).toArray();
+  const locIds = locDocs.map((l: any) => l._id as ObjectId);
+  const locCount = locIds.length;
+
+  const visQueryAll: any = {
+    tenantId: tenantOid,
+    categoryId: { $in: docs.map((d) => d._id!).filter(Boolean) },
+  };
+  if (locCount > 0) visQueryAll.locationId = { $in: locIds };
+  if (qCh) visQueryAll.channel = qCh;
+
+  const overlaysAll = await categoryVisibilityCol().find(visQueryAll).toArray();
+
+  // per-cat → per-channel → per-location → visible:boolean
+  const overlayByCatAll = new Map<string, Map<'dine-in' | 'online', Map<string, boolean>>>();
+  // per-cat → per-channel → Set<locationId> of removed tombstones
+  const removedByCatAll = new Map<string, Map<'dine-in' | 'online', Set<string>>>();
+
+  for (const v of overlaysAll as any[]) {
+    const catKey = v.categoryId.toString();
+    const ch = v.channel as 'dine-in' | 'online';
+    const locKey = v.locationId.toString();
+    if (v.removed === true) {
+      const chMap = removedByCatAll.get(catKey) ?? new Map();
+      const set = chMap.get(ch) ?? new Set<string>();
+      set.add(locKey);
+      chMap.set(ch, set);
+      removedByCatAll.set(catKey, chMap);
+    } else {
+      const chMap = overlayByCatAll.get(catKey) ?? new Map();
+      const locMap = chMap.get(ch) ?? new Map<string, boolean>();
+      locMap.set(locKey, !!v.visible);
+      chMap.set(ch, locMap);
+      overlayByCatAll.set(catKey, chMap);
+    }
+  }
+
+  const existsAnywhereForChannel = (cat: CategoryDoc, ch: 'dine-in' | 'online'): boolean => {
+    if (locCount === 0) {
+      // no locations → baseline visibility by channel scope
+      return channelAllowed(cat, ch);
+    }
+
+    const perChLoc = overlayByCatAll.get(cat._id!.toString())?.get(ch) ?? new Map<string, boolean>();
+    const removedLocs = removedByCatAll.get(cat._id!.toString())?.get(ch) ?? new Set<string>();
+
+    for (const lid of locIds) {
+      const key = lid.toString();
+      if (removedLocs.has(key)) continue; // hard removed here
+
+      const ov = perChLoc.get(key);
+      if (ov === true) return true;     // explicit include wins
+      if (ov === false) continue;       // explicit hide here
+
+      // no overlay → baseline by channel scope
+      if (channelAllowed(cat, ch)) return true;
+    }
+    return false;
+  };
+
+  const filteredGlobal = docs.filter((cat) => {
+    if (qCh) return existsAnywhereForChannel(cat, qCh);
+    return existsAnywhereForChannel(cat, 'dine-in') || existsAnywhereForChannel(cat, 'online');
+  });
+
+  // ---- summaries for GLOBAL VIEW (updated) ----
+  const summarizeRestrictions = (cat: CategoryDoc) => {
+    const catKey = cat._id!.toString();
+    const channel = pickChannel(cat); // 'dine-in' | 'online' | undefined (undefined => both)
+
+    // Lookups
+    const removedDI = removedByCatAll.get(catKey)?.get('dine-in') ?? new Set<string>();
+    const removedON = removedByCatAll.get(catKey)?.get('online') ?? new Set<string>();
+    const visDI = overlayByCatAll.get(catKey)?.get('dine-in') ?? new Map<string, boolean>();
+    const visON = overlayByCatAll.get(catKey)?.get('online') ?? new Map<string, boolean>();
+
+    // If channel-filtered (?channel=...), keep per-channel behavior
+    if (qCh) {
+      const inc = new Set<string>();
+      const excl = new Set<string>();
+
+      const removedSet = qCh === 'dine-in' ? removedDI : removedON;
+      removedSet.forEach((lid) => excl.add(lid));
+
+      const visMap = qCh === 'dine-in' ? visDI : visON;
+      for (const [lid, v] of visMap.entries()) if (v === true) inc.add(lid);
+
+      const hasAny = inc.size > 0 || excl.size > 0;
+      return {
+        channel,
+        includeLocationIds: hasAny ? Array.from(inc) : undefined,
+        excludeLocationIds: hasAny ? Array.from(excl) : undefined,
+      };
+    }
+
+    // All-locations editor (no channel filter):
+    // - If category is single-channel, compute restrictions ONLY for that base channel.
+    // - If category is both-channels, require BOTH channels to agree.
+    const baseChannels: Array<'dine-in' | 'online'> =
+      channel === 'dine-in' ? ['dine-in']
+      : channel === 'online' ? ['online']
+      : (['dine-in', 'online'] as const);
+
+    const inc = new Set<string>();
+    const excl = new Set<string>();
+
+    if (baseChannels.length === 1) {
+      const base = baseChannels[0];
+      const baseRemoved = base === 'dine-in' ? removedDI : removedON;
+      const baseVis = base === 'dine-in' ? visDI : visON;
+
+      // Exclude when tombstoned on the base channel
+      baseRemoved.forEach((lid) => excl.add(lid));
+      // Include when explicitly visible on the base channel
+      for (const [lid, v] of baseVis.entries()) if (v === true) inc.add(lid);
+    } else {
+      // Both channels: require BOTH channels
+      for (const lid of new Set<string>([...removedDI, ...removedON])) {
+        if (removedDI.has(lid) && removedON.has(lid)) excl.add(lid);
+      }
+      const lids = new Set<string>([...visDI.keys(), ...visON.keys()]);
+      for (const lid of lids) {
+        if (visDI.get(lid) === true && visON.get(lid) === true) inc.add(lid);
+      }
+    }
+
+    const hasAnyRestriction = inc.size > 0 || excl.size > 0;
+    return {
+      channel,
+      includeLocationIds: hasAnyRestriction ? Array.from(inc) : undefined,
+      excludeLocationIds: hasAnyRestriction ? Array.from(excl) : undefined,
+    };
+  };
+
+  // Reflect per-channel presence across ANY location in the "All locations" row
+  const items = filteredGlobal.map((cat) => {
+    const dineInExists = existsAnywhereForChannel(cat, 'dine-in');
+    const onlineExists = existsAnywhereForChannel(cat, 'online');
+
+    const dto = toCategoryDTO(cat) as any;
+    const extra = summarizeRestrictions(cat);
+
+    dto.channelStatus = {
+      dineIn: dineInExists,
+      online: onlineExists,
+    };
+
+    dto.channel =
+      dineInExists && onlineExists
+        ? undefined
+        : dineInExists
+        ? 'dine-in'
+        : onlineExists
+        ? 'online'
+        : undefined;
+
+    return { ...dto, ...extra };
+  });
+
+  return items;
+}
+
+/* -------------------------------------------------------------------------- */
+/*                              PRIVATE: resolvers                             */
+/* -------------------------------------------------------------------------- */
+async function resolveTenantBySubdomain(subdomain?: string | null): Promise<TenantDoc | null> {
+  if (!subdomain || typeof subdomain !== 'string' || !subdomain.trim()) return null;
+  const sd = subdomain.trim().toLowerCase();
+  return tenantsCol().findOne({ subdomain: sd });
+}
+
+async function resolveBranchLocationId(tenantOid: ObjectId, branch?: string | null): Promise<ObjectId | null> {
+  if (!branch || typeof branch !== 'string' || !branch.trim()) return null;
+  const raw = branch.trim();
+
+  // Accept direct ObjectId
+  if (ObjectId.isValid(raw)) {
+    const loc = await locationsCol().findOne({ _id: new ObjectId(raw), tenantId: tenantOid }, { projection: { _id: 1 } });
+    return loc?._id ?? null;
+  }
+
+  // Try slug/code/name exact match (keep it simple and deterministic)
+  const bySlug = await locationsCol().findOne(
+    { tenantId: tenantOid, $or: [{ slug: raw }, { code: raw }, { name: raw }] },
+    { projection: { _id: 1 } }
+  );
+  return bySlug?._id ?? null;
+}
+
+/* -------------------------------------------------------------------------- */
+/*                           EXISTING (private/admin)                          */
+/* -------------------------------------------------------------------------- */
 export async function listCategories(req: Request, res: Response, next: NextFunction) {
   try {
     const tenantId = req.user?.tenantId;
@@ -61,264 +362,7 @@ export async function listCategories(req: Request, res: Response, next: NextFunc
     const locId = getTargetLocationId(req);
     const qCh = parseChannel(req.query.channel);
 
-    // Fetch base category docs (do NOT pre-filter by channelScope)
-    const orTerms: any[] = [{ scope: 'all' }, { scope: { $exists: false } }];
-    if (locId) {
-      orTerms.push({ scope: 'location', locationId: locId });
-    } else {
-      orTerms.push({ scope: 'location' }); // include branch-scoped for global view too
-    }
-    const baseFilter: any = { tenantId: tenantOid, $or: orTerms };
-
-    const docs = await categoriesCol().find(baseFilter).sort({ name: 1 }).toArray();
-    if (docs.length === 0) return res.ok({ items: [] });
-
-    // helper to surface channel from channelScope (only for display fallback)
-    const pickChannel = (cat: CategoryDoc): ('dine-in' | 'online' | undefined) => {
-      const scope = (cat as any).channelScope as 'all' | 'dine-in' | 'online' | undefined;
-      return scope && scope !== 'all' ? scope : undefined;
-    };
-
-    // -----------------------------
-    // BRANCH VIEW
-    // -----------------------------
-    if (locId) {
-      const visQuery: any = {
-        tenantId: tenantOid,
-        locationId: locId,
-        categoryId: { $in: docs.map((d) => d._id!).filter(Boolean) },
-      };
-      if (qCh) visQuery.channel = qCh;
-
-      const visOverlays = await categoryVisibilityCol().find(visQuery).toArray();
-
-      const overlayByCat = new Map<string, Map<'dine-in' | 'online', boolean>>();
-      const removedByCat = new Map<string, Set<'dine-in' | 'online'>>();
-      for (const v of visOverlays as any[]) {
-        const catKey = v.categoryId.toString();
-        const ch = v.channel as 'dine-in' | 'online';
-        if (v.removed === true) {
-          const set = removedByCat.get(catKey) ?? new Set<'dine-in' | 'online'>();
-          set.add(ch);
-          removedByCat.set(catKey, set);
-        } else {
-          const m = overlayByCat.get(catKey) ?? new Map<'dine-in' | 'online', boolean>();
-          m.set(ch, !!v.visible);
-          overlayByCat.set(catKey, m);
-        }
-      }
-
-      const isVisibleInBranch = (cat: CategoryDoc, ch: 'dine-in' | 'online'): boolean => {
-        const catKey = cat._id!.toString();
-
-        // hard tombstone wins
-        if (removedByCat.get(catKey)?.has(ch)) return false;
-
-        const ov = overlayByCat.get(catKey)?.get(ch);
-        // overlay (visible/hidden) overrides channelScope
-        if (ov !== undefined) return ov;
-
-        // baseline (no overlay): fall back to channelScope
-        return channelAllowed(cat, ch);
-      };
-
-      const filtered = docs.filter((cat) => {
-        if (qCh) return isVisibleInBranch(cat, qCh);
-        return isVisibleInBranch(cat, 'dine-in') || isVisibleInBranch(cat, 'online');
-      });
-
-      const items = filtered.map((cat) => {
-        const dineIn = isVisibleInBranch(cat, 'dine-in');
-        const online = isVisibleInBranch(cat, 'online');
-
-        const dto = toCategoryDTO(cat) as any;
-
-        // explicit availability flags for UI
-        dto.channelStatus = { dineIn, online };
-
-        // synthesize dto.channel to match existing UI expectations
-        dto.channel =
-          dineIn && online
-            ? undefined
-            : dineIn
-            ? 'dine-in'
-            : online
-            ? 'online'
-            : undefined;
-
-        // fallback (kept for backward compatibility where UI reads only `channel`)
-        if (!dto.channel && !(dineIn || online)) {
-          dto.channel = pickChannel(cat);
-        }
-
-        return dto;
-      });
-
-      return res.ok({ items });
-    }
-
-    // -----------------------------
-    // GLOBAL VIEW (ALL LOCATIONS)
-    // -----------------------------
-    const locDocs = await locationsCol().find({ tenantId: tenantOid }, { projection: { _id: 1 } }).toArray();
-    const locIds = locDocs.map((l: any) => l._id as ObjectId);
-    const locCount = locIds.length;
-
-    const visQueryAll: any = {
-      tenantId: tenantOid,
-      categoryId: { $in: docs.map((d) => d._id!).filter(Boolean) },
-    };
-    if (locCount > 0) visQueryAll.locationId = { $in: locIds };
-    if (qCh) visQueryAll.channel = qCh;
-
-    const overlaysAll = await categoryVisibilityCol().find(visQueryAll).toArray();
-
-    // per-cat → per-channel → per-location → visible:boolean
-    const overlayByCatAll = new Map<string, Map<'dine-in' | 'online', Map<string, boolean>>>();
-    // per-cat → per-channel → Set<locationId> of removed tombstones
-    const removedByCatAll = new Map<string, Map<'dine-in' | 'online', Set<string>>>();
-
-    for (const v of overlaysAll as any[]) {
-      const catKey = v.categoryId.toString();
-      const ch = v.channel as 'dine-in' | 'online';
-      const locKey = v.locationId.toString();
-      if (v.removed === true) {
-        const chMap = removedByCatAll.get(catKey) ?? new Map();
-        const set = chMap.get(ch) ?? new Set<string>();
-        set.add(locKey);
-        chMap.set(ch, set);
-        removedByCatAll.set(catKey, chMap);
-      } else {
-        const chMap = overlayByCatAll.get(catKey) ?? new Map();
-        const locMap = chMap.get(ch) ?? new Map<string, boolean>();
-        locMap.set(locKey, !!v.visible);
-        chMap.set(ch, locMap);
-        overlayByCatAll.set(catKey, chMap);
-      }
-    }
-
-    const existsAnywhereForChannel = (cat: CategoryDoc, ch: 'dine-in' | 'online'): boolean => {
-      if (locCount === 0) {
-        // no locations → baseline visibility by channel scope
-        return channelAllowed(cat, ch);
-      }
-
-      const perChLoc = overlayByCatAll.get(cat._id!.toString())?.get(ch) ?? new Map<string, boolean>();
-      const removedLocs = removedByCatAll.get(cat._id!.toString())?.get(ch) ?? new Set<string>();
-
-      for (const lid of locIds) {
-        const key = lid.toString();
-        if (removedLocs.has(key)) continue; // hard removed here
-
-        const ov = perChLoc.get(key);
-        if (ov === true) return true;     // explicit include wins
-        if (ov === false) continue;       // explicit hide here
-
-        // no overlay → baseline by channel scope
-        if (channelAllowed(cat, ch)) return true;
-      }
-      return false;
-    };
-
-    const filteredGlobal = docs.filter((cat) => {
-      if (qCh) return existsAnywhereForChannel(cat, qCh);
-      return existsAnywhereForChannel(cat, 'dine-in') || existsAnywhereForChannel(cat, 'online');
-    });
-
-    // ---- summaries for GLOBAL VIEW (updated) ----
-    const summarizeRestrictions = (cat: CategoryDoc) => {
-      const catKey = cat._id!.toString();
-      const channel = pickChannel(cat); // 'dine-in' | 'online' | undefined (undefined => both)
-
-      // Lookups
-      const removedDI = removedByCatAll.get(catKey)?.get('dine-in') ?? new Set<string>();
-      const removedON = removedByCatAll.get(catKey)?.get('online') ?? new Set<string>();
-      const visDI = overlayByCatAll.get(catKey)?.get('dine-in') ?? new Map<string, boolean>();
-      const visON = overlayByCatAll.get(catKey)?.get('online') ?? new Map<string, boolean>();
-
-      // If channel-filtered (?channel=...), keep per-channel behavior
-      if (qCh) {
-        const inc = new Set<string>();
-        const excl = new Set<string>();
-
-        const removedSet = qCh === 'dine-in' ? removedDI : removedON;
-        removedSet.forEach((lid) => excl.add(lid));
-
-        const visMap = qCh === 'dine-in' ? visDI : visON;
-        for (const [lid, v] of visMap.entries()) if (v === true) inc.add(lid);
-
-        const hasAny = inc.size > 0 || excl.size > 0;
-        return {
-          channel,
-          includeLocationIds: hasAny ? Array.from(inc) : undefined,
-          excludeLocationIds: hasAny ? Array.from(excl) : undefined,
-        };
-      }
-
-      // All-locations editor (no channel filter):
-      // - If category is single-channel, compute restrictions ONLY for that base channel.
-      // - If category is both-channels, require BOTH channels to agree.
-      const baseChannels: Array<'dine-in' | 'online'> =
-        channel === 'dine-in' ? ['dine-in']
-        : channel === 'online' ? ['online']
-        : (['dine-in', 'online'] as const);
-
-      const inc = new Set<string>();
-      const excl = new Set<string>();
-
-      if (baseChannels.length === 1) {
-        const base = baseChannels[0];
-        const baseRemoved = base === 'dine-in' ? removedDI : removedON;
-        const baseVis = base === 'dine-in' ? visDI : visON;
-
-        // Exclude when tombstoned on the base channel
-        baseRemoved.forEach((lid) => excl.add(lid));
-        // Include when explicitly visible on the base channel
-        for (const [lid, v] of baseVis.entries()) if (v === true) inc.add(lid);
-      } else {
-        // Both channels: require BOTH channels
-        for (const lid of new Set<string>([...removedDI, ...removedON])) {
-          if (removedDI.has(lid) && removedON.has(lid)) excl.add(lid);
-        }
-        const lids = new Set<string>([...visDI.keys(), ...visON.keys()]);
-        for (const lid of lids) {
-          if (visDI.get(lid) === true && visON.get(lid) === true) inc.add(lid);
-        }
-      }
-
-      const hasAnyRestriction = inc.size > 0 || excl.size > 0;
-      return {
-        channel,
-        includeLocationIds: hasAnyRestriction ? Array.from(inc) : undefined,
-        excludeLocationIds: hasAnyRestriction ? Array.from(excl) : undefined,
-      };
-    };
-
-    // Reflect per-channel presence across ANY location in the "All locations" row
-    const items = filteredGlobal.map((cat) => {
-      const dineInExists = existsAnywhereForChannel(cat, 'dine-in');
-      const onlineExists = existsAnywhereForChannel(cat, 'online');
-
-      const dto = toCategoryDTO(cat) as any;
-      const extra = summarizeRestrictions(cat);
-
-      dto.channelStatus = {
-        dineIn: dineInExists,
-        online: onlineExists,
-      };
-
-      dto.channel =
-        dineInExists && onlineExists
-          ? undefined
-          : dineInExists
-          ? 'dine-in'
-          : onlineExists
-          ? 'online'
-          : undefined;
-
-      return { ...dto, ...extra };
-    });
-
+    const items = await listCategoriesCore({ tenantOid, locId, qCh });
     return res.ok({ items });
   } catch (err) {
     logger.error(`listCategories error: ${(err as Error).message}`);
@@ -326,6 +370,38 @@ export async function listCategories(req: Request, res: Response, next: NextFunc
   }
 }
 
+/* -------------------------------------------------------------------------- */
+/*                          NEW: PUBLIC categories API                         */
+/*   GET /api/v1/public/categories?subdomain=demo&branch=banani&channel=...   */
+/* -------------------------------------------------------------------------- */
+export async function listPublicCategories(req: Request, res: Response, next: NextFunction) {
+  try {
+    // Resolve tenant from subdomain
+    const subdomain = (req.query.subdomain as string | undefined) ?? null;
+    const tenant = await resolveTenantBySubdomain(subdomain);
+    if (!tenant?._id) {
+      // For public read, return empty instead of 4xx to keep storefront UX smooth
+      return res.ok({ items: [] });
+    }
+
+    // Resolve branch → locationId (optional)
+    const branch = (req.query.branch as string | undefined) ?? null;
+    const locId = await resolveBranchLocationId(tenant._id as ObjectId, branch);
+
+    // Channel filter (optional)
+    const qCh = parseChannel(req.query.channel);
+
+    const items = await listCategoriesCore({ tenantOid: tenant._id as ObjectId, locId, qCh });
+    return res.ok({ items });
+  } catch (err) {
+    logger.error(`listPublicCategories error: ${(err as Error).message}`);
+    next(err);
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/*                         CREATE / UPDATE / DELETE etc.                       */
+/* -------------------------------------------------------------------------- */
 export async function createCategory(req: Request, res: Response, next: NextFunction) {
   try {
     if (isBranch(req)) return res.fail(403, 'Not allowed for branch session');

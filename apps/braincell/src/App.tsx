@@ -53,6 +53,9 @@ const SettingsBilling = lazy(() => import('./pages/settings/Billing'));
 // Single plan sheet (controls step via ?step=select|subscribe)
 const PlanSheet = lazy(() => import('./features/billing/pages/PlanSheet'));
 
+// NEW: Bangla TTS Lab page
+const BanglaTTSLab = lazy(() => import('./pages/BanglaTTSLab'));
+
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const { token, loading } = useAuthContext();
   const navigate = useNavigate();
@@ -228,6 +231,16 @@ function App() {
                 <Route path="/customers" element={<div className="p-6 text-sm text-slate-700">Customers coming soon</div>} />
                 <Route path="/digital-menu" element={<div className="p-6 text-sm text-slate-700">Digital Menu coming soon</div>} />
                 <Route path="/qravy-store" element={<div className="p-6 text-sm text-slate-700">Qravy Store coming soon</div>} />
+
+                {/* NEW: Bangla TTS Lab route (protected, uses Dashboard shell) */}
+                <Route
+                  path="/labs/tts"
+                  element={
+                    <Suspense fallback={null}>
+                      <BanglaTTSLab />
+                    </Suspense>
+                  }
+                />
               </Route>
 
               {/* Settings routes OUTSIDE DashboardLayout to replace the main navbar with Settings navbar */}

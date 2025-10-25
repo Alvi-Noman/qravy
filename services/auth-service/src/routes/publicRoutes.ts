@@ -1,3 +1,4 @@
+// services/auth-service/src/routes/publicRoutes.ts
 import express, { type Request, type Response, type NextFunction } from 'express';
 import { z } from 'zod';
 import { ObjectId } from 'mongodb';
@@ -33,6 +34,55 @@ function baseVisible(doc: MenuItemDoc, ch: 'dine-in' | 'online'): boolean {
   const v = doc.visibility?.[k as 'dineIn' | 'online'];
   return typeof v === 'boolean' ? v : true;
 }
+
+/**
+ * GET /api/v1/public/tenant?subdomain=...
+ * Public, read-only tenant info for storefront header (returns { item })
+ */
+router.get('/public/tenant', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const parsed = z
+      .object({ subdomain: z.string().min(1, 'subdomain is required') })
+      .safeParse(req.query);
+
+    if (!parsed.success) {
+      const msg = parsed.error.issues?.[0]?.message || 'Invalid query';
+      return res.status(400).json({ message: msg });
+    }
+    const { subdomain } = parsed.data;
+
+    const tenants = client.db('authDB').collection<TenantDoc>('tenants');
+    const tenant = await tenants.findOne({ subdomain });
+    if (!tenant?._id) {
+      return res.status(404).json({ message: 'Tenant not found' });
+    }
+
+    // Minimal public shape
+    const item = {
+      id: tenant._id.toString(),
+      name:
+        (tenant as any).name ??
+        (tenant as any).restaurantName ??
+        (tenant as any).title ??
+        subdomain,
+      subdomain: tenant.subdomain,
+      logoUrl:
+        (tenant as any).branding?.logoUrl ??
+        (tenant as any).logoUrl ??
+        (tenant as any).logo?.url ??
+        null,
+      brandColor:
+        (tenant as any).branding?.primaryColor ??
+        (tenant as any).brandColor ??
+        null,
+    };
+
+    return res.json({ item });
+  } catch (err) {
+    logger.error(`[PUBLIC TENANT] ${String((err as Error)?.message || err)}`);
+    next(err);
+  }
+});
 
 /**
  * GET /api/v1/public/menu?subdomain=...&branch=...&channel=online|dine-in
@@ -71,9 +121,7 @@ router.get('/public/menu', async (req: Request, res: Response, next: NextFunctio
       const locDoc = await locations.findOne({
         tenantId: tenantOid,
         $or: [
-          // exact name match (case-insensitive)
           { name: { $regex: `^${branch}$`, $options: 'i' } },
-          // naive slug match
           { name: { $regex: `^${branchNorm.replace(/-/g, '[\\s-]')}$`, $options: 'i' } },
         ],
       });
@@ -88,7 +136,6 @@ router.get('/public/menu', async (req: Request, res: Response, next: NextFunctio
     const catVisCol = client.db('authDB').collection('categoryVisibility');
     const availCol = client.db('authDB').collection<ItemAvailabilityDoc>('itemAvailability');
 
-    // Branch-aware filter: include global items and items scoped to this location
     const filter: any =
       locId
         ? { tenantId: tenantOid, $or: [{ locationId: { $exists: false } }, { locationId: null }, { locationId: locId }] }
@@ -99,7 +146,6 @@ router.get('/public/menu', async (req: Request, res: Response, next: NextFunctio
       return res.json({ items: [] });
     }
 
-    // Load categories referenced
     const catIds = Array.from(
       new Set(
         docs
@@ -117,14 +163,13 @@ router.get('/public/menu', async (req: Request, res: Response, next: NextFunctio
       : [];
     const catById = new Map<string, any>(cats.map((c: any) => [c._id.toString(), c]));
 
-    // Category visibility overlays (branch-aware)
     const catVisQuery: any = { tenantId: tenantOid, categoryId: { $in: catIds } };
     if (locId) catVisQuery.locationId = locId;
     if (qCh) catVisQuery.channel = qCh;
     const catVis = catIds.length ? await catVisCol.find(catVisQuery).toArray() : [];
 
     const catOverlayByCat = new Map<string, Map<'dine-in' | 'online', boolean>>();
-    const catRemovedByCat = new Map<string, Set<'dine-in' | 'online'>>();
+    const catRemovedByCat = new Map<string, Set<'dine-in' | 'online'>>(); // <-- fixed generic here
     for (const v of catVis as any[]) {
       const catKey = v.categoryId.toString();
       const ch = v.channel as 'dine-in' | 'online';
@@ -139,7 +184,6 @@ router.get('/public/menu', async (req: Request, res: Response, next: NextFunctio
       }
     }
 
-    // Item availability overlays (branch-aware)
     const overlayQuery: any = {
       tenantId: tenantOid,
       itemId: { $in: docs.map((d) => d._id!).filter(Boolean) },
@@ -164,7 +208,6 @@ router.get('/public/menu', async (req: Request, res: Response, next: NextFunctio
       }
     }
 
-    // Helper for category channel allowance
     const catChannelAllowed = (cat: any | undefined, ch: 'dine-in' | 'online'): boolean => {
       const s = (cat as any)?.channelScope as 'all' | 'dine-in' | 'online' | undefined;
       if (!s || s === 'all') return true;
@@ -182,14 +225,12 @@ router.get('/public/menu', async (req: Request, res: Response, next: NextFunctio
     for (const d of docs) {
       const itmKey = d._id!.toString();
 
-      // Category constraints (scope + channel)
       let cat: any | undefined;
       let catIdStr: string | undefined;
       if (d.categoryId) {
         catIdStr = (d.categoryId as ObjectId).toString();
         cat = catById.get(catIdStr);
 
-        // If category is location-scoped, only include when matching the requested loc
         if (cat?.scope === 'location') {
           const catLoc =
             cat.locationId && ObjectId.isValid(cat.locationId) ? (cat.locationId as ObjectId) : null;
@@ -199,33 +240,25 @@ router.get('/public/menu', async (req: Request, res: Response, next: NextFunctio
         }
       }
 
-      // If category hard-removed for this loc+channel → skip
       if (catIdStr && qCh && catRemovedByCat.get(catIdStr)?.has(qCh)) continue;
 
-      // Determine channels to evaluate
       const channels: Array<'dine-in' | 'online'> = qCh ? [qCh] : CHANNELS;
-
       let present = false;
       let anyOn = false;
 
       for (const ch of channels) {
-        // Category channel allowance
         if (cat && !catChannelAllowed(cat, ch)) continue;
-
-        // If item-level tombstone for this ch at this loc → skip this channel
         if (removedByItem.get(itmKey)?.has(ch)) continue;
 
         const baseline = baseVisible(d, ch);
         const ov = overlayByItem.get(itmKey)?.get(ch);
         const catVisFlag = catIdStr ? catVisibleForCh(catIdStr, ch) : undefined;
 
-        // Category soft-off ⇒ show as present but OFF
         if (catVisFlag === false) {
           present = true;
           continue;
         }
 
-        // If baseline hides the channel, only count as ON if explicit available:true overlay exists
         if (baseline === false) {
           if (ov === true) {
             present = true;
@@ -254,6 +287,110 @@ router.get('/public/menu', async (req: Request, res: Response, next: NextFunctio
     return res.json({ items: out });
   } catch (err) {
     logger.error(`[PUBLIC MENU] ${String((err as Error)?.message || err)}`);
+    next(err);
+  }
+});
+
+/**
+ * GET /api/v1/public/categories?subdomain=...&branch=...&channel=...
+ * Public, read-only categories list for storefront
+ */
+router.get('/public/categories', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const parsed = querySchema.safeParse(req.query);
+    if (!parsed.success) {
+      const msg = parsed.error.issues?.[0]?.message || 'Invalid query';
+      return res.status(400).json({ message: msg });
+    }
+    const { subdomain, branch, channel } = parsed.data;
+    const qCh = parseChannel(channel);
+
+    const tenants = client.db('authDB').collection<TenantDoc>('tenants');
+    const tenant = await tenants.findOne({ subdomain });
+    if (!tenant?._id) {
+      return res.status(404).json({ message: 'Tenant not found' });
+    }
+    const tenantOid = tenant._id;
+
+    // Resolve branch (location) if provided
+    let locId: ObjectId | null = null;
+    if (branch && branch.trim()) {
+      const locations = client.db('authDB').collection('locations');
+      const norm = (s: string) =>
+        s
+          .toLowerCase()
+          .replace(/\s+/g, '-')
+          .replace(/[^a-z0-9-]/g, '')
+          .replace(/--+/g, '-')
+          .replace(/^-|-$/g, '');
+      const branchNorm = norm(branch);
+
+      const locDoc = await locations.findOne({
+        tenantId: tenantOid,
+        $or: [
+          { name: { $regex: `^${branch}$`, $options: 'i' } },
+          { name: { $regex: `^${branchNorm.replace(/-/g, '[\\s-]')}$`, $options: 'i' } },
+        ],
+      });
+      if (locDoc?._id) {
+        locId = locDoc._id as ObjectId;
+      }
+    }
+
+    const catsCol = client.db('authDB').collection('categories');
+    const catVisCol = client.db('authDB').collection('categoryVisibility');
+
+    const filter: any = { tenantId: tenantOid };
+    const cats = await catsCol
+      .find(filter)
+      .project({ _id: 1, name: 1, scope: 1, channelScope: 1, locationId: 1 })
+      .toArray();
+
+    // Filter out location-scoped categories that don't match the requested branch
+    const catsScoped = cats.filter((c) => {
+      if (c.scope !== 'location') return true;
+      if (!locId || !c.locationId) return false;
+      return String(c.locationId) === String(locId);
+    });
+
+    // Apply visibility overlay logic
+    const catIds = catsScoped.map((c) => c._id as ObjectId);
+    const visQuery: any = { tenantId: tenantOid, categoryId: { $in: catIds } };
+    if (locId) visQuery.locationId = locId;
+    if (qCh) visQuery.channel = qCh;
+
+    const visDocs = await catVisCol.find(visQuery).toArray();
+    const removed = new Set<string>();
+    const hidden = new Set<string>();
+
+    for (const v of visDocs) {
+      const id = (v.categoryId as ObjectId).toString();
+      if (v.removed) removed.add(id);
+      else if (v.visible === false) hidden.add(id);
+    }
+
+    // Respect channelScope when channel is requested, remove tombstoned, include hidden flag
+    const filteredByChannel = qCh
+      ? catsScoped.filter(
+          (c) => (c.channelScope ?? 'all') === 'all' || c.channelScope === qCh
+        )
+      : catsScoped;
+
+    const out = filteredByChannel
+      .filter((c) => !removed.has(c._id.toString()))
+      .map((c) => ({
+        id: c._id.toString(),
+        name: c.name ?? 'Untitled',
+        channelScope: c.channelScope ?? 'all',
+        hidden: hidden.has(c._id.toString()),
+        // placeholders to satisfy DTOs that expect timestamps
+        createdAt: new Date(0).toISOString(),
+        updatedAt: new Date(0).toISOString(),
+      }));
+
+    res.json({ items: out });
+  } catch (err) {
+    logger.error(`[PUBLIC CATEGORIES] ${String((err as Error)?.message || err)}`);
     next(err);
   }
 });

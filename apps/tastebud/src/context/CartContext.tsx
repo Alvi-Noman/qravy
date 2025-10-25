@@ -18,7 +18,7 @@ type CartItem = {
   name: string;
   price: number; // unit price in smallest currency unit or decimal (match your API)
   qty: number;
-  variation?: string;
+  variation?: string; // e.g., "Large", or "Large | Extra Cheese"
   notes?: string;
   imageUrl?: string;
 };
@@ -197,11 +197,14 @@ export function CartProvider({ children }: PropsWithChildren<{}>) {
     dispatch({ type: 'ADD', payload: { ...input, qty } });
   }, []);
 
-  const updateQty = useCallback((id: string, delta: number, variation?: string) => {
-    const line = state.items.find((it) => sameLine(it, { id, variation }));
-    const next = Math.max(0, (line?.qty ?? 0) + delta);
-    dispatch({ type: 'SET_QTY', payload: { id, variation, qty: next } });
-  }, [state.items]);
+  const updateQty = useCallback(
+    (id: string, delta: number, variation?: string) => {
+      const line = state.items.find((it) => sameLine(it, { id, variation }));
+      const next = Math.max(0, (line?.qty ?? 0) + delta);
+      dispatch({ type: 'SET_QTY', payload: { id, variation, qty: next } });
+    },
+    [state.items]
+  );
 
   const setQty = useCallback((id: string, qty: number, variation?: string) => {
     dispatch({ type: 'SET_QTY', payload: { id, variation, qty: Math.max(0, qty) } });

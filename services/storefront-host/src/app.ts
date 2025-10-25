@@ -72,6 +72,7 @@ export function createApp(): Application {
    * Mount at /api. Express sets baseUrl="/api" and url="/v1/...".
    * We must forward baseUrl + url so the gateway receives "/api/v1/...".
    */
+  const isHttpsGateway = GATEWAY_URL.startsWith('https://');
   const apiProxy = createProxyMiddleware({
     target: GATEWAY_URL,
     changeOrigin: true,
@@ -81,9 +82,7 @@ export function createApp(): Application {
     // We’re calling an HTTPS gateway with a local mkcert cert.
     // Two belts & suspenders to avoid resets:
     secure: false,
-    agent: GATEWAY_URL.startsWith('https://')
-      ? new https.Agent({ rejectUnauthorized: false })
-      : undefined,
+    agent: isHttpsGateway ? new https.Agent({ rejectUnauthorized: false }) : undefined,
 
     proxyTimeout: 30000,
     timeout: 30000,
@@ -125,13 +124,13 @@ export function createApp(): Application {
 
       proxyRes(proxyRes: IncomingMessage, _req: IncomingMessage, res: ServerResponse) {
         try {
-          if (proxyRes.headers) {
-            delete proxyRes.headers.etag;
-            delete proxyRes.headers['last-modified'];
-            proxyRes.headers['cache-control'] = 'no-store';
+          if ((proxyRes as any).headers) {
+            delete (proxyRes as any).headers.etag;
+            delete (proxyRes as any).headers['last-modified'];
+            (proxyRes as any).headers['cache-control'] = 'no-store';
           }
-          res.removeHeader('ETag');
-          res.setHeader('Cache-Control', 'no-store');
+          (res as any).removeHeader?.('ETag');
+          (res as any).setHeader?.('Cache-Control', 'no-store');
         } catch {
           /* noop */
         }
@@ -139,11 +138,14 @@ export function createApp(): Application {
 
       error(err, _req, res) {
         const sres = res as unknown as ServerResponse;
-        if (typeof (sres as any)?.setHeader === 'function' && typeof (sres as any)?.end === 'function') {
+        if (
+          typeof (sres as any)?.setHeader === 'function' &&
+          typeof (sres as any)?.end === 'function'
+        ) {
           if (!(sres as any).headersSent) {
             sres.statusCode = 502;
-            sres.setHeader('Content-Type', 'application/json');
-            sres.end(
+            (sres as any).setHeader('Content-Type', 'application/json');
+            (sres as any).end(
               JSON.stringify({
                 message: 'Bad gateway (storefront-host could not reach API gateway)',
                 code: (err as any).code || 'E_PROXY',
@@ -254,26 +256,33 @@ function parseChannel(
   pathname: string,
   search: URLSearchParams
 ): 'dine-in' | 'online' | null {
-  if (pathname.startsWith('/dine-in')) return 'dine-in';
-  if (pathname.startsWith('/online')) return 'online';
+  // Support detection anywhere in path (/t/:sub/:branch/dine-in or leading)
+  if (pathname.includes('/dine-in')) return 'dine-in';
+  if (pathname.includes('/online')) return 'online';
   const q = (search.get('channel') || '').toLowerCase();
   if (q === 'dine-in' || q === 'online') return q as 'dine-in' | 'online';
   return null;
 }
 
 function parseBranch(pathname: string, search: URLSearchParams): string | null {
-  // 1) /t/:sub/branch/:slug (dev routes)
-  const m1 = pathname.match(/^\/t\/[^/]+\/branch\/([^/]+)/);
-  const slug = m1?.[1];
-  if (slug) return decodeURIComponent(slug);
+  // 1) NEW dev routes: /t/:subdomain/:branchSlug(/dine-in)?
+  const mNew = pathname.match(/^\/t\/[^/]+\/([^/]+)(?:\/|$)/);
+  const cand = mNew?.[1];
+  if (cand && cand !== 'dine-in' && cand !== 'online') {
+    return decodeURIComponent(cand);
+  }
 
-  // 2) prod-style: first segment IF not channel/api/t
+  // 2) LEGACY dev routes: /t/:subdomain/branch/:slug
+  const mLegacy = pathname.match(/^\/t\/[^/]+\/branch\/([^/]+)/);
+  if (mLegacy?.[1]) return decodeURIComponent(mLegacy[1]);
+
+  // 3) prod-style: first segment IF not reserved
   const seg1 = pathname.split('/')[1] || '';
   if (seg1 && !['dine-in', 'online', 't', 'api'].includes(seg1)) {
     return decodeURIComponent(seg1);
   }
 
-  // 3) fallback from query
+  // 4) fallback from query
   const q = search.get('branch');
   return q ? q : null;
 }

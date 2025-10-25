@@ -16,6 +16,9 @@ export default function SettingsOverview(): JSX.Element {
     { title: 'Labs', desc: 'Experimental features toggle.', to: '/settings/labs' },
     { title: 'Data & Privacy', desc: 'Export and delete data.', to: '/settings/privacy' },
     { title: 'Audit Log', desc: 'Recent admin activity.', to: '/settings/audit' },
+
+    // NEW: direct link to the Bangla TTS Lab outside of /settings/*
+    { title: 'Bangla TTS (Lab)', desc: 'Type Bangla and hear the voice output.', to: '/labs/tts' },
   ];
 
   return (
