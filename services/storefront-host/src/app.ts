@@ -258,17 +258,20 @@ function parseChannel(
 ): 'dine-in' | 'online' | null {
   // Support detection anywhere in path (/t/:sub/:branch/dine-in or leading)
   if (pathname.includes('/dine-in')) return 'dine-in';
-  if (pathname.includes('/online')) return 'online';
+  // Treat /menu and /online as the "online" channel
+  if (pathname.includes('/menu') || pathname.includes('/online')) return 'online';
   const q = (search.get('channel') || '').toLowerCase();
   if (q === 'dine-in' || q === 'online') return q as 'dine-in' | 'online';
   return null;
 }
 
 function parseBranch(pathname: string, search: URLSearchParams): string | null {
-  // 1) NEW dev routes: /t/:subdomain/:branchSlug(/dine-in)?
+  // 1) NEW dev routes: /t/:subdomain/:branchSlug(/...)
+  //    Reserve special segments so they are NOT treated as branch
+  const RESERVED = new Set(['dine-in', 'online', 'menu']);
   const mNew = pathname.match(/^\/t\/[^/]+\/([^/]+)(?:\/|$)/);
   const cand = mNew?.[1];
-  if (cand && cand !== 'dine-in' && cand !== 'online') {
+  if (cand && !RESERVED.has(cand)) {
     return decodeURIComponent(cand);
   }
 
@@ -278,7 +281,7 @@ function parseBranch(pathname: string, search: URLSearchParams): string | null {
 
   // 3) prod-style: first segment IF not reserved
   const seg1 = pathname.split('/')[1] || '';
-  if (seg1 && !['dine-in', 'online', 't', 'api'].includes(seg1)) {
+  if (seg1 && !RESERVED.has(seg1) && seg1 !== 't' && seg1 !== 'api') {
     return decodeURIComponent(seg1);
   }
 

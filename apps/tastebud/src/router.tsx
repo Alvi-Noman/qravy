@@ -5,6 +5,7 @@ import { CartProvider } from './context/CartContext';
 
 const Home = lazy(() => import('./pages/Home'));
 const Restaurant = lazy(() => import('./pages/Restaurant'));
+const AIWaiter = lazy(() => import('./pages/AIWaiter'));
 
 const hasTenantFromRuntime =
   typeof window !== 'undefined' &&
@@ -18,31 +19,50 @@ export default function AppRouter() {
         <Suspense fallback={<div className="p-6 text-sm text-gray-500">Loading…</div>}>
           <Routes>
             {/* ================== Dev-style routes (path tenant) ==================
-                http://localhost:5174/t/<subdomain>                   -> online
-                http://localhost:5174/t/<subdomain>/dine-in           -> dine-in
-                http://localhost:5174/t/<subdomain>/<branchSlug>      -> branch online   (no /branch)
-                http://localhost:5174/t/<subdomain>/<branchSlug>/dine-in -> branch dine-in (no /branch)
+                http://localhost:5174/t/<subdomain>                          -> AIWaiter (entry)
+                http://localhost:5174/t/<subdomain>/menu                     -> Online Menu
+                http://localhost:5174/t/<subdomain>/menu/dine-in             -> Dine-in Menu
+                http://localhost:5174/t/<subdomain>/<branchSlug>             -> AIWaiter (branch entry)
+                http://localhost:5174/t/<subdomain>/<branchSlug>/menu        -> Online Menu (branch)
+                http://localhost:5174/t/<subdomain>/<branchSlug>/menu/dine-in-> Dine-in Menu (branch)
             */}
-            <Route path="/t/:subdomain" element={<Restaurant />} />
-            <Route path="/t/:subdomain/dine-in" element={<Restaurant />} />
-            <Route path="/t/:subdomain/:branchSlug" element={<Restaurant />} />
-            <Route path="/t/:subdomain/:branchSlug/dine-in" element={<Restaurant />} />
-            {/* Optional helper: /t/:subdomain/online -> /t/:subdomain */}
-            <Route path="/t/:subdomain/online" element={<Navigate replace to=".." />} />
+            <Route path="/t/:subdomain" element={<AIWaiter />} />
+            <Route path="/t/:subdomain/menu" element={<Restaurant />} />
+            <Route path="/t/:subdomain/menu/dine-in" element={<Restaurant />} />
+
+            <Route path="/t/:subdomain/:branchSlug" element={<AIWaiter />} />
+            <Route path="/t/:subdomain/:branchSlug/menu" element={<Restaurant />} />
+            <Route path="/t/:subdomain/:branchSlug/menu/dine-in" element={<Restaurant />} />
+
+            {/* Optional helpers / legacy redirects */}
+            <Route path="/t/:subdomain/online" element={<Navigate replace to="menu" />} />
+            <Route path="/t/:subdomain/dine-in" element={<Navigate replace to="menu/dine-in" />} />
+            <Route
+              path="/t/:subdomain/:branchSlug/dine-in"
+              element={<Navigate replace to="menu/dine-in" />}
+            />
 
             {/* ================== Prod-style routes (subdomain at host) ==================
-                chillox.qravy.com                   -> online
-                chillox.qravy.com/dine-in           -> dine-in
-                chillox.qravy.com/<branch>          -> branch online
-                chillox.qravy.com/<branch>/dine-in  -> branch dine-in
+                chillox.qravy.com                        -> AIWaiter (entry)
+                chillox.qravy.com/menu                   -> Online Menu
+                chillox.qravy.com/menu/dine-in           -> Dine-in Menu
+                chillox.qravy.com/<branch>               -> AIWaiter (branch entry)
+                chillox.qravy.com/<branch>/menu          -> Online Menu (branch)
+                chillox.qravy.com/<branch>/menu/dine-in  -> Dine-in Menu (branch)
                These rely on window.__STORE__.subdomain injected by the host.
             */}
-            <Route path="/" element={hasTenantFromRuntime ? <Restaurant /> : <Home />} />
-            <Route path="/dine-in" element={<Restaurant />} />
-            <Route path="/:branch" element={<Restaurant />} />
-            <Route path="/:branch/dine-in" element={<Restaurant />} />
+            <Route path="/" element={hasTenantFromRuntime ? <AIWaiter /> : <Home />} />
+            <Route path="/menu" element={<Restaurant />} />
+            <Route path="/menu/dine-in" element={<Restaurant />} />
 
-            {/* Fallback 404 → Home (or Restaurant if tenant runtime present) */}
+            <Route path="/:branch" element={<AIWaiter />} />
+            <Route path="/:branch/menu" element={<Restaurant />} />
+            <Route path="/:branch/menu/dine-in" element={<Restaurant />} />
+
+            {/* Optional helpers / legacy redirects */}
+            <Route path="/dine-in" element={<Navigate replace to="/menu/dine-in" />} />
+
+            {/* Fallback 404 → Home (or AIWaiter if tenant runtime present) */}
             <Route
               path="*"
               element={<Navigate replace to={hasTenantFromRuntime ? '/' : '/'} />}

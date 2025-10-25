@@ -44,7 +44,7 @@ function useRuntimeRoute() {
   const channelFromPath = resolveChannelFromPath(location.pathname);
   const ch =
     (search.get('channel') as Channel | null) ??
-    (typeof window !== 'undefined'
+   (typeof window !== 'undefined'
       ? ((window as any).__STORE__?.channel as Channel | null) ?? null
       : null) ??
     channelFromPath;
@@ -58,7 +58,7 @@ export default function RestaurantPage() {
   const { subdomain, branchSlug, channel } = useRuntimeRoute();
   const location = useLocation();
 
-  if (!subdomain) return <Navigate to="/t/demo" replace />;
+  if (!subdomain) return <Navigate to="/t/demo/menu" replace />;
 
   const normalizedBranch = branchSlug || undefined;
 
@@ -260,9 +260,11 @@ export default function RestaurantPage() {
 
   // Route targets for the segmented switch
   const onlineHref =
-    normalizedBranch ? `/t/${subdomain}/${normalizedBranch}` : `/t/${subdomain}`;
+    normalizedBranch ? `/t/${subdomain}/${normalizedBranch}/menu` : `/t/${subdomain}/menu`;
   const dineInHref =
-    normalizedBranch ? `/t/${subdomain}/${normalizedBranch}/dine-in` : `/t/${subdomain}/dine-in`;
+    normalizedBranch
+      ? `/t/${subdomain}/${normalizedBranch}/menu/dine-in`
+      : `/t/${subdomain}/menu/dine-in`;
 
   /** Switch-only skeleton (never on initial load/refresh) */
   const [isSwitchSkeleton, setIsSwitchSkeleton] = React.useState(false);
@@ -279,7 +281,7 @@ export default function RestaurantPage() {
         ) {
           setIsSwitchSkeleton(true);
           const t = window.setTimeout(() => setIsSwitchSkeleton(false), SWITCH_DELAY_MS);
-          return () => clearTimeout(t);
+          return () => window.clearTimeout(t);
         }
       }
     } catch {
@@ -329,7 +331,7 @@ export default function RestaurantPage() {
         return Object.values(grouped).reduce((sum, g) => sum + g.items.length, 0);
       }
       const k = idToKey.get(activeCatId);
-      return k && grouped[k] ? grouped[k].items.length : 0;
+        return k && grouped[k] ? grouped[k].items.length : 0;
     }
     return filteredItems.length;
   }, [hasCategories, activeCatId, grouped, idToKey, filteredItems.length]);
@@ -441,9 +443,7 @@ export default function RestaurantPage() {
               </div>
 
               {/* Sentinel for infinite scroll */}
-              {visibleCount < totalItemsInView && (
-                <div ref={sentinelRef} className="h-10 w-full" />
-              )}
+              {visibleCount < totalItemsInView && <div ref={sentinelRef} className="h-10 w-full" />}
             </>
           ) : (
             (() => {
