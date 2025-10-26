@@ -32,6 +32,7 @@ export default function AIWaiter() {
   const wsRef = useRef<WebSocket | null>(null);
   const ctxRef = useRef<AudioContext | null>(null);
   const nodeRef = useRef<AudioWorkletNode | null>(null);
+  const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
 
   const [listening, setListening] = useState(false);
@@ -39,68 +40,119 @@ export default function AIWaiter() {
   const [partial, setPartial] = useState<string>('');
   const [finals, setFinals] = useState<string[]>([]);
 
+  const stoppingRef = useRef<boolean>(false);
+  const finalSeenRef = useRef<boolean>(false);
+  const waitingForFinalRef = useRef<boolean>(false);
+
+  const pendingFinalResolverRef = useRef<null | ((ok: boolean) => void)>(null);
+
+  function waitForFinal(timeoutMs = 8000) {
+    if (pendingFinalResolverRef.current) {
+      try { pendingFinalResolverRef.current(false); } catch {}
+      pendingFinalResolverRef.current = null;
+    }
+    return new Promise<boolean>((resolve) => {
+      const timer = setTimeout(() => {
+        if (pendingFinalResolverRef.current) {
+          pendingFinalResolverRef.current(false);
+          pendingFinalResolverRef.current = null;
+        }
+        resolve(false);
+      }, timeoutMs);
+      pendingFinalResolverRef.current = (ok: boolean) => {
+        try { clearTimeout(timer); } catch {}
+        pendingFinalResolverRef.current = null;
+        resolve(ok);
+      };
+    });
+  }
+
   async function startListening() {
     try {
+      if (listening || wsRef.current || ctxRef.current) return;
+
       setStatus('Requesting microphone…');
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: 1,
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+      });
       streamRef.current = stream;
 
-      // iOS/Safari commonly runs at 48k; we’ll resample to 16k in the worklet.
-      const ctx = new AudioContext();
+      const ctx = new AudioContext({ sampleRate: 16000, latencyHint: 'interactive' });
       ctxRef.current = ctx;
-
-      // iOS needs explicit resume in a click handler
       if (ctx.state === 'suspended') {
-        try {
-          await ctx.resume();
-        } catch {}
+        try { await ctx.resume(); } catch {}
       }
 
       setStatus('Loading worklet…');
       await ctx.audioWorklet.addModule('/worklets/audio-capture.worklet.js');
 
       const src = ctx.createMediaStreamSource(stream);
-      const node = new AudioWorkletNode(ctx, 'capture-processor');
+      sourceRef.current = src;
+
+      const node = new AudioWorkletNode(ctx, 'capture-processor', {
+        numberOfInputs: 1,
+        numberOfOutputs: 0,
+      });
       nodeRef.current = node;
 
       const ws = new WebSocket(getWsURL('/ws/voice'));
       wsRef.current = ws;
+      ws.binaryType = 'arraybuffer';
 
       ws.onopen = () => {
         console.log('[WS] open');
-        // Advertise that we are sending 16k mono frames
-        ws.send(
-          JSON.stringify({
-            t: 'hello',
-            sessionId: 'dev-session',
-            userId: 'guest',
-            rate: 16000,
-            ch: 1,
-          }),
-        );
+        stoppingRef.current = false;
+        finalSeenRef.current = false;
+
+        ws.send(JSON.stringify({
+          t: 'hello',
+          sessionId: 'dev-session',
+          userId: 'guest',
+          rate: 16000,
+          ch: 1,
+        }));
         setStatus('Connected — streaming…');
         setListening(true);
       };
 
       ws.onmessage = (ev) => {
+        console.log('[WS] received message, type:', typeof ev.data, 'length:', ev.data?.length);
+        if (typeof ev.data !== 'string') return;
         try {
           const msg = JSON.parse(ev.data);
+          console.log('[WS] parsed message:', msg.t);
           if (msg.t === 'ack') {
-            console.log('[WS] ack');
+            console.log('[WS] received ack');
             return;
           }
           if (msg.t === 'stt_partial') {
+            if (finalSeenRef.current) {
+              console.log('[WS] ignoring partial (final already seen)');
+              return;
+            }
             setPartial(msg.text || '');
+            console.log('[WS] stt_partial:', msg.text);
             return;
           }
           if (msg.t === 'stt_final') {
+            console.log('[WS] 🎉 GOT STT_FINAL:', msg.text);
+            finalSeenRef.current = true;
             setPartial('');
             setFinals((prev) => [...prev, msg.text || '']);
             setStatus('Finalized one segment.');
+            pendingFinalResolverRef.current?.(true);
             return;
           }
-        } catch {
-          // non-JSON (ignore)
+          if (msg.t === 'error') {
+            console.error('[WS] error payload:', msg.message);
+          }
+        } catch (e) {
+          console.error('[WS] failed to parse message:', e);
         }
       };
 
@@ -115,61 +167,96 @@ export default function AIWaiter() {
         setStatus('Connection closed');
       };
 
-      // Forward 20ms Int16 frames (ArrayBuffer) from worklet to WS
+      let frames = 0;
       node.port.onmessage = (ev) => {
+        if (stoppingRef.current) return;
         const ab = ev.data as ArrayBuffer;
         if (ws.readyState === WebSocket.OPEN) {
           ws.send(ab);
+          frames++;
+          if (frames % 50 === 0) console.log('worklet frames sent:', frames);
         }
       };
 
-      // Keep audio graph alive (don’t route to speakers to avoid echo)
+      // Keep node alive (no audible output; no connection to destination)
       src.connect(node);
-      // No node.connect(ctx.destination)
 
       setStatus('Listening…');
     } catch (err) {
       console.error(err);
       setStatus('Mic or worklet error. Check permissions & console.');
-      stopListening(); // cleanup partial initialization
+      stopListening();
     }
   }
 
   async function stopListening() {
+    console.log('[CLIENT] ========== STOP LISTENING STARTED ==========');
     setStatus('Stopping…');
 
-    // Ask server to finalize
+    // 1) Stop sending new frames immediately
+    stoppingRef.current = true;
+    console.log('[CLIENT] stopped sending frames');
+
+    // 2) Ask server to finalize while WS is still open
+    let gotFinal = finalSeenRef.current;
+    console.log('[CLIENT] finalSeenRef.current:', gotFinal);
+    console.log('[CLIENT] wsRef.current state:', wsRef.current?.readyState);
+    
     try {
       if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        console.log('[CLIENT] ✅ WS is OPEN, sending end signal...');
         wsRef.current.send(JSON.stringify({ t: 'end' }));
-        // Give server a tiny moment to compute final before closing
-        await new Promise((r) => setTimeout(r, 250));
+        console.log('[CLIENT] end signal sent successfully');
+        
+        if (!gotFinal) {
+          console.log('[CLIENT] waiting for stt_final (8s timeout)...');
+          const startWait = Date.now();
+          gotFinal = await waitForFinal(8000);
+          const elapsed = Date.now() - startWait;
+          console.log(`[CLIENT] wait finished after ${elapsed}ms, gotFinal:`, gotFinal);
+          
+          if (!gotFinal) {
+            console.warn('[CLIENT] ⚠️ TIMED OUT waiting for stt_final');
+            setStatus('Timed out waiting for final transcription');
+          } else {
+            console.log('[CLIENT] ✅ received stt_final successfully');
+          }
+        } else {
+          console.log('[CLIENT] final already received, skipping wait');
+        }
+        
+        // Small grace period for any in-flight messages
+        console.log('[CLIENT] waiting 100ms grace period...');
+        await new Promise(resolve => setTimeout(resolve, 100));
+        console.log('[CLIENT] grace period done');
+      } else {
+        console.warn('[CLIENT] ⚠️ WS not open, state:', wsRef.current?.readyState);
       }
-    } catch {}
+    } catch (e) {
+      console.error('[CLIENT] ❌ error during stop:', e);
+    }
 
-    try {
-      wsRef.current?.close();
-    } catch {}
-    wsRef.current = null;
-
-    try {
-      nodeRef.current?.port?.close?.();
-    } catch {}
-    nodeRef.current?.disconnect();
+    // 3) Tear down audio graph
+    try { sourceRef.current?.disconnect(); } catch {}
+    sourceRef.current = null;
+    try { nodeRef.current?.port.close(); } catch {}
+    try { nodeRef.current?.disconnect(); } catch {}
     nodeRef.current = null;
-
-    try {
-      ctxRef.current?.close();
-    } catch {}
+    try { streamRef.current?.getTracks().forEach((t) => t.stop()); } catch {}
+    streamRef.current = null;
+    try { await ctxRef.current?.close(); } catch {}
     ctxRef.current = null;
 
-    try {
-      streamRef.current?.getTracks().forEach((t) => t.stop());
-    } catch {}
-    streamRef.current = null;
+    // 4) Close WS
+    try { wsRef.current?.close(); } catch {}
+    wsRef.current = null;
 
     setListening(false);
-    setStatus('Stopped');
+    if (gotFinal) {
+      setStatus('Stopped - transcription complete');
+    } else {
+      setStatus('Stopped - transcription may be incomplete');
+    }
   }
 
   return (
