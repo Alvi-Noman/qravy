@@ -16,6 +16,9 @@ const TASTEBUD_DEV_URL = process.env.TASTEBUD_DEV_URL as string;
 // Prefer Docker service name for container-to-container in dev.
 const GATEWAY_URL = process.env.GATEWAY_URL || 'http://api-gateway:8080';
 
+// NEW: direct target for the AI Waiter WS service (Fix A)
+const AI_WAITER_URL = process.env.AI_WAITER_URL || 'http://ai-waiter-service:7071';
+
 // ---- CORS allow-list
 const RAW_ORIGINS = (process.env.CORS_ORIGIN || '')
   .split(',')
@@ -56,13 +59,20 @@ export function createApp(): Application {
 
   const app = express();
 
+  // --- COOP/COEP: enable faster audio timing & future SharedArrayBuffer ---
+  app.use((req, res, next) => {
+    res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+    res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp');
+    next();
+  });
+
   app.set('trust proxy', 1);
   app.use(morgan('dev'));
   app.use(cors({ origin: corsOrigin, credentials: true }));
   app.use(express.json());
 
   console.log(
-    `[storefront-host] PORT=${PORT} GATEWAY_URL=${GATEWAY_URL} TASTEBUD_DEV_URL=${TASTEBUD_DEV_URL}`
+    `[storefront-host] PORT=${PORT} GATEWAY_URL=${GATEWAY_URL} TASTEBUD_DEV_URL=${TASTEBUD_DEV_URL} AI_WAITER_URL=${AI_WAITER_URL}`
   );
 
   // Health
@@ -165,6 +175,23 @@ export function createApp(): Application {
 
   // Mount proxy at /api — upstream will receive /api/v1/... because of pathRewrite above.
   app.use('/api', apiProxy);
+
+  /* ========================= WS proxy -> AI Waiter (voice) ========================= */
+  const isHttpsAi = AI_WAITER_URL.startsWith('https://');
+  const voiceWsProxy = createProxyMiddleware({
+    target: AI_WAITER_URL,            // ← Fix A: point directly to ai-waiter
+    changeOrigin: true,
+    ws: true,
+    // Accept self-signed mkcert when ai-waiter is HTTPS in dev
+    secure: false,
+    agent: isHttpsAi ? new https.Agent({ rejectUnauthorized: false }) : undefined,
+  });
+
+  // Expose the WS proxy for server.ts upgrade handling
+  app.set('voiceWsProxy', voiceWsProxy);
+
+  // Mount the WS route (also handles accidental HTTP hits to the same path)
+  app.use('/ws/voice', voiceWsProxy);
 
   /* ========================= Frontend proxy -> Tastebud dev ========================= */
   app.use(

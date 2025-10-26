@@ -1,3 +1,4 @@
+// services/storefront-host/src/server.ts
 import http from 'http';
 import { createApp } from './app.js';
 
@@ -6,6 +7,19 @@ const HOST = process.env.HOST || '0.0.0.0';
 
 const app = createApp();
 const server = http.createServer(app);
+
+// --- WS upgrade handler for /ws/voice ---
+server.on('upgrade', (req, socket, head) => {
+  if (req.url && req.url.startsWith('/ws/voice')) {
+    const voiceWsProxy = (app as any).get('voiceWsProxy');
+    if (voiceWsProxy?.upgrade) {
+      voiceWsProxy.upgrade(req, socket, head);
+      return;
+    }
+  }
+  // destroy others if no WS route matches
+  socket.destroy();
+});
 
 server.listen(PORT, HOST, () => {
   console.log(`[storefront-host] listening on http://${HOST}:${PORT}`);
@@ -23,5 +37,6 @@ const shutdown = () => {
     process.exit(0);
   });
 };
+
 process.on('SIGTERM', shutdown);
 process.on('SIGINT', shutdown);

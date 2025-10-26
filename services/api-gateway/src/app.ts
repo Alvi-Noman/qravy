@@ -219,6 +219,17 @@ app.use('/api/v1/access', jsonProxyToAuth());
 // Catch-all for other /api/v1/* (includes non-public)
 app.use('/api/v1', jsonProxyToAuth());
 
+/* ========================= WS proxy -> ai-waiter-service ========================= */
+const VOICE_WS_TARGET = process.env.VOICE_WS_TARGET || 'http://ai-waiter-service:7071';
+const voiceWsProxy = createProxyMiddleware({
+  target: VOICE_WS_TARGET,
+  changeOrigin: true,
+  ws: true,
+  logLevel: 'warn',
+});
+// Mount the WS route
+app.use('/ws/voice', voiceWsProxy);
+
 // Dev 404 tracer for unhandled API routes (outside /api/v1)
 if (process.env.NODE_ENV !== 'production') {
   app.use('/api', (req: Request, res: Response) => {
@@ -227,4 +238,5 @@ if (process.env.NODE_ENV !== 'production') {
   });
 }
 
+export { voiceWsProxy };
 export default app;
