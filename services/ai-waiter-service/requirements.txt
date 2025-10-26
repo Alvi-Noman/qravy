@@ -1,5 +1,7 @@
+# services/ai-waiter-service/requirements.txt
 faster-whisper==1.0.1
 websockets==12.0
 numpy==1.26.4
 soundfile==0.12.1
 pymongo==4.6.3
+httpx==0.27.2

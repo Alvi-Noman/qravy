@@ -1,5 +1,6 @@
+# services/ai-waiter-service/vad.py
 class Segmenter:
-    def __init__(self, bytes_per_sec=16000*2, min_ms=250, max_ms=900):
+    def __init__(self, bytes_per_sec=16000*2, min_ms=500, max_ms=2000):
         self.buf = bytearray()
         self.bytes_per_sec = bytes_per_sec
         self.min = int(bytes_per_sec * (min_ms/1000))

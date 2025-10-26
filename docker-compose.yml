@@ -1,3 +1,4 @@
+# docker-compose.yml
 services:
   auth-service:
     build:
@@ -110,13 +111,19 @@ services:
     environment:
       - PORT=7071
       - MONGO_URI=mongodb://mongo:27017
-      - WHISPER_MODEL=small
+      - WHISPER_MODEL=tiny
       - WHISPER_DEVICE=cpu
       - WHISPER_COMPUTE_TYPE=int8
       - OMP_NUM_THREADS=1
       - MKL_NUM_THREADS=1
       - OPENBLAS_NUM_THREADS=1
       - NUMEXPR_NUM_THREADS=1
+
+      # === Groq Whisper v3 ===
+      - GROQ_API_KEY=${GROQ_API_KEY:?Set GROQ_API_KEY in your .env}
+      - GROQ_MODEL=whisper-large-v3
+      - GROQ_BASE=https://api.groq.com
+      - GROQ_TIMEOUT_MS=6000
     depends_on:
       - mongo
     ports:

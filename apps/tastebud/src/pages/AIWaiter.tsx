@@ -29,21 +29,21 @@ export default function AIWaiter() {
     ? `/t/${resolvedSub}/${resolvedBranch}/menu`
     : `/t/${resolvedSub}/menu`;
 
+  // --- Audio / WS refs ---
   const wsRef = useRef<WebSocket | null>(null);
   const ctxRef = useRef<AudioContext | null>(null);
   const nodeRef = useRef<AudioWorkletNode | null>(null);
   const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
 
+  // --- UI/State ---
   const [listening, setListening] = useState(false);
   const [status, setStatus] = useState<string>('idle');
-  const [partial, setPartial] = useState<string>('');
   const [finals, setFinals] = useState<string[]>([]);
 
+  // --- finalize helpers ---
   const stoppingRef = useRef<boolean>(false);
   const finalSeenRef = useRef<boolean>(false);
-  const waitingForFinalRef = useRef<boolean>(false);
-
   const pendingFinalResolverRef = useRef<null | ((ok: boolean) => void)>(null);
 
   function waitForFinal(timeoutMs = 8000) {
@@ -88,7 +88,7 @@ export default function AIWaiter() {
         try { await ctx.resume(); } catch {}
       }
 
-      setStatus('Loading worklet…');
+      setStatus('Loading…');
       await ctx.audioWorklet.addModule('/worklets/audio-capture.worklet.js');
 
       const src = ctx.createMediaStreamSource(stream);
@@ -105,7 +105,6 @@ export default function AIWaiter() {
       ws.binaryType = 'arraybuffer';
 
       ws.onopen = () => {
-        console.log('[WS] open');
         stoppingRef.current = false;
         finalSeenRef.current = false;
 
@@ -115,58 +114,35 @@ export default function AIWaiter() {
           userId: 'guest',
           rate: 16000,
           ch: 1,
+          lang: 'auto', // server auto-detects then locks
         }));
-        setStatus('Connected — streaming…');
+        setStatus('listening');
         setListening(true);
       };
 
       ws.onmessage = (ev) => {
-        console.log('[WS] received message, type:', typeof ev.data, 'length:', ev.data?.length);
         if (typeof ev.data !== 'string') return;
         try {
-          const msg = JSON.parse(ev.data);
-          console.log('[WS] parsed message:', msg.t);
-          if (msg.t === 'ack') {
-            console.log('[WS] received ack');
-            return;
-          }
-          if (msg.t === 'stt_partial') {
-            if (finalSeenRef.current) {
-              console.log('[WS] ignoring partial (final already seen)');
-              return;
-            }
-            setPartial(msg.text || '');
-            console.log('[WS] stt_partial:', msg.text);
-            return;
-          }
+          const msg = JSON.parse(ev.data as string);
+
           if (msg.t === 'stt_final') {
-            console.log('[WS] 🎉 GOT STT_FINAL:', msg.text);
             finalSeenRef.current = true;
-            setPartial('');
             setFinals((prev) => [...prev, msg.text || '']);
-            setStatus('Finalized one segment.');
+            setStatus('segment captured');
             pendingFinalResolverRef.current?.(true);
-            return;
           }
-          if (msg.t === 'error') {
-            console.error('[WS] error payload:', msg.message);
-          }
-        } catch (e) {
-          console.error('[WS] failed to parse message:', e);
-        }
+        } catch {}
       };
 
-      ws.onerror = (err) => {
-        console.error('[WS] error', err);
-        setStatus('WebSocket error (see console)');
-      };
-
+      ws.onerror = () => setStatus('connection error');
       ws.onclose = () => {
-        console.log('[WS] close');
         setListening(false);
-        setStatus('Connection closed');
+        if (status !== 'timed out') setStatus('idle');
+        pendingFinalResolverRef.current?.(false);
+        pendingFinalResolverRef.current = null;
       };
 
+      // frame pump
       let frames = 0;
       node.port.onmessage = (ev) => {
         if (stoppingRef.current) return;
@@ -174,69 +150,43 @@ export default function AIWaiter() {
         if (ws.readyState === WebSocket.OPEN) {
           ws.send(ab);
           frames++;
-          if (frames % 50 === 0) console.log('worklet frames sent:', frames);
+          // (quiet logging) if needed: if (frames % 50 === 0) console.log('frames:', frames);
         }
       };
 
-      // Keep node alive (no audible output; no connection to destination)
+      // keep node alive
       src.connect(node);
-
-      setStatus('Listening…');
     } catch (err) {
       console.error(err);
-      setStatus('Mic or worklet error. Check permissions & console.');
+      setStatus('mic error');
       stopListening();
     }
   }
 
   async function stopListening() {
-    console.log('[CLIENT] ========== STOP LISTENING STARTED ==========');
-    setStatus('Stopping…');
+    setStatus('stopping…');
 
-    // 1) Stop sending new frames immediately
+    // 1) stop sending
     stoppingRef.current = true;
-    console.log('[CLIENT] stopped sending frames');
 
-    // 2) Ask server to finalize while WS is still open
+    // 2) ask server to finalize
     let gotFinal = finalSeenRef.current;
-    console.log('[CLIENT] finalSeenRef.current:', gotFinal);
-    console.log('[CLIENT] wsRef.current state:', wsRef.current?.readyState);
-    
     try {
       if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-        console.log('[CLIENT] ✅ WS is OPEN, sending end signal...');
         wsRef.current.send(JSON.stringify({ t: 'end' }));
-        console.log('[CLIENT] end signal sent successfully');
-        
+
         if (!gotFinal) {
-          console.log('[CLIENT] waiting for stt_final (8s timeout)...');
-          const startWait = Date.now();
-          gotFinal = await waitForFinal(8000);
-          const elapsed = Date.now() - startWait;
-          console.log(`[CLIENT] wait finished after ${elapsed}ms, gotFinal:`, gotFinal);
-          
-          if (!gotFinal) {
-            console.warn('[CLIENT] ⚠️ TIMED OUT waiting for stt_final');
-            setStatus('Timed out waiting for final transcription');
-          } else {
-            console.log('[CLIENT] ✅ received stt_final successfully');
-          }
-        } else {
-          console.log('[CLIENT] final already received, skipping wait');
+          const ok = await waitForFinal(8000);
+          gotFinal = ok;
+          if (!ok) setStatus('timed out');
         }
-        
-        // Small grace period for any in-flight messages
-        console.log('[CLIENT] waiting 100ms grace period...');
-        await new Promise(resolve => setTimeout(resolve, 100));
-        console.log('[CLIENT] grace period done');
-      } else {
-        console.warn('[CLIENT] ⚠️ WS not open, state:', wsRef.current?.readyState);
+        await new Promise((r) => setTimeout(r, 100));
       }
     } catch (e) {
-      console.error('[CLIENT] ❌ error during stop:', e);
+      console.error(e);
     }
 
-    // 3) Tear down audio graph
+    // 3) tear down audio
     try { sourceRef.current?.disconnect(); } catch {}
     sourceRef.current = null;
     try { nodeRef.current?.port.close(); } catch {}
@@ -247,94 +197,121 @@ export default function AIWaiter() {
     try { await ctxRef.current?.close(); } catch {}
     ctxRef.current = null;
 
-    // 4) Close WS
+    // 4) close socket
     try { wsRef.current?.close(); } catch {}
     wsRef.current = null;
 
     setListening(false);
-    if (gotFinal) {
-      setStatus('Stopped - transcription complete');
-    } else {
-      setStatus('Stopped - transcription may be incomplete');
-    }
+    setStatus(gotFinal ? 'idle' : 'idle');
   }
 
+  // --- Small helpers for UI ---
+  const StatusDot = ({ active }: { active: boolean }) => (
+    <span
+      className={[
+        'inline-block h-2.5 w-2.5 rounded-full',
+        active ? 'bg-emerald-500 animate-pulse' : 'bg-gray-300',
+      ].join(' ')}
+      aria-hidden="true"
+    />
+  );
+
   return (
-    <div className="min-h-screen bg-[#F6F5F8] font-[Inter] flex items-center">
-      <div className="mx-auto max-w-3xl px-4 py-12">
-        <h1 className="text-[30px] sm:text-[36px] font-semibold text-gray-900 mb-2">
-          Meet your AI Waiter
-        </h1>
-        <p className="text-gray-600 mb-8">
-          Ask for recommendations, dietary options, combos, or specials. Speak or type—your call.
-        </p>
+    <div className="min-h-screen bg-[#F6F5F8] font-[Inter]">
+      {/* TEMP TEST PANEL (you said you'll remove later) */}
+      <div className="fixed right-4 top-4 z-50 w-64 rounded-xl border bg-white p-3 shadow-sm">
+        <div className="mb-1 flex items-center justify-between">
+          <span className="text-xs font-semibold text-gray-700">Finalized</span>
+          <StatusDot active={listening} />
+        </div>
+        <div className="max-h-40 space-y-1 overflow-y-auto text-sm text-gray-900">
+          {finals.length ? (
+            finals.map((t, i) => (
+              <div key={i} className="leading-snug">• {t}</div>
+            ))
+          ) : (
+            <span className="text-gray-400">—</span>
+          )}
+        </div>
+      </div>
 
-        <div className="rounded-2xl bg-white border p-6 shadow-sm mb-8">
-          <div className="flex flex-col gap-4">
-            <p className="text-sm text-gray-500">{status}</p>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div className="rounded-xl border p-3">
-                <div className="text-xs uppercase text-gray-500 mb-1">Live partial</div>
-                <div className="min-h-[64px] whitespace-pre-wrap text-gray-900">
-                  {partial || <span className="text-gray-400">—</span>}
-                </div>
-              </div>
-
-              <div className="rounded-xl border p-3">
-                <div className="text-xs uppercase text-gray-500 mb-1">Finalized</div>
-                <div className="min-h-[64px] whitespace-pre-wrap text-gray-900">
-                  {finals.length ? (
-                    finals.map((t, i) => (
-                      <div key={i} className="mb-1">
-                        • {t}
-                      </div>
-                    ))
-                  ) : (
-                    <span className="text-gray-400">—</span>
-                  )}
-                </div>
-              </div>
+      {/* Main content */}
+      <div className="mx-auto flex max-w-md flex-col items-center px-5 pb-28 pt-10 sm:max-w-lg">
+        {/* Header */}
+        <div className="mb-6 w-full">
+          <div className="flex items-center justify-between">
+            <h1 className="text-xl font-semibold text-gray-900">Voice chat</h1>
+            <div className="flex items-center gap-2 text-xs text-gray-500">
+              <StatusDot active={listening} />
+              <span>{status}</span>
             </div>
-
-            {!listening ? (
-              <button
-                onClick={startListening}
-                className="self-center px-5 py-2 rounded-xl bg-black text-white hover:opacity-90"
-              >
-                🎙️ Start Talking
-              </button>
-            ) : (
-              <button
-                onClick={stopListening}
-                className="self-center px-5 py-2 rounded-xl bg-red-600 text-white hover:opacity-90"
-              >
-                ⏹ Stop
-              </button>
-            )}
           </div>
         </div>
 
-        <div className="flex gap-3">
+        {/* Orb */}
+        <div className="relative mb-6 mt-2 flex h-44 w-44 items-center justify-center">
+          <div
+            className={[
+              'h-44 w-44 rounded-full blur-[1px]',
+              'bg-[radial-gradient(ellipse_at_center,_var(--tw-gradient-stops))]',
+              listening
+                ? 'from-indigo-400 via-purple-400 to-blue-400 animate-[pulse_2.2s_ease-in-out_infinite]'
+                : 'from-indigo-200 via-purple-200 to-blue-200',
+            ].join(' ')}
+          />
+          {/* soft gloss */}
+          <div className="pointer-events-none absolute -right-3 -top-3 h-20 w-12 rotate-12 rounded-full bg-white/50 blur-md" />
+        </div>
+
+        {/* Prompt text */}
+        <p className="mx-auto mb-8 max-w-sm text-center text-[15px] leading-6 text-gray-700">
+          “Hello 👋 I can help you answer questions, explain topics, write content, or just chat
+          casually. Ask me anything!”
+        </p>
+
+        {/* Action buttons (minimal) */}
+        <div className="mt-2 flex items-center gap-3">
           <Link
             to={seeMenuHref}
-            className="inline-flex items-center justify-center rounded-xl border px-4 py-2 text-sm font-medium bg-black text-white hover:opacity-90"
+            className="rounded-full border border-gray-200 bg-white px-4 py-2 text-sm font-medium text-gray-900 shadow-sm hover:bg-gray-50"
           >
             See Menu
           </Link>
           <Link
-            to={
-              resolvedBranch
-                ? `/t/${resolvedSub}/${resolvedBranch}/dine-in`
-                : `/t/${resolvedSub}/dine-in`
-            }
-            className="inline-flex items-center justify-center rounded-xl border px-4 py-2 text-sm font-medium bg-white text-gray-900 hover:bg-gray-50"
+            to={resolvedBranch ? `/t/${resolvedSub}/${resolvedBranch}/dine-in` : `/t/${resolvedSub}/dine-in`}
+            className="rounded-full border border-gray-200 bg-white px-4 py-2 text-sm font-medium text-gray-900 shadow-sm hover:bg-gray-50"
           >
-            Dine-in View
+            Dine-in
           </Link>
         </div>
 
-        <p className="mt-6 text-xs text-gray-400">Path: {location.pathname}</p>
+        {/* Mic button fixed to bottom for thumb reachability */}
+        <div className="pointer-events-none fixed inset-x-0 bottom-6 z-40 flex justify-center">
+          {!listening ? (
+            <button
+              onClick={startListening}
+              className="pointer-events-auto h-16 w-16 rounded-full bg-black text-white shadow-lg ring-8 ring-black/5 active:scale-95"
+              aria-pressed="false"
+              aria-label="Start voice"
+            >
+              <span className="sr-only">Start</span>
+              🎙️
+            </button>
+          ) : (
+            <button
+              onClick={stopListening}
+              className="pointer-events-auto h-16 w-16 rounded-full bg-red-600 text-white shadow-lg ring-8 ring-red-600/10 active:scale-95"
+              aria-pressed="true"
+              aria-label="Stop voice"
+            >
+              <span className="sr-only">Stop</span>
+              ⏹
+            </button>
+          )}
+        </div>
+
+        {/* Path (tiny dev aid) */}
+        <p className="mt-10 text-center text-[11px] text-gray-400">Path: {location.pathname}</p>
       </div>
     </div>
   );
