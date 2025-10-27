@@ -57,7 +57,7 @@ services:
       # ✅ Enable HTTPS with local certs
       SSL_KEY_PATH: /app/certs/localhost-key.pem
       SSL_CERT_PATH: /app/certs/localhost.pem
-      # ✅ WS target for AI Waiter (Phase 3)
+      # ✅ WS target for AI Waiter
       VOICE_WS_TARGET: http://ai-waiter-service:7071
     ports:
       - "8080:8080"
@@ -96,7 +96,7 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
-  # === New services for ASR ===
+  # === Persistence for transcripts ===
   mongo:
     image: mongo:6
     ports:
@@ -105,6 +105,7 @@ services:
       - mongo_data:/data/db
     restart: unless-stopped
 
+  # === AI Waiter (ASR + Brain in one service) ===
   ai-waiter-service:
     build:
       context: ./services/ai-waiter-service
@@ -119,11 +120,23 @@ services:
       - OPENBLAS_NUM_THREADS=1
       - NUMEXPR_NUM_THREADS=1
 
-      # === Groq Whisper v3 ===
+      # === Groq Whisper v3 (for finalize) ===
       - GROQ_API_KEY=${GROQ_API_KEY:?Set GROQ_API_KEY in your .env}
       - GROQ_MODEL=whisper-large-v3
       - GROQ_BASE=https://api.groq.com
       - GROQ_TIMEOUT_MS=6000
+
+      # === OpenAI brain (GPT-4o mini) ===
+      - OPENAI_API_KEY=${OPENAI_API_KEY:?Set OPENAI_API_KEY in your .env}
+      - OPENAI_BASE=https://api.openai.com
+      - OPENAI_CHAT_MODEL=gpt-4o-mini
+      # Optional brain tuning (matches brain.py defaults; override if needed)
+      - BRAIN_TIMEOUT_S=4.0
+      - BRAIN_MAX_TOKENS=200
+      - BRAIN_TEMP=0.3
+      - BRAIN_TOP_P=1.0
+      - BRAIN_FREQ_PENALTY=0.0
+      - BRAIN_PRES_PENALTY=0.0
     depends_on:
       - mongo
     ports:
