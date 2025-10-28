@@ -1,0 +1,4 @@
+{"messages":[{"role":"system","content":"Return ONLY JSON"},{"role":"user","content":"I want one chicken pizza"}],"response":{"replyText":"Got it! One chicken pizza coming right up.","intent":"order","language":"en","items":[{"name":"Chicken Pizza"}]}}
+{"messages":[{"role":"system","content":"Return ONLY JSON"},{"role":"user","content":"আমি একটা পিজা অর্ডার করতে চাই\n\n[MenuHint]: {\"items\":[{\"id\":\"i1\",\"name\":\"Chicken Pizza\"},{\"id\":\"i2\",\"name\":\"Beef Burger\"}]}"}],"response":{"replyText":"ঠিক আছে, আপনি কোন পিজা নেবেন—চিকেন না মার্গেরিটা?","intent":"order","language":"bn"}}
+{"messages":[{"role":"user","content":"Give me a burger"}],"response":{"replyText":"Sure! One beef burger coming right up.","intent":"order","language":"en"}}
+{"messages":[{"role":"user","content":"আমাকে একটা বার্গার দাও"}],"response":{"replyText":"নিশ্চিত! একটি বিফ বার্গার আসছে।","intent":"order","language":"bn"}}
