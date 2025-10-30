@@ -40,6 +40,9 @@ AI_DYM_ENABLE = os.environ.get("AI_DYM_ENABLE", "1") == "1"           # did-you-
 AI_LLM_ENABLE = os.environ.get("AI_LLM_ENABLE", "1") == "1"           # LLM tier
 AI_DET_SHORTCIRCUIT = os.environ.get("AI_DET_SHORTCIRCUIT", "0") == "1"  # if 1, skip LLM when det matches
 
+# 🕒 Did-You-Mean cooldown (ms) to avoid spam on repeated non-food utterances
+AI_DYM_COOLDOWN_MS = int(os.environ.get("AI_DYM_COOLDOWN_MS", "3000"))
+
 _CLIENT = MongoClient(MONGO_URI)
 DB = _CLIENT[TRANS_DB_NAME]
 COLL = DB.transcripts
@@ -526,6 +529,44 @@ def _compose_availability_reply(items: List[Dict[str, Any]], lang_hint: Optional
         return base
 
 
+# ---------- Product-ish heuristic (cheap, before robust_find) ----------
+_EN_FOOD_RE = re.compile(
+    r"\b(menu|burger|pizza|pasta|bir(y)?ani|shawarma|coffee|drink|combo|meal|fries|rice|wrap|sandwich|snack|dessert|shake|ice ?cream)\b",
+    re.I,
+)
+_BN_FOOD_RE = re.compile(
+    r"(মেনু|বার্গার|পিজা|পাস্তা|বিরিয়ানি|বিরিয়ানি|শাওয়ারমা|কফি|ড্রিঙ্ক|কম্বো|মিল|ফ্রাই|ভাত|র‍্যাপ|স্যান্ডউইচ|স্ন্যাকস|ডেজার্ট|শেক|আইসক্রীম)"
+)
+
+def _make_token_set(vocab: Set[str]) -> Set[str]:
+    toks: Set[str] = set()
+    for term in vocab:
+        for t in re.split(r"\s+", term):
+            t = t.strip()
+            if len(t) >= 3:
+                toks.add(t)
+    # bound size a bit
+    if len(toks) > 800:
+        toks = set(list(toks)[:800])
+    return toks
+
+def _looks_producty(query_norm: str, vocab_tokens: Set[str]) -> bool:
+    q = (query_norm or "").strip().lower()
+    if not q or len(q) < 2:
+        return False
+    # keyword cues
+    if _EN_FOOD_RE.search(q) or _BN_FOOD_RE.search(q):
+        return True
+    # overlap with menu/category tokens
+    q_toks = [t for t in re.split(r"\s+", q) if len(t) >= 3]
+    for t in q_toks:
+        # substring either way (no expensive loops; bounded sets)
+        for vt in vocab_tokens:
+            if t in vt or vt in t:
+                return True
+    return False
+
+
 # ✅ Call brain and push a WS message, and return reply object for DB
 async def call_brain_and_push(
     ws: WebSocketServerProtocol,
@@ -615,6 +656,10 @@ async def handle_conn(ws: WebSocketServerProtocol):
     branch_hint: Optional[str] = None
     channel_hint: Optional[str] = None
     last_detected_lang = None
+
+    # 🔕 DYM spam control per-connection
+    last_dym_ms: float = 0.0
+    last_dym_norm: Optional[str] = None
 
     if isinstance(session_lang, str) and session_lang.strip().lower() == "auto":
         session_lang = None
@@ -834,6 +879,9 @@ async def handle_conn(ws: WebSocketServerProtocol):
                     print("[ai-waiter-service] ⚠️ build_vocab_from_snapshot failed:", e)
                     vocab = set()
 
+                # Build token set for cheap product intent
+                vocab_tokens = _make_token_set(set(vocab))
+
                 # 🔧 NORMALIZE: exact → phonetic → fuzzy (with live vocab)
                 norm_text, changes = normalize_text(
                     selected_text, vocab=vocab, fuzzy_threshold=FUZZY_THRESHOLD
@@ -912,30 +960,18 @@ async def handle_conn(ws: WebSocketServerProtocol):
                         final_sent = True
                         return
 
-                # --------- Robust "Did you mean" flow (guarded) ---------
+                # --------- Robust "Did you mean" (prepare only; decide after LLM) ---------
+                robust_pending = None
                 if AI_DYM_ENABLE:
                     try:
-                        robust = robust_find(
+                        robust_pending = robust_find(
                             norm_text,
                             snapshot,
                             lang_hint=(session_lang or last_detected_lang),
                             max_results=8,
                         )
-                        if robust and robust.get("matches"):
-                            await ws.send(
-                                json.dumps(
-                                    {
-                                        "t": "did_you_mean",
-                                        "strategy": robust.get("strategy"),
-                                        "category": robust.get("category_hit"),
-                                        "options": robust["matches"],  # each: id,name,score,why,available,price,category
-                                    }
-                                )
-                            )
-                            print(f"[ai-waiter-service] ✅ did_you_mean sent ({len(robust['matches'])} options)")
                     except Exception as e:
-                        print("[ai-waiter-service] ⚠️ robust_find failed:", e)
-                # -----------------------------------------------------
+                        print("[ai-waiter-service] ⚠️ robust_find failed (prepare):", e)
 
                 # ---------------- LLM path (guarded) ----------------
                 if AI_LLM_ENABLE:
@@ -967,6 +1003,72 @@ async def handle_conn(ws: WebSocketServerProtocol):
                         import traceback
 
                         traceback.print_exc()
+
+                    # ---------------- Decide if we should show Did-You-Mean (after LLM) ---------------
+                    try:
+                        if AI_DYM_ENABLE and robust_pending and robust_pending.get("matches"):
+                            meta = (last_ai or {}).get("meta") or {}
+                            intent = (meta.get("intent") or "").lower()
+                            items = meta.get("items") or []
+                            items_len = len(items)
+                            fallback_flag = bool(meta.get("fallback"))
+
+                            reply_text = (last_ai or {}).get("replyText", "") or ""
+                            reply_lower = reply_text.strip().lower()
+
+                            # BN/EN negative vs positive cues
+                            implies_not_found = any(k in reply_lower for k in [
+                                " নেই", "নেই", "পাওয়া যায় না",
+                                "not found", "don’t have", "don't have", "do not have", "unavailable",
+                            ])
+                            implies_order_success = any(k in reply_lower for k in [
+                                "অর্ডার করা হলো", "অর্ডার নিশ্চিত", "কার্টে যোগ", "ট্রেতে যোগ",
+                                "order placed", "added to cart", "added to tray", "added to your order",
+                            ])
+                            implies_available_affirm = any(k in reply_lower for k in [
+                                "পাওয়া যায়", "আছে", "রয়েছে", "উপলব্ধ",
+                                "available", "we have", "in stock",
+                            ])
+
+                            # treat these as product intents too
+                            PRODUCT_INTENTS = {"order", "order_inquiry", "menu", "menu_inquiry", "availability_check"}
+
+                            # name overlap between LLM items and robust options (extra confidence)
+                            llm_names = [(it.get("name") or "").strip().lower() for it in items]
+                            robust_names = [(m.get("name") or "").strip().lower() for m in robust_pending.get("matches", [])]
+                            overlap_with_robust = any(
+                                rn and any((rn in ln) or (ln in rn) for ln in llm_names) for rn in robust_names
+                            )
+
+                            single_item_confident = (
+                                (intent in PRODUCT_INTENTS) and
+                                (items_len >= 1 or overlap_with_robust or implies_available_affirm) and
+                                not fallback_flag
+                            )
+                            multi_item_confident  = (intent in PRODUCT_INTENTS and items_len >= 2 and not fallback_flag)
+
+                            # uncertain only when no items, irrelevant intent, or explicit negatives
+                            llm_uncertain = (items_len == 0) or (intent not in PRODUCT_INTENTS) or implies_not_found
+
+                            now_ms = time.monotonic() * 1000.0
+                            cooldown_ok = (now_ms - last_dym_ms) >= AI_DYM_COOLDOWN_MS or (last_dym_norm != norm_text)
+
+                            if cooldown_ok and (not single_item_confident) and (not multi_item_confident) and (not implies_order_success) and llm_uncertain:
+                                await ws.send(json.dumps({
+                                    "t": "did_you_mean",
+                                    "strategy": robust_pending.get("strategy"),
+                                    "category": robust_pending.get("category_hit"),
+                                    "options": robust_pending["matches"],
+                                }))
+                                last_dym_ms = now_ms
+                                last_dym_norm = norm_text
+                                print(f"[ai-waiter-service] ✅ did_you_mean sent after LLM ({len(robust_pending['matches'])} options)")
+                            else:
+                                print("[ai-waiter-service] ℹ️ did_you_mean suppressed "
+                                      f"(intent={intent} items_len={items_len} fallback={fallback_flag} "
+                                      f"avail_affirm={implies_available_affirm} overlap={overlap_with_robust})")
+                    except Exception as e:
+                        print("[ai-waiter-service] ⚠️ did_you_mean post-LLM decision failed:", e)
 
                     try:
                         await writer_q.put(

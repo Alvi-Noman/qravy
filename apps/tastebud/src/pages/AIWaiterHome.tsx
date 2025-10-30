@@ -83,6 +83,42 @@ export default function AiWaiterHome() {
   const [dymCategory, setDymCategory] = useState<string | null>(null);
   const [dymStrategy, setDymStrategy] = useState<string | null>(null);
 
+  // === NEW: DYM duplicate suppression & cooldown ===
+  const DYM_CLIENT_COOLDOWN_MS = 3000; // 3s after add/confirm
+  const dymLastHashRef = useRef<string | null>(null);
+  const dymCooldownUntilRef = useRef<number>(0);
+
+  // === NEW (a): tiny guard window to ignore server DYM on obvious success ===
+  const ignoreDymUntilRef = useRef<number>(0);
+
+  const stableHash = (val: unknown): string => {
+    const s = JSON.stringify(val);
+    let h = 5381;
+    for (let i = 0; i < s.length; i++) {
+      // djb2 with xor
+      h = ((h << 5) + h) ^ s.charCodeAt(i);
+    }
+    return (h >>> 0).toString(36);
+  };
+
+  const buildDymHashInput = (strategy?: string | null, category?: string | null, options?: DymOption[] | null) => {
+    const core = {
+      strategy: strategy ?? null,
+      category: category ?? null,
+      options: (options ?? [])
+        .map(o => ({ id: (o as any).id ?? null, name: o?.name ?? '', available: (o as any)?.available ?? undefined, price: (o as any)?.price ?? undefined }))
+        .sort((a, b) => (a.name || '').localeCompare(b.name || '')),
+    };
+    return core;
+  };
+
+  const shouldOpenDym = (hash: string | null): boolean => {
+    const now = Date.now();
+    if (now < dymCooldownUntilRef.current) return false; // client cooldown active
+    if (hash && dymLastHashRef.current === hash) return false; // same query hash recently shown
+    return true;
+  };
+
   // Helpers to open/close contexts
   const openSuggestions = () => { setShowTray(false); setShowDidYouMean(false); setShowSuggestions(true); };
   const openTray = () => { setShowSuggestions(false); setShowDidYouMean(false); setShowTray(true); };
@@ -93,6 +129,14 @@ export default function AiWaiterHome() {
     const q = opt?.name ? `?q=${encodeURIComponent(opt.name)}` : '';
     navigate(`${seeMenuHref}${q}`);
     setShowDidYouMean(false);
+    // start short cooldown AFTER confirm to avoid immediate reopen from in-flight messages
+    dymCooldownUntilRef.current = Date.now() + DYM_CLIENT_COOLDOWN_MS;
+
+    // lock in the last shown hash so that a replay of the same options doesn’t reopen
+    try {
+      const hash = stableHash(buildDymHashInput(dymStrategy, dymCategory, dymOptions));
+      dymLastHashRef.current = hash;
+    } catch {}
   };
 
   function handleIntentRouting(intent: WaiterIntent | undefined) {
@@ -172,7 +216,7 @@ export default function AiWaiterHome() {
       const rms = Math.sqrt(sum / timeData.length);
       const scaled = Math.min(1, rms * 2.5);
       setLevel((prev) => prev * 0.8 + scaled * 0.2);
-      rafLevelRef.current = requestAnimationFrame(tick);
+      if (rafLevelRef.current) rafLevelRef.current = requestAnimationFrame(tick);
     };
     if (rafLevelRef.current) cancelAnimationFrame(rafLevelRef.current);
     rafLevelRef.current = requestAnimationFrame(tick);
@@ -256,13 +300,23 @@ export default function AiWaiterHome() {
 
           // ✅ dedicated did_you_mean
           if (msg.t === 'did_you_mean') {
+            // === NEW (c): bail out if inside ignore window ===
+            if (Date.now() < ignoreDymUntilRef.current) return;
+
             const options: DymOption[] = Array.isArray(msg.options ?? msg.matches) ? (msg.options ?? msg.matches) : [];
+            const cat = (msg.category as string) ?? null;
+            const strat = (msg.strategy as string) ?? null;
+
             if (options.length) {
-              setDymOptions(options);
-              setDymCategory((msg.category as string) ?? null);
-              setDymStrategy((msg.strategy as string) ?? null);
-              setShowDidYouMean(true);
-              setUiMode('idle');
+              const hash = stableHash(buildDymHashInput(strat, cat, options));
+              if (shouldOpenDym(hash)) {
+                setDymOptions(options);
+                setDymCategory(cat);
+                setDymStrategy(strat);
+                setShowDidYouMean(true);
+                setUiMode('idle');
+                dymLastHashRef.current = hash;
+              }
             }
             return;
           }
@@ -278,18 +332,39 @@ export default function AiWaiterHome() {
             const meta: AiReplyMeta | undefined = msg.meta;
             const intent = (meta?.intent ?? 'chitchat') as WaiterIntent;
 
-            // ✅ If ai_reply carries robust matches in meta, open DYM.
+            // === NEW (b): set success ignore window on positive replies ===
+            const itemsLen = Array.isArray((meta as any)?.items) ? (meta as any).items.length : 0;
+            const textLower = (msg.replyText || '').toLowerCase();
+            const successHints = ["পাওয়া যায়","আছে","রয়েছে","উপলব্ধ","available","in stock","we have"];
+
+            if (intent === 'order' && itemsLen >= 2) {
+              // multi-item confident → longer window
+              ignoreDymUntilRef.current = Date.now() + 3000;
+            } else if (itemsLen >= 1 || successHints.some(h => textLower.includes(h))) {
+              // single-item or clearly positive availability → short window
+              ignoreDymUntilRef.current = Date.now() + 2000;
+            }
+
+            // ✅ If ai_reply carries robust matches in meta, open DYM — but suppress dups & honor cooldown
             const dym =
               (meta as any)?.didYouMean ??
               (meta as any)?.did_you_mean ??
               (meta as any)?.fallbackItems ??
               (meta as any)?.robustOptions;
+
             if (Array.isArray(dym) && dym.length) {
-              setDymOptions(dym as DymOption[]);
-              setDymCategory(((meta as any)?.category as string) ?? null);
-              setDymStrategy(((meta as any)?.strategy as string) ?? null);
-              setShowDidYouMean(true);
-              return;
+              const cat = ((meta as any)?.category as string) ?? null;
+              const strat = ((meta as any)?.strategy as string) ?? null;
+              const opts: DymOption[] = dym as DymOption[];
+              const hash = stableHash(buildDymHashInput(strat, cat, opts));
+              if (shouldOpenDym(hash)) {
+                setDymOptions(opts);
+                setDymCategory(cat);
+                setDymStrategy(strat);
+                setShowDidYouMean(true);
+                dymLastHashRef.current = hash;
+                return;
+              }
             }
 
             handleIntentRouting(intent);
@@ -458,7 +533,7 @@ export default function AiWaiterHome() {
 
       {/* Heading */}
       <div className="pt-40 sm:pt-48 text-left w-full max-w-[400px]">
-        <p className="text-[30px] md:text-[40px] leading-[1.6] font-medium text-[#2D2D2D]">
+        <p className="text-[30px] md:text[40px] leading-[1.6] font-medium text-[#2D2D2D]">
           আসসালামু আলাইকুম<br/>আপনি কি কোন ফুড অর্ডার<br/>করতে চাইছেন? নাকি আমি<br/>আপনাকে কিছু সাজেস্ট<br/>করবো?
         </p>
       </div>
