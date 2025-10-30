@@ -3,9 +3,9 @@ import { lazy, Suspense } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { CartProvider } from './context/CartContext';
 
-const Home = lazy(() => import('./pages/Home'));
-const Restaurant = lazy(() => import('./pages/Restaurant'));
-const AIWaiter = lazy(() => import('./pages/AIWaiter'));
+const Home = lazy(() => import('./pages/Directory'));
+const Restaurant = lazy(() => import('./pages/DigitalMenu'));
+const AIWaiter = lazy(() => import('./pages/AIWaiterHome'));
 
 const hasTenantFromRuntime =
   typeof window !== 'undefined' &&

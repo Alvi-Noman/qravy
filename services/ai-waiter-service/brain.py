@@ -1,147 +1,121 @@
 # services/ai-waiter-service/brain.py
 """
-Brain module for Qravy AI Waiter (single-service, low-latency path).
+Minimal, future-proof brain:
+- All behavior/intent/formatting lives in the fine-tuned model.
+- This file is a thin adapter: send input → get JSON → return to caller.
+- No regex, no prompt logic, no persona here. Change only the model ID via env.
 
-- Uses OpenAI's Chat Completions API to call gpt-4o-mini.
-- Returns only text (replyText). TTS is intentionally out-of-scope here.
-- Safe to import and call from ai-waiter-service/server.py right after stt_final.
-
-Environment variables (with reasonable defaults):
-  OPENAI_API_KEY       : Required
-  OPENAI_BASE          : Default "https://api.openai.com" (override for proxies)
-  OPENAI_CHAT_MODEL    : Default "gpt-4o-mini"
-  BRAIN_TIMEOUT_S      : Default "4.0"   (seconds) — keep this small for snappy UX
-  BRAIN_MAX_TOKENS     : Default "200"   (generation cap)
-  BRAIN_TEMP           : Default "0.3"
-  BRAIN_TOP_P          : Default "1.0"
-  BRAIN_FREQ_PENALTY   : Default "0.0"
-  BRAIN_PRES_PENALTY   : Default "0.0"
-
-Public async API:
-  generate_reply(transcript: str, *, tenant=None, branch=None, channel=None,
-                 locale=None, menu_snapshot=None, conversation_id=None, user_id=None)
-    -> dict with shape: {"replyText": str, "meta": {...}}
-
-Notes:
-- Language behavior: reply in the *same* language (Bangla vs English) as the transcript.
-- You can pass `menu_snapshot` (optional dict) to enable grounded answers later.
-- Keep timeouts tight so UI feels instant. If timeout/error occurs, a short apology is returned.
+Expected model output (single JSON object):
+{
+  "replyText": "string",
+  "intent": "order|menu|suggestions|chitchat",
+  "language": "bn|en",
+  "items": [{"name":"...", "itemId":"...", "quantity": 1}],   # optional
+  "notes": "..."                                               # optional
+}
 """
 
 from __future__ import annotations
 
 import os
-import re
 import json
-from typing import Any, Dict, Optional
+import re
+from typing import Any, Dict, Optional, List
 
 import httpx
 
-
-# -------- Configuration --------
+# --------------------------- Configuration ---------------------------
 
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
 OPENAI_BASE = os.environ.get("OPENAI_BASE", "https://api.openai.com").rstrip("/")
-OPENAI_CHAT_MODEL = os.environ.get("OPENAI_CHAT_MODEL", "gpt-4o-mini").strip()
+OPENAI_CHAT_MODEL = os.environ.get("OPENAI_CHAT_MODEL", "gpt-4.1-mini").strip()
 
 BRAIN_TIMEOUT_S = float(os.environ.get("BRAIN_TIMEOUT_S", "4.0"))
 BRAIN_MAX_TOKENS = int(os.environ.get("BRAIN_MAX_TOKENS", "200"))
-BRAIN_TEMP = float(os.environ.get("BRAIN_TEMP", "0.3"))
+BRAIN_TEMP = float(os.environ.get("BRAIN_TEMP", "0.2"))
 BRAIN_TOP_P = float(os.environ.get("BRAIN_TOP_P", "1.0"))
-BRAIN_FREQ_PENALTY = float(os.environ.get("BRAIN_FREQ_PENALTY", "0.0"))
-BRAIN_PRES_PENALTY = float(os.environ.get("BRAIN_PRES_PENALTY", "0.0"))
 
 OPENAI_CHAT_URL = f"{OPENAI_BASE}/v1/chat/completions"
 
-# Simple language detectors
-_BENGALI = re.compile(r"[\u0980-\u09FF]")   # Bangla block
-_LATIN = re.compile(r"[A-Za-z]")
-
-
-def _guess_lang(text: str) -> str:
-    """Guess 'bn' for Bangla, 'en' for English, default 'en' if uncertain."""
-    if _BENGALI.search(text):
-        return "bn"
-    if _LATIN.search(text):
-        return "en"
-    return "en"
-
+# Visibility at import time (helps detect stale modules/containers)
+print("[brain] loaded from:", __file__)
+print("[brain] OPENAI_BASE=", OPENAI_BASE)
+print("[brain] OPENAI_CHAT_MODEL=", OPENAI_CHAT_MODEL)
+print("[brain] BRAIN_TEMP=", BRAIN_TEMP)
 
 def _clamp(s: str, max_chars: int) -> str:
-    """Hard clamp to avoid oversized payloads in edge cases."""
-    if len(s) <= max_chars:
-        return s
-    return s[: max_chars - 1] + "…"
+    if not s:
+        return ""
+    return s if len(s) <= max_chars else (s[: max_chars - 1] + "…")
 
+# Very light language hint only for fallback phrasing
+_BENGALI = re.compile(r"[\u0980-\u09FF]")
+def _guess_lang(text: str) -> str:
+    return "bn" if _BENGALI.search(text or "") else "en"
 
-def _build_system_prompt(lang: str, tenant: Optional[str], branch: Optional[str],
-                         channel: Optional[str], locale: Optional[str]) -> str:
+def _safe_snip(s: str | bytes, n: int = 800) -> str:
+    """Trim long debug strings safely for logs."""
+    if s is None:
+        return ""
+    if isinstance(s, bytes):
+        try:
+            s = s.decode("utf-8", errors="replace")
+        except Exception:
+            s = str(s)
+    return s if len(s) <= n else (s[:n] + "…")
+
+# --------------------------- Message Build ---------------------------
+
+# One permanent system line: ask for strict JSON. (Behavior lives in fine-tune.)
+_SYSTEM = (
+    "Return ONLY a single valid JSON object with keys: "
+    'replyText, intent, language, and optional items[], notes. No markdown.'
+)
+
+def _build_user_content(
+    transcript: str,
+    menu_snapshot: Optional[Dict[str, Any]],
+) -> str:
     """
-    Keep the system prompt short and fast. Focus on role, tone, language parity,
-    concise actionable answers, and basic safety.
+    User content = raw transcript + compact optional menu hint.
+    - This is runtime grounding (live data), not behavior.
+    - Deterministic slice: sort by name, include aliases, cap at 120.
     """
-    brand = tenant or "the restaurant"
-    ch = channel or "online"
-    loc = locale or ("bn-BD" if lang == "bn" else "en-US")
-
-    if lang == "bn":
-        return (
-            "আপনি একজন ভয়েস ওয়েটার সহকারী। সংক্ষিপ্ত, ভদ্র ও কার্যকরভাবে উত্তর দিন। "
-            f"{brand} এর মেনু/অফার/উপলব্ধতা সম্পর্কে নিশ্চিত না হলে প্রস্তাব সাধারণ রাখুন। "
-            "অস্পষ্ট হলে ১–৩টি প্রাসঙ্গিক সাজেশন দিন, সংক্ষেপে কারণ বলুন। "
-            "ইউজারের ভাষায় (বাংলা) উত্তর দিন। অতিরঞ্জিত দাবি করবেন না। "
-            f"চ্যানেল: {ch}. লোকেল: {loc}. আউটপুট ছোট রাখুন; গ্রাহক শুনবেন।"
-        )
-    else:
-        return (
-            "You are a voice restaurant waiter. Be concise, polite, and action-oriented. "
-            f"Assume some knowledge of {brand}'s menu/offers/availability, but keep suggestions general if uncertain. "
-            "If the user is ambiguous, infer preferences and offer 1–3 relevant suggestions with brief reasons. "
-            "Respond in the same language as the user (English here). Avoid exaggerated claims. "
-            f"Channel: {ch}. Locale: {loc}. Keep replies short; the user will hear them."
-        )
-
-
-def _build_user_message(transcript: str, lang: str,
-                        menu_snapshot: Optional[Dict[str, Any]]) -> str:
-    """
-    Build a compact user message. If a small menu snapshot is provided, inline
-    a minimal hint so the model can ground suggestions (kept tiny for latency).
-    """
-    base = transcript.strip()
+    base = (transcript or "").strip()
     if not menu_snapshot:
         return base
 
-    # Keep snapshot extremely small; you can expand later to structured tools.
     try:
-        compact_menu = {
+        items_src = sorted(
+            (menu_snapshot.get("items") or []),
+            key=lambda z: (z.get("name") or "").lower()
+        )
+
+        compact = {
             "categories": [
-                {"name": c.get("name"), "id": c.get("id")}
+                {"id": c.get("id"), "name": c.get("name")}
                 for c in (menu_snapshot.get("categories") or [])[:8]
             ],
             "items": [
                 {
+                    "id": i.get("id") or i.get("_id"),
                     "name": i.get("name"),
-                    "categoryIds": (i.get("categoryIds") or [])[:2],
                     "price": i.get("price"),
+                    "aliases": i.get("aliases") or [],
+                    "categoryIds": (i.get("categoryIds") or [])[:2],
                 }
-                for i in (menu_snapshot.get("items") or [])[:20]
+                for i in items_src[:120]
             ],
         }
-        snippet = json.dumps(compact_menu, ensure_ascii=False)
+        hint = json.dumps(compact, ensure_ascii=False)
     except Exception:
-        snippet = ""
+        hint = ""
 
-    if lang == "bn":
-        return f"{base}\n\n[মেনু-ইঙ্গিত (সংক্ষেপিত)]: {snippet}"
-    else:
-        return f"{base}\n\n[Menu hint (compact)]: {snippet}"
+    return f"{base}\n\n[MenuHint]: {hint}" if hint else base
 
+# --------------------------- OpenAI Call ---------------------------
 
-async def _call_openai_chat(messages: list[dict[str, str]]) -> str:
-    """
-    Call OpenAI Chat Completions and return text content.
-    """
+async def _call_openai(messages: List[Dict[str, str]]) -> str:
     if not OPENAI_API_KEY:
         raise RuntimeError("OPENAI_API_KEY is not set")
 
@@ -149,29 +123,57 @@ async def _call_openai_chat(messages: list[dict[str, str]]) -> str:
         "Authorization": f"Bearer {OPENAI_API_KEY}",
         "Content-Type": "application/json",
     }
-
     payload = {
         "model": OPENAI_CHAT_MODEL,
         "messages": messages,
         "max_tokens": BRAIN_MAX_TOKENS,
         "temperature": BRAIN_TEMP,
         "top_p": BRAIN_TOP_P,
-        "frequency_penalty": BRAIN_FREQ_PENALTY,
-        "presence_penalty": BRAIN_PRES_PENALTY,
-        "stream": False,  # add streaming later if desired
+        "stream": False,
+        # ✅ Force a single valid JSON object from the model
+        "response_format": {"type": "json_object"},
     }
 
-    async with httpx.AsyncClient(timeout=BRAIN_TIMEOUT_S) as client:
-        resp = await client.post(OPENAI_CHAT_URL, headers=headers, json=payload)
-        resp.raise_for_status()
-
-    data = resp.json()
-    # OpenAI-compatible shape: choices[0].message.content
+    # Debug visibility of outbound call (truncated)
     try:
-        return (data["choices"][0]["message"]["content"] or "").strip()
-    except Exception as e:
-        raise RuntimeError(f"OpenAI chat response parse error: {e}") from e
+        print("[brain] >>>", _safe_snip(json.dumps(payload, ensure_ascii=False)))
+    except Exception:
+        pass
 
+    async with httpx.AsyncClient(timeout=BRAIN_TIMEOUT_S) as client:
+        r = await client.post(OPENAI_CHAT_URL, headers=headers, json=payload)
+
+    # Debug visibility of inbound response (status + truncated body)
+    print("[brain] HTTP", r.status_code)
+    print("[brain] <<<", _safe_snip(r.text))
+
+    r.raise_for_status()
+    data = r.json()
+
+    # Defensive extract
+    return (data.get("choices", [{}])[0].get("message", {}).get("content") or "").strip()
+
+# ------------------------ JSON Parse Helpers ------------------------
+
+_JSON_FIRST_OBJECT = re.compile(r"\{.*\}", re.DOTALL)
+
+def _parse_model_json(text: str) -> Dict[str, Any]:
+    """
+    Parse a single JSON object from model text. If the model added stray text,
+    grab the first {...} block.
+    """
+    candidate = text
+    if not text.startswith("{"):
+        m = _JSON_FIRST_OBJECT.search(text)
+        if not m:
+            raise ValueError("No JSON object found in model response")
+        candidate = m.group(0)
+    obj = json.loads(candidate)
+    if not isinstance(obj, dict):
+        raise ValueError("Top-level JSON is not an object")
+    return obj
+
+# ----------------------------- Public API -----------------------------
 
 async def generate_reply(
     transcript: str,
@@ -185,95 +187,69 @@ async def generate_reply(
     user_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
-    Main entrypoint: produce a short, speakable reply for the given transcript.
-
-    Returns:
-      {
-        "replyText": "<assistant message>",
-        "meta": {
-            "model": "<model>",
-            "lang": "bn|en",
-            "tenant": "...",
-            "branch": "...",
-            "channel": "...",
-            "conversationId": "...",
-            "userId": "...",
-            "timing": { "timeout_s": <float> }
-        }
-      }
+    Thin adapter:
+    - clamp transcript
+    - send transcript + optional menu hint to the fine-tuned model
+    - expect strict JSON back
+    - return reply + small meta (no business logic here)
     """
-    # Defensive clamps for latency and payload size
-    transcript = _clamp(transcript or "", 2000).strip()
+    transcript = _clamp(transcript or "", 2000)
     if not transcript:
-        # Very short default
+        lang = "en"
         return {
             "replyText": "Sorry, I didn’t catch that. Could you say that again?",
             "meta": {
                 "model": OPENAI_CHAT_MODEL,
-                "lang": "en",
-                "tenant": tenant,
-                "branch": branch,
-                "channel": channel,
-                "conversationId": conversation_id,
-                "userId": user_id,
-                "timing": {"timeout_s": BRAIN_TIMEOUT_S},
+                "language": lang,
+                "tenant": tenant, "branch": branch, "channel": channel,
+                "conversationId": conversation_id, "userId": user_id,
                 "fallback": True,
             },
         }
 
-    lang = _guess_lang(transcript)
-
-    system_prompt = _build_system_prompt(lang, tenant, branch, channel, locale)
-    user_message = _build_user_message(transcript, lang, menu_snapshot)
-
     messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": user_message},
+        {"role": "system", "content": _SYSTEM},
+        {"role": "user", "content": _build_user_content(transcript, menu_snapshot)},
     ]
 
-    # Try the model; on timeout/error return a polite short fallback.
     try:
-        content = await _call_openai_chat(messages)
-        content = content.strip()
-        if not content:
-            raise RuntimeError("Empty model response")
-        # Keep replies compact; these are spoken. (Clamp just in case.)
-        content = _clamp(content, 800)
+        raw = await _call_openai(messages)
+        obj = _parse_model_json(raw)
+
+        # Minimal normalization
+        reply_text = str(obj.get("replyText") or "").strip()
+        language = (obj.get("language") or "").strip() or _guess_lang(reply_text or transcript)
+        intent = (obj.get("intent") or "").strip() or "chitchat"
+
         return {
-            "replyText": content,
+            "replyText": reply_text,
             "meta": {
                 "model": OPENAI_CHAT_MODEL,
-                "lang": lang,
-                "tenant": tenant,
-                "branch": branch,
-                "channel": channel,
-                "conversationId": conversation_id,
-                "userId": user_id,
-                "timing": {"timeout_s": BRAIN_TIMEOUT_S},
+                "language": language,
+                "intent": intent,
+                "items": obj.get("items"),
+                "notes": obj.get("notes"),
+                "tenant": tenant, "branch": branch, "channel": channel,
+                "conversationId": conversation_id, "userId": user_id,
                 "fallback": False,
             },
         }
+
     except Exception as e:
-        # Minimal apology in the correct language
-        if lang == "bn":
-            text = "দুঃখিত, একটু সমস্যা হচ্ছে। আবার বলবেন কি?"
-        else:
-            text = "Sorry, I’m having trouble. Could you try once more?"
+        # Graceful network/parse fallback (language hint from input)
+        lang = _guess_lang(transcript)
+        text = "দুঃখিত, একটু সমস্যা হচ্ছে। আবার বলবেন কি?" if lang == "bn" \
+               else "Sorry, I’m having trouble. Could you try once more?"
         return {
             "replyText": text,
             "meta": {
                 "model": OPENAI_CHAT_MODEL,
-                "lang": lang,
-                "tenant": tenant,
-                "branch": branch,
-                "channel": channel,
-                "conversationId": conversation_id,
-                "userId": user_id,
-                "timing": {"timeout_s": BRAIN_TIMEOUT_S},
+                "language": lang,
+                "tenant": tenant, "branch": branch, "channel": channel,
+                "conversationId": conversation_id, "userId": user_id,
                 "error": str(e),
                 "fallback": True,
             },
         }
-
 
 __all__ = ["generate_reply"]

@@ -1,4 +1,4 @@
-// apps/tastebud/src/pages/Restaurant.tsx
+// apps/tastebud/src/pages/DigitalMenu.tsx
 import React from 'react';
 import { useLocation, useParams, useSearchParams, Link, Navigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
@@ -44,7 +44,7 @@ function useRuntimeRoute() {
   const channelFromPath = resolveChannelFromPath(location.pathname);
   const ch =
     (search.get('channel') as Channel | null) ??
-   (typeof window !== 'undefined'
+    (typeof window !== 'undefined'
       ? ((window as any).__STORE__?.channel as Channel | null) ?? null
       : null) ??
     channelFromPath;
@@ -54,7 +54,7 @@ function useRuntimeRoute() {
 
 /* ========================================================================== */
 
-export default function RestaurantPage() {
+export default function DigitalMenu() {
   const { subdomain, branchSlug, channel } = useRuntimeRoute();
   const location = useLocation();
 
@@ -62,12 +62,11 @@ export default function RestaurantPage() {
 
   const normalizedBranch = branchSlug || undefined;
 
-  /** TENANT INFO (for restaurant name) */
+  /** TENANT INFO (optional) */
   const { data: tenant } = useQuery({
     queryKey: ['tenantInfo', subdomain],
     enabled: Boolean(subdomain),
     queryFn: async () => {
-      // Prefer hydrated store if available; otherwise go through our API wrapper
       const storeTenant =
         (typeof window !== 'undefined' ? (window as any).__STORE__?.tenant : undefined) ?? null;
       if (storeTenant) return storeTenant;
@@ -259,6 +258,11 @@ export default function RestaurantPage() {
   }, [sections]);
 
   // Route targets for the segmented switch
+  const isDevPath = location.pathname.startsWith('/t/');
+  const backHref = isDevPath
+    ? (normalizedBranch ? `/t/${subdomain}/${normalizedBranch}` : `/t/${subdomain}`)
+    : (normalizedBranch ? `/${normalizedBranch}` : `/`);
+
   const onlineHref =
     normalizedBranch ? `/t/${subdomain}/${normalizedBranch}/menu` : `/t/${subdomain}/menu`;
   const dineInHref =
@@ -303,11 +307,6 @@ export default function RestaurantPage() {
   // SINGLE source of truth for skeleton:
   const showSkeleton = isSwitchSkeleton || isMenuLoading || isCatLoading;
 
-  const tenantName: string =
-    (tenant as any)?.name ??
-    (typeof window !== 'undefined' ? (window as any).__STORE__?.tenant?.name : undefined) ??
-    'Restaurant Name';
-
   /* ======================= Infinite scroll (client) ======================== */
   const initialPageSize = React.useMemo(() => {
     if (typeof window === 'undefined') return 16;
@@ -331,7 +330,7 @@ export default function RestaurantPage() {
         return Object.values(grouped).reduce((sum, g) => sum + g.items.length, 0);
       }
       const k = idToKey.get(activeCatId);
-        return k && grouped[k] ? grouped[k].items.length : 0;
+      return k && grouped[k] ? grouped[k].items.length : 0;
     }
     return filteredItems.length;
   }, [hasCategories, activeCatId, grouped, idToKey, filteredItems.length]);
@@ -368,29 +367,55 @@ export default function RestaurantPage() {
       className="min-h-screen bg-[#F6F5F8] font-[Inter]"
       style={{ fontFamily: 'Inter, ui-sans-serif, system-ui, Segoe UI, Roboto, Helvetica, Arial' }}
     >
-      <div className="mx-auto max-w-6xl px-4 py-6">
-        {/* Header: Welcome to + Restaurant Name */}
-        <div className="mb-6">
-          <h1 className="text-[30px] sm:text-[34px] font-normal leading-tight text-gray-900">
-            <span className="font-normal">Welcome to</span>
-            <br />
-            <span className="font-semibold">{tenantName}</span>
-          </h1>
+      {/* Top Bar: Back + Title */}
+      <div className="sticky top-0 z-30 bg-[#F6F5F8]">
+        <div className="mx-auto max-w-6xl px-4 pt-4">
+          <div className="flex items-center justify-between">
+            <Link
+              to={backHref}
+              aria-label="Back"
+              className="h-9 w-9 rounded-full bg-white border border-gray-200 flex items-center justify-center shadow-sm active:scale-95"
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path d="M15 6l-6 6 6 6" stroke="#111827" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </Link>
+            <h1 className="text-[22px] sm:text-[24px] font-semibold text-gray-900">Menu</h1>
+            {/* spacer to keep title centered */}
+            <span className="h-9 w-9" />
+          </div>
         </div>
+      </div>
 
+      <div className="mx-auto max-w-6xl px-4 py-4">
         {/* Search bar */}
         <SearchBar value={query} onChange={setQuery} onSubmit={(v) => setQuery(v)} className="mb-3" />
 
         {/* Category header + segmented switch */}
-        <div className="mt-8 mb-6 flex items-center justify-between sm:mt-10 sm:mb-8">
+        <div className="mt-6 mb-6 flex items-center justify-between sm:mt-8 sm:mb-8">
           <h2 className="text-[20px] font-semibold text-gray-900">Category</h2>
 
           <ChannelSwitch
             channel={channel}
-            dineInHref={dineInHref}
-            onlineHref={onlineHref}
+            dineInHref={
+              normalizedBranch
+                ? `/t/${subdomain}/${normalizedBranch}/menu/dine-in`
+                : `/t/${subdomain}/menu/dine-in`
+            }
+            onlineHref={
+              normalizedBranch
+                ? `/t/${subdomain}/${normalizedBranch}/menu`
+                : `/t/${subdomain}/menu`
+            }
             showSkeleton={showSkeleton}
-            onSwitch={markSwitch}
+            onSwitch={(targetPath) => {
+              try {
+                sessionStorage.setItem(
+                  SWITCH_FLAG_KEY,
+                  JSON.stringify({ ts: Date.now(), path: targetPath })
+                );
+              } catch {}
+            }}
           />
         </div>
 
@@ -398,83 +423,94 @@ export default function RestaurantPage() {
         {showSkeleton ? (
           <RestaurantSkeleton />
         ) : isMenuError ? (
-          <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+          <div className="rounded-xl border border-red-2 00 bg-red-50 p-4 text-sm text-red-700">
             Failed to load menu. {(menuError as Error)?.message ?? 'Unknown error'}
           </div>
         ) : filteredItems.length === 0 ? (
           <div className="rounded-xl bg-white p-6 text-center text-sm text-gray-600">
             No results for "{query}".
           </div>
-        ) : hasCategories ? (
-          activeCatId === 'all' ? (
-            <>
-              <CategoryList
-                sections={sections.map(({ id, name }) => ({ id, name }))}
-                activeId={activeCatId}
-                onJump={(id) => setActiveCatId(id)}
-              />
+        ) : Object.keys(grouped).length > 0 && !isCatError ? (
+          // With categories
+          (() => {
+            const hasAll = activeCatId === 'all';
+            return hasAll ? (
+              <>
+                <CategoryList
+                  sections={Object.entries(grouped).length
+                    ? [{ id: 'all', name: 'All' }, ...Object.entries(grouped).map(([key, g]) => ({ id: `cat-${key}`, name: g.name }))]
+                    : [{ id: 'all', name: 'All' }]}
+                  activeId={activeCatId}
+                  onJump={(id) => setActiveCatId(id)}
+                />
 
-              {/* Progressive, section-aware rendering */}
-              <div className="space-y-8">
-                {(() => {
-                  let remaining = visibleCount;
-                  const blocks: JSX.Element[] = [];
-                  for (const [key, group] of Object.entries(grouped)) {
-                    if (remaining <= 0) break;
-                    const slice = group.items.slice(0, Math.max(0, remaining));
-                    if (slice.length > 0) {
-                      blocks.push(
-                        <section key={key} id={`cat-${key}`} className="scroll-mt-20">
-                          <h2 className="mb-3 text-base font-semibold text-gray-900 sm:text-lg">{group.name}</h2>
-                          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                            {slice.map((item) => (
-                              <ProductCard key={item.id} item={item} />
-                            ))}
-                          </div>
-                        </section>
-                      );
-                      remaining -= slice.length;
-                    } else {
-                      break;
+                <div className="space-y-8">
+                  {(() => {
+                    let remaining = visibleCount;
+                    const blocks: JSX.Element[] = [];
+                    for (const [key, group] of Object.entries(grouped)) {
+                      if (remaining <= 0) break;
+                      const slice = group.items.slice(0, Math.max(0, remaining));
+                      if (slice.length > 0) {
+                        blocks.push(
+                          <section key={key} id={`cat-${key}`} className="scroll-mt-20">
+                            <h2 className="mb-3 text-base font-semibold text-gray-900 sm:text-lg">{group.name}</h2>
+                            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                              {slice.map((item) => (
+                                <ProductCard key={item.id} item={item} />
+                              ))}
+                            </div>
+                          </section>
+                        );
+                        remaining -= slice.length;
+                      } else {
+                        break;
+                      }
                     }
-                  }
-                  return blocks;
-                })()}
-              </div>
+                    return blocks;
+                  })()}
+                </div>
 
-              {/* Sentinel for infinite scroll */}
-              {visibleCount < totalItemsInView && <div ref={sentinelRef} className="h-10 w-full" />}
-            </>
-          ) : (
-            (() => {
-              const key = idToKey.get(activeCatId);
-              const g = key ? grouped[key] : undefined;
-              if (!g) return null;
-              const itemsSlice = g.items.slice(0, visibleCount);
-              return (
-                <>
-                  <CategoryList
-                    sections={sections.map(({ id, name }) => ({ id, name }))}
-                    activeId={activeCatId}
-                    onJump={(id) => setActiveCatId(id)}
-                  />
-                  <section id={`cat-${key}`} className="scroll-mt-20">
-                    <h2 className="mb-3 text-base font-semibold text-gray-900 sm:text-lg">{g.name}</h2>
-                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                      {itemsSlice.map((item) => (
-                        <ProductCard key={item.id} item={item} />
-                      ))}
-                    </div>
-                  </section>
-                  {visibleCount < g.items.length && <div ref={sentinelRef} className="h-10 w-full" />}
-                </>
-              );
-            })()
-          )
+                {visibleCount <
+                  Object.values(grouped).reduce((sum, g) => sum + g.items.length, 0) && (
+                  <div ref={sentinelRef} className="h-10 w-full" />
+                )}
+              </>
+            ) : (
+              (() => {
+                const idToKey = new Map<string, string>(
+                  Object.entries(grouped).map(([key, g]) => [`cat-${key}`, key])
+                );
+                const key = idToKey.get(activeCatId);
+                const g = key ? grouped[key] : undefined;
+                if (!g) return null;
+                const itemsSlice = g.items.slice(0, visibleCount);
+                return (
+                  <>
+                    <CategoryList
+                      sections={[{ id: 'all', name: 'All' }, ...Object.entries(grouped).map(([k, gg]) => ({ id: `cat-${k}`, name: gg.name }))]}
+                      activeId={activeCatId}
+                      onJump={(id) => setActiveCatId(id)}
+                    />
+                    <section id={`cat-${key}`} className="scroll-mt-20">
+                      <h2 className="mb-3 text-base font-semibold text-gray-900 sm:text-lg">{g.name}</h2>
+                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                        {itemsSlice.map((item) => (
+                          <ProductCard key={item.id} item={item} />
+                        ))}
+                      </div>
+                    </section>
+                    {visibleCount < g.items.length && <div ref={sentinelRef} className="h-10 w-full" />}
+                  </>
+                );
+              })()
+            );
+          })()
         ) : (
+          // Without categories
           <>
             <CategoryList
-              sections={sections.map(({ id, name }) => ({ id, name }))}
+              sections={[{ id: 'all', name: 'All' }]}
               activeId={activeCatId}
               onJump={(id) => setActiveCatId(id)}
             />

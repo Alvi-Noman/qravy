@@ -1,10 +1,16 @@
-// apps/tastebud/src/pages/AIWaiter.tsx
+// apps/tastebud/src/pages/AiWaiterHome.tsx
 import React, { useRef, useState, useEffect } from 'react';
-import { useLocation, useParams, useSearchParams, Link } from 'react-router-dom';
+import { useLocation, useParams, useSearchParams, Link, useNavigate } from 'react-router-dom';
 import { getWsURL } from '../utils/ws';
 import MicHalo from '../components/ai-waiter/MicHalo';
+import SuggestionsModal from '../components/ai-waiter/SuggestionsModal';
+import TrayModal from '../components/ai-waiter/TrayModal';
+import type { WaiterIntent, AiReplyMeta } from '../types/waiter-intents';
 
-export default function AIWaiter() {
+type UIMode = 'idle' | 'thinking' | 'talking';
+
+export default function AiWaiterHome() {
+  const navigate = useNavigate();
   const { subdomain, branch, branchSlug } = useParams<{ subdomain?: string; branch?: string; branchSlug?: string }>();
   const [search] = useSearchParams();
   const location = useLocation();
@@ -52,8 +58,6 @@ export default function AIWaiter() {
   const [aiReplies, setAiReplies] = useState<string[]>([]);
   const [level, setLevel] = useState(0); // 0..1
 
-  // Temporary UI state for preview
-  type UIMode = 'idle' | 'thinking' | 'talking';
   const [uiMode, setUiMode] = useState<UIMode>('idle');
 
   // Language toggle: default BN, user can switch to EN (or AUTO if you like)
@@ -67,6 +71,37 @@ export default function AIWaiter() {
 
   const aiSeenRef = useRef<boolean>(false);
   const pendingAiResolverRef = useRef<null | ((ok: boolean) => void)>(null);
+
+  // ===== Intent-driven UI contexts (no voice back to home) =====
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [showTray, setShowTray] = useState(false);
+
+  // Helpers to open/close contexts (manual close only)
+  const openSuggestions = () => { setShowTray(false); setShowSuggestions(true); };
+  const openTray = () => { setShowSuggestions(false); setShowTray(true); };
+  const goMenu = () => { setShowSuggestions(false); setShowTray(false); navigate(seeMenuHref); };
+
+  function handleIntentRouting(intent: WaiterIntent | undefined) {
+    // Respect current context; no voice auto-close to home.
+    if (!intent) return;
+
+    if (showSuggestions) {
+      if (intent === 'order') return openTray();
+      if (intent === 'menu') return goMenu();
+      return; // suggestions/chitchat => stay
+    }
+
+    if (showTray) {
+      if (intent === 'menu') return goMenu();
+      return; // remain in Tray for other intents
+    }
+
+    // From home (no modal yet):
+    if (intent === 'suggestions') return openSuggestions();
+    if (intent === 'order') return openTray();
+    if (intent === 'menu') return goMenu();
+    // chitchat => stay home
+  }
 
   function waitForFinal(timeoutMs = 8000) {
     if (pendingFinalResolverRef.current) {
@@ -212,6 +247,11 @@ export default function AIWaiter() {
             aiSeenRef.current = true;
             pendingAiResolverRef.current?.(true);
             setUiMode('talking');
+
+            // 🔎 Intent-driven routing (never voice-close a modal)
+            const meta: AiReplyMeta | undefined = msg.meta;
+            const intent = (meta?.intent ?? 'chitchat') as WaiterIntent;
+            handleIntentRouting(intent);
             return;
           }
 
@@ -298,12 +338,16 @@ export default function AIWaiter() {
   const activeChip = 'bg-[#FA2851] text-white border-[#FA2851] shadow-[0_6px_20px_rgba(250,40,81,0.25)]';
   const inactiveChip = 'bg-white/80 text-gray-700 border-white/70 backdrop-blur hover:bg-white';
 
-  // Map UI state to MicHalo mode
-  const haloMode =
-    uiMode === 'thinking' ? 'thinking'
-    : uiMode === 'talking' ? 'talking'
-    : listening ? 'listening'
-    : 'idle';
+  // Map our internal UI state to the MicHalo's accepted prop type:
+  // MicHalo likely expects: 'idle' | 'listening' | 'talking'
+  type HaloVisualMode = 'idle' | 'listening' | 'talking';
+  const haloVisualMode: HaloVisualMode =
+    uiMode === 'talking'
+      ? 'talking'
+      : listening
+      ? 'listening'
+      : 'idle';
+  // ('thinking' is visualized as 'listening' ring, which keeps types happy)
 
   return (
     <div
@@ -383,13 +427,13 @@ export default function AIWaiter() {
 
       {/* Mic + Halo + See Menu */}
       <div className="relative flex flex-col items-center justify-center">
-        <MicHalo size={600} color={haloColor} opacity={0.6} accentColor={ACCENT} mode={haloMode as any} level={level} />
+        <MicHalo size={600} color={'#FFE9ED'} opacity={0.6} accentColor={'#FA2851'} mode={haloVisualMode} level={level} />
 
         {!listening ? (
           <button
             onClick={startListening}
             className="relative h-[120px] w-[120px] rounded-full flex items-center justify-center transition-all duration-300 active:scale-95 z-[2]"
-            style={{ background: ACCENT, boxShadow: '0 8px 24px rgba(250,40,81,0.3)' }}
+            style={{ background: '#FA2851', boxShadow: '0 8px 24px rgba(250,40,81,0.3)' }}
             aria-label="Start voice"
           >
             <svg width="40" height="40" viewBox="0 0 24 24" fill="#fff" aria-hidden="true">
@@ -401,7 +445,7 @@ export default function AIWaiter() {
           <button
             onClick={stopListening}
             className="relative h-[120px] w-[120px] rounded-full flex items-center justify-center transition-all duration-300 active:scale-95 z-[2]"
-            style={{ background: ACCENT, boxShadow: '0 8px 24px rgba(250,40,81,0.3)' }}
+            style={{ background: '#FA2851', boxShadow: '0 8px 24px rgba(250,40,81,0.3)' }}
             aria-label="Stop voice"
           >
             <svg width="42" height="42" viewBox="0 0 24 24" fill="#fff" aria-hidden="true">
@@ -417,6 +461,16 @@ export default function AIWaiter() {
           See Menu
         </Link>
       </div>
+
+      {/* ===== Modals (manual close only; voice never closes them) ===== */}
+      <SuggestionsModal
+        open={showSuggestions}
+        onClose={() => setShowSuggestions(false)}
+      />
+      <TrayModal
+        open={showTray}
+        onClose={() => setShowTray(false)}
+      />
     </div>
   );
 }

@@ -1,9 +1,9 @@
 // apps/tastebud/src/app.tsx
 import { Suspense } from "react";
 import { Routes, Route, Navigate, useParams } from "react-router-dom";
-import Home from "./pages/Home";
-import Restaurant from "./pages/Restaurant";
-import AIWaiter from "./pages/AIWaiter";
+import Home from "./pages/Directory";
+import Restaurant from "./pages/DigitalMenu";
+import AIWaiter from "./pages/AIWaiterHome";
 
 function RedirectToTenant() {
   const { subdomain } = useParams();
