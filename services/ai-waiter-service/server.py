@@ -74,7 +74,7 @@ GROQ_TIMEOUT_MS = int(os.environ.get("GROQ_TIMEOUT_MS", "3000"))  # 3s budget
 IDLE_FINALIZE_MS = int(os.environ.get("IDLE_FINALIZE_MS", "1200"))
 
 # Normalizer knobs
-FUZZY_THRESHOLD = float(os.environ.get("NORMALIZER_FUZZY_THRESHOLD", "0.87"))
+FUZZY_THRESHOLD = float(os.environ.get("NORMALIZER_FUZZY_THRESHOLD", "0.83"))
 MENU_SNAPSHOT_MAX = int(os.environ.get("MENU_SNAPSHOT_MAX", "120"))  # max items sent to brain per turn
 VOCAB_MAX = int(os.environ.get("NORMALIZER_VOCAB_MAX", "200"))       # cap vocab for fuzzy speed
 INCLUDE_ALIASES = os.environ.get("NORMALIZER_INCLUDE_ALIASES", "1") == "1"

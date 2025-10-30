@@ -165,13 +165,17 @@ services:
   transcripts-exporter:
     image: python:3.11-slim
     working_dir: /app
+    # 👇 Explicitly source the same .env the waiter uses, then run watcher
     command: >
-      bash -lc "pip install --no-cache-dir 'pymongo[srv]' &&
-                python fine_tuning/export_transcripts.py --watch"
+      bash -lc "set -a;
+                . services/ai-waiter-service/.env;
+                set +a;
+                pip install --no-cache-dir 'pymongo[srv]' &&
+                python fine_tuning/export_transcripts.py --watch
+                --mongo \"$MONGO_URI\" --db \"$MONGO_DB\" --coll transcripts"
     env_file:
-      - ./services/ai-waiter-service/.env     # reuse the same MONGO_URI (Atlas)
+      - ./services/ai-waiter-service/.env
     environment:
-      - MONGO_URI=${MONGO_URI:-mongodb://mongo:27017}
       - PYTHONUNBUFFERED=1
     volumes:
       - ./:/app
