@@ -1,10 +1,11 @@
-// apps/tastebud/src/pages/AiWaiterHome.tsx
+// apps/tastebud/src/pages/AIWaiterHome.tsx
 import React, { useRef, useState, useEffect } from 'react';
 import { useLocation, useParams, useSearchParams, Link, useNavigate } from 'react-router-dom';
 import { getWsURL } from '../utils/ws';
 import MicHalo from '../components/ai-waiter/MicHalo';
 import SuggestionsModal from '../components/ai-waiter/SuggestionsModal';
 import TrayModal from '../components/ai-waiter/TrayModal';
+import DidYouMeanModal, { DidYouMeanOption as DymOption } from '../components/ai-waiter/DidYouMeanModal'; // uses modal's type
 import type { WaiterIntent, AiReplyMeta } from '../types/waiter-intents';
 
 type UIMode = 'idle' | 'thinking' | 'talking';
@@ -60,7 +61,7 @@ export default function AiWaiterHome() {
 
   const [uiMode, setUiMode] = useState<UIMode>('idle');
 
-  // Language toggle: default BN, user can switch to EN (or AUTO if you like)
+  // Language toggle: default BN
   const [selectedLang, setSelectedLang] = useState<'auto' | 'bn' | 'en'>('bn');
 
   const stoppingRef = useRef<boolean>(false);
@@ -72,35 +73,47 @@ export default function AiWaiterHome() {
   const aiSeenRef = useRef<boolean>(false);
   const pendingAiResolverRef = useRef<null | ((ok: boolean) => void)>(null);
 
-  // ===== Intent-driven UI contexts (no voice back to home) =====
+  // ===== Intent-driven UI contexts =====
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [showTray, setShowTray] = useState(false);
 
-  // Helpers to open/close contexts (manual close only)
-  const openSuggestions = () => { setShowTray(false); setShowSuggestions(true); };
-  const openTray = () => { setShowSuggestions(false); setShowTray(true); };
-  const goMenu = () => { setShowSuggestions(false); setShowTray(false); navigate(seeMenuHref); };
+  // ✅ Did You Mean modal state (typed from modal)
+  const [showDidYouMean, setShowDidYouMean] = useState(false);
+  const [dymOptions, setDymOptions] = useState<DymOption[]>([]);
+  const [dymCategory, setDymCategory] = useState<string | null>(null);
+  const [dymStrategy, setDymStrategy] = useState<string | null>(null);
+
+  // Helpers to open/close contexts
+  const openSuggestions = () => { setShowTray(false); setShowDidYouMean(false); setShowSuggestions(true); };
+  const openTray = () => { setShowSuggestions(false); setShowDidYouMean(false); setShowTray(true); };
+  const goMenu = () => { setShowSuggestions(false); setShowTray(false); setShowDidYouMean(false); navigate(seeMenuHref); };
+
+  // ✅ onPick for DidYouMeanModal (required by Props)
+  const handleDidYouMeanPick = (opt: DymOption) => {
+    const q = opt?.name ? `?q=${encodeURIComponent(opt.name)}` : '';
+    navigate(`${seeMenuHref}${q}`);
+    setShowDidYouMean(false);
+  };
 
   function handleIntentRouting(intent: WaiterIntent | undefined) {
-    // Respect current context; no voice auto-close to home.
     if (!intent) return;
+
+    if (showDidYouMean) return;
 
     if (showSuggestions) {
       if (intent === 'order') return openTray();
       if (intent === 'menu') return goMenu();
-      return; // suggestions/chitchat => stay
+      return;
     }
 
     if (showTray) {
       if (intent === 'menu') return goMenu();
-      return; // remain in Tray for other intents
+      return;
     }
 
-    // From home (no modal yet):
     if (intent === 'suggestions') return openSuggestions();
     if (intent === 'order') return openTray();
     if (intent === 'menu') return goMenu();
-    // chitchat => stay home
   }
 
   function waitForFinal(timeoutMs = 8000) {
@@ -241,6 +254,19 @@ export default function AiWaiterHome() {
             return;
           }
 
+          // ✅ dedicated did_you_mean
+          if (msg.t === 'did_you_mean') {
+            const options: DymOption[] = Array.isArray(msg.options ?? msg.matches) ? (msg.options ?? msg.matches) : [];
+            if (options.length) {
+              setDymOptions(options);
+              setDymCategory((msg.category as string) ?? null);
+              setDymStrategy((msg.strategy as string) ?? null);
+              setShowDidYouMean(true);
+              setUiMode('idle');
+            }
+            return;
+          }
+
           if (msg.t === 'ai_reply') {
             const text = (msg.replyText as string) || '';
             if (text) setAiReplies((prev) => [...prev, text]);
@@ -251,6 +277,21 @@ export default function AiWaiterHome() {
             // 🔎 Intent-driven routing (never voice-close a modal)
             const meta: AiReplyMeta | undefined = msg.meta;
             const intent = (meta?.intent ?? 'chitchat') as WaiterIntent;
+
+            // ✅ If ai_reply carries robust matches in meta, open DYM.
+            const dym =
+              (meta as any)?.didYouMean ??
+              (meta as any)?.did_you_mean ??
+              (meta as any)?.fallbackItems ??
+              (meta as any)?.robustOptions;
+            if (Array.isArray(dym) && dym.length) {
+              setDymOptions(dym as DymOption[]);
+              setDymCategory(((meta as any)?.category as string) ?? null);
+              setDymStrategy(((meta as any)?.strategy as string) ?? null);
+              setShowDidYouMean(true);
+              return;
+            }
+
             handleIntentRouting(intent);
             return;
           }
@@ -331,7 +372,6 @@ export default function AiWaiterHome() {
   const ACCENT = '#FA2851';
   const bgWhite = '#FFFFFF';
   const bgPink = '#FFF0F3';
-  const haloColor = '#FFE9ED';
 
   // Temporary buttons styling helpers
   const chipBase = 'px-3 py-1.5 rounded-full text-sm font-medium border transition-all active:scale-95';
@@ -339,7 +379,6 @@ export default function AiWaiterHome() {
   const inactiveChip = 'bg-white/80 text-gray-700 border-white/70 backdrop-blur hover:bg-white';
 
   // Map our internal UI state to the MicHalo's accepted prop type:
-  // MicHalo likely expects: 'idle' | 'listening' | 'talking'
   type HaloVisualMode = 'idle' | 'listening' | 'talking';
   const haloVisualMode: HaloVisualMode =
     uiMode === 'talking'
@@ -347,7 +386,6 @@ export default function AiWaiterHome() {
       : listening
       ? 'listening'
       : 'idle';
-  // ('thinking' is visualized as 'listening' ring, which keeps types happy)
 
   return (
     <div
@@ -462,7 +500,7 @@ export default function AiWaiterHome() {
         </Link>
       </div>
 
-      {/* ===== Modals (manual close only; voice never closes them) ===== */}
+      {/* ===== Modals ===== */}
       <SuggestionsModal
         open={showSuggestions}
         onClose={() => setShowSuggestions(false)}
@@ -470,6 +508,14 @@ export default function AiWaiterHome() {
       <TrayModal
         open={showTray}
         onClose={() => setShowTray(false)}
+      />
+      <DidYouMeanModal
+        open={showDidYouMean}
+        onClose={() => setShowDidYouMean(false)}
+        options={dymOptions}
+        category={dymCategory ?? undefined}
+        strategy={dymStrategy ?? undefined}
+        onPick={handleDidYouMeanPick}  // ✅ required by Props
       />
     </div>
   );

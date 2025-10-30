@@ -22,9 +22,14 @@ export interface MenuItemDTO {
   description?: string;
   category?: string;
   categoryId?: string;
+  /** Image URLs (primary first) */
   media: string[];
   variations: VariationDTO[];
   tags: string[];
+
+  /** Optional alias strings used for matching/normalization (bn/en, phonetic, etc.) */
+  aliases?: string[];
+
   restaurantId?: string;
 
   // Branch scope
@@ -56,6 +61,9 @@ export interface MenuItemDTO {
 export interface CategoryDTO {
   id: string;
   name: string;
+
+  /** Optional alias strings for category-level matching (e.g., "burger", "বার্গার"). */
+  aliases?: string[];
 
   /** Channel scope ('all' | 'dine-in' | 'online') */
   channelScope?: 'all' | 'dine-in' | 'online';

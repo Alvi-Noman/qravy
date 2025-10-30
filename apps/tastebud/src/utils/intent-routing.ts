@@ -59,6 +59,29 @@ export function localHeuristicIntent(text: string): WaiterIntent {
   return 'chitchat';
 }
 
+/* ----------------------- Did-You-Mean meta detector ----------------------- */
+
+function hasDidYouMean(meta?: AiReplyMeta | null): boolean {
+  if (!meta) return false;
+
+  // server-side robust search wire-ups (choose any that you emit):
+  // - didYouMean: [] | true
+  // - fallbackItems: []
+  // - did_you_mean: [] (alt)
+  // - robustOptions: []
+  const a: unknown =
+    (meta as any).didYouMean ??
+    (meta as any).did_you_mean ??
+    (meta as any).fallbackItems ??
+    (meta as any).robustOptions;
+
+  if (a === true) return true;
+  if (Array.isArray(a) && a.length > 0) return true;
+  return false;
+}
+
+/* --------------------------- Message processing --------------------------- */
+
 /** Parse an `ai_reply` WS message into a strongly-typed structure. */
 export function parseAiReply(msg: WsInboundMessage): ParsedAiReply | null {
   if (msg.t !== 'ai_reply') return null;
@@ -133,18 +156,37 @@ export function decideNextAction(
       return 'stay'; // menu | chitchat
     }
   }
+
+  // ✅ Fallback to satisfy TS and handle any future context extensions.
+  return 'stay';
 }
 
 /**
  * Helper that applies both parsing & routing to an inbound message.
  * Returns `null` if the message is not ai_reply; otherwise an action decision.
+ *
+ * 🔗 Did-You-Mean integration:
+ * If the meta indicates robust fallback options are present, we short-circuit
+ * the normal intent routing and open the DidYouMean modal immediately.
  */
 export function routeFromAiReply(
   msg: WsInboundMessage,
   current: WaiterUiContext,
 ): { action: WaiterUiAction; parsed: ParsedAiReply } | null {
+  if (msg.t !== 'ai_reply') return null;
+
   const parsed = parseAiReply(msg);
   if (!parsed) return null;
+
+  // If server attached robust fallback matches, always surface the modal.
+  if (hasDidYouMean(parsed.meta)) {
+    const OPEN_DYM = 'openDidYouMean' as unknown as WaiterUiAction;
+    return {
+      action: OPEN_DYM,
+      parsed,
+    };
+  }
+
   return {
     action: decideNextAction(current, parsed.intent),
     parsed,
@@ -156,7 +198,9 @@ export function routeFromAiReply(
 /** True if we should keep responding inside a modal (no voice pop-back). */
 export function lockContextForVoice(current: WaiterUiContext): boolean {
   // Only "home" is allowed to float; modals and /menu are voice-locked.
-  return current === 'suggestions' || current === 'tray' || current === 'menu';
+  // Include DidYouMean (treated as a modal) without requiring global type edits.
+  const c = current as unknown as string;
+  return current === 'suggestions' || current === 'tray' || current === 'menu' || c === 'didYouMean';
 }
 
 /** Simple priority comparator you can use if multiple intents are inferred locally. */

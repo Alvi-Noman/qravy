@@ -1,43 +1,51 @@
 # services/ai-waiter-service/server.py
-import asyncio, json, os, time, re, io, wave
+import asyncio
+import io
+import json
+import os
+import re
+import time
+import wave
 from datetime import datetime
+from typing import Any, Dict, List, Optional, Tuple, Set
+
+import httpx
 import numpy as np
 import websockets
-from websockets.server import WebSocketServerProtocol
+from bson import ObjectId  # ✅ NEW
 from faster_whisper import WhisperModel
 from pymongo import MongoClient
 from vad import Segmenter
-import httpx
-from typing import Dict, Any, List, Tuple, Optional
-from bson import ObjectId  # ✅ NEW
+from websockets.server import WebSocketServerProtocol
 
 # ✅ In-process brain (OpenAI gpt-4o-mini) call
 from brain import generate_reply
 
 # ✅ Normalizer (exact pairs + phonetic + fuzzy)
-#   Make sure services/ai-waiter-service/normalizer.py exists
 from normalizer import normalize_text
+
+# ✅ Robust multilingual/phonetic/category-aware fallback search (wire-up)
+from robust_search import robust_find  # <-- ADDED
+
 
 # ---------- Config ----------
 MONGO_URI = os.environ.get("MONGO_URI", "mongodb://mongo:27017")
-
-# transcripts DB (stays in qravy)
 TRANS_DB_NAME = os.environ.get("MONGO_DB", "qravy")
-
-# menu DB (can be different, e.g., authDB)
 MENU_DB_NAME = os.environ.get("MENU_DB", TRANS_DB_NAME)
 MENU_COLL = os.environ.get("MENU_COLLECTION", "menu_items")
 
-_CLIENT = MongoClient(MONGO_URI)
+# ⚙️ Tier flags (keep all tiers alive by default)
+AI_DET_ENABLE = os.environ.get("AI_DET_ENABLE", "1") == "1"           # deterministic matcher on/off
+AI_DYM_ENABLE = os.environ.get("AI_DYM_ENABLE", "1") == "1"           # did-you-mean suggestions
+AI_LLM_ENABLE = os.environ.get("AI_LLM_ENABLE", "1") == "1"           # LLM tier
+AI_DET_SHORTCIRCUIT = os.environ.get("AI_DET_SHORTCIRCUIT", "0") == "1"  # if 1, skip LLM when det matches
 
-# Keep `DB` pointing to transcripts DB so the rest of the file works unchanged
+_CLIENT = MongoClient(MONGO_URI)
 DB = _CLIENT[TRANS_DB_NAME]
 COLL = DB.transcripts
-
-# Read menu from MENU_DB + MENU_COLLECTION
 ITEMS = _CLIENT[MENU_DB_NAME][MENU_COLL]
 
-# Early health check with retries (handles DNS/TLS warm-up / election)
+
 def ping_mongo_with_retries(client, attempts=6, delay_s=5):
     for i in range(1, attempts + 1):
         try:
@@ -51,58 +59,48 @@ def ping_mongo_with_retries(client, attempts=6, delay_s=5):
     print("[ai-waiter-service] ❌ Mongo ping FAILED after retries")
     return False
 
+
 ping_mongo_with_retries(DB.client)
 
-# TTL (30 days) so transcripts auto-expire
 try:
-    COLL.create_index("ts", expireAfterSeconds=30*24*3600, name="ttl_30d")
+    COLL.create_index("ts", expireAfterSeconds=30 * 24 * 3600, name="ttl_30d")
 except Exception as e:
     print("[ai-waiter-service] TTL index create failed:", str(e))
 
-WHISPER_MODEL = os.environ.get("WHISPER_MODEL", "tiny")           # fast default
-DEVICE = os.environ.get("WHISPER_DEVICE", "cpu")                  # "cuda" on GPU
-COMPUTE_TYPE = os.environ.get("WHISPER_COMPUTE_TYPE", "int8")     # "float16" on GPU
-WHISPER_LANG = os.environ.get("WHISPER_LANG", "bn")               # default preference
+WHISPER_MODEL = os.environ.get("WHISPER_MODEL", "tiny")
+DEVICE = os.environ.get("WHISPER_DEVICE", "cpu")
+COMPUTE_TYPE = os.environ.get("WHISPER_COMPUTE_TYPE", "int8")
+WHISPER_LANG = os.environ.get("WHISPER_LANG", "bn")
 
-# Groq (final transcription)
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 GROQ_MODEL = os.environ.get("GROQ_MODEL", "whisper-large-v3")
 GROQ_BASE = os.environ.get("GROQ_BASE", "https://api.groq.com")
-GROQ_TIMEOUT_MS = int(os.environ.get("GROQ_TIMEOUT_MS", "3000"))  # 3s budget
+GROQ_TIMEOUT_MS = int(os.environ.get("GROQ_TIMEOUT_MS", "3000"))
 
-# Silence → finalize threshold (ms)
 IDLE_FINALIZE_MS = int(os.environ.get("IDLE_FINALIZE_MS", "1200"))
-
-# Normalizer knobs
 FUZZY_THRESHOLD = float(os.environ.get("NORMALIZER_FUZZY_THRESHOLD", "0.83"))
-MENU_SNAPSHOT_MAX = int(os.environ.get("MENU_SNAPSHOT_MAX", "120"))  # max items sent to brain per turn
-VOCAB_MAX = int(os.environ.get("NORMALIZER_VOCAB_MAX", "200"))       # cap vocab for fuzzy speed
+MENU_SNAPSHOT_MAX = int(os.environ.get("MENU_SNAPSHOT_MAX", "120"))
+VOCAB_MAX = int(os.environ.get("NORMALIZER_VOCAB_MAX", "200"))
 INCLUDE_ALIASES = os.environ.get("NORMALIZER_INCLUDE_ALIASES", "1") == "1"
 
-# Reduce thread thrash on CPU
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 os.environ.setdefault("MKL_NUM_THREADS", "1")
 os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
 os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
 
-# Load model once (warm)
-print(f"[ai-waiter-service] Loading Faster-Whisper model={WHISPER_MODEL} device={DEVICE} compute={COMPUTE_TYPE}")
+print(
+    f"[ai-waiter-service] Loading Faster-Whisper model={WHISPER_MODEL} device={DEVICE} compute={COMPUTE_TYPE}"
+)
 model = WhisperModel(WHISPER_MODEL, device=DEVICE, compute_type=COMPUTE_TYPE)
 
-# Background DB writer (batch)
 writer_q: asyncio.Queue = asyncio.Queue()
 
+
 async def writer():
-    """
-    Batched writer with size/age-based flush.
-    Configure via:
-      TRANSCRIPT_FLUSH_N   (default: 1 in dev, 10 in prod)
-      TRANSCRIPT_FLUSH_MS  (default: 1500)
-    """
     import time as _time
 
-    FLUSH_N = int(os.environ.get("TRANSCRIPT_FLUSH_N", "1"))      # dev-friendly default: 1
-    FLUSH_MS = int(os.environ.get("TRANSCRIPT_FLUSH_MS", "1500")) # dev-friendly default: 1.5s
+    FLUSH_N = int(os.environ.get("TRANSCRIPT_FLUSH_N", "1"))
+    FLUSH_MS = int(os.environ.get("TRANSCRIPT_FLUSH_MS", "1500"))
 
     buf = []
     last_flush = _time.monotonic()
@@ -123,34 +121,33 @@ async def writer():
         try:
             item = await asyncio.wait_for(writer_q.get(), timeout=FLUSH_MS / 1000)
         except asyncio.TimeoutError:
-            # time-based flush
             if (_time.monotonic() - last_flush) * 1000 >= FLUSH_MS:
                 await do_flush()
             continue
 
         if item is None:
-            # shutdown: final flush
             await do_flush()
             print("[ai-waiter-service] writer shutdown complete")
             break
 
         buf.append(item)
-        now = _time.monotonic()
         if len(buf) >= FLUSH_N or (_time.monotonic() - last_flush) * 1000 >= FLUSH_MS:
             await do_flush()
 
+
 WRITER_TASK = None
 
-# ---------- Helpers ----------
-_LATIN = re.compile(r'[A-Za-z]')
-_BENGALI = re.compile(r'[\u0980-\u09FF]')  # Bangla block
+_LATIN = re.compile(r"[A-Za-z]")
+_BENGALI = re.compile(r"[\u0980-\u09FF]")
 
 BANGLA_PROMPT = "আসসালামু আলাইকুম, আমি খাবার অর্ডার করতে চাই।"
+
 
 def looks_sane(text: str, lang: Optional[str]) -> bool:
     s = (text or "").strip()
     if len(s) < 2:
         return False
+
     generic = {"thank you", "thanks", "today", "ok", "okay"}
     if s.lower() in generic:
         return False
@@ -162,8 +159,8 @@ def looks_sane(text: str, lang: Optional[str]) -> bool:
         return has_bn or (not has_en and len(s) > 3)
     if lang == "en":
         return has_en or (not has_bn and len(s) > 3)
-
     return has_bn or has_en
+
 
 def rms_i16(b: bytes) -> float:
     if not b:
@@ -174,85 +171,42 @@ def rms_i16(b: bytes) -> float:
     xf = x.astype(np.float32)
     return float(np.sqrt(np.mean(xf * xf)))
 
+
 def pcm16_mono_to_wav_bytes(pcm_bytes: bytes, rate: int = 16000) -> bytes:
     bio = io.BytesIO()
-    with wave.open(bio, 'wb') as wf:
+    with wave.open(bio, "wb") as wf:
         wf.setnchannels(1)
         wf.setsampwidth(2)
         wf.setframerate(rate)
         wf.writeframes(pcm_bytes)
     return bio.getvalue()
 
+
 async def groq_transcribe(pcm_bytes: bytes, lang: Optional[str], rate: int = 16000) -> Optional[str]:
     if not GROQ_API_KEY:
         return None
     try:
         wav_bytes = pcm16_mono_to_wav_bytes(pcm_bytes, rate=rate)
-        url = GROQ_BASE.rstrip('/') + "/openai/v1/audio/transcriptions"
+        url = GROQ_BASE.rstrip("/") + "/openai/v1/audio/transcriptions"
         headers = {"Authorization": f"Bearer {GROQ_API_KEY}"}
         data = {"model": GROQ_MODEL, "response_format": "json"}
         if lang and lang not in ("auto", "", None):
             data["language"] = lang
         files = {"file": ("audio.wav", wav_bytes, "audio/wav")}
+
         async with httpx.AsyncClient(timeout=GROQ_TIMEOUT_MS / 1000) as client:
             resp = await client.post(url, headers=headers, data=data, files=files)
-        if resp.status_code >= 400:
-            print("[ai-waiter-service] Groq error:", resp.status_code, resp.text[:200])
-            return None
-        payload = resp.json()
-        txt = (payload.get("text") or "").strip()
-        if txt:
-            return txt
+            if resp.status_code >= 400:
+                print("[ai-waiter-service] Groq error:", resp.status_code, resp.text[:200])
+                return None
+            payload = resp.json()
+            txt = (payload.get("text") or "").strip()
+            if txt:
+                return txt
     except Exception as e:
         print("[ai-waiter-service] Groq call failed:", e)
     return None
 
-# ---------- Core STT ----------
-def stt_np_float32(pcm_bytes: bytes, lang: Optional[str]):
-    i16 = np.frombuffer(pcm_bytes, dtype=np.int16)
-    if i16.size == 0:
-        return "", [], None
-    f32 = (i16.astype(np.float32) / 32768.0)
-
-    segments, info = model.transcribe(
-        f32,
-        language=lang,                   # None -> auto; else "en"/"bn"
-        task="transcribe",
-        vad_filter=False,
-        beam_size=1,
-        best_of=1,
-        without_timestamps=False,
-        condition_on_previous_text=False,
-        no_speech_threshold=0.6,
-        log_prob_threshold=-1.0,
-        compression_ratio_threshold=2.4,
-        temperature=0.0,
-        initial_prompt=(BANGLA_PROMPT if lang == "bn" else ""),
-        suppress_blank=True,
-    )
-
-    text = []
-    segs = []
-    for seg in segments:
-        txt = (seg.text or "").strip()
-        if txt:
-            text.append(txt)
-            segs.append((seg.start, seg.end))
-
-    result_text = " ".join(text)
-    detected_lang = getattr(info, "language", None)
-
-    hallucinations = {
-        "thank you", "thanks for watching", "bye", "goodbye",
-        "subscribe", "like and subscribe", "see you next time",
-        "thanks", "thank you for watching"
-    }
-    norm = result_text.lower().strip()
-    if norm in hallucinations and len(norm.split()) <= 4:
-        print(f"[ai-waiter-service] ⚠️ detected generic filler: '{result_text}', ignoring")
-        return "", [], detected_lang
-
-    return result_text, segs, detected_lang
 
 # ---------- Tenant resolver ----------
 def _to_object_id_maybe(x: Optional[str]) -> Optional[ObjectId]:
@@ -263,110 +217,108 @@ def _to_object_id_maybe(x: Optional[str]) -> Optional[ObjectId]:
     except Exception:
         return None
 
+
 def resolve_tenant_id(tenant_hint: Optional[str]) -> Optional[ObjectId]:
-    """
-    Resolve a UI-provided tenant hint (slug/subdomain/code/name or _id string)
-    into the actual ObjectId from tenants collections (qravy or MENU_DB).
-    """
     if not tenant_hint:
         return None
-
-    # 1) direct ObjectId-like
     try:
         return ObjectId(tenant_hint)
     except Exception:
         pass
-
-    # 2) look in transcripts DB (qravy) tenants
     try:
         t = DB.tenants.find_one(
-            {"$or": [
-                {"slug": tenant_hint},
-                {"subdomain": tenant_hint},
-                {"code": tenant_hint},
-                {"name": tenant_hint},
-            ]},
-            {"_id": 1}
+            {
+                "$or": [
+                    {"slug": tenant_hint},
+                    {"subdomain": tenant_hint},
+                    {"code": tenant_hint},
+                    {"name": tenant_hint},
+                ]
+            },
+            {"_id": 1},
         )
         if t and t.get("_id"):
             return t["_id"]
     except Exception as e:
         print("[ai-waiter-service] ⚠️ tenant lookup (qravy) failed:", e)
 
-    # 3) look in MENU_DB.tenants (where your tenants actually live)
     try:
         menu_tenants = _CLIENT[MENU_DB_NAME]["tenants"]
         t2 = menu_tenants.find_one(
-            {"$or": [
-                {"slug": tenant_hint},
-                {"subdomain": tenant_hint},
-                {"code": tenant_hint},
-                {"name": tenant_hint},
-            ]},
-            {"_id": 1}
+            {
+                "$or": [
+                    {"slug": tenant_hint},
+                    {"subdomain": tenant_hint},
+                    {"code": tenant_hint},
+                    {"name": tenant_hint},
+                ]
+            },
+            {"_id": 1},
         )
         if t2 and t2.get("_id"):
             return t2["_id"]
     except Exception as e:
         print("[ai-waiter-service] ⚠️ tenant lookup (MENU_DB) failed:", e)
-
     return None
 
+
 # ---------- Menu snapshot & vocab ----------
-def build_menu_query(tenant: Optional[str]) -> Dict[str, Any]:
-    # 🔒 Visibility: equality-only on 'hidden' (Atlas rejects $ne/$exists/$expr on this field)
-    q: Dict[str, Any] = {
-        "status": "active",
-        "hidden": False,
-    }
+def build_menu_query(tenant: Optional[str], branch: Optional[str] = None) -> Dict[str, Any]:
+    q: Dict[str, Any] = {}
     if tenant:
         tenant_oid = resolve_tenant_id(tenant)
         if tenant_oid:
             q["tenantId"] = tenant_oid
+    if branch:
+        q["branch"] = branch
     return q
 
-def fetch_menu_snapshot(tenant: Optional[str], limit: int = MENU_SNAPSHOT_MAX) -> Dict[str, Any]:
-    """
-    Pulls a compact, real-time slice of the menu for grounding and vocab.
-    Fields kept intentionally small to reduce tokens.
-    """
-    try:
-        q = build_menu_query(tenant)
-        print("[debug] menu query:", q)
 
+def fetch_menu_snapshot(tenant: Optional[str], branch: Optional[str] = None, limit: int = MENU_SNAPSHOT_MAX) -> Dict[str, Any]:
+    try:
+        q = build_menu_query(tenant, branch)
+        print("[debug] menu query:", q)
         cur = ITEMS.find(
             q,
             {
-                "_id": 1, "name": 1, "price": 1,
-                "categoryId": 1, "category": 1,
-                "visibility": 1, "status": 1, "hidden": 1,
-                "aliases": 1
+                "_id": 1,
+                "name": 1,
+                "price": 1,
+                "categoryId": 1,
+                "category": 1,
+                "visibility": 1,
+                "status": 1,
+                "hidden": 1,
+                "aliases": 1,
             },
         ).limit(limit)
+
         items = []
         for d in cur:
             vis = d.get("visibility") or {}
             dine_in_ok = vis.get("dineIn", vis.get("dinein", True)) is not False
-            items.append({
-                "id": str(d.get("_id")),
-                "name": d.get("name"),
-                "category_id": str(d.get("categoryId")) if d.get("categoryId") else None,
-                "category": d.get("category"),
-                "price": d.get("price"),
-                "available": (not bool(d.get("hidden"))) and (d.get("status") == "active") and dine_in_ok,
-                "aliases": d.get("aliases") or []
-            })
-        print("[debug] snapshot items count =", len(items))
+            available = (not bool(d.get("hidden"))) and (d.get("status") == "active") and dine_in_ok
+            items.append(
+                {
+                    "id": str(d.get("_id")),
+                    "name": d.get("name"),
+                    "category_id": str(d.get("categoryId")) if d.get("categoryId") else None,
+                    "category": d.get("category"),
+                    "price": d.get("price"),
+                    "available": available,
+                    "aliases": d.get("aliases") or [],
+                }
+            )
+
         cats = {}
         for it in items:
             if it.get("category_id") or it.get("category"):
                 k = it.get("category_id") or it.get("category")
-                cats[k] = {
-                    "id": it.get("category_id"),
-                    "name": it.get("category"),
-                }
+                cats[k] = {"id": it.get("category_id"), "name": it.get("category")}
+
         snapshot = {
             "tenant_id": tenant,
+            "branch": branch,
             "updated_at": datetime.utcnow().isoformat() + "Z",
             "categories": [c for c in cats.values() if c.get("name")],
             "items": items,
@@ -374,84 +326,180 @@ def fetch_menu_snapshot(tenant: Optional[str], limit: int = MENU_SNAPSHOT_MAX) -
         return snapshot
     except Exception as e:
         print("[ai-waiter-service] ⚠️ fetch_menu_snapshot failed:", e)
-        return {"tenant_id": tenant, "updated_at": datetime.utcnow().isoformat() + "Z", "categories": [], "items": []}
+        return {
+            "tenant_id": tenant,
+            "branch": branch,
+            "updated_at": datetime.utcnow().isoformat() + "Z",
+            "categories": [],
+            "items": [],
+        }
 
-def build_vocab_from_snapshot(snapshot: Dict[str, Any]) -> List[str]:
-    vocab: List[str] = []
-    for it in snapshot.get("items", []):
-        n = it.get("name")
-        if n:
-            vocab.append(n)
-        if INCLUDE_ALIASES:
-            for a in (it.get("aliases") or []):
-                if a:
-                    vocab.append(a)
-    # Dedup & cap
-    seen = set()
-    out = []
-    for w in vocab:
-        if w not in seen:
-            seen.add(w)
-            out.append(w)
-        if len(out) >= VOCAB_MAX:
-            break
-    return out
 
-# ---------- Deterministic pre-match (snapshot → DB fallback) ----------
-def _tokenize_lower(s: str) -> List[str]:
-    s = (s or "").lower()
-    # keep simple word tokens
-    return re.findall(r"[a-z\u0980-\u09FF]+(?:\s+[a-z\u0980-\u09FF]+)?", s)
+# ---------- NEW: vocab + deterministic helpers ----------
+def _clean_term(s: Any) -> str:
+    """Lightweight cleanup; tries normalize_text but never fails."""
+    if not isinstance(s, str):
+        return ""
+    s2 = s.strip().lower()
+    try:
+        norm = normalize_text(s2)
+        # normalize_text may return str OR (str, changes); handle both
+        if isinstance(norm, tuple):
+            s2 = norm[0] or s2
+        elif isinstance(norm, str):
+            s2 = norm or s2
+    except Exception:
+        pass
+    return s2
+
+
+def build_vocab_from_snapshot(snapshot: Dict[str, Any]) -> Set[str]:
+    """
+    Build a bounded vocabulary from the live menu snapshot to help the normalizer.
+    Snapshot shape:
+      {"items":[{"name": "...", "aliases":[...], "category": str|dict, ...}]}
+    """
+    vocab: Set[str] = set()
+    items = (snapshot or {}).get("items", []) or []
+    for it in items:
+        name = _clean_term(it.get("name"))
+        if name:
+            vocab.add(name)
+
+        aliases = it.get("aliases") or []
+        if isinstance(aliases, str):
+            aliases = [aliases]
+        for a in aliases:
+            aa = _clean_term(a)
+            if aa:
+                vocab.add(aa)
+
+        cat = it.get("category")
+        if isinstance(cat, dict):
+            cat = cat.get("name") or cat.get("slug")
+        if isinstance(cat, str):
+            cc = _clean_term(cat)
+            if cc:
+                vocab.add(cc)
+
+    # trim junk + bound size
+    vocab = {t for t in vocab if t and any(ch.isalnum() for ch in t) and len(t) >= 2}
+    if len(vocab) > VOCAB_MAX:
+        vocab = set(list(vocab)[:VOCAB_MAX])
+    return vocab
+
+
+def _availability_gate(doc: Dict[str, Any]) -> bool:
+    """Mirror the snapshot 'available' logic for DB fallback."""
+    vis = doc.get("visibility") or {}
+    dine_in_ok = vis.get("dineIn", vis.get("dinein", True)) is not False
+    return (not bool(doc.get("hidden"))) and (doc.get("status") == "active") and dine_in_ok
+
+
+def _shape_menu_item(doc: Dict[str, Any]) -> Dict[str, Any]:
+    """Return the same item shape used in your snapshot list."""
+    return {
+        "id": str(doc.get("_id")),
+        "name": doc.get("name"),
+        "category_id": str(doc.get("categoryId")) if doc.get("categoryId") else None,
+        "category": doc.get("category"),
+        "price": doc.get("price"),
+        "available": _availability_gate(doc),
+        "aliases": doc.get("aliases") or [],
+    }
+
 
 def _match_in_snapshot(norm_text: str, snapshot: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Find items whose name/aliases appear in normalized text."""
-    text = (norm_text or "").lower()
-    if not text.strip():
+    """
+    Deterministic, cheap pass:
+    - exact/contains check against name and aliases
+    - returns up to a few best candidates with 'available' ones first
+    """
+    q = (norm_text or "").strip().lower()
+    if not q:
         return []
-    hits = []
-    for it in snapshot.get("items", []):
-        name = (it.get("name") or "").strip()
-        aliases = [a.strip() for a in (it.get("aliases") or []) if a]
-        cand_strings = [name.lower()] + [a.lower() for a in aliases]
-        if any(re.search(rf"\b{re.escape(c)}\b", text) for c in cand_strings if c):
-            hits.append(it)
-    return hits
+    items = (snapshot or {}).get("items", []) or []
+    hits: List[Tuple[int, Dict[str, Any]]] = []
+
+    for it in items:
+        name = (it.get("name") or "").strip().lower()
+        alias_list = it.get("aliases") or []
+        if isinstance(alias_list, str):
+            alias_list = [alias_list]
+        alias_list = [str(a).strip().lower() for a in alias_list if isinstance(a, str)]
+
+        score = 0
+        if q == name:
+            score = 100
+        elif name and (q in name or name in q):
+            score = 80
+        else:
+            for a in alias_list:
+                if q == a:
+                    score = max(score, 90)
+                elif a and (q in a or a in q):
+                    score = max(score, 70)
+        if score > 0:
+            if it.get("available"):
+                score += 5
+            hits.append((score, it))
+
+    hits.sort(key=lambda x: x[0], reverse=True)
+    return [h[1] for h in hits[:5]]
+
 
 def _db_fallback_search(tenant_hint: Optional[str], norm_text: str, limit: int = 10) -> List[Dict[str, Any]]:
-    """If snapshot missed it (due to cap), query DB with visibility constraints."""
-    q_base = build_menu_query(tenant_hint)
-    text = (norm_text or "").strip()
-    if not text:
+    """
+    If snapshot didn’t produce a match, try a lightweight Mongo regex search
+    on name and aliases, scoped by tenantId (if resolvable).
+    """
+    q: Dict[str, Any] = {}
+    tenant_oid = resolve_tenant_id(tenant_hint) if tenant_hint else None
+    if tenant_oid:
+        q["tenantId"] = tenant_oid
+
+    rx = {"$regex": re.escape(norm_text), "$options": "i"} if norm_text else {"$exists": True}
+    q["$or"] = [{"name": rx}, {"aliases": rx}]
+
+    try:
+        cur = ITEMS.find(
+            q,
+            {
+                "_id": 1,
+                "name": 1,
+                "price": 1,
+                "categoryId": 1,
+                "category": 1,
+                "visibility": 1,
+                "status": 1,
+                "hidden": 1,
+                "aliases": 1,
+            },
+        ).limit(limit)
+
+        docs = list(cur)
+        # light re-rank: available first, then containment
+        scored: List[Tuple[int, Dict[str, Any]]] = []
+        ql = (norm_text or "").lower()
+        for d in docs:
+            it = _shape_menu_item(d)
+            s = 10
+            nm = (it.get("name") or "").lower()
+            if ql == nm:
+                s += 50
+            elif ql and (ql in nm or nm in ql):
+                s += 30
+            if it.get("available"):
+                s += 5
+            scored.append((s, it))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return [x[1] for x in scored]
+    except Exception as e:
+        print("[ai-waiter-service] ⚠️ _db_fallback_search failed:", e)
         return []
-    # build lenient OR of key bigrams/unigrams
-    tokens = list(set(_tokenize_lower(text)))[:6]
-    if not tokens:
-        return []
-    regexes = [{"name": {"$regex": re.escape(tok), "$options": "i"}} for tok in tokens]
-    alias_regexes = [{"aliases": {"$elemMatch": {"$regex": re.escape(tok), "$options": "i"}}} for tok in tokens]
-    q = {"$and": [q_base, {"$or": regexes + alias_regexes}]}
-    print("[debug] DB fallback query:", q)
-    cur = ITEMS.find(
-        q,
-        {"_id":1,"name":1,"price":1,"category":1,"categoryId":1,"aliases":1,"status":1,"hidden":1,"visibility":1},
-    ).limit(limit)
-    out = []
-    for d in cur:
-        vis = d.get("visibility") or {}
-        dine_in_ok = vis.get("dineIn", vis.get("dinein", True)) is not False
-        out.append({
-            "id": str(d.get("_id")),
-            "name": d.get("name"),
-            "category_id": str(d.get("categoryId")) if d.get("categoryId") else None,
-            "category": d.get("category"),
-            "price": d.get("price"),
-            "available": (not bool(d.get("hidden"))) and (d.get("status") == "active") and dine_in_ok,
-            "aliases": d.get("aliases") or []
-        })
-    return out
+
 
 def _compose_availability_reply(items: List[Dict[str, Any]], lang_hint: Optional[str]) -> str:
-    """Short, deterministic availability message with prices."""
     lang = (lang_hint or "").lower()
     if not items:
         return "Not found."
@@ -461,8 +509,11 @@ def _compose_availability_reply(items: List[Dict[str, Any]], lang_hint: Optional
     price = top.get("price")
     price_str = f" (৳{price})" if isinstance(price, (int, float)) else ""
 
-    # If more than one similar item, mention a couple alts
-    alts = [it.get("name") for it in items[1:3] if it.get("name")]
+    if not top.get("available"):
+        return "দুঃখিত, এই আইটেমটি এখন উপলব্ধ নয়।" if lang == "bn" else f"Sorry, **{name}** is currently unavailable."
+
+    alts = [it.get("name") for it in items[1:3] if it.get("name") and it.get("available")]
+
     if lang == "bn":
         base = f"জি, **{name}** রয়েছে{price_str}। নেবেন কি?"
         if alts:
@@ -473,6 +524,7 @@ def _compose_availability_reply(items: List[Dict[str, Any]], lang_hint: Optional
         if alts:
             base += f" Similar options: {', '.join(alts)}."
         return base
+
 
 # ✅ Call brain and push a WS message, and return reply object for DB
 async def call_brain_and_push(
@@ -509,62 +561,69 @@ async def call_brain_and_push(
 
         # 🔎 Log which model produced this reply
         mo = reply_obj.get("meta", {})
-        print("[ai-waiter-service] model=", mo.get("model"),
-              "lang=", mo.get("language"),
-              "intent=", mo.get("intent"),
-              "fallback=", mo.get("fallback"))
+        print(
+            "[ai-waiter-service] model=",
+            mo.get("model"),
+            "lang=",
+            mo.get("language"),
+            "intent=",
+            mo.get("intent"),
+            "fallback=",
+            mo.get("fallback"),
+        )
 
         if not ws.closed:
-            await ws.send(json.dumps({
-                "t": "ai_reply",
-                "replyText": reply_obj["replyText"],
-                "meta": {
-                    **reply_obj["meta"],
-                    "normalizer": {
-                        "changed": [{"from": a, "to": b, "score": s} for (a, b, s) in norm_changes]
+            await ws.send(
+                json.dumps(
+                    {
+                        "t": "ai_reply",
+                        "replyText": reply_obj["replyText"],
+                        "meta": {
+                            **reply_obj["meta"],
+                            "normalizer": {
+                                "changed": [{"from": a, "to": b, "score": s} for (a, b, s) in norm_changes]
+                            },
+                        },
                     }
-                },
-            }))
+                )
+            )
             print("[ai-waiter-service] ✅ ai_reply sent")
         else:
             print("[ai-waiter-service] ⚠️ WS closed, cannot send ai_reply")
     except Exception as e:
         print(f"[ai-waiter-service] ❌ brain call failed: {e}")
-        import traceback; traceback.print_exc()
+        import traceback
+
+        traceback.print_exc()
         if not ws.closed:
             try:
-                await ws.send(json.dumps({
-                    "t": "ai_reply_error",
-                    "message": "AI unavailable"
-                }))
+                await ws.send(json.dumps({"t": "ai_reply_error", "message": "AI unavailable"}))
             except Exception as send_err:
                 print(f"[ai-waiter-service] ❌ failed to send ai_reply_error: {send_err}")
     return reply_obj
+
 
 async def handle_conn(ws: WebSocketServerProtocol):
     session_id = None
     user_id = "guest"
     rate = 16000
     ch = 1
+
     # Start with env default (bn), but allow client override
     session_lang: Optional[str] = (WHISPER_LANG or "bn")
     tenant_hint: Optional[str] = None
     branch_hint: Optional[str] = None
     channel_hint: Optional[str] = None
-
     last_detected_lang = None
 
     if isinstance(session_lang, str) and session_lang.strip().lower() == "auto":
         session_lang = None
 
-    seg = Segmenter(bytes_per_sec=rate*2, min_ms=500, max_ms=2000)
-
+    seg = Segmenter(bytes_per_sec=rate * 2, min_ms=500, max_ms=2000)
     work_q: asyncio.Queue = asyncio.Queue(maxsize=1)
     closed = asyncio.Event()
-
     all_pcm = bytearray()
     last_partial_text = None
-
     closing = False
     final_sent = False
 
@@ -577,7 +636,6 @@ async def handle_conn(ws: WebSocketServerProtocol):
     async def worker():
         nonlocal last_partial_text, final_sent, last_detected_lang
         MIN_CHUNK_BYTES = 8000
-
         while not closed.is_set():
             if final_sent:
                 break
@@ -586,7 +644,6 @@ async def handle_conn(ws: WebSocketServerProtocol):
                 break
             if final_sent:
                 break
-
             if len(chunk) < MIN_CHUNK_BYTES:
                 print(f"[ai-waiter-service] skipping short chunk: {len(chunk)} bytes")
                 continue
@@ -595,21 +652,21 @@ async def handle_conn(ws: WebSocketServerProtocol):
                 continue
 
             print(f"[ai-waiter-service] transcribing chunk bytes={len(chunk)} lang={session_lang or 'auto'}")
+
+            # stt_np_float32 is expected to exist in your codebase
             text, _, det = await asyncio.get_event_loop().run_in_executor(None, stt_np_float32, chunk, session_lang)
             if det:
                 last_detected_lang = det
+
             if text and not final_sent and not ws.closed:
                 last_partial_text = text
                 has_bn = bool(_BENGALI.search(text))
                 has_en = bool(_LATIN.search(text))
-                print(f"[ai-waiter-service] 🔍 partial='{text[:50]}' | has_bn={has_bn} has_en={has_en} | hint={session_lang} det={last_detected_lang}")
-
+                print(
+                    f"[ai-waiter-service] 🔍 partial='{text[:50]}' | has_bn={has_bn} has_en={has_en} | hint={session_lang} det={last_detected_lang}"
+                )
                 try:
-                    await ws.send(json.dumps({
-                        "t": "stt_partial",
-                        "text": text,
-                        "ts": time.time()
-                    }))
+                    await ws.send(json.dumps({"t": "stt_partial", "text": text, "ts": time.time()}))
                     print("[ai-waiter-service] stt_partial:", text[:120])
                 except Exception as e:
                     print("[ai-waiter-service] stt_partial send failed:", e)
@@ -645,14 +702,13 @@ async def handle_conn(ws: WebSocketServerProtocol):
                     continue
                 all_pcm += msg
                 cap_buffer()
-
                 out = seg.push(msg)
                 if out:
                     # keep only the freshest chunk
                     try:
                         while True:
-                            work_q.get_nowait()
-                        # fallthrough
+                            work_q.get_nowait()  # fallthrough
+                        # noqa
                     except asyncio.QueueEmpty:
                         pass
                     try:
@@ -666,23 +722,27 @@ async def handle_conn(ws: WebSocketServerProtocol):
                 data = json.loads(msg)
             except Exception:
                 continue
-            t = data.get("t")
 
+            t = data.get("t")
             if t == "hello":
                 session_id = data.get("sessionId") or session_id
                 user_id = data.get("userId") or user_id
                 rate = int(data.get("rate", 16000))
                 ch = int(data.get("ch", 1))
+
                 # ✅ Respect client language hint: 'bn' | 'en' | 'auto'
                 lang_hint = data.get("lang")
                 if isinstance(lang_hint, str) and lang_hint:
                     v = lang_hint.strip().lower()
                     session_lang = None if v == "auto" else v  # None => auto
+
                 tenant_hint = data.get("tenant") or tenant_hint
                 branch_hint = data.get("branch") or branch_hint
                 channel_hint = data.get("channel") or channel_hint
 
-                print(f"[ai-waiter-service] hello session={session_id} user={user_id} rate={rate} ch={ch} lang={session_lang or 'auto'}")
+                print(
+                    f"[ai-waiter-service] hello session={session_id} user={user_id} rate={rate} ch={ch} lang={session_lang or 'auto'}"
+                )
                 print(f"[ai-waiter-service] context: tenant={tenant_hint} branch={branch_hint} channel={channel_hint}")
                 continue
 
@@ -702,9 +762,10 @@ async def handle_conn(ws: WebSocketServerProtocol):
             if last:
                 all_pcm += last
                 cap_buffer()
-
             final_bytes = bytes(all_pcm) if all_pcm else b""
-            print(f"[ai-waiter-service] finalization: total_bytes={len(final_bytes)}, last_partial='{last_partial_text}' lang={session_lang or 'auto'}")
+            print(
+                f"[ai-waiter-service] finalization: total_bytes={len(final_bytes)}, last_partial='{last_partial_text}' lang={session_lang or 'auto'}"
+            )
 
             selected_text: Optional[str] = None
             selected_segs: List[Tuple[float, float]] = []
@@ -756,7 +817,7 @@ async def handle_conn(ws: WebSocketServerProtocol):
                         )
                         if det:
                             last_detected_lang = det
-                            print(f"[ai-waiter-service] detected_lang(full)={last_detected_lang}")
+                        print(f"[ai-waiter-service] detected_lang(full)={last_detected_lang}")
                         if local_text:
                             selected_text = local_text
                             selected_segs = segs
@@ -766,19 +827,30 @@ async def handle_conn(ws: WebSocketServerProtocol):
             if selected_text and not ws.closed:
                 # 🔤 LIVE MENU SNAPSHOT (tenant-scoped, compact)
                 snapshot = fetch_menu_snapshot(tenant_hint, limit=MENU_SNAPSHOT_MAX)
-                vocab = build_vocab_from_snapshot(snapshot)
+                print(f"[ai-waiter-service] snapshot items={len(snapshot.get('items', []))}")
+                try:
+                    vocab = list(build_vocab_from_snapshot(snapshot))
+                except Exception as e:
+                    print("[ai-waiter-service] ⚠️ build_vocab_from_snapshot failed:", e)
+                    vocab = set()
 
                 # 🔧 NORMALIZE: exact → phonetic → fuzzy (with live vocab)
-                norm_text, changes = normalize_text(selected_text, vocab=vocab, fuzzy_threshold=FUZZY_THRESHOLD)
+                norm_text, changes = normalize_text(
+                    selected_text, vocab=vocab, fuzzy_threshold=FUZZY_THRESHOLD
+                )
 
-                # --------- NEW: Deterministic pre-match path ---------
-                matches = _match_in_snapshot(norm_text, snapshot)
-                if not matches:
-                    matches = _db_fallback_search(tenant_hint, norm_text, limit=10)
+                # --------- Deterministic pre-match path (guarded) ---------
+                matches: List[Dict[str, Any]] = []
+                if AI_DET_ENABLE:
+                    matches = _match_in_snapshot(norm_text, snapshot)
+                    if not matches:
+                        matches = _db_fallback_search(tenant_hint, norm_text, limit=10)
 
-                if matches:
-                    # Compose deterministic reply and send immediately (skip LLM)
-                    reply_text = _compose_availability_reply(matches, (session_lang or last_detected_lang or "en"))
+                if AI_DET_ENABLE and matches:
+                    # Compose deterministic reply
+                    reply_text = _compose_availability_reply(
+                        matches, (session_lang or last_detected_lang or "en")
+                    )
                     meta = {
                         "model": "deterministic",
                         "language": (session_lang or last_detected_lang or "en"),
@@ -787,100 +859,145 @@ async def handle_conn(ws: WebSocketServerProtocol):
                             {"name": m.get("name"), "itemId": m.get("id"), "price": m.get("price")}
                             for m in matches[:5]
                         ],
-                        "tenant": tenant_hint, "branch": branch_hint, "channel": channel_hint,
+                        "tenant": tenant_hint,
+                        "branch": branch_hint,
+                        "channel": channel_hint,
                         "fallback": False,
-                        "source": "snapshot" if matches and matches[0] in snapshot.get("items", []) else "db"
+                        "source": "snapshot",
                     }
                     try:
-                        await ws.send(json.dumps({
-                            "t": "ai_reply",
-                            "replyText": reply_text,
-                            "meta": {
-                                **meta,
-                                "normalizer": {
-                                    "changed": [{"from": a, "to": b, "score": s} for (a, b, s) in changes]
+                        await ws.send(
+                            json.dumps(
+                                {
+                                    "t": "ai_reply",
+                                    "replyText": reply_text,
+                                    "meta": {
+                                        **meta,
+                                        "normalizer": {
+                                            "changed": [
+                                                {"from": a, "to": b, "score": s} for (a, b, s) in changes
+                                            ]
+                                        },
+                                    },
                                 }
-                            },
-                        }))
+                            )
+                        )
                         print("[ai-waiter-service] ✅ deterministic ai_reply sent")
                     except Exception as e:
                         print("[ai-waiter-service] ❌ failed to send deterministic ai_reply:", e)
 
                     # Persist transcript + deterministic answer
                     try:
-                        await writer_q.put({
-                            "user": user_id,
-                            "session": session_id,
-                            "text": selected_text,
-                            "text_norm": norm_text,
-                            "norm_changes": changes,
-                            "segments": [],  # not tracking per-word here
-                            "ts": datetime.utcnow(),
-                            "status": "new",
-                            "engine": "deterministic",
-                            "ai": {"replyText": reply_text, "meta": meta},
-                            "tenant": tenant_hint,
-                            "menu_snapshot_size": len(snapshot.get("items", [])),
-                        })
+                        await writer_q.put(
+                            {
+                                "user": user_id,
+                                "session": session_id,
+                                "text": selected_text,
+                                "text_norm": norm_text,
+                                "norm_changes": changes,
+                                "segments": [],  # not tracking per-word here
+                                "ts": datetime.utcnow(),
+                                "status": "new",
+                                "engine": "deterministic",
+                                "ai": {"replyText": reply_text, "meta": meta},
+                                "tenant": tenant_hint,
+                                "menu_snapshot_size": len(snapshot.get("items", [])),
+                            }
+                        )
+                    except Exception as e:
+                        print("[ai-waiter-service] writer queue error:", e)
+
+                    # 🔧 CONTROL: only stop here if you *want* to
+                    if AI_DET_SHORTCIRCUIT:
+                        final_sent = True
+                        return
+
+                # --------- Robust "Did you mean" flow (guarded) ---------
+                if AI_DYM_ENABLE:
+                    try:
+                        robust = robust_find(
+                            norm_text,
+                            snapshot,
+                            lang_hint=(session_lang or last_detected_lang),
+                            max_results=8,
+                        )
+                        if robust and robust.get("matches"):
+                            await ws.send(
+                                json.dumps(
+                                    {
+                                        "t": "did_you_mean",
+                                        "strategy": robust.get("strategy"),
+                                        "category": robust.get("category_hit"),
+                                        "options": robust["matches"],  # each: id,name,score,why,available,price,category
+                                    }
+                                )
+                            )
+                            print(f"[ai-waiter-service] ✅ did_you_mean sent ({len(robust['matches'])} options)")
+                    except Exception as e:
+                        print("[ai-waiter-service] ⚠️ robust_find failed:", e)
+                # -----------------------------------------------------
+
+                # ---------------- LLM path (guarded) ----------------
+                if AI_LLM_ENABLE:
+                    # Tell client we're about to think (so UI can show "thinking")
+                    try:
+                        if not ws.closed:
+                            await ws.send(json.dumps({"t": "ai_reply_pending"}))
+                    except Exception:
+                        pass
+
+                    print("[ai-waiter-service] 🧠 starting brain task…")
+                    last_ai = {"replyText": "", "meta": {}}
+                    try:
+                        last_ai = await call_brain_and_push(
+                            ws,
+                            transcript=selected_text,
+                            transcript_norm=norm_text,
+                            norm_changes=changes,
+                            tenant=tenant_hint,
+                            branch=branch_hint,
+                            channel=channel_hint,
+                            session_id=session_id,
+                            user_id=user_id,
+                            menu_snapshot=snapshot,
+                        )
+                        print("[ai-waiter-service] 🧠 brain task completed")
+                    except Exception as e:
+                        print(f"[ai-waiter-service] ❌ brain task failed: {e}")
+                        import traceback
+
+                        traceback.print_exc()
+
+                    try:
+                        await writer_q.put(
+                            {
+                                "user": user_id,
+                                "session": session_id,
+                                "text": selected_text,
+                                "text_norm": norm_text,
+                                "norm_changes": changes,
+                                "segments": [],
+                                "ts": datetime.utcnow(),
+                                "status": "new",
+                                "engine": "groq" if groq_used else ("local-partial" if selected_segs == [] else "local-full"),
+                                "ai": last_ai,  # ← store AI reply+meta for export/finetune
+                                "tenant": tenant_hint,
+                                "menu_snapshot_size": len(snapshot.get("items", [])),
+                            }
+                        )
                     except Exception as e:
                         print("[ai-waiter-service] writer queue error:", e)
 
                     final_sent = True
-                    # Short-circuit: do NOT call LLM
-                    return
-
-                # ---------------- LLM path (unchanged) ----------------
-                # Tell client we're about to think (so UI can show "thinking")
-                try:
-                    if not ws.closed:
-                        await ws.send(json.dumps({"t": "ai_reply_pending"}))
-                except Exception:
-                    pass
-
-                print("[ai-waiter-service] 🧠 starting brain task…")
-                last_ai = {"replyText": "", "meta": {}}
-                try:
-                    last_ai = await call_brain_and_push(
-                        ws,
-                        transcript=selected_text,
-                        transcript_norm=norm_text,
-                        norm_changes=changes,
-                        tenant=tenant_hint,
-                        branch=branch_hint,
-                        channel=channel_hint,
-                        session_id=session_id,
-                        user_id=user_id,
-                        menu_snapshot=snapshot
-                    )
-                    print("[ai-waiter-service] 🧠 brain task completed")
-                except Exception as e:
-                    print(f"[ai-waiter-service] ❌ brain task failed: {e}")
-                    import traceback; traceback.print_exc()
-
-                try:
-                    await writer_q.put({
-                        "user": user_id,
-                        "session": session_id,
-                        "text": selected_text,
-                        "text_norm": norm_text,
-                        "norm_changes": changes,
-                        "segments": [],
-                        "ts": datetime.utcnow(),
-                        "status": "new",
-                        "engine": "groq" if groq_used else ("local-partial" if selected_segs == [] else "local-full"),
-                        "ai": last_ai,                 # ← store AI reply+meta for export/finetune
-                        "tenant": tenant_hint,
-                        "menu_snapshot_size": len(snapshot.get("items", [])),
-                    })
-                except Exception as e:
-                    print("[ai-waiter-service] writer queue error:", e)
-                final_sent = True
+                else:
+                    print("[ai-waiter-service] ⚠️ AI_LLM_ENABLE=0 → skipping LLM tier")
             else:
                 print("[ai-waiter-service] ⚠️ no usable final produced")
-
     except Exception as e:
         print(f"[ai-waiter-service] error in handle_conn: {e}")
-        import traceback; traceback.print_exc()
+        import traceback
+
+        traceback.print_exc()
     finally:
         closed.set()
         try:
@@ -890,12 +1007,14 @@ async def handle_conn(ws: WebSocketServerProtocol):
         await asyncio.gather(wtask, return_exceptions=True)
         print("[ai-waiter-service] connection handler finished")
 
+
 async def main():
     global WRITER_TASK
     WRITER_TASK = asyncio.create_task(writer())
 
     # Graceful shutdown on SIGTERM/SIGINT (Docker sends SIGTERM)
     import signal
+
     loop = asyncio.get_running_loop()
 
     def _schedule_shutdown():
@@ -910,19 +1029,17 @@ async def main():
 
     port = int(os.environ.get("PORT", "7071"))
     async with websockets.serve(
-        handle_conn, "0.0.0.0", port,
-        max_size=None,
-        ping_timeout=30,
-        ping_interval=20,
-        close_timeout=10
+        handle_conn, "0.0.0.0", port, max_size=None, ping_timeout=30, ping_interval=20, close_timeout=10
     ):
         print(f"[ai-waiter-service] WS listening on :{port}")
         await asyncio.Future()
+
 
 async def shutdown():
     await writer_q.put(None)
     if WRITER_TASK:
         await WRITER_TASK
+
 
 if __name__ == "__main__":
     try:

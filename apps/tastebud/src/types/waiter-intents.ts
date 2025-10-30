@@ -21,6 +21,26 @@ export type WaiterSuggestion = {
   meta?: Record<string, unknown>;
 };
 
+/** Option shown in the Did-You-Mean modal (robust fallback). */
+export type DidYouMeanOption = {
+  /** Canonical item id (required for selection). */
+  id: string;
+  /** Canonical display name. */
+  name: string;
+  /** Optional relevance score (0..1 or any scale your server uses). */
+  score?: number;
+  /** Short explanation like "phonetic", "alias", "category: burger", etc. */
+  why?: string;
+  /** Availability flag. */
+  available?: boolean;
+  /** Price to show (BDT or your app’s unit). */
+  price?: number;
+  /** Category name (flattened for UI). */
+  category?: string | null;
+  /** Allow any additional server-provided fields. */
+  [key: string]: unknown;
+};
+
 /** Meta shape that the server attaches to `ai_reply`. */
 export type AiReplyMeta = {
   /** Classified intent for client-side routing. */
@@ -42,6 +62,16 @@ export type AiReplyMeta = {
   error?: string;
   /** Whether the reply is a fallback/apology. */
   fallback?: boolean;
+
+  /**
+   * 🔎 Robust fallback hints for Did-You-Mean.
+   * Any of these can be populated by the server; the client only checks presence/non-empty.
+   */
+  didYouMean?: DidYouMeanOption[] | true;
+  did_you_mean?: DidYouMeanOption[];   // alt key
+  fallbackItems?: DidYouMeanOption[];  // alt key
+  robustOptions?: DidYouMeanOption[];  // alt key
+
   /** Allow future-safe passthroughs without type errors. */
   [key: string]: unknown;
 };
@@ -59,7 +89,20 @@ export type WsInboundMessage =
     }
   | { t: 'ai_reply_pending' }
   | { t: 'ai_reply'; replyText: string; meta?: AiReplyMeta }
-  | { t: 'ai_reply_error'; message?: string };
+  | { t: 'ai_reply_error'; message?: string }
+  /**
+   * Robust “Did you mean?” push from server (pre-LLM or ultimate fallback).
+   * This is separate from ai_reply and can be shown immediately.
+   */
+  | {
+      t: 'did_you_mean';
+      /** Ranked options to surface in the modal. */
+      options: DidYouMeanOption[];
+      /** Which strategy matched (debug/telemetry). */
+      strategy?: string;
+      /** Category-level hit, if any (e.g., "burger"). */
+      category?: string | null;
+    };
 
 /** Client → WS control messages (hello/end). */
 export type WsOutboundMessage =
@@ -78,14 +121,15 @@ export type WsOutboundMessage =
   | { t: 'end' };
 
 /** UI contexts we can be in on the client. */
-export type WaiterUiContext = 'home' | 'suggestions' | 'tray' | 'menu';
+export type WaiterUiContext = 'home' | 'suggestions' | 'tray' | 'menu' | 'didYouMean';
 
 /** Actions our state machine can decide for the UI. */
 export type WaiterUiAction =
   | 'stay'                // remain where we are
   | 'openSuggestions'     // show SuggestionsModal
   | 'openTray'            // show TrayModal (order/cart)
-  | 'goMenu';             // navigate to /menu
+  | 'goMenu'              // navigate to /menu
+  | 'openDidYouMean';     // show DidYouMeanModal
 
 /** Convenience: a normalized payload after parsing an ai_reply. */
 export type ParsedAiReply = {
