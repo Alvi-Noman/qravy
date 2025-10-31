@@ -21,12 +21,22 @@ export type WaiterSuggestion = {
   meta?: Record<string, unknown>;
 };
 
+/** ✅ Structured order item coming from the brain. */
+export type AiOrderItem = {
+  name: string;
+  itemId?: string;
+  quantity?: number;
+  price?: number;
+};
+
 /** Meta shape that the server attaches to `ai_reply`. */
 export type AiReplyMeta = {
   /** Classified intent for client-side routing. */
   intent?: WaiterIntent;
   /** When intent === 'suggestions', optional list of suggested items. */
   suggestions?: WaiterSuggestion[];
+  /** When intent === 'order', optional list of ordered items. */
+  items?: AiOrderItem[];
   /** Language hint used by brain (kept loose). */
   lang?: 'bn' | 'en' | string;
   /** Debug/trace fields (pass-throughs). */
@@ -82,10 +92,10 @@ export type WaiterUiContext = 'home' | 'suggestions' | 'tray' | 'menu';
 
 /** Actions our state machine can decide for the UI. */
 export type WaiterUiAction =
-  | 'stay'                // remain where we are
-  | 'openSuggestions'     // show SuggestionsModal
-  | 'openTray'            // show TrayModal (order/cart)
-  | 'goMenu';             // navigate to /menu
+  | 'stay' // remain where we are
+  | 'openSuggestions' // show SuggestionsModal
+  | 'openTray' // show TrayModal (order/cart)
+  | 'goMenu'; // navigate to /menu
 
 /** Convenience: a normalized payload after parsing an ai_reply. */
 export type ParsedAiReply = {

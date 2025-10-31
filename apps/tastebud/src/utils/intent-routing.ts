@@ -18,10 +18,23 @@ import type {
 /** Sanitize any raw string into a supported WaiterIntent. */
 export function normalizeIntent(raw?: unknown): WaiterIntent {
   const v = String(raw ?? '').trim().toLowerCase();
+
+  // existing canonical intents
   if (v === 'suggestions') return 'suggestions';
   if (v === 'order' || v === 'ordering' || v === 'cart' || v === 'checkout') return 'order';
   if (v === 'menu' || v === 'see_menu' || v === 'browse') return 'menu';
   if (v === 'chitchat' || v === 'smalltalk' || v === 'general') return 'chitchat';
+
+  // 🔧 map backend variants → canonical intents
+  // deterministic server path (treat availability like chitchat so it doesn't open tray)
+  if (v === 'availability_check' || v === 'availability') return 'chitchat';
+
+  // model variants
+  if (v === 'menu_inquiry' || v === 'menuinquiry' || v === 'menu_query') return 'menu';
+  if (v === 'recommendation' || v === 'recommendations' || v === 'recommend' || v === 'recs')
+    return 'suggestions';
+
+  // unknown → safe default
   return 'chitchat';
 }
 
@@ -65,7 +78,12 @@ export function parseAiReply(msg: WsInboundMessage): ParsedAiReply | null {
   const meta: AiReplyMeta = msg.meta ?? {};
   const replyText = (msg.replyText || '').trim();
 
-  const intent = normalizeIntent(meta.intent ?? localHeuristicIntent(replyText));
+  // 🔒 Safety net: if items[] present, treat as 'order' even if intent is missing/odd.
+  const hasItems =
+    Array.isArray((meta as any).items) && ((meta as any).items as unknown[]).length > 0;
+
+  const intent = normalizeIntent(meta.intent ?? (hasItems ? 'order' : localHeuristicIntent(replyText)));
+
   const suggestions = Array.isArray(meta.suggestions)
     ? (meta.suggestions as WaiterSuggestion[])
     : [];

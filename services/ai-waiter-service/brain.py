@@ -69,7 +69,11 @@ def _safe_snip(s: str | bytes, n: int = 800) -> str:
 # One permanent system line: ask for strict JSON. (Behavior lives in fine-tune.)
 _SYSTEM = (
     "Return ONLY a single valid JSON object with keys: "
-    'replyText, intent, language, and optional items[], notes. No markdown.'
+    "replyText, intent, language, and optional items[], notes. "
+    "Valid intents: order | menu | suggestions | chitchat. "
+    "For intent 'order', include items as an array of objects with "
+    "{name, itemId?, quantity?}. When you can match to [MenuHint], include itemId. "
+    "No markdown."
 )
 
 def _build_user_content(
@@ -219,7 +223,26 @@ async def generate_reply(
         # Minimal normalization
         reply_text = str(obj.get("replyText") or "").strip()
         language = (obj.get("language") or "").strip() or _guess_lang(reply_text or transcript)
-        intent = (obj.get("intent") or "").strip() or "chitchat"
+
+        # 🔧 Normalize intent to canonical 4
+        intent_raw = (obj.get("intent") or "").strip().lower()
+        intent_map = {
+            "order_food": "order",
+            "add_to_cart": "order",
+            "place_order": "order",
+            "availability_check": "order",
+            "availability": "order",
+            "menuinquiry": "menu",
+            "menu_inquiry": "menu",
+            "menu_query": "menu",
+            "recommendation": "suggestions",
+            "recommendations": "suggestions",
+            "recommend": "suggestions",
+            "recs": "suggestions",
+        }
+        intent = intent_map.get(intent_raw, intent_raw or "chitchat")
+        if intent not in {"order", "menu", "suggestions", "chitchat"}:
+            intent = "chitchat"
 
         return {
             "replyText": reply_text,

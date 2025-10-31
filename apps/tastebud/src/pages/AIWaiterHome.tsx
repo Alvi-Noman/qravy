@@ -7,6 +7,11 @@ import SuggestionsModal from '../components/ai-waiter/SuggestionsModal';
 import TrayModal from '../components/ai-waiter/TrayModal';
 import type { WaiterIntent, AiReplyMeta } from '../types/waiter-intents';
 
+// 🧩 NEW imports
+import { buildMenuIndex, resolveItemIdByName } from '../utils/item-resolver';
+import { useCart } from '../contexts/CartContext';
+import { routeFromAiReply } from '../utils/intent-routing';
+
 type UIMode = 'idle' | 'thinking' | 'talking';
 
 export default function AiWaiterHome() {
@@ -56,11 +61,11 @@ export default function AiWaiterHome() {
   const [listening, setListening] = useState(false);
   const [finals, setFinals] = useState<string[]>([]);
   const [aiReplies, setAiReplies] = useState<string[]>([]);
-  const [level, setLevel] = useState(0); // 0..1
+  const [level, setLevel] = useState(0);
 
   const [uiMode, setUiMode] = useState<UIMode>('idle');
 
-  // Language toggle: default BN, user can switch to EN (or AUTO if you like)
+  // Language toggle
   const [selectedLang, setSelectedLang] = useState<'auto' | 'bn' | 'en'>('bn');
 
   const stoppingRef = useRef<boolean>(false);
@@ -72,35 +77,41 @@ export default function AiWaiterHome() {
   const aiSeenRef = useRef<boolean>(false);
   const pendingAiResolverRef = useRef<null | ((ok: boolean) => void)>(null);
 
-  // ===== Intent-driven UI contexts (no voice back to home) =====
+  // ===== Intent-driven UI contexts =====
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [showTray, setShowTray] = useState(false);
 
-  // Helpers to open/close contexts (manual close only)
+  // Helpers to open/close contexts
   const openSuggestions = () => { setShowTray(false); setShowSuggestions(true); };
   const openTray = () => { setShowSuggestions(false); setShowTray(true); };
   const goMenu = () => { setShowSuggestions(false); setShowTray(false); navigate(seeMenuHref); };
 
+  // 🧩 NEW: cart + menuIndex
+  const { addItem } = useCart();
+  const [menuIndex, setMenuIndex] = useState<ReturnType<typeof buildMenuIndex> | null>(null);
+  const [storeItems, setStoreItems] = useState<any[]>([]);
+  useEffect(() => {
+    // populate from your storefront context or API
+    if (storeItems?.length) setMenuIndex(buildMenuIndex(storeItems));
+  }, [storeItems]);
+
   function handleIntentRouting(intent: WaiterIntent | undefined) {
-    // Respect current context; no voice auto-close to home.
     if (!intent) return;
 
     if (showSuggestions) {
       if (intent === 'order') return openTray();
       if (intent === 'menu') return goMenu();
-      return; // suggestions/chitchat => stay
+      return;
     }
 
     if (showTray) {
       if (intent === 'menu') return goMenu();
-      return; // remain in Tray for other intents
+      return;
     }
 
-    // From home (no modal yet):
     if (intent === 'suggestions') return openSuggestions();
     if (intent === 'order') return openTray();
     if (intent === 'menu') return goMenu();
-    // chitchat => stay home
   }
 
   function waitForFinal(timeoutMs = 8000) {
@@ -124,7 +135,6 @@ export default function AiWaiterHome() {
     });
   }
 
-  // Extended to 8000ms to outlast brain timeout (~4s) with cushion
   function waitForAiReply(timeoutMs = 8000) {
     if (pendingAiResolverRef.current) {
       try { pendingAiResolverRef.current(false); } catch {}
@@ -146,14 +156,13 @@ export default function AiWaiterHome() {
     });
   }
 
-  // start measuring mic level
   const startLevelMeter = (analyser: AnalyserNode) => {
     const timeData = new Uint8Array(analyser.fftSize);
     const tick = () => {
       analyser.getByteTimeDomainData(timeData);
       let sum = 0;
       for (let i = 0; i < timeData.length; i++) {
-        const v = (timeData[i] - 128) / 128; // -1..1
+        const v = (timeData[i] - 128) / 128;
         sum += v * v;
       }
       const rms = Math.sqrt(sum / timeData.length);
@@ -190,14 +199,12 @@ export default function AiWaiterHome() {
       const src = ctx.createMediaStreamSource(stream);
       sourceRef.current = src;
 
-      // analyser for live level
       const analyser = ctx.createAnalyser();
       analyser.fftSize = 1024;
       src.connect(analyser);
       analyserRef.current = analyser;
       startLevelMeter(analyser);
 
-      // worklet for streaming
       const node = new AudioWorkletNode(ctx, 'capture-processor', { numberOfInputs: 1, numberOfOutputs: 0 });
       nodeRef.current = node;
 
@@ -215,7 +222,6 @@ export default function AiWaiterHome() {
           userId: 'guest',
           rate: 16000,
           ch: 1,
-          // ✅ Send the user-selected language: 'bn' | 'en' | 'auto'
           lang: selectedLang,
           tenant: resolvedSub ?? null,
           branch: resolvedBranch ?? null,
@@ -248,9 +254,28 @@ export default function AiWaiterHome() {
             pendingAiResolverRef.current?.(true);
             setUiMode('talking');
 
-            // 🔎 Intent-driven routing (never voice-close a modal)
+            // 🧩 Enhanced intent logic
             const meta: AiReplyMeta | undefined = msg.meta;
             const intent = (meta?.intent ?? 'chitchat') as WaiterIntent;
+
+            if (intent === 'order' && menuIndex) {
+              const items = Array.isArray(meta?.items) ? meta.items : [];
+              for (const it of items) {
+                let itemId = (it as any).itemId;
+                const name = (it as any).name;
+                const qty = Math.max(1, Number((it as any).quantity ?? 1));
+
+                if (!itemId && name) {
+                  const found = resolveItemIdByName(menuIndex, name);
+                  if (found) itemId = found;
+                }
+
+                if (itemId) addItem({ id: itemId, name: name ?? '', qty });
+              }
+              openTray();
+              return;
+            }
+
             handleIntentRouting(intent);
             return;
           }
@@ -280,7 +305,6 @@ export default function AiWaiterHome() {
         if (ws.readyState === WebSocket.OPEN) ws.send(ab);
       };
 
-      // keep node alive
       src.connect(node);
     } catch (e) {
       console.error(e);
@@ -295,20 +319,12 @@ export default function AiWaiterHome() {
       if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
         wsRef.current.send(JSON.stringify({ t: 'end' }));
         if (!gotFinal) gotFinal = await waitForFinal(8000);
-
-        // wait a bit for the server's brain task to push ai_reply
-        if (!aiSeenRef.current) {
-          await waitForAiReply(8000);
-        }
-
+        if (!aiSeenRef.current) await waitForAiReply(8000);
         await new Promise((r) => setTimeout(r, 100));
       }
     } catch (e) { console.error(e); }
 
-    // tear down analyser + level loop
     try { stopLevelMeter(); } catch {}
-
-    // tear down audio graph
     try { sourceRef.current?.disconnect(); } catch {}
     sourceRef.current = null;
     try { nodeRef.current?.port.close(); } catch {}
@@ -318,8 +334,6 @@ export default function AiWaiterHome() {
     streamRef.current = null;
     try { await ctxRef.current?.close(); } catch {}
     ctxRef.current = null;
-
-    // close ws
     try { wsRef.current?.close(); } catch {}
     wsRef.current = null;
 
@@ -327,19 +341,15 @@ export default function AiWaiterHome() {
     setUiMode('idle');
   }
 
-  // ===== tokens =====
+  // ===== visuals =====
   const ACCENT = '#FA2851';
   const bgWhite = '#FFFFFF';
   const bgPink = '#FFF0F3';
-  const haloColor = '#FFE9ED';
 
-  // Temporary buttons styling helpers
   const chipBase = 'px-3 py-1.5 rounded-full text-sm font-medium border transition-all active:scale-95';
   const activeChip = 'bg-[#FA2851] text-white border-[#FA2851] shadow-[0_6px_20px_rgba(250,40,81,0.25)]';
   const inactiveChip = 'bg-white/80 text-gray-700 border-white/70 backdrop-blur hover:bg-white';
 
-  // Map our internal UI state to the MicHalo's accepted prop type:
-  // MicHalo likely expects: 'idle' | 'listening' | 'talking'
   type HaloVisualMode = 'idle' | 'listening' | 'talking';
   const haloVisualMode: HaloVisualMode =
     uiMode === 'talking'
@@ -347,7 +357,6 @@ export default function AiWaiterHome() {
       : listening
       ? 'listening'
       : 'idle';
-  // ('thinking' is visualized as 'listening' ring, which keeps types happy)
 
   return (
     <div
@@ -357,41 +366,25 @@ export default function AiWaiterHome() {
         background: `linear-gradient(180deg, ${bgWhite} 70%, ${bgPink} 100%)`,
       }}
     >
-      {/* TOP-LEFT TEMP MODE BUTTONS */}
+      {/* UI Controls */}
       <div className="fixed top-4 left-4 z-50 flex items-center gap-2">
-        <button
-          type="button"
-          onClick={() => setUiMode((m) => (m === 'thinking' ? 'idle' : 'thinking'))}
-          className={`${chipBase} ${uiMode === 'thinking' ? activeChip : inactiveChip}`}
-        >
-          Thinking
-        </button>
-        <button
-          type="button"
-          onClick={() => setUiMode((m) => (m === 'talking' ? 'idle' : 'talking'))}
-          className={`${chipBase} ${uiMode === 'talking' ? activeChip : inactiveChip}`}
-        >
-          Talking
-        </button>
+        <button type="button" onClick={() => setUiMode((m) => (m === 'thinking' ? 'idle' : 'thinking'))}
+          className={`${chipBase} ${uiMode === 'thinking' ? activeChip : inactiveChip}`}>Thinking</button>
+        <button type="button" onClick={() => setUiMode((m) => (m === 'talking' ? 'idle' : 'talking'))}
+          className={`${chipBase} ${uiMode === 'talking' ? activeChip : inactiveChip}`}>Talking</button>
       </div>
 
-      {/* Language switcher (bottom-left) */}
+      {/* Language switcher */}
       <div className="fixed bottom-4 left-4 z-50 flex gap-2">
         {(['auto','bn','en'] as const).map((l) => (
-          <button
-            key={l}
-            onClick={() => setSelectedLang(l)}
+          <button key={l} onClick={() => setSelectedLang(l)}
             className={`px-3 py-1 rounded-full text-sm font-medium transition ${
               selectedLang === l ? 'bg-[#FA2851] text-white' : 'bg-white/90 text-gray-700 border border-gray-200'
-            }`}
-            title="Language hint sent to ASR"
-          >
-            {l.toUpperCase()}
-          </button>
+            }`}>{l.toUpperCase()}</button>
         ))}
       </div>
 
-      {/* TEMP transcript card (top-right) */}
+      {/* Transcript & AI cards */}
       <div className="fixed right-4 top-4 z-50 w-64 rounded-xl border border-white/20 bg-white/60 backdrop-blur-md p-3 shadow-sm">
         <div className="mb-1 flex items-center justify-between">
           <span className="text-xs font-semibold text-gray-800">Finalized</span>
@@ -405,7 +398,6 @@ export default function AiWaiterHome() {
         </div>
       </div>
 
-      {/* AI Reply card */}
       <div className="fixed right-4 top-[190px] z-50 w-64 rounded-xl border border-white/20 bg-white/60 backdrop-blur-md p-3 shadow-sm">
         <div className="mb-1 flex items-center justify-between">
           <span className="text-xs font-semibold text-gray-800">AI Reply</span>
@@ -418,59 +410,38 @@ export default function AiWaiterHome() {
         </div>
       </div>
 
-      {/* Heading */}
+      {/* Main hero */}
       <div className="pt-40 sm:pt-48 text-left w-full max-w-[400px]">
         <p className="text-[30px] md:text-[40px] leading-[1.6] font-medium text-[#2D2D2D]">
-          আসসালামু আলাইকুম<br/>আপনি কি কোন ফুড অর্ডার<br/>করতে চাইছেন? নাকি আমি<br/>আপনাকে কিছু সাজেস্ট<br/>করবো?
+          আসসালামু আলাইকুম<br />আপনি কি কোন ফুড অর্ডার<br />করতে চাইছেন? নাকি আমি<br />আপনাকে কিছু সাজেস্ট<br />করবো?
         </p>
       </div>
 
-      {/* Mic + Halo + See Menu */}
+      {/* Mic + Menu */}
       <div className="relative flex flex-col items-center justify-center">
         <MicHalo size={600} color={'#FFE9ED'} opacity={0.6} accentColor={'#FA2851'} mode={haloVisualMode} level={level} />
-
         {!listening ? (
-          <button
-            onClick={startListening}
+          <button onClick={startListening}
             className="relative h-[120px] w-[120px] rounded-full flex items-center justify-center transition-all duration-300 active:scale-95 z-[2]"
-            style={{ background: '#FA2851', boxShadow: '0 8px 24px rgba(250,40,81,0.3)' }}
-            aria-label="Start voice"
-          >
-            <svg width="40" height="40" viewBox="0 0 24 24" fill="#fff" aria-hidden="true">
-              <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c1.66 0 3 1.34 3 3z" />
-              <path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-6.92h-2z" />
-            </svg>
+            style={{ background: '#FA2851', boxShadow: '0 8px 24px rgba(250,40,81,0.3)' }} aria-label="Start voice">
+            <svg width="40" height="40" viewBox="0 0 24 24" fill="#fff"><path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c1.66 0 3 1.34 3 3z"/><path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-6.92h-2z"/></svg>
           </button>
         ) : (
-          <button
-            onClick={stopListening}
+          <button onClick={stopListening}
             className="relative h-[120px] w-[120px] rounded-full flex items-center justify-center transition-all duration-300 active:scale-95 z-[2]"
-            style={{ background: '#FA2851', boxShadow: '0 8px 24px rgba(250,40,81,0.3)' }}
-            aria-label="Stop voice"
-          >
-            <svg width="42" height="42" viewBox="0 0 24 24" fill="#fff" aria-hidden="true">
-              <rect x="7" y="7" width="10" height="10" rx="2" />
-            </svg>
+            style={{ background: '#FA2851', boxShadow: '0 8px 24px rgba(250,40,81,0.3)' }} aria-label="Stop voice">
+            <svg width="42" height="42" viewBox="0 0 24 24" fill="#fff"><rect x="7" y="7" width="10" height="10" rx="2"/></svg>
           </button>
         )}
-
-        <Link
-          to={seeMenuHref}
-          className="mt-6 z-[3] px-6 py-3 rounded-full text-[16px] font-medium bg-white/95 text-[#FA2851] border border-white/80 shadow-[0_4px_14px_rgba(0,0,0,0.06)] backdrop-blur-xl transition-transform duration-300 hover:scale-[1.03] active:scale-95"
-        >
+        <Link to={seeMenuHref}
+          className="mt-6 z-[3] px-6 py-3 rounded-full text-[16px] font-medium bg-white/95 text-[#FA2851] border border-white/80 shadow-[0_4px_14px_rgba(0,0,0,0.06)] backdrop-blur-xl transition-transform duration-300 hover:scale-[1.03] active:scale-95">
           See Menu
         </Link>
       </div>
 
-      {/* ===== Modals (manual close only; voice never closes them) ===== */}
-      <SuggestionsModal
-        open={showSuggestions}
-        onClose={() => setShowSuggestions(false)}
-      />
-      <TrayModal
-        open={showTray}
-        onClose={() => setShowTray(false)}
-      />
+      {/* Modals */}
+      <SuggestionsModal open={showSuggestions} onClose={() => setShowSuggestions(false)} />
+      <TrayModal open={showTray} onClose={() => setShowTray(false)} />
     </div>
   );
 }
