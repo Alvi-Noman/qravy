@@ -9,8 +9,9 @@ import type { WaiterIntent, AiReplyMeta } from '../types/waiter-intents';
 
 // 🧩 NEW imports
 import { buildMenuIndex, resolveItemIdByName } from '../utils/item-resolver';
-import { useCart } from '../contexts/CartContext';
+import { useCart } from '../context/CartContext';
 import { routeFromAiReply } from '../utils/intent-routing';
+import { usePublicMenu } from '../hooks/usePublicMenu'; // ✅ added
 
 type UIMode = 'idle' | 'thinking' | 'talking';
 
@@ -86,14 +87,18 @@ export default function AiWaiterHome() {
   const openTray = () => { setShowSuggestions(false); setShowTray(true); };
   const goMenu = () => { setShowSuggestions(false); setShowTray(false); navigate(seeMenuHref); };
 
-  // 🧩 NEW: cart + menuIndex
+  // 🧩 NEW: menu + cart
   const { addItem } = useCart();
+  const { items: storeItems } = usePublicMenu(resolvedSub, resolvedBranch, 'dine-in'); // ✅ replace manual fetch
   const [menuIndex, setMenuIndex] = useState<ReturnType<typeof buildMenuIndex> | null>(null);
-  const [storeItems, setStoreItems] = useState<any[]>([]);
+
   useEffect(() => {
-    // populate from your storefront context or API
     if (storeItems?.length) setMenuIndex(buildMenuIndex(storeItems));
   }, [storeItems]);
+
+  // ✅ NEW: carry items to SuggestionsModal
+  type SuggestedItem = { id?: string; name?: string; price?: number; imageUrl?: string };
+  const [suggestedItems, setSuggestedItems] = useState<SuggestedItem[]>([]);
 
   function handleIntentRouting(intent: WaiterIntent | undefined) {
     if (!intent) return;
@@ -181,6 +186,105 @@ export default function AiWaiterHome() {
     setLevel(0);
   };
 
+  // ---------- Smart suggestion mappers (LLM-driven, no keywords) ----------
+  function resolveStoreItemById(id?: string) {
+    if (!id) return undefined as any;
+    return storeItems?.find((s: any) => String(s?.id) === String(id));
+  }
+
+  function mergeFromStore(it: any, itemId?: string): SuggestedItem {
+    const storeItem = itemId ? resolveStoreItemById(itemId) : undefined;
+    const priceFromStore = typeof (storeItem as any)?.price === 'number' ? (storeItem as any).price : undefined;
+    const priceFromMeta = typeof it?.price === 'number' ? it.price : undefined;
+
+    return {
+      id: itemId ?? undefined,
+      name: (storeItem as any)?.name ?? it?.name ?? undefined,
+      price: priceFromStore ?? priceFromMeta,
+      imageUrl: (storeItem as any)?.imageUrl ?? (storeItem as any)?.image ?? undefined,
+    };
+  }
+
+  // Use LLM meta first; if IDs missing, resolve by name via menuIndex.
+  function buildSuggestionsFromMeta(meta: AiReplyMeta | undefined): SuggestedItem[] {
+    if (!menuIndex) return [];
+    const out: SuggestedItem[] = [];
+
+    // 1) Direct items list
+    const metaItems = Array.isArray(meta?.items) ? (meta!.items as any[]) : [];
+    for (const it of metaItems) {
+      const name = it?.name as string | undefined;
+      let itemId = it?.itemId as string | undefined;
+
+      if (!itemId && name) {
+        const found = resolveItemIdByName(menuIndex, name);
+        if (found) itemId = String(found);
+      }
+      out.push(mergeFromStore(it, itemId));
+    }
+
+    // 2) Optional groups: meta.suggestions = [{title?, items:[{...}]}]
+    const groups: any[] = Array.isArray((meta as any)?.suggestions) ? (meta as any).suggestions : [];
+    for (const g of groups) {
+      const gItems = Array.isArray(g?.items) ? g.items : [];
+      for (const it of gItems) {
+        const name = it?.name as string | undefined;
+        let itemId = it?.itemId as string | undefined;
+        if (!itemId && name) {
+          const found = resolveItemIdByName(menuIndex, name);
+          if (found) itemId = String(found);
+        }
+        out.push(mergeFromStore(it, itemId));
+      }
+    }
+
+    // Deduplicate by id/name combo
+    const seen = new Set<string>();
+    return out.filter((x) => {
+      const key = `${x.id ?? ''}|${(x.name ?? '').toLowerCase()}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
+
+  // If LLM doesn't structure items, harvest names directly from reply text.
+  function buildSuggestionsFromReplyText(replyText: string): SuggestedItem[] {
+    if (!replyText || !storeItems?.length) return [];
+    const lc = replyText.toLowerCase();
+
+    const hits: SuggestedItem[] = [];
+    for (const s of storeItems as any[]) {
+      const name = (s?.name ?? '').toString();
+      if (!name) continue;
+
+      // Match canonical name
+      const nameHit = lc.includes(name.toLowerCase());
+
+      // Also check aliases if present
+      const aliases: string[] = Array.isArray(s?.aliases) ? s.aliases : [];
+      const aliasHit = aliases.some((a) => lc.includes(a.toLowerCase()));
+
+      if (nameHit || aliasHit) {
+        hits.push({
+          id: String(s.id),
+          name: s.name,
+          price: typeof s.price === 'number' ? s.price : undefined,
+          imageUrl: s.imageUrl ?? s.image ?? undefined,
+        });
+      }
+    }
+
+    // Deduplicate
+    const seen = new Set<string>();
+    return hits.filter((x) => {
+      const key = `${x.id ?? ''}|${(x.name ?? '').toLowerCase()}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
+
   async function startListening() {
     try {
       if (listening || wsRef.current || ctxRef.current) return;
@@ -258,6 +362,33 @@ export default function AiWaiterHome() {
             const meta: AiReplyMeta | undefined = msg.meta;
             const intent = (meta?.intent ?? 'chitchat') as WaiterIntent;
 
+            // ✅ LLM-driven suggestions (no keyword gating)
+            if (intent === 'suggestions') {
+              let mapped: SuggestedItem[] = [];
+              // Prefer well-structured meta (items / suggestions groups)
+              const metaBased = buildSuggestionsFromMeta(meta);
+              mapped = metaBased;
+
+              // If meta gave nothing, harvest from free text using live menu
+              if ((!mapped || mapped.length === 0) && text) {
+                mapped = buildSuggestionsFromReplyText(text);
+              }
+
+              // If still empty but we have some store items, offer top few as graceful fallback
+              if ((!mapped || mapped.length === 0) && Array.isArray(storeItems) && storeItems.length) {
+                mapped = (storeItems as any[]).slice(0, Math.min(8, storeItems.length)).map((s) => ({
+                  id: String(s.id),
+                  name: s.name,
+                  price: typeof s.price === 'number' ? s.price : undefined,
+                  imageUrl: s.imageUrl ?? s.image ?? undefined,
+                }));
+              }
+
+              setSuggestedItems(mapped.filter(Boolean));
+              openSuggestions();
+              return;
+            }
+
             if (intent === 'order' && menuIndex) {
               const items = Array.isArray(meta?.items) ? meta.items : [];
               for (const it of items) {
@@ -270,7 +401,15 @@ export default function AiWaiterHome() {
                   if (found) itemId = found;
                 }
 
-                if (itemId) addItem({ id: itemId, name: name ?? '', qty });
+                if (itemId) {
+                  // try to pick up a price from our local storeItems, then from the AI-provided meta, otherwise fallback to 0
+                  const storeItem = storeItems.find((s) => String((s as any).id) === String(itemId));
+                  const priceFromStore = typeof storeItem?.price === 'number' ? storeItem.price : undefined;
+                  const priceFromMeta = typeof (it as any).price === 'number' ? (it as any).price : undefined;
+                  const price = priceFromStore ?? priceFromMeta ?? 0;
+
+                  addItem({ id: String(itemId), name: name ?? '', price, qty });
+                }
               }
               openTray();
               return;
@@ -440,7 +579,7 @@ export default function AiWaiterHome() {
       </div>
 
       {/* Modals */}
-      <SuggestionsModal open={showSuggestions} onClose={() => setShowSuggestions(false)} />
+      <SuggestionsModal open={showSuggestions} onClose={() => setShowSuggestions(false)} items={suggestedItems} />
       <TrayModal open={showTray} onClose={() => setShowTray(false)} />
     </div>
   );

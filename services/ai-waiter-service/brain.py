@@ -73,6 +73,11 @@ _SYSTEM = (
     "Valid intents: order | menu | suggestions | chitchat. "
     "For intent 'order', include items as an array of objects with "
     "{name, itemId?, quantity?}. When you can match to [MenuHint], include itemId. "
+    "When referring to menu items, always use the exact 'name' field from [MenuHint] if available. "
+    "Intent policy: (a) price or availability questions → intent='chitchat'; "
+    "(b) general requests to show/see the menu or what's on the menu → intent='menu'; "
+    "(c) category-specific or option-listing replies (e.g., 'what desserts do you have') → intent='suggestions' and include items[]; "
+    "(d) everything else → 'chitchat'. "
     "No markdown."
 )
 
@@ -116,6 +121,129 @@ def _build_user_content(
         hint = ""
 
     return f"{base}\n\n[MenuHint]: {hint}" if hint else base
+
+# ----------------------- Canonical Name Helpers -----------------------
+
+def _build_menu_maps(menu_snapshot: Optional[Dict[str, Any]]):
+    """
+    Build lookup maps:
+      id -> canonical name
+      lower(name/alias) -> id
+      id -> aliases (including its own name for replacement sweep)
+    """
+    id_to_name: Dict[str, str] = {}
+    token_to_id: Dict[str, str] = {}
+    id_to_aliases: Dict[str, List[str]] = {}
+
+    if not menu_snapshot:
+        return id_to_name, token_to_id, id_to_aliases
+
+    for it in (menu_snapshot.get("items") or []):
+        _id = str(it.get("id") or it.get("_id") or "")
+        name = (it.get("name") or "").strip()
+        if not _id or not name:
+            continue
+        aliases = (it.get("aliases") or [])[:]
+        # include the canonical name itself as an alias for replacement logic
+        all_aliases = list({name, *aliases})
+
+        id_to_name[_id] = name
+        id_to_aliases[_id] = all_aliases
+
+        for tok in all_aliases:
+            t = (tok or "").strip().lower()
+            if t:
+                token_to_id[t] = _id
+
+    return id_to_name, token_to_id, id_to_aliases
+
+def _find_id_for_name(name: Optional[str], token_to_id: Dict[str, str]) -> Optional[str]:
+    if not name:
+        return None
+    return token_to_id.get(name.strip().lower())
+
+def _canonicalize_reply_text(
+    reply_text: str,
+    model_items: Optional[List[Dict[str, Any]]],
+    menu_snapshot: Optional[Dict[str, Any]],
+) -> str:
+    """
+    Replace any mentioned item names/aliases in reply_text with the menu's
+    canonical/original 'name' (e.g., Cheesy Fries), so Bangla transliterations
+    are shown in canonical form inside otherwise Bangla sentences.
+    """
+    if not reply_text or not menu_snapshot:
+        return reply_text
+
+    id_to_name, token_to_id, id_to_aliases = _build_menu_maps(menu_snapshot)
+    if not id_to_name:
+        return reply_text
+
+    # Figure out which canonical items the model intended
+    intended_ids: List[str] = []
+
+    for it in (model_items or []):
+        _id = str(it.get("itemId") or "").strip()
+        nm = (it.get("name") or "").strip()
+        if _id and _id in id_to_name:
+            intended_ids.append(_id)
+            continue
+        if not _id and nm:
+            guess = _find_id_for_name(nm, token_to_id)
+            if guess:
+                intended_ids.append(guess)
+
+    if not intended_ids:
+        return reply_text
+
+    # For each intended item, replace any alias occurrences with canonical name
+    out = reply_text
+    for _id in intended_ids:
+        canonical = id_to_name.get(_id)
+        if not canonical:
+            continue
+        aliases = id_to_aliases.get(_id, [])
+        # include the model-provided name as an alias candidate too
+        # (covers cases where model minted a slight variant)
+        for alias in aliases:
+            a = (alias or "").strip()
+            if not a or a == canonical:
+                continue
+            # case-insensitive replace; keep it simple to work with Bengali too
+            pattern = re.compile(re.escape(a), flags=re.IGNORECASE)
+            out = pattern.sub(canonical, out)
+    return out
+
+# -------------------- Infer items from LLM text ----------------------
+
+def _infer_items_from_reply_text(reply_text: str, menu_snapshot: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    LLM-first inference: if the model listed concrete item names in reply_text
+    but forgot to fill items[], detect canonical names using the MenuHint.
+    No keyword rules; we match against canonical item names from the snapshot.
+    """
+    if not reply_text or not menu_snapshot:
+        return []
+    id_to_name, _, _ = _build_menu_maps(menu_snapshot)
+    if not id_to_name:
+        return []
+    hay = reply_text.lower()
+    hits: List[Dict[str, Any]] = []
+    for _id, canon in id_to_name.items():
+        name_l = (canon or "").strip().lower()
+        if name_l and name_l in hay:
+            hits.append({"name": canon, "itemId": _id, "quantity": 1})
+            if len(hits) >= 24:
+                break
+    # dedupe by itemId
+    seen = set()
+    out = []
+    for h in hits:
+        k = h.get("itemId")
+        if k and k not in seen:
+            out.append(h)
+            seen.add(k)
+    return out
 
 # --------------------------- OpenAI Call ---------------------------
 
@@ -224,25 +352,58 @@ async def generate_reply(
         reply_text = str(obj.get("replyText") or "").strip()
         language = (obj.get("language") or "").strip() or _guess_lang(reply_text or transcript)
 
-        # 🔧 Normalize intent to canonical 4
+        # If the model forgot items[], infer from reply_text using MenuHint (LLM-first, no keywords)
+        model_items = obj.get("items")
+        if not model_items:
+            inferred = _infer_items_from_reply_text(reply_text, menu_snapshot)
+            if inferred:
+                obj["items"] = inferred
+                model_items = inferred
+
+        # 🔧 Normalize intent to canonical 4 (base on LLM label)
         intent_raw = (obj.get("intent") or "").strip().lower()
         intent_map = {
             "order_food": "order",
             "add_to_cart": "order",
             "place_order": "order",
-            "availability_check": "order",
-            "availability": "order",
+
+            # availability/price checks are *not* menu
+            "availability_check": "chitchat",
+            "availability": "chitchat",
+            "in_stock": "chitchat",
+            "have_it": "chitchat",
+            "price_check": "chitchat",
+            "price": "chitchat",
+            "cost": "chitchat",
+            "how_much": "chitchat",
+
             "menuinquiry": "menu",
             "menu_inquiry": "menu",
             "menu_query": "menu",
+            "show_menu": "menu",
+            "see_menu": "menu",
+
             "recommendation": "suggestions",
             "recommendations": "suggestions",
             "recommend": "suggestions",
             "recs": "suggestions",
         }
         intent = intent_map.get(intent_raw, intent_raw or "chitchat")
+
+        # If the model labeled 'menu' but actually enumerated concrete items (either returned or inferred),
+        # treat this as 'suggestions' so the client shows the SuggestionsModal and not just /menu.
+        if intent == "menu" and model_items:
+            intent = "suggestions"
+
         if intent not in {"order", "menu", "suggestions", "chitchat"}:
             intent = "chitchat"
+
+        # ✅ Canonicalize any item names inside reply_text to menu's original names
+        reply_text = _canonicalize_reply_text(
+            reply_text=reply_text,
+            model_items=obj.get("items"),
+            menu_snapshot=menu_snapshot,
+        )
 
         return {
             "replyText": reply_text,

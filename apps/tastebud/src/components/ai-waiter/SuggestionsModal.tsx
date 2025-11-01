@@ -12,12 +12,22 @@ type Suggestion = {
   emoji?: string;
 };
 
+type MinimalMenuItem = {
+  id?: string;
+  name?: string;
+  price?: number;
+  imageUrl?: string;
+};
+
 type Props = {
   open: boolean;
   onClose: () => void;
   // Optional override if the parent wants to control where "See menu" goes.
   // If not provided, this component will resolve /menu from params/runtime.
   menuHrefOverride?: string;
+
+  // ✅ NEW: items resolved from AI suggestions (full menu objects preferred)
+  items?: MinimalMenuItem[];
 };
 
 function useMenuHref(menuHrefOverride?: string) {
@@ -61,7 +71,7 @@ const DUMMY_SUGGESTIONS: Suggestion[] = [
   { id: 'sweet', title: 'Desserts', blurb: 'Finish with something sweet', emoji: '🍰', query: 'dessert' },
 ];
 
-export default function SuggestionsModal({ open, onClose, menuHrefOverride }: Props) {
+export default function SuggestionsModal({ open, onClose, menuHrefOverride, items = [] }: Props) {
   const menuHref = useMenuHref(menuHrefOverride);
 
   React.useEffect(() => {
@@ -74,6 +84,8 @@ export default function SuggestionsModal({ open, onClose, menuHrefOverride }: Pr
   }, [open, onClose]);
 
   if (!open) return null;
+
+  const hasAiItems = Array.isArray(items) && items.length > 0;
 
   return (
     <div
@@ -109,6 +121,54 @@ export default function SuggestionsModal({ open, onClose, menuHrefOverride }: Pr
             Based on what you said, here are a few quick paths. Tap any card to jump into the menu.
           </p>
 
+          {/* ✅ AI-driven suggestions (if provided) */}
+          {hasAiItems && (
+            <div className="mb-5">
+              <h3 className="text-[15px] font-semibold text-gray-900 mb-2">Recommended for you</h3>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {items.map((it, idx) => {
+                  const title = String(it?.name ?? 'Item');
+                  const price = typeof it?.price === 'number' ? it.price : undefined;
+                  return (
+                    <div
+                      key={String(it?.id ?? idx)}
+                      className="group rounded-2xl border border-gray-100 bg-white p-4 hover:shadow-md transition-shadow"
+                    >
+                      <div className="flex items-start gap-3">
+                        <div className="h-10 w-10 rounded-xl grid place-items-center bg-gray-50 text-lg overflow-hidden">
+                          {it?.imageUrl ? (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img src={it.imageUrl} alt={title} className="h-10 w-10 object-cover rounded-xl" />
+                          ) : (
+                            <span role="img" aria-label="food">🍽️</span>
+                          )}
+                        </div>
+                        <div className="min-w-0">
+                          <h4 className="text-[15px] font-semibold text-gray-900">{title}</h4>
+                          {price !== undefined && (
+                            <p className="text-[13px] text-gray-600 mt-0.5">{price} ৳</p>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="mt-3 flex items-center justify-between">
+                        <span className="text-[12px] text-gray-500">#suggested</span>
+                        <Link
+                          to={menuHref}
+                          onClick={onClose}
+                          className="text-[12px] font-medium text-[#FA2851] group-hover:underline"
+                        >
+                          See options →
+                        </Link>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Existing quick paths (fallback / complement) */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             {DUMMY_SUGGESTIONS.map((s) => (
               <Link

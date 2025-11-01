@@ -173,20 +173,26 @@
 {"input": "মেকটা", "output": "আমি একটা"}
 {"input": "মেক্টা", "output": "আমি একটা"}
 {"input": "মেক্টো", "output": "আমি একটা"}
-{"input": "", "output": ""}
-{"input": "", "output": ""}
-{"input": "", "output": ""}
-{"input": "", "output": ""}
-{"input": "", "output": ""}
-{"input": "", "output": ""}
-{"input": "", "output": ""}
-{"input": "", "output": ""}
-{"input": "", "output": ""}
-{"input": "", "output": ""}
-{"input": "", "output": ""}
-{"input": "", "output": ""}
-{"input": "", "output": ""}
-{"input": "", "output": ""}
+{"input": "জাল", "output": "ঝাল"}
+{"input": "চাক্টা", "output": "চারটা"}
+{"input": "চাটটা", "output": "ছারটা"}
+{"input": "চাতটা", "output": "চারটা"}
+{"input": "চোরটা", "output": "চারটা"}
+{"input": "চোরটাও", "output": "চারটা"}
+{"input": "চোরটারো", "output": "চারটা"}
+{"input": "চোরটার", "output": "চারটা"}
+{"input": "চোরটারে", "output": "চারটা"}
+{"input": "যোস", "output": "জুস"}
+{"input": "আপনিজের", "output": "আপ্নাদের"}
+{"input": "পারকার", "output": "বার্গার"}
+{"input": "মুদ্ধে", "output": "মধ্যে"}
+{"input": "মধে", "output": "মধ্যে"}
+{"input": "দমকোতো", "output": "দাম কত"}
+{"input": "বারগ্যরের ", "output": "বার্গারের"}
+{"input": "বারগ্য", "output": "বার্গার"}
+{"input": "দ্রিক্সে", "output": "ড্রিঙ্কসের"}
+{"input": "দ্রিক্স", "output": "ড্রিঙ্কস"}
+{"input": "কহা", "output": "খাওয়া"}
 {"input": "", "output": ""}
 {"input": "", "output": ""}
 {"input": "", "output": ""}

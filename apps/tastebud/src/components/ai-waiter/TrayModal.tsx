@@ -1,4 +1,3 @@
-// apps/tastebud/src/components/ai-waiter/TrayModal.tsx
 import React from 'react';
 import { Link, useLocation, useParams, useSearchParams } from 'react-router-dom';
 import { useCart } from '../../context/CartContext';
@@ -7,6 +6,7 @@ type Props = {
   open: boolean;
   onClose: () => void;
   checkoutHrefOverride?: string;
+  recentAiItems?: { id: string; name: string }[]; // ✅ NEW optional prop
 };
 
 function useCheckoutHref(override?: string) {
@@ -21,13 +21,17 @@ function useCheckoutHref(override?: string) {
   const sd =
     subdomain ??
     search.get('subdomain') ??
-    (typeof window !== 'undefined' ? (window as any).__STORE__?.subdomain ?? null : null);
+    (typeof window !== 'undefined'
+      ? (window as any).__STORE__?.subdomain ?? null
+      : null);
 
   const br =
     branch ??
     branchSlug ??
     search.get('branch') ??
-    (typeof window !== 'undefined' ? (window as any).__STORE__?.branch ?? null : null) ??
+    (typeof window !== 'undefined'
+      ? (window as any).__STORE__?.branch ?? null
+      : null) ??
     undefined;
 
   if (override) return override;
@@ -43,8 +47,12 @@ function useCheckoutHref(override?: string) {
 const BDT = new Intl.NumberFormat('en-BD');
 const formatBDT = (n: number) => `৳${BDT.format(n)}`;
 
-export default function TrayModal({ open, onClose, checkoutHrefOverride }: Props) {
-  // ✅ Match CartContext API (subtotal & clear)
+export default function TrayModal({
+  open,
+  onClose,
+  checkoutHrefOverride,
+  recentAiItems = [],
+}: Props) {
   const { items, subtotal, removeItem, clear } = useCart();
   const checkoutHref = useCheckoutHref(checkoutHrefOverride);
 
@@ -88,6 +96,16 @@ export default function TrayModal({ open, onClose, checkoutHrefOverride }: Props
           </button>
         </div>
 
+        {/* ✅ AI banner */}
+        {(recentAiItems?.length ?? 0) > 0 && (
+          <div className="px-4 pt-3">
+            <div className="rounded-xl bg-[#FFF0F3] text-[#FA2851] text-[13px] px-3 py-2 border border-[#FFD6DE]">
+              Added {recentAiItems!.length} item
+              {recentAiItems!.length > 1 ? 's' : ''} from the assistant.
+            </div>
+          </div>
+        )}
+
         {/* Content */}
         <div className="px-4 pt-3 pb-4 max-h-[70vh] overflow-y-auto">
           {items.length === 0 ? (
@@ -102,7 +120,6 @@ export default function TrayModal({ open, onClose, checkoutHrefOverride }: Props
                   className="flex items-center justify-between gap-3 border border-gray-100 rounded-2xl p-3 hover:shadow-sm transition"
                 >
                   <div className="flex items-center gap-3 min-w-0">
-                    {/* Optional thumbnail */}
                     {it.imageUrl ? (
                       <img
                         src={it.imageUrl}
@@ -114,7 +131,6 @@ export default function TrayModal({ open, onClose, checkoutHrefOverride }: Props
                     ) : (
                       <div className="h-12 w-12 rounded-xl bg-gray-100" />
                     )}
-
                     <div className="min-w-0">
                       <div className="text-[15px] font-medium text-gray-900 truncate">
                         {it.name ?? 'Item'}
