@@ -1,7 +1,7 @@
 // apps/tastebud/src/pages/AiWaiterHome.tsx
 import React, { useRef, useState, useEffect } from 'react';
 import { useLocation, useParams, useSearchParams, Link, useNavigate } from 'react-router-dom';
-import { getWsURL } from '../utils/ws';
+import { getWsURL, getStableSessionId } from '../utils/ws';
 import MicHalo from '../components/ai-waiter/MicHalo';
 import SuggestionsModal from '../components/ai-waiter/SuggestionsModal';
 import TrayModal from '../components/ai-waiter/TrayModal';
@@ -10,7 +10,6 @@ import type { WaiterIntent, AiReplyMeta } from '../types/waiter-intents';
 // 🧩 NEW imports
 import { buildMenuIndex, resolveItemIdByName } from '../utils/item-resolver';
 import { useCart } from '../context/CartContext';
-import { routeFromAiReply } from '../utils/intent-routing';
 import { usePublicMenu } from '../hooks/usePublicMenu'; // ✅ added
 
 type UIMode = 'idle' | 'thinking' | 'talking';
@@ -27,7 +26,9 @@ export default function AiWaiterHome() {
     link.href = 'https://fonts.googleapis.com/css2?family=Noto+Sans+Bengali:wght@400;500;600;700&display=swap';
     link.rel = 'stylesheet';
     document.head.appendChild(link);
-    return () => { document.head.removeChild(link); };
+    return () => {
+      document.head.removeChild(link);
+    };
   }, []);
 
   const resolvedSub =
@@ -66,8 +67,45 @@ export default function AiWaiterHome() {
 
   const [uiMode, setUiMode] = useState<UIMode>('idle');
 
-  // Language toggle
-  const [selectedLang, setSelectedLang] = useState<'auto' | 'bn' | 'en'>('bn');
+  // Language toggle (now globally broadcast from here)
+  const [selectedLang, setSelectedLang] = useState<'auto' | 'bn' | 'en'>(() => {
+    const fromUrl = (search.get('lang') as 'auto' | 'bn' | 'en' | null) || null;
+    const fromLs =
+      typeof window !== 'undefined' ? ((localStorage.getItem('qravy:lang') as 'auto' | 'bn' | 'en' | null) || null) : null;
+    return (fromUrl || fromLs || 'bn') as 'auto' | 'bn' | 'en';
+  });
+
+  // 🔊 Broadcast language globally so MicInputBar & others can reflect it without edits
+  const broadcastLang = (lang: 'auto' | 'bn' | 'en') => {
+    if (typeof window !== 'undefined') {
+      (window as any).__WAITER_LANG__ = lang; // simple global read
+      try {
+        window.dispatchEvent(new CustomEvent('qravy:lang', { detail: { lang } }));
+      } catch {}
+      try {
+        document.documentElement.setAttribute('lang', lang === 'bn' ? 'bn' : 'en');
+      } catch {}
+    }
+  };
+
+  // On mount: ensure current lang is broadcast & html@lang set
+  useEffect(() => {
+    broadcastLang(selectedLang);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Whenever selectedLang changes: persist, broadcast, and inform live WS session
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        localStorage.setItem('qravy:lang', selectedLang);
+      } catch {}
+    }
+    broadcastLang(selectedLang);
+    // inform server-side session immediately if WS is up
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ t: 'set_lang', lang: selectedLang }));
+    }
+  }, [selectedLang]);
 
   const stoppingRef = useRef<boolean>(false);
 
@@ -83,9 +121,19 @@ export default function AiWaiterHome() {
   const [showTray, setShowTray] = useState(false);
 
   // Helpers to open/close contexts
-  const openSuggestions = () => { setShowTray(false); setShowSuggestions(true); };
-  const openTray = () => { setShowSuggestions(false); setShowTray(true); };
-  const goMenu = () => { setShowSuggestions(false); setShowTray(false); navigate(seeMenuHref); };
+  const openSuggestions = () => {
+    setShowTray(false);
+    setShowSuggestions(true);
+  };
+  const openTray = () => {
+    setShowSuggestions(false);
+    setShowTray(true);
+  };
+  const goMenu = () => {
+    setShowSuggestions(false);
+    setShowTray(false);
+    navigate(seeMenuHref);
+  };
 
   // 🧩 NEW: menu + cart
   const { addItem } = useCart();
@@ -121,7 +169,9 @@ export default function AiWaiterHome() {
 
   function waitForFinal(timeoutMs = 8000) {
     if (pendingFinalResolverRef.current) {
-      try { pendingFinalResolverRef.current(false); } catch {}
+      try {
+        pendingFinalResolverRef.current(false);
+      } catch {}
       pendingFinalResolverRef.current = null;
     }
     return new Promise<boolean>((resolve) => {
@@ -133,7 +183,9 @@ export default function AiWaiterHome() {
         resolve(false);
       }, timeoutMs);
       pendingFinalResolverRef.current = (ok: boolean) => {
-        try { clearTimeout(timer); } catch {}
+        try {
+          clearTimeout(timer);
+        } catch {}
         pendingFinalResolverRef.current = null;
         resolve(ok);
       };
@@ -142,7 +194,9 @@ export default function AiWaiterHome() {
 
   function waitForAiReply(timeoutMs = 8000) {
     if (pendingAiResolverRef.current) {
-      try { pendingAiResolverRef.current(false); } catch {}
+      try {
+        pendingAiResolverRef.current(false);
+      } catch {}
       pendingAiResolverRef.current = null;
     }
     return new Promise<boolean>((resolve) => {
@@ -154,7 +208,9 @@ export default function AiWaiterHome() {
         resolve(false);
       }, timeoutMs);
       pendingAiResolverRef.current = (ok: boolean) => {
-        try { clearTimeout(timer); } catch {}
+        try {
+          clearTimeout(timer);
+        } catch {}
         pendingAiResolverRef.current = null;
         resolve(ok);
       };
@@ -296,8 +352,13 @@ export default function AiWaiterHome() {
 
       const ctx = new AudioContext({ sampleRate: 16000, latencyHint: 'interactive' });
       ctxRef.current = ctx;
-      if (ctx.state === 'suspended') { try { await ctx.resume(); } catch {} }
+      if (ctx.state === 'suspended') {
+        try {
+          await ctx.resume();
+        } catch {}
+      }
 
+      // Make sure the worklet module is loaded before constructing the node
       await ctx.audioWorklet.addModule('/worklets/audio-capture.worklet.js');
 
       const src = ctx.createMediaStreamSource(stream);
@@ -309,28 +370,36 @@ export default function AiWaiterHome() {
       analyserRef.current = analyser;
       startLevelMeter(analyser);
 
+      // Must match registerProcessor('audio-capture', ...)
       const node = new AudioWorkletNode(ctx, 'capture-processor', { numberOfInputs: 1, numberOfOutputs: 0 });
       nodeRef.current = node;
 
+      // Build WS with auto ?sid=... inside getWsURL
       const ws = new WebSocket(getWsURL('/ws/voice'));
       wsRef.current = ws;
       ws.binaryType = 'arraybuffer';
 
       ws.onopen = () => {
+        const sid = getStableSessionId();
         stoppingRef.current = false;
         finalSeenRef.current = false;
         aiSeenRef.current = false;
-        ws.send(JSON.stringify({
-          t: 'hello',
-          sessionId: 'dev-session',
-          userId: 'guest',
-          rate: 16000,
-          ch: 1,
-          lang: selectedLang,
-          tenant: resolvedSub ?? null,
-          branch: resolvedBranch ?? null,
-          channel: resolvedChannel,
-        }));
+
+        // Always identify early with the same sid
+        ws.send(
+          JSON.stringify({
+            t: 'hello',
+            sid, // NEW: stable session id
+            sessionId: sid, // keep legacy key if server expects it
+            userId: 'guest',
+            rate: 16000,
+            ch: 1,
+            lang: selectedLang, // ← always reflect current selection
+            tenant: resolvedSub ?? null,
+            branch: resolvedBranch ?? null,
+            channel: resolvedChannel,
+          }),
+        );
         setListening(true);
       };
 
@@ -365,6 +434,7 @@ export default function AiWaiterHome() {
             // ✅ LLM-driven suggestions (no keyword gating)
             if (intent === 'suggestions') {
               let mapped: SuggestedItem[] = [];
+
               // Prefer well-structured meta (items / suggestions groups)
               const metaBased = buildSuggestionsFromMeta(meta);
               mapped = metaBased;
@@ -376,12 +446,14 @@ export default function AiWaiterHome() {
 
               // If still empty but we have some store items, offer top few as graceful fallback
               if ((!mapped || mapped.length === 0) && Array.isArray(storeItems) && storeItems.length) {
-                mapped = (storeItems as any[]).slice(0, Math.min(8, storeItems.length)).map((s) => ({
-                  id: String(s.id),
-                  name: s.name,
-                  price: typeof s.price === 'number' ? s.price : undefined,
-                  imageUrl: s.imageUrl ?? s.image ?? undefined,
-                }));
+                mapped = (storeItems as any[])
+                  .slice(0, Math.min(8, storeItems.length))
+                  .map((s) => ({
+                    id: String(s.id),
+                    name: s.name,
+                    price: typeof s.price === 'number' ? s.price : undefined,
+                    imageUrl: s.imageUrl ?? s.image ?? undefined,
+                  }));
               }
 
               setSuggestedItems(mapped.filter(Boolean));
@@ -438,12 +510,17 @@ export default function AiWaiterHome() {
         pendingAiResolverRef.current = null;
       };
 
+      // 🔧 IMPORTANT: forward Int16 frames coming from the worklet
       node.port.onmessage = (ev) => {
         if (stoppingRef.current) return;
-        const ab = ev.data as ArrayBuffer;
-        if (ws.readyState === WebSocket.OPEN) ws.send(ab);
+        const msg = ev.data;
+        if (msg && msg.type === 'chunk' && msg.samples && msg.samples.buffer) {
+          const ab = msg.samples.buffer as ArrayBuffer;
+          if (ws.readyState === WebSocket.OPEN) ws.send(ab);
+        }
       };
 
+      // connect mic → worklet
       src.connect(node);
     } catch (e) {
       console.error(e);
@@ -456,24 +533,41 @@ export default function AiWaiterHome() {
     let gotFinal = finalSeenRef.current;
     try {
       if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-        wsRef.current.send(JSON.stringify({ t: 'end' }));
+        const sid = getStableSessionId();
+        wsRef.current.send(JSON.stringify({ t: 'end', sid })); // include sid on end for bookkeeping
         if (!gotFinal) gotFinal = await waitForFinal(8000);
         if (!aiSeenRef.current) await waitForAiReply(8000);
         await new Promise((r) => setTimeout(r, 100));
       }
-    } catch (e) { console.error(e); }
+    } catch (e) {
+      console.error(e);
+    }
 
-    try { stopLevelMeter(); } catch {}
-    try { sourceRef.current?.disconnect(); } catch {}
+    try {
+      stopLevelMeter();
+    } catch {}
+    try {
+      sourceRef.current?.disconnect();
+    } catch {}
     sourceRef.current = null;
-    try { nodeRef.current?.port.close(); } catch {}
-    try { nodeRef.current?.disconnect(); } catch {}
+    try {
+      nodeRef.current?.port.close();
+    } catch {}
+    try {
+      nodeRef.current?.disconnect();
+    } catch {}
     nodeRef.current = null;
-    try { streamRef.current?.getTracks().forEach((t) => t.stop()); } catch {}
+    try {
+      streamRef.current?.getTracks().forEach((t) => t.stop());
+    } catch {}
     streamRef.current = null;
-    try { await ctxRef.current?.close(); } catch {}
+    try {
+      await ctxRef.current?.close();
+    } catch {}
     ctxRef.current = null;
-    try { wsRef.current?.close(); } catch {}
+    try {
+      wsRef.current?.close();
+    } catch {}
     wsRef.current = null;
 
     setListening(false);
@@ -490,12 +584,7 @@ export default function AiWaiterHome() {
   const inactiveChip = 'bg-white/80 text-gray-700 border-white/70 backdrop-blur hover:bg-white';
 
   type HaloVisualMode = 'idle' | 'listening' | 'talking';
-  const haloVisualMode: HaloVisualMode =
-    uiMode === 'talking'
-      ? 'talking'
-      : listening
-      ? 'listening'
-      : 'idle';
+  const haloVisualMode: HaloVisualMode = uiMode === 'talking' ? 'talking' : listening ? 'listening' : 'idle';
 
   return (
     <div
@@ -507,19 +596,34 @@ export default function AiWaiterHome() {
     >
       {/* UI Controls */}
       <div className="fixed top-4 left-4 z-50 flex items-center gap-2">
-        <button type="button" onClick={() => setUiMode((m) => (m === 'thinking' ? 'idle' : 'thinking'))}
-          className={`${chipBase} ${uiMode === 'thinking' ? activeChip : inactiveChip}`}>Thinking</button>
-        <button type="button" onClick={() => setUiMode((m) => (m === 'talking' ? 'idle' : 'talking'))}
-          className={`${chipBase} ${uiMode === 'talking' ? activeChip : inactiveChip}`}>Talking</button>
+        <button
+          type="button"
+          onClick={() => setUiMode((m) => (m === 'thinking' ? 'idle' : 'thinking'))}
+          className={`${chipBase} ${uiMode === 'thinking' ? activeChip : inactiveChip}`}
+        >
+          Thinking
+        </button>
+        <button
+          type="button"
+          onClick={() => setUiMode((m) => (m === 'talking' ? 'idle' : 'talking'))}
+          className={`${chipBase} ${uiMode === 'talking' ? activeChip : inactiveChip}`}
+        >
+          Talking
+        </button>
       </div>
 
       {/* Language switcher */}
       <div className="fixed bottom-4 left-4 z-50 flex gap-2">
-        {(['auto','bn','en'] as const).map((l) => (
-          <button key={l} onClick={() => setSelectedLang(l)}
+        {(['auto', 'bn', 'en'] as const).map((l) => (
+          <button
+            key={l}
+            onClick={() => setSelectedLang(l)}
             className={`px-3 py-1 rounded-full text-sm font-medium transition ${
               selectedLang === l ? 'bg-[#FA2851] text-white' : 'bg-white/90 text-gray-700 border border-gray-200'
-            }`}>{l.toUpperCase()}</button>
+            }`}
+          >
+            {l.toUpperCase()}
+          </button>
         ))}
       </div>
 
@@ -529,7 +633,10 @@ export default function AiWaiterHome() {
           <span className="text-xs font-semibold text-gray-800">Finalized</span>
           <span className="inline-flex items-center gap-2">
             <span className="text-[10px] uppercase tracking-wide text-gray-600">{uiMode}</span>
-            <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ backgroundColor: listening ? '#10B981' : '#D1D5DB' }} />
+            <span
+              className="inline-block h-2.5 w-2.5 rounded-full"
+              style={{ backgroundColor: listening ? '#10B981' : '#D1D5DB' }}
+            />
           </span>
         </div>
         <div className="max-h-40 overflow-y-auto text-sm text-gray-900 space-y-1">
@@ -552,7 +659,15 @@ export default function AiWaiterHome() {
       {/* Main hero */}
       <div className="pt-40 sm:pt-48 text-left w-full max-w-[400px]">
         <p className="text-[30px] md:text-[40px] leading-[1.6] font-medium text-[#2D2D2D]">
-          আসসালামু আলাইকুম<br />আপনি কি কোন ফুড অর্ডার<br />করতে চাইছেন? নাকি আমি<br />আপনাকে কিছু সাজেস্ট<br />করবো?
+          আসসালামু আলাইকুম
+          <br />
+          আপনি কি কোন ফুড অর্ডার
+          <br />
+          করতে চাইছেন? নাকি আমি
+          <br />
+          আপনাকে কিছু সাজেস্ট
+          <br />
+          করবো?
         </p>
       </div>
 
@@ -560,20 +675,35 @@ export default function AiWaiterHome() {
       <div className="relative flex flex-col items-center justify-center">
         <MicHalo size={600} color={'#FFE9ED'} opacity={0.6} accentColor={'#FA2851'} mode={haloVisualMode} level={level} />
         {!listening ? (
-          <button onClick={startListening}
+          <button
+            onClick={startListening}
             className="relative h-[120px] w-[120px] rounded-full flex items-center justify-center transition-all duration-300 active:scale-95 z-[2]"
-            style={{ background: '#FA2851', boxShadow: '0 8px 24px rgba(250,40,81,0.3)' }} aria-label="Start voice">
-            <svg width="40" height="40" viewBox="0 0 24 24" fill="#fff"><path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c1.66 0 3 1.34 3 3z"/><path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-6.92h-2z"/></svg>
+            style={{ background: '#FA2851', boxShadow: '0 8px 24px rgba(250,40,81,0.3)' }}
+            aria-label="Start voice"
+          >
+            {/* simple, valid mic icon */}
+            <svg width="40" height="40" viewBox="0 0 24 24" fill="#fff" aria-hidden="true">
+              <rect x="9" y="3" width="6" height="10" rx="3" />
+              <path d="M5 11a7 7 0 0014 0h-2a5 5 0 01-10 0H5z" />
+              <path d="M11 19v2h2v-2h-2z" />
+            </svg>
           </button>
         ) : (
-          <button onClick={stopListening}
+          <button
+            onClick={stopListening}
             className="relative h-[120px] w-[120px] rounded-full flex items-center justify-center transition-all duration-300 active:scale-95 z-[2]"
-            style={{ background: '#FA2851', boxShadow: '0 8px 24px rgba(250,40,81,0.3)' }} aria-label="Stop voice">
-            <svg width="42" height="42" viewBox="0 0 24 24" fill="#fff"><rect x="7" y="7" width="10" height="10" rx="2"/></svg>
+            style={{ background: '#FA2851', boxShadow: '0 8px 24px rgba(250,40,81,0.3)' }}
+            aria-label="Stop voice"
+          >
+            <svg width="42" height="42" viewBox="0 0 24 24" fill="#fff" aria-hidden="true">
+              <rect x="7" y="7" width="10" height="10" rx="2" />
+            </svg>
           </button>
         )}
-        <Link to={seeMenuHref}
-          className="mt-6 z-[3] px-6 py-3 rounded-full text-[16px] font-medium bg-white/95 text-[#FA2851] border border-white/80 shadow-[0_4px_14px_rgba(0,0,0,0.06)] backdrop-blur-xl transition-transform duration-300 hover:scale-[1.03] active:scale-95">
+        <Link
+          to={seeMenuHref}
+          className="mt-6 z-[3] px-6 py-3 rounded-full text-[16px] font-medium bg-white/95 text-[#FA2851] border border-white/80 shadow-[0_4px_14px_rgba(0,0,0,0.06)] backdrop-blur-xl transition-transform duration-300 hover:scale-[1.03] active:scale-95"
+        >
           See Menu
         </Link>
       </div>

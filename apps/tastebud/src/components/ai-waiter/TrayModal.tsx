@@ -1,6 +1,8 @@
+// apps/tastebud/src/components/ai-waiter/TrayModal.tsx
 import React from 'react';
 import { Link, useLocation, useParams, useSearchParams } from 'react-router-dom';
 import { useCart } from '../../context/CartContext';
+import MicInputBar from './MicInputBar';
 
 type Props = {
   open: boolean;
@@ -65,6 +67,9 @@ export default function TrayModal({
 
   if (!open) return null;
 
+  const tenant = (typeof window !== 'undefined' ? (window as any).__STORE__?.subdomain : undefined) ?? undefined;
+  const branch = (typeof window !== 'undefined' ? (window as any).__STORE__?.branch : undefined) ?? undefined;
+
   return (
     <div
       className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center"
@@ -107,7 +112,7 @@ export default function TrayModal({
         )}
 
         {/* Content */}
-        <div className="px-4 pt-3 pb-4 max-h-[70vh] overflow-y-auto">
+        <div className="px-4 pt-3 pb-4 max-h-[64vh] overflow-y-auto">
           {items.length === 0 ? (
             <div className="text-center text-gray-500 py-10 text-sm">
               Your tray is empty.
@@ -175,6 +180,19 @@ export default function TrayModal({
 
         {/* Footer */}
         <div className="sticky bottom-0 border-t border-gray-100 bg-white px-4 py-3">
+          {/* ✅ Mic input bar inside the tray footer (follows global language) */}
+          <div className="mb-3">
+            <MicInputBar
+              tenant={tenant}
+              branch={branch}
+              channel="dine-in"
+              onAiReply={({ replyText, meta }) => {
+                // Keep minimal: log only; parent flow can consume meta.items to add to cart if desired.
+                console.debug('AI reply (TrayModal):', replyText, meta);
+              }}
+            />
+          </div>
+
           {items.length > 0 && (
             <div className="flex items-center justify-between mb-3">
               <span className="text-[15px] font-medium text-gray-800">Total</span>

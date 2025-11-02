@@ -8,8 +8,14 @@ from faster_whisper import WhisperModel
 from pymongo import MongoClient
 from vad import Segmenter
 import httpx
-from typing import Dict, Any, List, Tuple, Optional
+from typing import Dict, Any, List, Tuple, Optional, Deque
 from bson import ObjectId  # ✅ NEW
+from collections import defaultdict, deque  # (kept; unused now)
+
+# ✅ NEW: rolling context/state helpers (same folder import)
+from session_ctx import (
+    get_history, push_user, push_assistant, get_state, update_state
+)
 
 # ✅ In-process brain (OpenAI gpt-4o-mini) call
 from brain import generate_reply
@@ -27,6 +33,14 @@ TRANS_DB_NAME = os.environ.get("MONGO_DB", "qravy")
 # menu DB (can be different, e.g., authDB)
 MENU_DB_NAME = os.environ.get("MENU_DB", TRANS_DB_NAME)
 MENU_COLL = os.environ.get("MENU_COLLECTION", "menu_items")
+
+# 🔁 Session context (per tenant+session) ----------
+MAX_TURNS = int(os.environ.get("SESSION_CTX_TURNS", "8"))  # still honored in session_ctx
+SESSION_CTX: Dict[Tuple[str, str], Deque[Dict[str, str]]] = defaultdict(  # retained (unused here)
+    lambda: deque(maxlen=MAX_TURNS)
+)
+def session_key(tenant: Optional[str], sid: Optional[str]) -> Tuple[str, str]:
+    return ((tenant or "unknown").strip(), (sid or "anon").strip())
 
 _CLIENT = MongoClient(MONGO_URI)
 
@@ -486,21 +500,42 @@ async def call_brain_and_push(
     channel: Optional[str],
     session_id: Optional[str],
     user_id: Optional[str],
-    menu_snapshot: Dict[str, Any]
+    menu_snapshot: Dict[str, Any],
+    history: Optional[List[Dict[str, str]]] = None,   # ✅ NEW
+    dialog_state: Optional[Dict[str, Any]] = None,    # ✅ NEW
+    locale: Optional[str] = None,                     # ✅ NEW
 ):
     print(f"[ai-waiter-service] 🧠 calling brain for transcript_norm: '{transcript_norm[:80]}...'")
     reply_obj = {"replyText": "", "meta": {}}
     try:
-        reply = await generate_reply(
-            transcript_norm,
-            tenant=tenant,
-            branch=branch,
-            channel=channel,
-            locale=None,
-            menu_snapshot=menu_snapshot,  # ✅ live, compact, real-time
-            conversation_id=session_id,
-            user_id=user_id,
-        )
+        # Be forward/backward compatible with brain.generate_reply signature
+        try:
+            reply = await generate_reply(
+                transcript=transcript_norm,
+                tenant=tenant,
+                branch=branch,
+                channel=channel,
+                locale=locale,                      # ✅ pass locale through
+                menu_snapshot=menu_snapshot,        # ✅ live, compact, real-time
+                conversation_id=session_id,
+                user_id=user_id,
+                history=history,                    # ✅ include context
+                dialog_state=dialog_state,          # ✅ include compact state (if supported)
+            )
+        except TypeError:
+            # Older brain.py without dialog_state
+            reply = await generate_reply(
+                transcript=transcript_norm,
+                tenant=tenant,
+                branch=branch,
+                channel=channel,
+                locale=locale,                      # ✅ pass locale through
+                menu_snapshot=menu_snapshot,
+                conversation_id=session_id,
+                user_id=user_id,
+                history=history,
+            )
+
         reply_obj = {
             "replyText": reply.get("replyText") or "",
             "meta": reply.get("meta") or {},
@@ -652,7 +687,6 @@ async def handle_conn(ws: WebSocketServerProtocol):
                     try:
                         while True:
                             work_q.get_nowait()
-                        # fallthrough
                     except asyncio.QueueEmpty:
                         pass
                     try:
@@ -771,7 +805,10 @@ async def handle_conn(ws: WebSocketServerProtocol):
                 # 🔧 NORMALIZE: exact → phonetic → fuzzy (with live vocab)
                 norm_text, changes = normalize_text(selected_text, vocab=vocab, fuzzy_threshold=FUZZY_THRESHOLD)
 
-                # --------- NEW: Deterministic pre-match path ---------
+                # ✅ Record USER turn into context
+                push_user(tenant_hint, session_id, norm_text)
+
+                # --------- Deterministic pre-match path ---------
                 matches = _match_in_snapshot(norm_text, snapshot)
                 if not matches:
                     matches = _db_fallback_search(tenant_hint, norm_text, limit=10)
@@ -779,9 +816,14 @@ async def handle_conn(ws: WebSocketServerProtocol):
                 if matches:
                     # Compose deterministic reply and send immediately (skip LLM)
                     reply_text = _compose_availability_reply(matches, (session_lang or last_detected_lang or "en"))
+                    # ✅ Stronger language tagging on deterministic path
+                    final_lang = (session_lang or last_detected_lang)
+                    if not final_lang:
+                        # infer from the actual normalized text we’re replying to
+                        final_lang = "bn" if _BENGALI.search(norm_text) else "en"
                     meta = {
                         "model": "deterministic",
-                        "language": (session_lang or last_detected_lang or "en"),
+                        "language": final_lang,
                         "intent": "availability_check",
                         "items": [
                             {"name": m.get("name"), "itemId": m.get("id"), "price": m.get("price")}
@@ -806,6 +848,10 @@ async def handle_conn(ws: WebSocketServerProtocol):
                     except Exception as e:
                         print("[ai-waiter-service] ❌ failed to send deterministic ai_reply:", e)
 
+                    # ✅ Update context + dialog state
+                    push_assistant(tenant_hint, session_id, reply_text)
+                    update_state(tenant_hint, session_id, meta=meta, user_text=norm_text)
+
                     # Persist transcript + deterministic answer
                     try:
                         await writer_q.put({
@@ -829,8 +875,7 @@ async def handle_conn(ws: WebSocketServerProtocol):
                     # Short-circuit: do NOT call LLM
                     return
 
-                # ---------------- LLM path (unchanged) ----------------
-                # Tell client we're about to think (so UI can show "thinking")
+                # ---------------- LLM path ----------------
                 try:
                     if not ws.closed:
                         await ws.send(json.dumps({"t": "ai_reply_pending"}))
@@ -840,6 +885,10 @@ async def handle_conn(ws: WebSocketServerProtocol):
                 print("[ai-waiter-service] 🧠 starting brain task…")
                 last_ai = {"replyText": "", "meta": {}}
                 try:
+                    # Build history + dialog state for the brain
+                    history_list = get_history(tenant_hint, session_id)
+                    dialog_state = get_state(tenant_hint, session_id)
+
                     last_ai = await call_brain_and_push(
                         ws,
                         transcript=selected_text,
@@ -850,12 +899,19 @@ async def handle_conn(ws: WebSocketServerProtocol):
                         channel=channel_hint,
                         session_id=session_id,
                         user_id=user_id,
-                        menu_snapshot=snapshot
+                        menu_snapshot=snapshot,
+                        history=history_list,         # ✅ pass rolling context
+                        dialog_state=dialog_state,     # ✅ pass compact state
+                        locale=(session_lang or last_detected_lang),  # ✅ NEW: honor selected language
                     )
                     print("[ai-waiter-service] 🧠 brain task completed")
                 except Exception as e:
                     print(f"[ai-waiter-service] ❌ brain task failed: {e}")
                     import traceback; traceback.print_exc()
+
+                # ✅ Update context + dialog state
+                push_assistant(tenant_hint, session_id, last_ai.get("replyText") or "")
+                update_state(tenant_hint, session_id, meta=last_ai.get("meta"), user_text=norm_text)
 
                 try:
                     await writer_q.put({

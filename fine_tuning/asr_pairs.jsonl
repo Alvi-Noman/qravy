@@ -193,9 +193,12 @@
 {"input": "দ্রিক্সে", "output": "ড্রিঙ্কসের"}
 {"input": "দ্রিক্স", "output": "ড্রিঙ্কস"}
 {"input": "কহা", "output": "খাওয়া"}
-{"input": "", "output": ""}
-{"input": "", "output": ""}
-{"input": "", "output": ""}
+{"input": "কেকে", "output": "কি কি"}
+{"input": "আপনা দেশে", "output": "আপনাদের"}
+{"input": "কেছে", "output": "কাছে"}
+{"input": "কাছা", "output": "কাছে"}
+{"input": "কাছি", "output": "কাছে"}
+{"input": "কাছেত", "output": "কাছে"}
 {"input": "", "output": ""}
 {"input": "", "output": ""}
 {"input": "", "output": ""}

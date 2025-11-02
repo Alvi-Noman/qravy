@@ -10,6 +10,7 @@ import CategoryList from '../components/CategoryList';
 import SearchBar from '../components/SearchBar';
 import RestaurantSkeleton from '../components/RestaurantSkeleton';
 import ChannelSwitch from '../components/ChannelSwitch';
+import MicInputBar from '../components/ai-waiter/MicInputBar';
 
 const SWITCH_FLAG_KEY = 'qravy:just-switched';
 const SWITCH_DELAY_MS = 1000;     // show skeleton for ~1s after a switch
@@ -362,6 +363,14 @@ export default function DigitalMenu() {
 
   /* ============================== Rendering =============================== */
 
+  // Safe runtime hints for mic bar
+  const tenantSlug =
+    subdomain ??
+    ((typeof window !== 'undefined' ? (window as any).__STORE__?.subdomain : undefined) || undefined);
+  const branchHint =
+    normalizedBranch ??
+    ((typeof window !== 'undefined' ? (window as any).__STORE__?.branch : undefined) || undefined);
+
   return (
     <div
       className="min-h-screen bg-[#F6F5F8] font-[Inter]"
@@ -387,7 +396,7 @@ export default function DigitalMenu() {
         </div>
       </div>
 
-      <div className="mx-auto max-w-6xl px-4 py-4">
+      <div className="mx-auto max-w-6xl px-4 py-4 pb-28">
         {/* Search bar */}
         <SearchBar value={query} onChange={setQuery} onSubmit={(v) => setQuery(v)} className="mb-3" />
 
@@ -437,9 +446,7 @@ export default function DigitalMenu() {
             return hasAll ? (
               <>
                 <CategoryList
-                  sections={Object.entries(grouped).length
-                    ? [{ id: 'all', name: 'All' }, ...Object.entries(grouped).map(([key, g]) => ({ id: `cat-${key}`, name: g.name }))]
-                    : [{ id: 'all', name: 'All' }]}
+                  sections={[{ id: 'all', name: 'All' }, ...Object.entries(grouped).map(([key, g]) => ({ id: `cat-${key}`, name: g.name }))]}
                   activeId={activeCatId}
                   onJump={(id) => setActiveCatId(id)}
                 />
@@ -528,6 +535,23 @@ export default function DigitalMenu() {
             Categories not available yet. Showing items without grouping.
           </p>
         ) : null}
+      </div>
+
+      {/* ✅ Sticky mic bar (bottom) — follows global language from AiWaiterHome */}
+      <div className="sticky bottom-0 inset-x-0 z-40">
+        <div className="mx-auto max-w-6xl px-4 pb-4">
+          <div className="rounded-[999px] bg-white shadow-[0_12px_32px_rgba(250,40,81,0.08)] border border-gray-100 p-2">
+            <MicInputBar
+              tenant={tenantSlug}
+              branch={branchHint}
+              channel={channel}
+              onAiReply={({ replyText, meta }) => {
+                // You can optionally add-to-cart if meta.items present.
+                console.debug('AI reply (DigitalMenu):', replyText, meta);
+              }}
+            />
+          </div>
+        </div>
       </div>
     </div>
   );

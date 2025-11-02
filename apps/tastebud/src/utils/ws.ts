@@ -1,11 +1,54 @@
-// Utility to generate WebSocket URLs that automatically respect the API origin
-export function getWsURL(path: string) {
-  const apiOrigin = (import.meta as any).env?.VITE_API_ORIGIN; // e.g. http://localhost:8080 or https://apiqravy.com
-  if (apiOrigin) {
-    const u = new URL(apiOrigin);
-    const scheme = u.protocol === 'https:' ? 'wss:' : 'ws:';
-    return `${scheme}//${u.host}${path}`;
+// apps/tastebud/src/utils/ws.ts
+
+function uuidv4(): string {
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (crypto.getRandomValues(new Uint8Array(1))[0] & 15) >>> 0;
+    const v = c === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
+
+export function getStableSessionId(): string {
+  const key = 'qravy_waiter_sid';
+  let sid = localStorage.getItem(key);
+  if (!sid) {
+    sid = uuidv4();
+    localStorage.setItem(key, sid);
   }
-  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  return `${proto}//${location.host}${path}`;
+  return sid;
+}
+
+/**
+ * Build WebSocket URL.
+ * Priority:
+ * 1. VITE_WS_ORIGIN (for AI Waiter WebSocket)
+ * 2. VITE_API_ORIGIN (fallback)
+ * 3. window.location (final fallback)
+ */
+export function getWsURL(path: string): string {
+  const env = (import.meta as any).env || {};
+  const wsOrigin = env.VITE_WS_ORIGIN || null;
+  const apiOrigin = env.VITE_API_ORIGIN || null;
+  const sid = getStableSessionId();
+
+  let scheme: 'ws:' | 'wss:';
+  let host: string;
+
+  if (wsOrigin) {
+    const u = new URL(wsOrigin);
+    scheme = u.protocol === 'https:' ? 'wss:' : 'ws:';
+    host = u.host;
+  } else if (apiOrigin) {
+    const u = new URL(apiOrigin);
+    scheme = u.protocol === 'https:' ? 'wss:' : 'ws:';
+    host = u.host;
+  } else {
+    scheme = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    host = location.host;
+  }
+
+  const base = `${scheme}//${host}`;
+  const url = new URL(path, base);
+  url.searchParams.set('sid', sid);
+  return url.toString();
 }

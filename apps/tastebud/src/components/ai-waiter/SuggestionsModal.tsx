@@ -1,6 +1,7 @@
 // apps/tastebud/src/components/ai-waiter/SuggestionsModal.tsx
 import React from 'react';
 import { Link, useLocation, useParams, useSearchParams } from 'react-router-dom';
+import MicInputBar from './MicInputBar';
 
 type Suggestion = {
   id: string;
@@ -86,6 +87,10 @@ export default function SuggestionsModal({ open, onClose, menuHrefOverride, item
   if (!open) return null;
 
   const hasAiItems = Array.isArray(items) && items.length > 0;
+
+  // runtime store hints (safe optional chaining)
+  const tenant = (typeof window !== 'undefined' ? (window as any).__STORE__?.subdomain : undefined) ?? undefined;
+  const branch = (typeof window !== 'undefined' ? (window as any).__STORE__?.branch : undefined) ?? undefined;
 
   return (
     <div
@@ -189,7 +194,6 @@ export default function SuggestionsModal({ open, onClose, menuHrefOverride, item
 
                 <div className="mt-3 flex items-center justify-between">
                   <span className="text-[12px] text-gray-500">
-                    {/* Placeholder tag; keep for future filters */}
                     {s.query ? `#${s.query}` : '#menu'}
                   </span>
                   <span className="text-[12px] font-medium text-[#FA2851] group-hover:underline">
@@ -209,6 +213,19 @@ export default function SuggestionsModal({ open, onClose, menuHrefOverride, item
             >
               Open full menu
             </Link>
+          </div>
+
+          {/* ✅ Mic input bar — now auto-reads global lang from AiWaiterHome */}
+          <div className="mt-4">
+            <MicInputBar
+              className=""
+              tenant={tenant}
+              branch={branch}
+              channel="dine-in"
+              onAiReply={({ replyText, meta }) => {
+                console.debug('AI reply (SuggestionsModal):', replyText, meta);
+              }}
+            />
           </div>
         </div>
       </div>

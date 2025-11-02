@@ -30,8 +30,9 @@ OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
 OPENAI_BASE = os.environ.get("OPENAI_BASE", "https://api.openai.com").rstrip("/")
 OPENAI_CHAT_MODEL = os.environ.get("OPENAI_CHAT_MODEL", "gpt-4.1-mini").strip()
 
-BRAIN_TIMEOUT_S = float(os.environ.get("BRAIN_TIMEOUT_S", "4.0"))
-BRAIN_MAX_TOKENS = int(os.environ.get("BRAIN_MAX_TOKENS", "200"))
+# ✅ Increased defaults
+BRAIN_MAX_TOKENS = int(os.environ.get("BRAIN_MAX_TOKENS", "1024"))
+BRAIN_TIMEOUT_S = float(os.environ.get("BRAIN_TIMEOUT_S", "8.0"))
 BRAIN_TEMP = float(os.environ.get("BRAIN_TEMP", "0.2"))
 BRAIN_TOP_P = float(os.environ.get("BRAIN_TOP_P", "1.0"))
 
@@ -66,20 +67,43 @@ def _safe_snip(s: str | bytes, n: int = 800) -> str:
 
 # --------------------------- Message Build ---------------------------
 
-# One permanent system line: ask for strict JSON. (Behavior lives in fine-tune.)
+# ✅ Base system instruction (kept for reference; actual content built per language below)
 _SYSTEM = (
-    "Return ONLY a single valid JSON object with keys: "
-    "replyText, intent, language, and optional items[], notes. "
+    "Return ONLY a single valid JSON object with keys: replyText, intent, language, and optional items[], notes. "
     "Valid intents: order | menu | suggestions | chitchat. "
-    "For intent 'order', include items as an array of objects with "
-    "{name, itemId?, quantity?}. When you can match to [MenuHint], include itemId. "
-    "When referring to menu items, always use the exact 'name' field from [MenuHint] if available. "
-    "Intent policy: (a) price or availability questions → intent='chitchat'; "
-    "(b) general requests to show/see the menu or what's on the menu → intent='menu'; "
-    "(c) category-specific or option-listing replies (e.g., 'what desserts do you have') → intent='suggestions' and include items[]; "
-    "(d) everything else → 'chitchat'. "
-    "No markdown."
+    "For intent 'order', include items as an array of up to 8 objects. "
+    "Do NOT list the full menu. replyText must be ≤ 280 characters."
 )
+
+# ✅ Language-resolving helpers
+def _resolve_lang_hint(locale: Optional[str], transcript: str) -> str:
+    """
+    Normalize the desired language:
+      - 'bn' or 'en' → fixed language
+      - 'auto' / None → infer from current transcript
+    """
+    v = (locale or "").strip().lower()
+    if v in ("bn", "en"):
+        return v
+    return _guess_lang(transcript)
+
+_LANG_DIRECTIVE = {
+    "bn": "Respond ONLY in Bangla (Bengali).",
+    "en": "Respond ONLY in English.",
+}
+
+def _build_system_with_lang(lang_hint: str) -> str:
+    directive = _LANG_DIRECTIVE.get(
+        lang_hint,
+        "Mirror the user's language and do not switch mid-conversation."
+    )
+    return (
+        "Return ONLY a single valid JSON object with keys: replyText, intent, language, and optional items[], notes. "
+        "Valid intents: order | menu | suggestions | chitchat. "
+        "For intent 'order', include items as an array of up to 8 objects. "
+        "Do NOT list the full menu. replyText must be ≤ 280 characters. "
+        + directive
+    )
 
 def _build_user_content(
     transcript: str,
@@ -122,6 +146,20 @@ def _build_user_content(
 
     return f"{base}\n\n[MenuHint]: {hint}" if hint else base
 
+# ------------- Dialog State Helper (compact, JSON-only, optional) -------------
+def _build_state_line(dialog_state: Optional[Dict[str, Any]]) -> Optional[Dict[str, str]]:
+    """
+    Return a tiny synthetic 'system' message carrying [DialogState] if provided.
+    The model is instructed in _SYSTEM to use it when present.
+    """
+    if not dialog_state:
+        return None
+    try:
+        blob = json.dumps(dialog_state, ensure_ascii=False)
+        return {"role": "system", "content": f"[DialogState]: {blob}"}
+    except Exception:
+        return None
+
 # ----------------------- Canonical Name Helpers -----------------------
 
 def _build_menu_maps(menu_snapshot: Optional[Dict[str, Any]]):
@@ -160,7 +198,7 @@ def _build_menu_maps(menu_snapshot: Optional[Dict[str, Any]]):
 def _find_id_for_name(name: Optional[str], token_to_id: Dict[str, str]) -> Optional[str]:
     if not name:
         return None
-    return token_to_id.get(name.strip().lower())
+    return token_to_id.get((name or "").strip().lower())
 
 def _canonicalize_reply_text(
     reply_text: str,
@@ -175,44 +213,46 @@ def _canonicalize_reply_text(
     if not reply_text or not menu_snapshot:
         return reply_text
 
-    id_to_name, token_to_id, id_to_aliases = _build_menu_maps(menu_snapshot)
-    if not id_to_name:
-        return reply_text
+    # ✅ Make canonicalization safe
+    try:
+        id_to_name, token_to_id, id_to_aliases = _build_menu_maps(menu_snapshot)
+        if not id_to_name:
+            return reply_text
 
-    # Figure out which canonical items the model intended
-    intended_ids: List[str] = []
+        # Figure out which canonical items the model intended
+        intended_ids: List[str] = []
 
-    for it in (model_items or []):
-        _id = str(it.get("itemId") or "").strip()
-        nm = (it.get("name") or "").strip()
-        if _id and _id in id_to_name:
-            intended_ids.append(_id)
-            continue
-        if not _id and nm:
-            guess = _find_id_for_name(nm, token_to_id)
-            if guess:
-                intended_ids.append(guess)
-
-    if not intended_ids:
-        return reply_text
-
-    # For each intended item, replace any alias occurrences with canonical name
-    out = reply_text
-    for _id in intended_ids:
-        canonical = id_to_name.get(_id)
-        if not canonical:
-            continue
-        aliases = id_to_aliases.get(_id, [])
-        # include the model-provided name as an alias candidate too
-        # (covers cases where model minted a slight variant)
-        for alias in aliases:
-            a = (alias or "").strip()
-            if not a or a == canonical:
+        for it in (model_items or []):
+            _id = str(it.get("itemId") or "").strip()
+            nm = (it.get("name") or "").strip()
+            if _id and _id in id_to_name:
+                intended_ids.append(_id)
                 continue
-            # case-insensitive replace; keep it simple to work with Bengali too
-            pattern = re.compile(re.escape(a), flags=re.IGNORECASE)
-            out = pattern.sub(canonical, out)
-    return out
+            if not _id and nm:
+                guess = _find_id_for_name(nm, token_to_id)
+                if guess:
+                    intended_ids.append(guess)
+
+        if not intended_ids:
+            return reply_text
+
+        # For each intended item, replace any alias occurrences with canonical name
+        out = reply_text
+        for _id in intended_ids:
+            canonical = id_to_name.get(_id)
+            if not canonical:
+                continue
+            aliases = id_to_aliases.get(_id, [])
+            for alias in aliases:
+                a = (alias or "").strip()
+                if not a or a == canonical:
+                    continue
+                pattern = re.compile(re.escape(a), flags=re.IGNORECASE)
+                out = pattern.sub(canonical, out)
+        return out
+    except Exception:
+        # If anything goes wrong, fall back to the original text unchanged
+        return reply_text
 
 # -------------------- Infer items from LLM text ----------------------
 
@@ -220,7 +260,6 @@ def _infer_items_from_reply_text(reply_text: str, menu_snapshot: Optional[Dict[s
     """
     LLM-first inference: if the model listed concrete item names in reply_text
     but forgot to fill items[], detect canonical names using the MenuHint.
-    No keyword rules; we match against canonical item names from the snapshot.
     """
     if not reply_text or not menu_snapshot:
         return []
@@ -317,12 +356,14 @@ async def generate_reply(
     menu_snapshot: Optional[Dict[str, Any]] = None,
     conversation_id: Optional[str] = None,
     user_id: Optional[str] = None,
+    history: Optional[List[Dict[str, str]]] = None,        # ✅ existing
+    dialog_state: Optional[Dict[str, Any]] = None,          # ✅ NEW
 ) -> Dict[str, Any]:
     """
     Thin adapter:
     - clamp transcript
-    - send transcript + optional menu hint to the fine-tuned model
-    - expect strict JSON back
+    - build chat messages from optional history + optional dialog_state + current turn (+ MenuHint)
+    - call model expecting strict JSON
     - return reply + small meta (no business logic here)
     """
     transcript = _clamp(transcript or "", 2000)
@@ -336,23 +377,44 @@ async def generate_reply(
                 "tenant": tenant, "branch": branch, "channel": channel,
                 "conversationId": conversation_id, "userId": user_id,
                 "fallback": True,
+                "ctxLen": len(history or []),
+                "stateLen": len(dialog_state or {}),
             },
         }
 
-    messages = [
-        {"role": "system", "content": _SYSTEM},
-        {"role": "user", "content": _build_user_content(transcript, menu_snapshot)},
+    # ✅ Build messages with hard language directive
+    lang_hint = _resolve_lang_hint(locale, transcript)
+
+    messages: List[Dict[str, str]] = [
+        {"role": "system", "content": _build_system_with_lang(lang_hint)}
     ]
+
+    state_line = _build_state_line(dialog_state)
+    if state_line:
+        messages.append(state_line)
+
+    if history:
+        # keep last 8 short turns; earlier turns should be summarized server-side
+        for t in history[-8:]:
+            r = t.get("role")
+            c = (t.get("content") or "").strip()
+            if r in ("user", "assistant") and c:
+                messages.append({"role": r, "content": c})
+
+    messages.append({"role": "user", "content": _build_user_content(transcript, menu_snapshot)})
 
     try:
         raw = await _call_openai(messages)
         obj = _parse_model_json(raw)
 
-        # Minimal normalization
         reply_text = str(obj.get("replyText") or "").strip()
         language = (obj.get("language") or "").strip() or _guess_lang(reply_text or transcript)
 
-        # If the model forgot items[], infer from reply_text using MenuHint (LLM-first, no keywords)
+        # ✅ If caller forced a language (bn/en), honor it in meta & nudge consistency
+        if lang_hint in ("bn", "en"):
+            language = lang_hint
+
+        # If the model forgot items[], infer from reply_text using MenuHint
         model_items = obj.get("items")
         if not model_items:
             inferred = _infer_items_from_reply_text(reply_text, menu_snapshot)
@@ -360,14 +422,13 @@ async def generate_reply(
                 obj["items"] = inferred
                 model_items = inferred
 
-        # 🔧 Normalize intent to canonical 4 (base on LLM label)
+        # Normalize intent to canonical 4
         intent_raw = (obj.get("intent") or "").strip().lower()
         intent_map = {
             "order_food": "order",
             "add_to_cart": "order",
             "place_order": "order",
 
-            # availability/price checks are *not* menu
             "availability_check": "chitchat",
             "availability": "chitchat",
             "in_stock": "chitchat",
@@ -389,16 +450,12 @@ async def generate_reply(
             "recs": "suggestions",
         }
         intent = intent_map.get(intent_raw, intent_raw or "chitchat")
-
-        # If the model labeled 'menu' but actually enumerated concrete items (either returned or inferred),
-        # treat this as 'suggestions' so the client shows the SuggestionsModal and not just /menu.
         if intent == "menu" and model_items:
             intent = "suggestions"
-
         if intent not in {"order", "menu", "suggestions", "chitchat"}:
             intent = "chitchat"
 
-        # ✅ Canonicalize any item names inside reply_text to menu's original names
+        # Canonicalize any item names in reply_text to menu originals
         reply_text = _canonicalize_reply_text(
             reply_text=reply_text,
             model_items=obj.get("items"),
@@ -415,6 +472,8 @@ async def generate_reply(
                 "notes": obj.get("notes"),
                 "tenant": tenant, "branch": branch, "channel": channel,
                 "conversationId": conversation_id, "userId": user_id,
+                "ctxLen": len(history or []),
+                "stateLen": len(dialog_state or {}),
                 "fallback": False,
             },
         }
@@ -432,6 +491,8 @@ async def generate_reply(
                 "tenant": tenant, "branch": branch, "channel": channel,
                 "conversationId": conversation_id, "userId": user_id,
                 "error": str(e),
+                "ctxLen": len(history or []),
+                "stateLen": len(dialog_state or {}),
                 "fallback": True,
             },
         }
