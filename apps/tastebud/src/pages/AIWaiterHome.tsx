@@ -12,6 +12,9 @@ import { buildMenuIndex, resolveItemIdByName } from '../utils/item-resolver';
 import { useCart } from '../context/CartContext';
 import { usePublicMenu } from '../hooks/usePublicMenu'; // ✅ added
 
+// ✅ NEW: global conversation store (to surface text in modals / mic bars)
+import { useConversationStore } from '../state/conversation';
+
 type UIMode = 'idle' | 'thinking' | 'talking';
 
 export default function AiWaiterHome() {
@@ -19,6 +22,11 @@ export default function AiWaiterHome() {
   const { subdomain, branch, branchSlug } = useParams<{ subdomain?: string; branch?: string; branchSlug?: string }>();
   const [search] = useSearchParams();
   const location = useLocation();
+
+  // ✅ store helpers
+  const appendAi = useConversationStore((s) => s.appendAi);
+  const clearAi  = useConversationStore((s) => s.clearAi);
+  const setAi    = useConversationStore((s) => s.setAi);
 
   // Load Noto Sans Bengali
   useEffect(() => {
@@ -345,6 +353,9 @@ export default function AiWaiterHome() {
     try {
       if (listening || wsRef.current || ctxRef.current) return;
 
+      // ✅ start fresh subtitle each turn
+      clearAi();
+
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       });
@@ -417,12 +428,18 @@ export default function AiWaiterHome() {
 
           if (msg.t === 'ai_reply_pending') {
             setUiMode('thinking');
+            // ✅ show a thinking stub immediately in global subtitle
+            setAi('Thinking…');
             return;
           }
 
           if (msg.t === 'ai_reply') {
             const text = (msg.replyText as string) || '';
-            if (text) setAiReplies((prev) => [...prev, text]);
+            if (text) {
+              setAiReplies((prev) => [...prev, text]);
+              // ✅ push to global so MicInputBar / modals can display the same line
+              appendAi(text);
+            }
             aiSeenRef.current = true;
             pendingAiResolverRef.current?.(true);
             setUiMode('talking');

@@ -1,15 +1,13 @@
-// apps/tastebud/src/components/ai-waiter/SuggestionsModal.tsx
 import React from 'react';
 import { Link, useLocation, useParams, useSearchParams } from 'react-router-dom';
 import MicInputBar from './MicInputBar';
+import { useConversationStore } from '../../state/conversation'; // ✅ Global AI text
 
 type Suggestion = {
   id: string;
   title: string;
   blurb: string;
-  // optional tag you might use later to prefilter/search
   query?: string;
-  // tiny emoji/icon; replace with images later if you like
   emoji?: string;
 };
 
@@ -23,11 +21,7 @@ type MinimalMenuItem = {
 type Props = {
   open: boolean;
   onClose: () => void;
-  // Optional override if the parent wants to control where "See menu" goes.
-  // If not provided, this component will resolve /menu from params/runtime.
   menuHrefOverride?: string;
-
-  // ✅ NEW: items resolved from AI suggestions (full menu objects preferred)
   items?: MinimalMenuItem[];
 };
 
@@ -52,11 +46,11 @@ function useMenuHref(menuHrefOverride?: string) {
     (typeof window !== 'undefined' ? (window as any).__STORE__?.branch ?? null : null) ??
     undefined;
 
-  // If parent provided a target, honor it
   if (menuHrefOverride) return menuHrefOverride;
 
-  // Dev-style routes if /t/:subdomain is present in URL; otherwise prod-style
-  const isDevTenantPath = /\/t\/[^/]+/.test(location.pathname) || (sd && location.pathname.startsWith('/t/'));
+  const isDevTenantPath =
+    /\/t\/[^/]+/.test(location.pathname) ||
+    (sd && location.pathname.startsWith('/t/'));
   if (isDevTenantPath || subdomain) {
     return br ? `/t/${sd}/${br}/menu` : `/t/${sd}/menu`;
   }
@@ -72,25 +66,37 @@ const DUMMY_SUGGESTIONS: Suggestion[] = [
   { id: 'sweet', title: 'Desserts', blurb: 'Finish with something sweet', emoji: '🍰', query: 'dessert' },
 ];
 
-export default function SuggestionsModal({ open, onClose, menuHrefOverride, items = [] }: Props) {
+export default function SuggestionsModal({
+  open,
+  onClose,
+  menuHrefOverride,
+  items = [],
+}: Props) {
   const menuHref = useMenuHref(menuHrefOverride);
 
+  // ✅ Call all hooks unconditionally (before any return)
+  const hasAiItems = Array.isArray(items) && items.length > 0;
+  const tenant =
+    (typeof window !== 'undefined'
+      ? (window as any).__STORE__?.subdomain
+      : undefined) ?? undefined;
+  const branch =
+    (typeof window !== 'undefined'
+      ? (window as any).__STORE__?.branch
+      : undefined) ?? undefined;
+
+  // ✅ Global AI text
+  const aiText = useConversationStore((s) => s.aiText);
+
+  // ✅ Escape close listener
   React.useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    document.addEventListener('keydown', onKey);
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
+    if (open) document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
   }, [open, onClose]);
 
+  // ✅ Now safe to conditionally return
   if (!open) return null;
-
-  const hasAiItems = Array.isArray(items) && items.length > 0;
-
-  // runtime store hints (safe optional chaining)
-  const tenant = (typeof window !== 'undefined' ? (window as any).__STORE__?.subdomain : undefined) ?? undefined;
-  const branch = (typeof window !== 'undefined' ? (window as any).__STORE__?.branch : undefined) ?? undefined;
 
   return (
     <div
@@ -104,7 +110,7 @@ export default function SuggestionsModal({ open, onClose, menuHrefOverride, item
         onClick={onClose}
       />
 
-      {/* Sheet / Modal card */}
+      {/* Modal card */}
       <div className="relative z-[101] w-full sm:max-w-2xl sm:rounded-2xl sm:shadow-2xl bg-white">
         {/* Header */}
         <div className="sticky top-0 flex items-center justify-between px-4 py-3 border-b border-gray-100">
@@ -115,10 +121,22 @@ export default function SuggestionsModal({ open, onClose, menuHrefOverride, item
             aria-label="Close"
           >
             <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
-              <path fill="currentColor" d="M18.3 5.71a1 1 0 0 0-1.41 0L12 10.59 7.11 5.7a1 1 0 0 0-1.41 1.41L10.59 12l-4.9 4.89a1 1 0 1 0 1.41 1.41L12 13.41l4.89 4.9a1 1 0 0 0 1.41-1.41L13.41 12l4.9-4.89a1 1 0 0 0-.01-1.4Z"/>
+              <path
+                fill="currentColor"
+                d="M18.3 5.71a1 1 0 0 0-1.41 0L12 10.59 7.11 5.7a1 1 0 0 0-1.41 1.41L10.59 12l-4.9 4.89a1 1 0 1 0 1.41 1.41L12 13.41l4.89 4.9a1 1 0 0 0 1.41-1.41L13.41 12l4.9-4.89a1 1 0 0 0-.01-1.4Z"
+              />
             </svg>
           </button>
         </div>
+
+        {/* ✅ AI message on top */}
+        {aiText && (
+          <div className="px-4 pt-3">
+            <div className="rounded-xl bg-gray-50 text-gray-700 text-[14px] px-3 py-2 border border-gray-100">
+              {aiText}
+            </div>
+          </div>
+        )}
 
         {/* Body */}
         <div className="px-4 pt-3 pb-4">
@@ -126,10 +144,12 @@ export default function SuggestionsModal({ open, onClose, menuHrefOverride, item
             Based on what you said, here are a few quick paths. Tap any card to jump into the menu.
           </p>
 
-          {/* ✅ AI-driven suggestions (if provided) */}
+          {/* ✅ AI-driven suggestions */}
           {hasAiItems && (
             <div className="mb-5">
-              <h3 className="text-[15px] font-semibold text-gray-900 mb-2">Recommended for you</h3>
+              <h3 className="text-[15px] font-semibold text-gray-900 mb-2">
+                Recommended for you
+              </h3>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 {items.map((it, idx) => {
                   const title = String(it?.name ?? 'Item');
@@ -142,10 +162,15 @@ export default function SuggestionsModal({ open, onClose, menuHrefOverride, item
                       <div className="flex items-start gap-3">
                         <div className="h-10 w-10 rounded-xl grid place-items-center bg-gray-50 text-lg overflow-hidden">
                           {it?.imageUrl ? (
-                            // eslint-disable-next-line @next/next/no-img-element
-                            <img src={it.imageUrl} alt={title} className="h-10 w-10 object-cover rounded-xl" />
+                            <img
+                              src={it.imageUrl}
+                              alt={title}
+                              className="h-10 w-10 object-cover rounded-xl"
+                            />
                           ) : (
-                            <span role="img" aria-label="food">🍽️</span>
+                            <span role="img" aria-label="food">
+                              🍽️
+                            </span>
                           )}
                         </div>
                         <div className="min-w-0">
@@ -173,12 +198,12 @@ export default function SuggestionsModal({ open, onClose, menuHrefOverride, item
             </div>
           )}
 
-          {/* Existing quick paths (fallback / complement) */}
+          {/* Default quick paths */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             {DUMMY_SUGGESTIONS.map((s) => (
               <Link
                 key={s.id}
-                to={menuHref /* you may add `+ '?q=' + encodeURIComponent(s.query!)` once DigitalMenu reads it */}
+                to={menuHref}
                 className="group rounded-2xl border border-gray-100 bg-white p-4 hover:shadow-md transition-shadow active:scale-[0.99]"
                 onClick={onClose}
               >
@@ -215,7 +240,7 @@ export default function SuggestionsModal({ open, onClose, menuHrefOverride, item
             </Link>
           </div>
 
-          {/* ✅ Mic input bar — now auto-reads global lang from AiWaiterHome */}
+          {/* ✅ Mic input bar */}
           <div className="mt-4">
             <MicInputBar
               className=""

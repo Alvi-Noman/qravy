@@ -1,6 +1,7 @@
 // apps/tastebud/src/components/ai-waiter/MicInputBar.tsx
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { getWsURL, getStableSessionId } from "../../utils/ws";
+import { useConversationStore } from "../../state/conversation"; // ✅ global subtitle store
 
 type Lang = "bn" | "en" | "auto";
 
@@ -30,6 +31,22 @@ export default function MicInputBar({
   const [isRecording, setIsRecording] = useState(false);
   const [thinking, setThinking] = useState(false);
   const [partial, setPartial] = useState("");
+  const [aiText, setAiText] = useState(""); // local buffer (kept)
+
+  // ✅ Zustand global store (subtitle shared across app)
+  const appendAi  = useConversationStore((s) => s.appendAi);
+  const setAi     = useConversationStore((s) => s.setAi);
+  const globalAiText = useConversationStore((s) => s.aiText);
+
+  // viewport for last-2-lines view
+  const lastLinesRef = useRef<HTMLDivElement | null>(null);
+
+  // ---- Dual-mode press logic (Tap OR Hold) ----
+  const HOLD_MS = 250;
+  const holdTimerRef = useRef<number | null>(null);
+  const isHoldModeRef = useRef(false);
+  const pointerActiveRef = useRef(false);
+  const lastDownAtRef = useRef(0);
 
   // 🔗 Keep a current language that follows AiWaiterHome broadcasts
   const getGlobalLang = (): Lang => {
@@ -77,39 +94,23 @@ export default function MicInputBar({
   // ---------- Cleanup ----------
   const cleanup = useCallback(async () => {
     try {
-      // Ask server to finalize
       if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
         try {
           wsRef.current.send(JSON.stringify({ t: "end" }));
         } catch {}
       }
-
-      // Tear down audio graph
       if (nodeRef.current) {
-        try {
-          nodeRef.current.port.onmessage = null as any;
-        } catch {}
-        try {
-          nodeRef.current.disconnect();
-        } catch {}
+        try { nodeRef.current.port.onmessage = null as any; } catch {}
+        try { nodeRef.current.disconnect(); } catch {}
       }
-
       if (srcRef.current) {
-        try {
-          srcRef.current.disconnect();
-        } catch {}
+        try { srcRef.current.disconnect(); } catch {}
       }
-
       if (acRef.current) {
-        try {
-          await acRef.current.close();
-        } catch {}
+        try { await acRef.current.close(); } catch {}
       }
-
       if (mediaRef.current) {
-        try {
-          mediaRef.current.getTracks().forEach((t) => t.stop());
-        } catch {}
+        try { mediaRef.current.getTracks().forEach((t) => t.stop()); } catch {}
       }
     } catch {}
 
@@ -125,6 +126,12 @@ export default function MicInputBar({
   useEffect(() => {
     return () => {
       cleanup();
+      if (holdTimerRef.current) {
+        window.clearTimeout(holdTimerRef.current);
+        holdTimerRef.current = null;
+      }
+      pointerActiveRef.current = false;
+      isHoldModeRef.current = false;
     };
   }, [cleanup]);
 
@@ -164,18 +171,34 @@ export default function MicInputBar({
     ws.onmessage = (ev) => {
       try {
         const data = JSON.parse(ev.data);
+
+        // ❌ Ignore all partial STT messages
         if (data.t === "stt_partial") {
-          setPartial(data.text || "");
-          onPartial?.(data.text || "");
-        } else if (data.t === "ai_reply_pending") {
+          return;
+        }
+
+        // 🤖 AI is thinking
+        if (data.t === "ai_reply_pending") {
           setThinking(true);
-        } else if (data.t === "ai_reply") {
+          // ✅ immediately reflect in the shared subtitle
+          setAi("Thinking…");
+          return;
+        }
+
+        // ✅ Only handle the final AI reply
+        if (data.t === "ai_reply") {
           setThinking(false);
           const replyText = data.replyText || "";
+          // local buffer (kept for smoothness)
+          setAiText((prev) => (prev ? `${prev} ${replyText}` : replyText));
+          // ✅ broadcast globally so any MicInputBar shows it
+          appendAi(replyText);
           onAiReply?.({ replyText, meta: data.meta });
+          return;
         }
+
       } catch {
-        // ignore non-JSON or binary
+        // ignore non-JSON or binary frames
       }
     };
 
@@ -183,7 +206,13 @@ export default function MicInputBar({
     ws.onclose = () => {};
 
     wsRef.current = ws;
-  }, [branch, channel, currentLang, onAiReply, onPartial, tenant, wsPath]);
+  }, [branch, channel, currentLang, onAiReply, onPartial, tenant, wsPath, appendAi, setAi]);
+
+  // keep the last-2-lines viewport stuck to the bottom
+  useEffect(() => {
+    if (!lastLinesRef.current) return;
+    lastLinesRef.current.scrollTop = lastLinesRef.current.scrollHeight;
+  }, [aiText, globalAiText]); // 👈 also scroll when global subtitle changes
 
   // ---------- Start Recording ----------
   const start = useCallback(async () => {
@@ -191,6 +220,7 @@ export default function MicInputBar({
     setIsRecording(true);
     setPartial("");
     setThinking(false);
+    setAiText(""); // clear only local buffer
 
     openWebSocket();
 
@@ -230,8 +260,8 @@ export default function MicInputBar({
       const ws = wsRef.current;
       if (!ws || ws.readyState !== WebSocket.OPEN) return;
 
-      if (msg.type === "chunk" && msg.samples instanceof Int16Array) {
-        ws.send(msg.samples.buffer);
+      if ((msg as any).type === "chunk" && (msg as any).samples instanceof Int16Array) {
+        ws.send((msg as any).samples.buffer);
       } else if (msg instanceof ArrayBuffer) {
         ws.send(msg);
       }
@@ -242,99 +272,182 @@ export default function MicInputBar({
 
   // ---------- Stop ----------
   const stop = useCallback(async () => {
+    if (!isRecording) return;
     setIsRecording(false);
     await cleanup();
-  }, [cleanup]);
+  }, [cleanup, isRecording]);
 
-  // ---------- Event handlers ----------
-  const onPointerDown = useCallback(async () => {
-    await start();
-  }, [start]);
+  // ---------- Pointer handlers implementing Tap OR Hold ----------
+  const onPointerDown = useCallback(async (e: React.PointerEvent) => {
+    if (disabled) return;
+    e.preventDefault();
+    pointerActiveRef.current = true;
+    isHoldModeRef.current = false;
+    lastDownAtRef.current = Date.now();
 
-  const onPointerUp = useCallback(async () => {
-    await stop();
-  }, [stop]);
+    if (holdTimerRef.current) {
+      window.clearTimeout(holdTimerRef.current);
+      holdTimerRef.current = null;
+    }
+    holdTimerRef.current = window.setTimeout(async () => {
+      if (!pointerActiveRef.current) return;
+      isHoldModeRef.current = true;
+      if (!isRecording) {
+        await start();
+      }
+    }, HOLD_MS);
+  }, [disabled, isRecording, start]);
 
-  const onPointerLeave = useCallback(async () => {
-    if (isRecording) await stop();
-  }, [isRecording, stop]);
+  const endPressCycle = useCallback(async () => {
+    if (holdTimerRef.current) {
+      window.clearTimeout(holdTimerRef.current);
+      holdTimerRef.current = null;
+    }
+    const wasHold = isHoldModeRef.current;
+    isHoldModeRef.current = false;
+    pointerActiveRef.current = false;
 
-  const onClickToggle = useCallback(
-    async (e: React.MouseEvent) => {
+    if (wasHold) {
+      await stop();
+      return;
+    }
+
+    const pressedFor = Date.now() - lastDownAtRef.current;
+    if (pressedFor < HOLD_MS) {
+      if (isRecording) {
+        await stop();
+      } else {
+        await start();
+      }
+    }
+  }, [start, stop]);
+
+  const onPointerUp = useCallback(async (e: React.PointerEvent) => {
+    if (disabled) return;
+    e.preventDefault();
+    await endPressCycle();
+  }, [disabled, endPressCycle]);
+
+  const onPointerLeave = useCallback(async (e: React.PointerEvent) => {
+    if (disabled) return;
+    if (pointerActiveRef.current) {
       e.preventDefault();
-      if (isRecording) await stop();
-      else await start();
-    },
-    [isRecording, start, stop]
-  );
+      await endPressCycle();
+    }
+  }, [disabled, endPressCycle]);
 
   // ---------- UI ----------
+  const hintText = isRecording
+    ? partial
+      ? partial
+      : "Listening…"
+    : thinking
+      ? "Thinking…"
+      : "Tap to start • Hold to talk";
+
+  // 👇 Prefer the shared subtitle; fallback to local buffer
+  const subtitle = globalAiText || aiText;
+
   return (
-    <div
-      className={[
-        "w-full rounded-full bg-white shadow-[0_6px_20px_rgba(255,0,64,0.12)]",
-        "border border-white/60 px-4 py-2 flex items-center gap-3",
-        "backdrop-blur",
-        className,
-      ].join(" ")}
-    >
-      {/* live caption / hint */}
-      <div className="grow min-h-6 text-sm text-gray-500">
-        {isRecording
-          ? partial
-            ? <span className="text-gray-700">{partial}</span>
-            : "Listening…"
-          : thinking
-            ? "Thinking…"
-            : "Hold to speak or tap to toggle"}
-      </div>
+    <div className={["relative w-full", className].join(" ")}>
+      <div
+        className="fixed left-0 right-0 bottom-0 h-40 bg-gradient-to-t from-[#F6F5F8]/100 from-[60%] to-[#F6F5F8]/0 to-[100%]"
+        aria-hidden="true"
+      />
 
-      {/* mic button */}
-      <button
-        type="button"
-        disabled={disabled}
-        onPointerDown={onPointerDown}
-        onPointerUp={onPointerUp}
-        onPointerLeave={onPointerLeave}
-        onClick={onClickToggle}
+      <div
         className={[
-          "relative h-12 w-12 shrink-0 rounded-full",
-          isRecording ? "bg-rose-600" : "bg-rose-500",
-          "flex items-center justify-center text-white",
-          "shadow-lg active:scale-95 transition-transform",
-          disabled ? "opacity-50 cursor-not-allowed" : "cursor-pointer",
+          "w-full rounded-full bg-white shadow-[0_6px_20px_rgba(255,0,64,0.12)]",
+          "border border-white/60 px-4 py-2 flex items-center gap-3",
+          "backdrop-blur",
+          "relative z-10",
         ].join(" ")}
-        style={{ touchAction: "manipulation" }}
-        aria-label={isRecording ? "Stop recording" : "Start recording"}
-        title={isRecording ? "Release to send" : "Hold to speak"}
       >
-        {/* mic icon */}
-        <svg
-          xmlns="http://www.w3.org/2000/svg"
-          className="h-6 w-6"
-          fill="none"
-          viewBox="0 0 24 24"
-          stroke="currentColor"
-          strokeWidth="2"
-          aria-hidden="true"
-        >
-          <path
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            d="M12 2a3 3 0 00-3 3v6a3 3 0 106 0V5a3 3 0 00-3-3z"
-          />
-          <path
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            d="M19 11a7 7 0 01-14 0M12 18v4"
-          />
-        </svg>
+        {/* live caption / flowing last-2-lines */}
+        <div className="grow min-h-6 flex items-center text-sm text-gray-700">
+          {isRecording ? (
+            partial ? (
+              <span className="text-gray-700">{partial}</span>
+            ) : (
+              "Listening…"
+            )
+          ) : thinking ? (
+            "Thinking…"
+          ) : subtitle ? (
+            <div className="relative w-full">
+              {/* 2-line viewport that always sticks to the latest lines */}
+              <div
+                ref={lastLinesRef}
+                className="h-[2.8em] leading-snug overflow-y-auto pr-1"
+                style={{
+                  scrollbarWidth: "none",
+                  msOverflowStyle: "none",
+                }}
+              >
+                <div
+                  style={
+                    {
+                      // @ts-ignore
+                      ["--webkitScrollbarDisplay"]: "none",
+                    } as React.CSSProperties
+                  }
+                  className="whitespace-pre-wrap break-words"
+                >
+                  {subtitle}
+                </div>
+              </div>
 
-        {/* halo while recording */}
-        {isRecording && (
-          <span className="absolute inset-0 rounded-full animate-ping bg-rose-400/40" />
-        )}
-      </button>
+              {/* top fade for modern look */}
+              <div className="pointer-events-none absolute -top-1 left-0 right-0 h-3 bg-gradient-to-b from-white to-transparent" />
+            </div>
+          ) : (
+            // idle → wave icon
+            <img
+              src="/icons/wave-idle.svg"
+              alt="Idle wave"
+              className="h-6 opacity-80 select-none pointer-events-none"
+            />
+          )}
+        </div>
+
+        {/* mic button */}
+        <button
+          type="button"
+          disabled={disabled}
+          onPointerDown={onPointerDown}
+          onPointerUp={onPointerUp}
+          onPointerLeave={onPointerLeave}
+          className={[
+            "relative h-12 w-12 shrink-0 rounded-full",
+            isRecording ? "bg-rose-600" : "bg-rose-500",
+            "flex items-center justify-center text-white",
+            "shadow-lg active:scale-95 transition-transform",
+            disabled ? "opacity-50 cursor-not-allowed" : "cursor-pointer",
+          ].join(" ")}
+          style={{ touchAction: "manipulation" }}
+          aria-label={isRecording ? "Stop recording" : "Start recording"}
+          title="Tap to toggle • Hold to talk"
+        >
+          {/* mic icon */}
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            className="h-6 w-6"
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+            strokeWidth="2"
+            aria-hidden="true"
+          >
+            <path strokeLinecap="round" strokeLinejoin="round" d="M12 2a3 3 0 00-3 3v6a3 3 0 106 0V5a3 3 0 00-3-3z" />
+            <path strokeLinecap="round" strokeLinejoin="round" d="M19 11a7 7 0 01-14 0M12 18v4" />
+          </svg>
+
+          {/* halo while recording */}
+          {isRecording && (
+            <span className="absolute inset-0 rounded-full animate-ping bg-rose-400/40" />
+          )}
+        </button>
+      </div>
     </div>
   );
 }

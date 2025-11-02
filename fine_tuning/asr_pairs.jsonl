@@ -199,13 +199,13 @@
 {"input": "কাছা", "output": "কাছে"}
 {"input": "কাছি", "output": "কাছে"}
 {"input": "কাছেত", "output": "কাছে"}
-{"input": "", "output": ""}
-{"input": "", "output": ""}
-{"input": "", "output": ""}
-{"input": "", "output": ""}
-{"input": "", "output": ""}
-{"input": "", "output": ""}
-{"input": "", "output": ""}
+{"input": "ব্রেট", "output": "ব্রেড"}
+{"input": "দনে", "output": "দেন"}
+{"input": "একঠা", "output": "একটা"}
+{"input": "আদ্যুইটা", "output": "আর দুইটা"}
+{"input": "কেকি", "output": "কি কি"}
+{"input": "দিনার", "output": "ডিনার"}
+{"input": "কেছুক", "output": "কিছু"}
 {"input": "", "output": ""}
 {"input": "", "output": ""}
 {"input": "", "output": ""}

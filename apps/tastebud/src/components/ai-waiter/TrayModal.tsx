@@ -3,12 +3,13 @@ import React from 'react';
 import { Link, useLocation, useParams, useSearchParams } from 'react-router-dom';
 import { useCart } from '../../context/CartContext';
 import MicInputBar from './MicInputBar';
+import { useConversationStore } from '../../state/conversation'; // ✅ ADDED
 
 type Props = {
   open: boolean;
   onClose: () => void;
   checkoutHrefOverride?: string;
-  recentAiItems?: { id: string; name: string }[]; // ✅ NEW optional prop
+  recentAiItems?: { id: string; name: string }[]; // ✅ optional
 };
 
 function useCheckoutHref(override?: string) {
@@ -58,17 +59,39 @@ export default function TrayModal({
   const { items, subtotal, removeItem, clear } = useCart();
   const checkoutHref = useCheckoutHref(checkoutHrefOverride);
 
+  // ✅ Read latest AI text globally (shared from MicInputBar / AiWaiterHome)
+  //    IMPORTANT: hooks must come before any conditional return.
+  const aiText = useConversationStore((s) => s.aiText);
+
+  // ✅ Hard guard: tray must not show if cart is empty
+  const hasItems = items.length > 0;
+  const effectiveOpen = open && hasItems;
+
+  // ✅ If someone tries to open while empty, auto-close to sync parent state
   React.useEffect(() => {
-    if (!open) return;
+    if (open && !hasItems) {
+      onClose?.();
+    }
+  }, [open, hasItems, onClose]);
+
+  // ✅ Close on Escape (only when actually open)
+  React.useEffect(() => {
+    if (!effectiveOpen) return;
     const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
-  }, [open, onClose]);
+  }, [effectiveOpen, onClose]);
 
-  if (!open) return null;
+  if (!effectiveOpen) return null;
 
-  const tenant = (typeof window !== 'undefined' ? (window as any).__STORE__?.subdomain : undefined) ?? undefined;
-  const branch = (typeof window !== 'undefined' ? (window as any).__STORE__?.branch : undefined) ?? undefined;
+  const tenant =
+    (typeof window !== 'undefined'
+      ? (window as any).__STORE__?.subdomain
+      : undefined) ?? undefined;
+  const branch =
+    (typeof window !== 'undefined'
+      ? (window as any).__STORE__?.branch
+      : undefined) ?? undefined;
 
   return (
     <div
@@ -101,7 +124,7 @@ export default function TrayModal({
           </button>
         </div>
 
-        {/* ✅ AI banner */}
+        {/* ✅ AI banner (shows only when tray is open AND there are items) */}
         {(recentAiItems?.length ?? 0) > 0 && (
           <div className="px-4 pt-3">
             <div className="rounded-xl bg-[#FFF0F3] text-[#FA2851] text-[13px] px-3 py-2 border border-[#FFD6DE]">
@@ -111,102 +134,102 @@ export default function TrayModal({
           </div>
         )}
 
+        {/* ✅ AI speaking area (auto-inherits current conversation text) */}
+        {aiText && (
+          <div className="px-4 pt-3">
+            <div className="rounded-xl bg-gray-50 text-gray-700 text-[14px] px-3 py-2 border border-gray-100">
+              {aiText}
+            </div>
+          </div>
+        )}
+
         {/* Content */}
         <div className="px-4 pt-3 pb-4 max-h-[64vh] overflow-y-auto">
-          {items.length === 0 ? (
-            <div className="text-center text-gray-500 py-10 text-sm">
-              Your tray is empty.
-            </div>
-          ) : (
-            <div className="space-y-3">
-              {items.map((it) => (
-                <div
-                  key={`${it.id}:${it.variation ?? ''}`}
-                  className="flex items-center justify-between gap-3 border border-gray-100 rounded-2xl p-3 hover:shadow-sm transition"
-                >
-                  <div className="flex items-center gap-3 min-w-0">
-                    {it.imageUrl ? (
-                      <img
-                        src={it.imageUrl}
-                        alt={it.name}
-                        className="h-12 w-12 rounded-xl object-cover"
-                        loading="lazy"
-                        decoding="async"
-                      />
-                    ) : (
-                      <div className="h-12 w-12 rounded-xl bg-gray-100" />
-                    )}
-                    <div className="min-w-0">
-                      <div className="text-[15px] font-medium text-gray-900 truncate">
-                        {it.name ?? 'Item'}
-                      </div>
-                      <div className="text-[12px] text-gray-600 truncate">
-                        {it.variation ? `${it.variation} · ` : ''}
-                        {formatBDT(it.price)} × {it.qty}
-                      </div>
-                      {it.notes ? (
-                        <div className="text-[12px] text-gray-500 truncate">
-                          {it.notes}
-                        </div>
-                      ) : null}
+          <div className="space-y-3">
+            {items.map((it) => (
+              <div
+                key={`${it.id}:${it.variation ?? ''}`}
+                className="flex items-center justify-between gap-3 border border-gray-100 rounded-2xl p-3 hover:shadow-sm transition"
+              >
+                <div className="flex items-center gap-3 min-w-0">
+                  {it.imageUrl ? (
+                    <img
+                      src={it.imageUrl}
+                      alt={it.name}
+                      className="h-12 w-12 rounded-xl object-cover"
+                      loading="lazy"
+                      decoding="async"
+                    />
+                  ) : (
+                    <div className="h-12 w-12 rounded-xl bg-gray-100" />
+                  )}
+                  <div className="min-w-0">
+                    <div className="text-[15px] font-medium text-gray-900 truncate">
+                      {it.name ?? 'Item'}
                     </div>
+                    <div className="text-[12px] text-gray-600 truncate">
+                      {it.variation ? `${it.variation} · ` : ''}
+                      {formatBDT(it.price)} × {it.qty}
+                    </div>
+                    {it.notes ? (
+                      <div className="text-[12px] text-gray-500 truncate">
+                        {it.notes}
+                      </div>
+                    ) : null}
                   </div>
-
-                  <button
-                    onClick={() => removeItem(it.id, it.variation)}
-                    className="h-8 w-8 grid place-items-center text-gray-400 hover:text-[#FA2851] rounded-full hover:bg-gray-100 transition"
-                    aria-label="Remove item"
-                  >
-                    <svg
-                      width="16"
-                      height="16"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                    >
-                      <path
-                        strokeWidth="2"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        d="M6 6l12 12M6 18L18 6"
-                      />
-                    </svg>
-                  </button>
                 </div>
-              ))}
-            </div>
-          )}
+
+                <button
+                  onClick={() => removeItem(it.id, it.variation)}
+                  className="h-8 w-8 grid place-items-center text-gray-400 hover:text-[#FA2851] rounded-full hover:bg-gray-100 transition"
+                  aria-label="Remove item"
+                >
+                  <svg
+                    width="16"
+                    height="16"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                  >
+                    <path
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      d="M6 6l12 12M6 18L18 6"
+                    />
+                  </svg>
+                </button>
+              </div>
+            ))}
+          </div>
         </div>
 
         {/* Footer */}
         <div className="sticky bottom-0 border-t border-gray-100 bg-white px-4 py-3">
-          {/* ✅ Mic input bar inside the tray footer (follows global language) */}
+          {/* ✅ Mic input bar inside the tray footer */}
           <div className="mb-3">
             <MicInputBar
               tenant={tenant}
               branch={branch}
               channel="dine-in"
               onAiReply={({ replyText, meta }) => {
-                // Keep minimal: log only; parent flow can consume meta.items to add to cart if desired.
+                // Keep minimal: parent flow should decide whether to open tray
                 console.debug('AI reply (TrayModal):', replyText, meta);
               }}
             />
           </div>
 
-          {items.length > 0 && (
-            <div className="flex items-center justify-between mb-3">
-              <span className="text-[15px] font-medium text-gray-800">Total</span>
-              <span className="text-[17px] font-semibold text-[#FA2851]">
-                {formatBDT(subtotal)}
-              </span>
-            </div>
-          )}
+          <div className="flex items-center justify-between mb-3">
+            <span className="text-[15px] font-medium text-gray-800">Total</span>
+            <span className="text-[17px] font-semibold text-[#FA2851]">
+              {formatBDT(subtotal)}
+            </span>
+          </div>
 
           <div className="flex gap-2">
             <button
               onClick={clear}
-              disabled={items.length === 0}
-              className="flex-1 px-4 py-2 rounded-full text-sm font-medium text-gray-700 border border-gray-200 hover:bg-gray-50 active:scale-95 transition disabled:opacity-50"
+              className="flex-1 px-4 py-2 rounded-full text-sm font-medium text-gray-700 border border-gray-200 hover:bg-gray-50 active:scale-95 transition"
             >
               Clear
             </button>

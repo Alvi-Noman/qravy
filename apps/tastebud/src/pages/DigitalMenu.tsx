@@ -11,6 +11,7 @@ import SearchBar from '../components/SearchBar';
 import RestaurantSkeleton from '../components/RestaurantSkeleton';
 import ChannelSwitch from '../components/ChannelSwitch';
 import MicInputBar from '../components/ai-waiter/MicInputBar';
+import { useConversationStore } from '../state/conversation'; // ✅ ADDED
 
 const SWITCH_FLAG_KEY = 'qravy:just-switched';
 const SWITCH_DELAY_MS = 1000;     // show skeleton for ~1s after a switch
@@ -278,7 +279,7 @@ export default function DigitalMenu() {
       const raw = sessionStorage.getItem(SWITCH_FLAG_KEY);
       if (raw) {
         const parsed = JSON.parse(raw) as { ts: number; path: string } | null;
-        sessionStorage.removeItem(SWITCH_FLAG_KEY); // one-shot: consume immediately
+        sessionStorage.removeItem(SWITCH_FLAG_KEY);
         if (
           parsed &&
           parsed.path === location.pathname &&
@@ -289,9 +290,7 @@ export default function DigitalMenu() {
           return () => window.clearTimeout(t);
         }
       }
-    } catch {
-      /* ignore */
-    }
+    } catch {}
   }, [location.pathname]);
 
   const markSwitch = React.useCallback((targetPath: string) => {
@@ -300,9 +299,7 @@ export default function DigitalMenu() {
         SWITCH_FLAG_KEY,
         JSON.stringify({ ts: Date.now(), path: targetPath })
       );
-    } catch {
-      /* ignore */
-    }
+    } catch {}
   }, []);
 
   // SINGLE source of truth for skeleton:
@@ -363,6 +360,9 @@ export default function DigitalMenu() {
 
   /* ============================== Rendering =============================== */
 
+  // ✅ Get current AI conversation text
+  const aiText = useConversationStore((s) => s.aiText);
+
   // Safe runtime hints for mic bar
   const tenantSlug =
     subdomain ??
@@ -397,6 +397,13 @@ export default function DigitalMenu() {
       </div>
 
       <div className="mx-auto max-w-6xl px-4 py-4 pb-28">
+        {/* ✅ Ongoing AI message banner */}
+        {aiText && (
+          <div className="mb-4 rounded-xl bg-gray-50 text-gray-700 text-[14px] px-3 py-2 border border-gray-100">
+            {aiText}
+          </div>
+        )}
+
         {/* Search bar */}
         <SearchBar value={query} onChange={setQuery} onSubmit={(v) => setQuery(v)} className="mb-3" />
 
