@@ -3,6 +3,12 @@ import * as sdk from "microsoft-cognitiveservices-speech-sdk";
 
 type QueueItem = { id: string; text: string; resolve: () => void; reject: (e: any) => void };
 
+export type TtsEvents = {
+  onStart?: (originalText: string) => void;
+  onWord?: (word: string, offsetMs?: number) => void;   // ⬅️ now includes audio offset
+  onEnd?: () => void;                                    // after audio completes or is stopped
+};
+
 export type TTSPublicAPI = {
   speak: (text: string) => Promise<void>;
   stop: () => void;
@@ -16,6 +22,9 @@ export type TTSPublicAPI = {
   getMuted: () => boolean;
   getVolume: () => number; // 0..1
   getVoice: () => string;
+
+  /** Subscribe to synthesis lifecycle; returns unsubscribe */
+  subscribe: (handlers: TtsEvents) => () => void;
 };
 
 const TOKEN_URL = import.meta.env.VITE_SPEECH_TOKEN_URL || "/azure/speech-token";
@@ -26,6 +35,7 @@ const LS_VOLUME = "tts.volume"; // 0..1
 const LS_VOICE = "tts.voice";
 
 const TOKEN_REFRESH_MS = 9 * 60 * 1000; // refresh a bit before 10m
+const MIN_AUDIBLE = 0.05;               // never let live output go below 5% if not muted
 
 /* ---------- SSML helpers ---------- */
 function isLikelySsml(s: string) {
@@ -71,17 +81,23 @@ function localeFromVoice(voiceName: string): string {
 }
 
 function loadMuted(): boolean {
-  const v = localStorage.getItem(LS_MUTED);
-  return v === "1";
+  try {
+    const v = localStorage.getItem(LS_MUTED);
+    return v === "1";
+  } catch { return false; }
 }
 function loadVolume(): number {
-  const v = localStorage.getItem(LS_VOLUME);
-  const n = v ? Number(v) : 1;
-  if (Number.isNaN(n)) return 1;
-  return Math.min(1, Math.max(0, n));
+  try {
+    const v = localStorage.getItem(LS_VOLUME);
+    const n = v ? Number(v) : 1;
+    if (Number.isNaN(n)) return 1;
+    return Math.min(1, Math.max(0, n));
+  } catch { return 1; }
 }
 function loadVoice(): string {
-  return localStorage.getItem(LS_VOICE) || DEFAULT_VOICE;
+  try {
+    return localStorage.getItem(LS_VOICE) || DEFAULT_VOICE;
+  } catch { return DEFAULT_VOICE; }
 }
 
 /** Version-tolerant helper for cancellation details across SDK variants. */
@@ -138,9 +154,15 @@ class TTSManager implements TTSPublicAPI {
   private volume01 = loadVolume();
   private voice = loadVoice();
 
+  // Track current utterance text for event callbacks
+  private currentUtteranceText = "";
+
   // Ducking state
   private ducked = false;
   private preDuckVolume01: number | null = null;
+
+  // Event subscribers
+  private listeners = new Set<TtsEvents>();
 
   private constructor() {}
 
@@ -149,22 +171,27 @@ class TTSManager implements TTSPublicAPI {
   getVolume() { return this.volume01; }
   getVoice() { return this.voice; }
 
+  subscribe = (h: TtsEvents) => {
+    this.listeners.add(h);
+    return () => this.listeners.delete(h);
+  };
+
   setMuted(muted: boolean) {
     this.muted = !!muted;
-    localStorage.setItem(LS_MUTED, this.muted ? "1" : "0");
+    try { localStorage.setItem(LS_MUTED, this.muted ? "1" : "0"); } catch {}
     if (this.speaker) this._applySpeakerVolume();
   }
 
   setVolume(vol01: number) {
     const v = Math.min(1, Math.max(0, Number(vol01)));
     this.volume01 = v;
-    localStorage.setItem(LS_VOLUME, String(v));
+    try { localStorage.setItem(LS_VOLUME, String(v)); } catch {}
     if (this.speaker) this._applySpeakerVolume();
   }
 
   setVoice(shortName: string) {
     this.voice = shortName || DEFAULT_VOICE;
-    localStorage.setItem(LS_VOICE, this.voice);
+    try { localStorage.setItem(LS_VOICE, this.voice); } catch {}
     if (this.speechConfig) this.speechConfig.speechSynthesisVoiceName = this.voice;
   }
 
@@ -197,6 +224,9 @@ class TTSManager implements TTSPublicAPI {
     this.speechConfig = null;
 
     this.playing = false;
+
+    // Notify listeners that playback ended
+    this._emitEnd();
   }
 
   pause() {
@@ -214,17 +244,14 @@ class TTSManager implements TTSPublicAPI {
 
   // ⬇️⬇️ Ducking API
   duck() {
-    // If already ducked, ignore
     if (this.ducked) return;
     this.ducked = true;
 
-    // Snapshot current volume and lower to ~15%
     if (this.preDuckVolume01 === null) this.preDuckVolume01 = this.volume01;
     const target = Math.min(this.volume01, 0.15);
     if (!this.muted) {
-      // Only change the live output; do not overwrite user preference in LS
       try {
-        if (this.speaker) this.speaker.volume = Math.round(target * 100);
+        if (this.speaker) this.speaker.volume = Math.round(Math.max(target, MIN_AUDIBLE) * 100);
       } catch {}
     }
   }
@@ -238,13 +265,24 @@ class TTSManager implements TTSPublicAPI {
 
     if (!this.muted) {
       try {
-        if (this.speaker) this.speaker.volume = Math.round(restore * 100);
+        if (this.speaker) this.speaker.volume = Math.round(Math.max(restore, MIN_AUDIBLE) * 100);
       } catch {}
     }
   }
   // ↑↑↑ Ducking API
 
   // ---------- internals ----------
+  private _emitStart(text: string) {
+    this.listeners.forEach(h => { h.onStart?.(text); });
+  }
+  private _emitWord(word: string, offsetMs?: number) {
+    if (!word) return;
+    this.listeners.forEach(h => { h.onWord?.(word, offsetMs); });
+  }
+  private _emitEnd() {
+    this.listeners.forEach(h => { h.onEnd?.(); });
+  }
+
   private async _ensureReady() {
     // Token valid?
     if (!this.authToken || (Date.now() - this.tokenFetchedAt) > TOKEN_REFRESH_MS) {
@@ -263,28 +301,75 @@ class TTSManager implements TTSPublicAPI {
     this.speechConfig.speechSynthesisVoiceName = this.voice;
     this.speechConfig.speechSynthesisLanguage = localeFromVoice(this.voice);
 
-    // Create a speaker we can control volume on
+    // ✅ Request word-boundary events with a boolean string
+    try {
+      this.speechConfig.setProperty(sdk.PropertyId.SpeechServiceResponse_RequestWordBoundary, "true");
+    } catch {}
+
+    // ✅ Choose a browser-friendly output format to avoid device quirks
+    try {
+      this.speechConfig.speechSynthesisOutputFormat =
+        sdk.SpeechSynthesisOutputFormat.Audio16Khz32KBitRateMonoMp3;
+    } catch {}
+
+    // Speaker we can volume-control
     this.speaker = new sdk.SpeakerAudioDestination();
     this.audioConfig = sdk.AudioConfig.fromSpeakerOutput(this.speaker);
     this._applySpeakerVolume();
 
     this.synthesizer = new sdk.SpeechSynthesizer(this.speechConfig, this.audioConfig);
 
-    // ✅ SDK 1.46.x uses PascalCase event names
+    // ✅ Attach both PascalCase and camelCase handlers for SDK compatibility
     try {
-      // These handlers are optional but super helpful while diagnosing cancels
-      (this.synthesizer as any).SynthesisStarted = (_s: any, e: any) => console.debug("[TTS] SynthesisStarted", e);
-      (this.synthesizer as any).SynthesisCompleted = (_s: any, e: any) => console.debug("[TTS] SynthesisCompleted", e);
-      (this.synthesizer as any).SynthesisCanceled = (_s: any, e: any) => console.warn("[TTS] SynthesisCanceled", e);
+      const onStart = (_s: any, e: any) => {
+        console.debug("[TTS] SynthesisStarted", e);
+        // Mirror lifecycle to subscribers
+        this._emitStart(this.currentUtteranceText);
+      };
+      const onComplete = (_s: any, e: any) => {
+        console.debug("[TTS] SynthesisCompleted", e);
+        this._emitEnd();
+      };
+      const onCancel = (_s: any, e: any) => {
+        console.warn("[TTS] SynthesisCanceled", e);
+        this._emitEnd();
+      };
+      const onWord = (_s: any, e: any) => {
+        try {
+          const wb = e as sdk.SpeechSynthesisWordBoundaryEventArgs;
+          const token = (wb.text ?? "").toString();
+          // Azure returns 100-nanosecond ticks in audioOffset → convert to ms
+          const offsetMs =
+            typeof (wb as any).audioOffset === "number"
+              ? (wb as any).audioOffset / 10000
+              : typeof (wb as any).offset === "number"
+                ? (wb as any).offset
+                : undefined;
+
+          if (token) this._emitWord(token, offsetMs);
+        } catch {}
+      };
+
+      // Newer typings / event fields
+      (this.synthesizer as any).SynthesisStarted = onStart;
+      (this.synthesizer as any).SynthesisCompleted = onComplete;
+      (this.synthesizer as any).SynthesisCanceled = onCancel;
+      (this.synthesizer as any).WordBoundary = onWord;
+
+      // Older/camelCase variants (no-op if SDK ignores them)
+      (this.synthesizer as any).synthesisStarted = onStart;
+      (this.synthesizer as any).synthesisCompleted = onComplete;
+      (this.synthesizer as any).synthesisCanceled = onCancel;
+      (this.synthesizer as any).wordBoundary = onWord;
     } catch {}
   }
 
   private _applySpeakerVolume() {
     // SpeakerAudioDestination.volume expects 0..100
-    const volPercent = this.muted ? 0 : Math.round(this.volume01 * 100);
+    const userVol = this.muted ? 0 : Math.round(this.volume01 * 100);
+    const duckedVol = this.ducked ? Math.round(Math.max(Math.min(this.volume01, 0.15), MIN_AUDIBLE) * 100) : userVol;
 
-    // If currently ducked, apply ducked volume, not the full one
-    const effective = this.ducked ? Math.min(volPercent, Math.round(0.15 * 100)) : volPercent;
+    const effective = this.muted ? 0 : Math.max(duckedVol, Math.round(MIN_AUDIBLE * 100));
 
     try {
       if (this.speaker) this.speaker.volume = effective;
@@ -318,6 +403,12 @@ class TTSManager implements TTSPublicAPI {
         await new Promise<void>((resolve, reject) => {
           const input = next.text;
           const voice = this.voice || DEFAULT_VOICE;
+
+          // Track text for SynthesisStarted callback
+          this.currentUtteranceText = input;
+
+          // 🔔 announce start for reveal
+          this._emitStart(input);
 
           const onSuccess = (result: sdk.SpeechSynthesisResult) => {
             if (result.reason === sdk.ResultReason.SynthesizingAudioCompleted) {

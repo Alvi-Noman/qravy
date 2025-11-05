@@ -1,9 +1,9 @@
 // apps/tastebud/src/components/ai-waiter/MicInputBar.tsx
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { getWsURL, getStableSessionId } from "../../utils/ws";
-import { useConversationStore } from "../../state/conversation"; // ✅ global subtitle store
-import { useTTS } from "../../state/TTSProvider"; // ✅ ADDED
-import { getTTS } from "../../state/tts"; // ⬅️ ADD
+import { useConversationStore } from "../../state/conversation";
+import { useTTS } from "../../state/TTSProvider";
+import { getTTS } from "../../state/tts";
 
 type Lang = "bn" | "en" | "auto";
 
@@ -19,41 +19,100 @@ type Props = {
   disabled?: boolean;
 };
 
+declare global {
+  interface Window {
+    __WAITER_LANG__?: "bn" | "en" | "auto";
+    __QRAVY_LAST_SPOKEN__?: string;
+    __QRAVY_LAST_SPOKEN_AT__?: number;
+  }
+}
+
 export default function MicInputBar({
   className = "",
   tenant,
   branch,
   channel,
-  lang = "bn",           // ✅ default Bangla
-  wsPath = "/ws/voice",  // ✅ same as AiWaiterHome
+  lang = "bn",
+  wsPath = "/ws/voice",
   onAiReply,
   onPartial,
   disabled = false,
 }: Props) {
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const willOwnLiveRef = useRef<boolean>(true); // set after mount by DOM check
+
+  // unique ID for this MicInputBar instance (used only for debugging/ownership if needed)
+  const ownerIdRef = useRef<string>("");
+  if (!ownerIdRef.current) {
+    ownerIdRef.current =
+      `micbar-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  }
+
   const [isRecording, setIsRecording] = useState(false);
   const [thinking, setThinking] = useState(false);
   const [partial, setPartial] = useState("");
-  const [aiText, setAiText] = useState(""); // local buffer (kept)
+  const [aiText, setAiText] = useState(""); // local buffer (not shown if global live exists)
 
-  // ✅ Zustand global store (subtitle shared across app)
-  const appendAi  = useConversationStore((s) => s.appendAi);
-  const setAi     = useConversationStore((s) => s.setAi);
-  const globalAiText = useConversationStore((s) => s.aiText);
+  // Zustand (pull only what we need)
+  const setAi           = useConversationStore((s) => s.setAi);
+  const aiLive          = useConversationStore((s) => s.aiTextLive);
+  const globalAiText    = useConversationStore((s) => s.aiText);
+  const startTtsReveal  = useConversationStore((s) => s.startTtsReveal);
+  const appendTtsReveal = useConversationStore((s) => s.appendTtsReveal);
+  const finishTtsReveal = useConversationStore((s) => s.finishTtsReveal);
 
-  // 🔊 TTS
-  const tts = useTTS(); // ✅ ADDED
+  // TTS
+  const tts = useTTS();
 
-  // viewport for last-2-lines view
+  // Determine if this MicInputBar is inside a modal/dialog → then DO NOT subscribe or speak-ownership
+  useEffect(() => {
+    const el = rootRef.current;
+    const inDialog = !!el?.closest('[role="dialog"]');
+    willOwnLiveRef.current = !inDialog; // page bars own live; modal bars are viewers only
+  }, []);
+
+  // ---------- TTS live reveal (subscribe ONLY if we own live) ----------
+  const synthStartAtRef = useRef<number>(0);
+  useEffect(() => {
+    if (!willOwnLiveRef.current) return; // modal: rely on existing owner (e.g., AiWaiterHome)
+
+    const unsub = tts.subscribe({
+      onStart: (text: string) => {
+        synthStartAtRef.current = performance.now();
+        try { startTtsReveal(text); } catch {}
+      },
+      // @ts-ignore: (word, offsetMs) signature
+      onWord: (w: string, offsetMs?: number) => {
+        if (typeof offsetMs === "number" && isFinite(offsetMs)) {
+          const due = synthStartAtRef.current + offsetMs;
+          const delay = Math.max(0, due - performance.now());
+          setTimeout(() => { try { appendTtsReveal(w); } catch {} }, delay);
+        } else {
+          try { appendTtsReveal(w); } catch {}
+        }
+      },
+      onEnd: () => { try { finishTtsReveal(); } catch {} },
+    });
+
+    return unsub;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tts]);
+
+  // viewport keep-bottom
   const lastLinesRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!lastLinesRef.current) return;
+    lastLinesRef.current.scrollTop = lastLinesRef.current.scrollHeight;
+  }, [aiLive, globalAiText, aiText]);
 
-  // ---- Dual-mode press logic (Tap OR Hold) ----
+  // =================== Tap / Hold press logic (single declarations) ===================
   const HOLD_MS = 250;
   const holdTimerRef = useRef<number | null>(null);
   const isHoldModeRef = useRef(false);
   const pointerActiveRef = useRef(false);
   const lastDownAtRef = useRef(0);
 
-  // 🔗 Keep a current language that follows AiWaiterHome broadcasts
+  // lang broadcasting
   const getGlobalLang = (): Lang => {
     if (typeof window === "undefined") return lang;
     const g = (window as any).__WAITER_LANG__;
@@ -61,9 +120,8 @@ export default function MicInputBar({
   };
   const [currentLang, setCurrentLang] = useState<Lang>(getGlobalLang());
 
-  // react to external (global) lang changes from AiWaiterHome
   useEffect(() => {
-    setCurrentLang(getGlobalLang()); // sync on mount
+    setCurrentLang(getGlobalLang()); // on mount
     if (typeof window === "undefined") return;
     const handler = (e: Event) => {
       try {
@@ -71,7 +129,6 @@ export default function MicInputBar({
         const next = detail?.lang;
         if (next === "bn" || next === "en" || next === "auto") {
           setCurrentLang(next);
-          // live-update server if WS is open
           if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
             wsRef.current.send(JSON.stringify({ t: "set_lang", lang: next }));
           }
@@ -83,7 +140,6 @@ export default function MicInputBar({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // if parent explicitly changes prop lang, reflect (global still wins when broadcast fires)
   useEffect(() => {
     setCurrentLang(getGlobalLang());
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -100,9 +156,7 @@ export default function MicInputBar({
   const cleanup = useCallback(async () => {
     try {
       if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-        try {
-          wsRef.current.send(JSON.stringify({ t: "end" }));
-        } catch {}
+        try { wsRef.current.send(JSON.stringify({ t: "end" })); } catch {}
       }
       if (nodeRef.current) {
         try { nodeRef.current.port.onmessage = null as any; } catch {}
@@ -140,6 +194,20 @@ export default function MicInputBar({
     };
   }, [cleanup]);
 
+  // ---------- speak-once guard (allow modal to speak as well) ----------
+  function shouldSpeakOnce(text: string): boolean {
+    // 🔧 changed: allow modal to speak too (no willOwnLiveRef gate)
+    if (typeof window === "undefined") return true;
+    const key = text.trim();
+    const now = performance.now();
+    const lastKey = window.__QRAVY_LAST_SPOKEN__;
+    const lastAt  = window.__QRAVY_LAST_SPOKEN_AT__ ?? 0;
+    if (lastKey === key && now - lastAt < 8000) return false;
+    window.__QRAVY_LAST_SPOKEN__ = key;
+    window.__QRAVY_LAST_SPOKEN_AT__ = now;
+    return true;
+  }
+
   // ---------- WebSocket ----------
   const openWebSocket = useCallback(() => {
     if (
@@ -164,7 +232,7 @@ export default function MicInputBar({
             userId: "guest",
             rate: 16000,
             ch: 1,
-            lang: currentLang, // ✅ reflect global/selected language
+            lang: currentLang,
             tenant: tenant ?? undefined,
             branch: branch ?? undefined,
             channel: channel ?? undefined,
@@ -177,35 +245,33 @@ export default function MicInputBar({
       try {
         const data = JSON.parse(ev.data);
 
-        // ❌ Ignore all partial STT messages
         if (data.t === "stt_partial") {
           return;
         }
 
-        // 🤖 AI is thinking
         if (data.t === "ai_reply_pending") {
           setThinking(true);
-          // ✅ immediately reflect in the shared subtitle
           setAi("Thinking…");
           return;
         }
 
-        // ✅ Only handle the final AI reply
         if (data.t === "ai_reply") {
           setThinking(false);
           const replyText = data.replyText || "";
-          // local buffer (kept for smoothness)
-          setAiText((prev) => (prev ? `${prev} ${replyText}` : replyText));
-          // ✅ broadcast globally so any MicInputBar shows it
-          appendAi(replyText);
 
-          // 🔊 Speak it (singleton)
-          try { tts.speak(replyText); } catch {}
+          // Do NOT push full text into global live; TTS word callbacks will reveal it.
+          setAiText((prev) => (prev ? `${prev} ${replyText}` : replyText));
+
+          // Speak (deduped globally)
+          try {
+            if (shouldSpeakOnce(replyText)) {
+              tts.speak(replyText);
+            }
+          } catch {}
 
           onAiReply?.({ replyText, meta: data.meta });
           return;
         }
-
       } catch {
         // ignore non-JSON or binary frames
       }
@@ -215,13 +281,7 @@ export default function MicInputBar({
     ws.onclose = () => {};
 
     wsRef.current = ws;
-  }, [branch, channel, currentLang, onAiReply, onPartial, tenant, wsPath, appendAi, setAi, tts]);
-
-  // keep the last-2-lines viewport stuck to the bottom
-  useEffect(() => {
-    if (!lastLinesRef.current) return;
-    lastLinesRef.current.scrollTop = lastLinesRef.current.scrollHeight;
-  }, [aiText, globalAiText]); // 👈 also scroll when global subtitle changes
+  }, [branch, channel, currentLang, onAiReply, onPartial, tenant, wsPath, tts]);
 
   // ---------- Start Recording ----------
   const start = useCallback(async () => {
@@ -229,9 +289,8 @@ export default function MicInputBar({
     setIsRecording(true);
     setPartial("");
     setThinking(false);
-    setAiText(""); // clear only local buffer
+    setAiText("");
 
-    // ✅ Duck TTS while recording (lower volume, not stop)
     try { getTTS().duck(); } catch {}
 
     openWebSocket();
@@ -240,7 +299,6 @@ export default function MicInputBar({
     const ac = new AC({ sampleRate: 48000 });
     acRef.current = ac;
 
-    // Load worklet
     await ac.audioWorklet.addModule("/worklets/audio-capture.worklet.js");
 
     const media = await navigator.mediaDevices.getUserMedia({
@@ -257,7 +315,6 @@ export default function MicInputBar({
     const src = ac.createMediaStreamSource(media);
     srcRef.current = src;
 
-    // ✅ Use correct processor name
     const node = new AudioWorkletNode(ac, "capture-processor", {
       numberOfInputs: 1,
       numberOfOutputs: 0,
@@ -266,7 +323,6 @@ export default function MicInputBar({
 
     node.port.postMessage({ type: "configure", frameMs: 20 });
 
-    // Forward PCM frames
     node.port.onmessage = (e: MessageEvent) => {
       const msg = e.data || {};
       const ws = wsRef.current;
@@ -287,12 +343,10 @@ export default function MicInputBar({
     if (!isRecording) return;
     setIsRecording(false);
     await cleanup();
-
-    // ✅ Restore TTS volume after recording
     try { getTTS().unduck(); } catch {}
   }, [cleanup, isRecording]);
 
-  // ---------- Pointer handlers implementing Tap OR Hold ----------
+  // ---------- Pointer handlers (use the single set of refs above) ----------
   const onPointerDown = useCallback(async (e: React.PointerEvent) => {
     if (disabled) return;
     e.preventDefault();
@@ -360,11 +414,11 @@ export default function MicInputBar({
       ? "Thinking…"
       : "Tap to start • Hold to talk";
 
-  // 👇 Prefer the shared subtitle; fallback to local buffer
-  const subtitle = globalAiText || aiText;
+  // Prefer shared LIVE; fallback to global final; then local buffer
+  const subtitle = aiLive || globalAiText || aiText;
 
   return (
-    <div className={["relative w-full", className].join(" ")}>
+    <div ref={rootRef} className={["relative w-full", className].join(" ")}>
       <div
         className="fixed left-0 right-0 bottom-0 h-40 bg-gradient-to-t from-[#F6F5F8]/100 from-[60%] to-[#F6F5F8]/0 to-[100%]"
         aria-hidden="true"
@@ -390,33 +444,17 @@ export default function MicInputBar({
             "Thinking…"
           ) : subtitle ? (
             <div className="relative w-full">
-              {/* 2-line viewport that always sticks to the latest lines */}
+              {/* 2-line viewport that sticks to latest lines */}
               <div
                 ref={lastLinesRef}
                 className="h-[2.8em] leading-snug overflow-y-auto pr-1"
-                style={{
-                  scrollbarWidth: "none",
-                  msOverflowStyle: "none",
-                }}
+                style={{ scrollbarWidth: "none", msOverflowStyle: "none" }}
               >
-                <div
-                  style={
-                    {
-                      // @ts-ignore
-                      ["--webkitScrollbarDisplay"]: "none",
-                    } as React.CSSProperties
-                  }
-                  className="whitespace-pre-wrap break-words"
-                >
-                  {subtitle}
-                </div>
+                <div className="whitespace-pre-wrap break-words">{subtitle}</div>
               </div>
-
-              {/* top fade for modern look */}
               <div className="pointer-events-none absolute -top-1 left-0 right-0 h-3 bg-gradient-to-b from-white to-transparent" />
             </div>
           ) : (
-            // idle → wave icon
             <img
               src="/icons/wave-idle.svg"
               alt="Idle wave"
@@ -443,7 +481,6 @@ export default function MicInputBar({
           aria-label={isRecording ? "Stop recording" : "Start recording"}
           title="Tap to toggle • Hold to talk"
         >
-          {/* mic icon */}
           <svg
             xmlns="http://www.w3.org/2000/svg"
             className="h-6 w-6"
@@ -457,10 +494,7 @@ export default function MicInputBar({
             <path strokeLinecap="round" strokeLinejoin="round" d="M19 11a7 7 0 01-14 0M12 18v4" />
           </svg>
 
-          {/* halo while recording */}
-          {isRecording && (
-            <span className="absolute inset-0 rounded-full animate-ping bg-rose-400/40" />
-          )}
+          {isRecording && <span className="absolute inset-0 rounded-full animate-ping bg-rose-400/40" />}
         </button>
       </div>
     </div>

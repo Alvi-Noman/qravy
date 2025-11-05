@@ -24,13 +24,41 @@ export default function AiWaiterHome() {
   const [search] = useSearchParams();
   const location = useLocation();
 
-  // ✅ store helpers
-  const appendAi = useConversationStore((s) => s.appendAi);
-  const clearAi  = useConversationStore((s) => s.clearAi);
-  const setAi    = useConversationStore((s) => s.setAi);
+  // ✅ pull each method separately to keep snapshots stable (prevents infinite re-sub loops)
+  const appendAi        = useConversationStore((s: any) => s.appendAi);
+  const clearAi         = useConversationStore((s: any) => s.clearAi);
+  const setAi           = useConversationStore((s: any) => s.setAi);
+  const startTtsReveal  = useConversationStore((s: any) => s.startTtsReveal)  ?? (() => {});
+  const appendTtsReveal = useConversationStore((s: any) => s.appendTtsReveal) ?? (() => {});
+  const finishTtsReveal = useConversationStore((s: any) => s.finishTtsReveal) ?? (() => {});
+  const aiLive          = useConversationStore((s: any) => s.aiTextLive); // ✅ live buffer for word-by-word
 
   // 🔊 TTS
   const tts = useTTS(); // ✅ ADDED
+
+  // 🔊 Schedule reveal using Azure audio offsets
+  const synthStartAtRef = useRef<number>(0);
+  useEffect(() => {
+    const unsubscribe = tts.subscribe({
+      onStart: (text) => {
+        synthStartAtRef.current = performance.now();
+        try { startTtsReveal(text); } catch {}
+      },
+      onWord:  (w, offsetMs) => {
+        if (typeof offsetMs === 'number' && isFinite(offsetMs)) {
+          const due = synthStartAtRef.current + offsetMs;
+          const delay = Math.max(0, due - performance.now());
+          setTimeout(() => { try { appendTtsReveal(w); } catch {} }, delay);
+        } else {
+          try { appendTtsReveal(w); } catch {}
+        }
+      },
+      onEnd:   () => { try { finishTtsReveal(); } catch {} },
+    });
+    return unsubscribe;
+    // Only resubscribe when the TTS instance changes
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tts]);
 
   // Load Noto Sans Bengali
   useEffect(() => {
@@ -73,8 +101,6 @@ export default function AiWaiterHome() {
   const rafLevelRef = useRef<number | null>(null);
 
   const [listening, setListening] = useState(false);
-  const [finals, setFinals] = useState<string[]>([]);
-  const [aiReplies, setAiReplies] = useState<string[]>([]);
   const [level, setLevel] = useState(0);
 
   const [uiMode, setUiMode] = useState<UIMode>('idle');
@@ -357,6 +383,9 @@ export default function AiWaiterHome() {
     try {
       if (listening || wsRef.current || ctxRef.current) return;
 
+      // 🔇 ensure no TTS is playing over mic
+      try { tts.stop(); } catch {}
+
       // ✅ start fresh subtitle each turn
       clearAi();
 
@@ -397,7 +426,7 @@ export default function AiWaiterHome() {
       ws.onopen = () => {
         const sid = getStableSessionId();
         stoppingRef.current = false;
-        finalSeenRef.current = false;
+        finalSeenRef.current = true; // ensure we don't block waiting stt_final to show AI
         aiSeenRef.current = false;
 
         ws.send(
@@ -424,14 +453,13 @@ export default function AiWaiterHome() {
 
           if (msg.t === 'stt_final') {
             finalSeenRef.current = true;
-            setFinals((p) => [...p, msg.text || '']);
             pendingFinalResolverRef.current?.(true);
             return;
           }
 
           if (msg.t === 'ai_reply_pending') {
             setUiMode('thinking');
-            // ✅ show a thinking stub immediately in global subtitle
+            // Optional: tiny stub; will be overwritten by live reveal
             setAi('Thinking…');
             return;
           }
@@ -439,10 +467,7 @@ export default function AiWaiterHome() {
           if (msg.t === 'ai_reply') {
             const text = (msg.replyText as string) || '';
             if (text) {
-              setAiReplies((prev) => [...prev, text]);
-              // ✅ push to global so MicInputBar / modals can display the same line
-              appendAi(text);
-              // 🔊 Speak it (singleton)
+              // ❗ do NOT append full text to store; reveal will come from TTS word boundaries
               try { tts.speak(text); } catch {}
             }
             aiSeenRef.current = true;
@@ -510,7 +535,6 @@ export default function AiWaiterHome() {
           }
 
           if (msg.t === 'ai_reply_error') {
-            setAiReplies((prev) => [...prev, '[AI is temporarily unavailable]']);
             aiSeenRef.current = true;
             pendingAiResolverRef.current?.(false);
             setUiMode('idle');
@@ -529,7 +553,7 @@ export default function AiWaiterHome() {
       };
 
       // 🔧 IMPORTANT: forward Int16 frames coming from the worklet
-      node.port.onmessage = (ev) => {
+      (node.port as MessagePort).onmessage = (ev) => {
         if (stoppingRef.current) return;
         const msg = ev.data;
         if (msg && msg.type === 'chunk' && msg.samples && msg.samples.buffer) {
@@ -645,45 +669,14 @@ export default function AiWaiterHome() {
         ))}
       </div>
 
-      {/* Transcript & AI cards */}
-      <div className="fixed right-4 top-4 z-50 w-64 rounded-xl border border-white/20 bg-white/60 backdrop-blur-md p-3 shadow-sm">
-        <div className="mb-1 flex items-center justify-between">
-          <span className="text-xs font-semibold text-gray-800">Finalized</span>
-          <span className="inline-flex items-center gap-2">
-            <span className="text-[10px] uppercase tracking-wide text-gray-600">{uiMode}</span>
-            <span
-              className="inline-block h-2.5 w-2.5 rounded-full"
-              style={{ backgroundColor: listening ? '#10B981' : '#D1D5DB' }}
-            />
-          </span>
-        </div>
-        <div className="max-h-40 overflow-y-auto text-sm text-gray-900 space-y-1">
-          {finals.length ? finals.map((t, i) => <div key={i}>• {t}</div>) : <span className="text-gray-500">—</span>}
-        </div>
-      </div>
-
-      <div className="fixed right-4 top-[190px] z-50 w-64 rounded-xl border border-white/20 bg-white/60 backdrop-blur-md p-3 shadow-sm">
-        <div className="mb-1 flex items-center justify-between">
-          <span className="text-xs font-semibold text-gray-800">AI Reply</span>
-        </div>
-        <div className="max-h-40 overflow-y-auto text-sm text-gray-900 space-y-1">
-          {aiReplies.length ? aiReplies.map((t, i) => <div key={i}>• {t}</div>) : <span className="text-gray-500">—</span>}
-        </div>
-      </div>
-
-      {/* Main hero */}
-      <div className="pt-40 sm:pt-48 text-left w-full max-w-[400px]">
-        <p className="text-[30px] md:text-[40px] leading-[1.6] font-medium text-[#2D2D2D]">
-          আসসালামু আলাইকুম
-          <br />
-          আপনি কি কোন ফুড অর্ডার
-          <br />
-          করতে চাইছেন? নাকি আমি
-          <br />
-          আপনাকে কিছু সাজেস্ট
-          <br />
-          করবো?
-        </p>
+      {/* Main hero — LIVE TTS text area */}
+      <div className="pt-40 sm:pt-48 text-left w-full max-w-[400px] min-h-[180px]">
+        {aiLive ? (
+          <p className="text-[30px] md:text-[40px] leading-[1.6] font-medium text-[#2D2D2D] whitespace-pre-wrap">
+            {aiLive}
+            <span className="ml-1 animate-pulse">▌</span>
+          </p>
+        ) : null}
       </div>
 
       {/* Mic + Menu */}
