@@ -1,7 +1,7 @@
+// apps/tastebud/src/components/ai-waiter/SuggestionsModal.tsx
 import React from 'react';
 import { Link, useLocation, useParams, useSearchParams } from 'react-router-dom';
 import MicInputBar from './MicInputBar';
-import { useConversationStore } from '../../state/conversation'; // ✅ Global AI text
 
 type Suggestion = {
   id: string;
@@ -85,9 +85,6 @@ export default function SuggestionsModal({
       ? (window as any).__STORE__?.branch
       : undefined) ?? undefined;
 
-  // ✅ Global AI text
-  const aiText = useConversationStore((s) => s.aiText);
-
   // ✅ Escape close listener
   React.useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
@@ -129,14 +126,7 @@ export default function SuggestionsModal({
           </button>
         </div>
 
-        {/* ✅ AI message on top */}
-        {aiText && (
-          <div className="px-4 pt-3">
-            <div className="rounded-xl bg-gray-50 text-gray-700 text-[14px] px-3 py-2 border border-gray-100">
-              {aiText}
-            </div>
-          </div>
-        )}
+        {/* (Removed AI in-modal texts as requested) */}
 
         {/* Body */}
         <div className="px-4 pt-3 pb-4">

@@ -14,6 +14,7 @@ import { usePublicMenu } from '../hooks/usePublicMenu'; // ✅ added
 
 // ✅ NEW: global conversation store (to surface text in modals / mic bars)
 import { useConversationStore } from '../state/conversation';
+import { useTTS } from '../state/TTSProvider'; // ✅ ADDED
 
 type UIMode = 'idle' | 'thinking' | 'talking';
 
@@ -27,6 +28,9 @@ export default function AiWaiterHome() {
   const appendAi = useConversationStore((s) => s.appendAi);
   const clearAi  = useConversationStore((s) => s.clearAi);
   const setAi    = useConversationStore((s) => s.setAi);
+
+  // 🔊 TTS
+  const tts = useTTS(); // ✅ ADDED
 
   // Load Noto Sans Bengali
   useEffect(() => {
@@ -396,16 +400,15 @@ export default function AiWaiterHome() {
         finalSeenRef.current = false;
         aiSeenRef.current = false;
 
-        // Always identify early with the same sid
         ws.send(
           JSON.stringify({
             t: 'hello',
-            sid, // NEW: stable session id
-            sessionId: sid, // keep legacy key if server expects it
+            sid,
+            sessionId: sid,
             userId: 'guest',
             rate: 16000,
             ch: 1,
-            lang: selectedLang, // ← always reflect current selection
+            lang: selectedLang,
             tenant: resolvedSub ?? null,
             branch: resolvedBranch ?? null,
             channel: resolvedChannel,
@@ -439,6 +442,8 @@ export default function AiWaiterHome() {
               setAiReplies((prev) => [...prev, text]);
               // ✅ push to global so MicInputBar / modals can display the same line
               appendAi(text);
+              // 🔊 Speak it (singleton)
+              try { tts.speak(text); } catch {}
             }
             aiSeenRef.current = true;
             pendingAiResolverRef.current?.(true);
@@ -452,16 +457,13 @@ export default function AiWaiterHome() {
             if (intent === 'suggestions') {
               let mapped: SuggestedItem[] = [];
 
-              // Prefer well-structured meta (items / suggestions groups)
               const metaBased = buildSuggestionsFromMeta(meta);
               mapped = metaBased;
 
-              // If meta gave nothing, harvest from free text using live menu
               if ((!mapped || mapped.length === 0) && text) {
                 mapped = buildSuggestionsFromReplyText(text);
               }
 
-              // If still empty but we have some store items, offer top few as graceful fallback
               if ((!mapped || mapped.length === 0) && Array.isArray(storeItems) && storeItems.length) {
                 mapped = (storeItems as any[])
                   .slice(0, Math.min(8, storeItems.length))
@@ -491,7 +493,6 @@ export default function AiWaiterHome() {
                 }
 
                 if (itemId) {
-                  // try to pick up a price from our local storeItems, then from the AI-provided meta, otherwise fallback to 0
                   const storeItem = storeItems.find((s) => String((s as any).id) === String(itemId));
                   const priceFromStore = typeof storeItem?.price === 'number' ? storeItem.price : undefined;
                   const priceFromMeta = typeof (it as any).price === 'number' ? (it as any).price : undefined;
@@ -551,7 +552,7 @@ export default function AiWaiterHome() {
     try {
       if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
         const sid = getStableSessionId();
-        wsRef.current.send(JSON.stringify({ t: 'end', sid })); // include sid on end for bookkeeping
+        wsRef.current.send(JSON.stringify({ t: 'end', sid }));
         if (!gotFinal) gotFinal = await waitForFinal(8000);
         if (!aiSeenRef.current) await waitForAiReply(8000);
         await new Promise((r) => setTimeout(r, 100));
@@ -664,9 +665,6 @@ export default function AiWaiterHome() {
       <div className="fixed right-4 top-[190px] z-50 w-64 rounded-xl border border-white/20 bg-white/60 backdrop-blur-md p-3 shadow-sm">
         <div className="mb-1 flex items-center justify-between">
           <span className="text-xs font-semibold text-gray-800">AI Reply</span>
-          <span className="text-[10px] uppercase tracking-wide text-gray-600">
-            {aiReplies.length ? `${aiReplies.length}` : '—'}
-          </span>
         </div>
         <div className="max-h-40 overflow-y-auto text-sm text-gray-900 space-y-1">
           {aiReplies.length ? aiReplies.map((t, i) => <div key={i}>• {t}</div>) : <span className="text-gray-500">—</span>}

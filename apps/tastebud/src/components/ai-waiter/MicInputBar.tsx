@@ -2,6 +2,8 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { getWsURL, getStableSessionId } from "../../utils/ws";
 import { useConversationStore } from "../../state/conversation"; // ✅ global subtitle store
+import { useTTS } from "../../state/TTSProvider"; // ✅ ADDED
+import { getTTS } from "../../state/tts"; // ⬅️ ADD
 
 type Lang = "bn" | "en" | "auto";
 
@@ -37,6 +39,9 @@ export default function MicInputBar({
   const appendAi  = useConversationStore((s) => s.appendAi);
   const setAi     = useConversationStore((s) => s.setAi);
   const globalAiText = useConversationStore((s) => s.aiText);
+
+  // 🔊 TTS
+  const tts = useTTS(); // ✅ ADDED
 
   // viewport for last-2-lines view
   const lastLinesRef = useRef<HTMLDivElement | null>(null);
@@ -193,6 +198,10 @@ export default function MicInputBar({
           setAiText((prev) => (prev ? `${prev} ${replyText}` : replyText));
           // ✅ broadcast globally so any MicInputBar shows it
           appendAi(replyText);
+
+          // 🔊 Speak it (singleton)
+          try { tts.speak(replyText); } catch {}
+
           onAiReply?.({ replyText, meta: data.meta });
           return;
         }
@@ -206,7 +215,7 @@ export default function MicInputBar({
     ws.onclose = () => {};
 
     wsRef.current = ws;
-  }, [branch, channel, currentLang, onAiReply, onPartial, tenant, wsPath, appendAi, setAi]);
+  }, [branch, channel, currentLang, onAiReply, onPartial, tenant, wsPath, appendAi, setAi, tts]);
 
   // keep the last-2-lines viewport stuck to the bottom
   useEffect(() => {
@@ -221,6 +230,9 @@ export default function MicInputBar({
     setPartial("");
     setThinking(false);
     setAiText(""); // clear only local buffer
+
+    // ✅ Duck TTS while recording (lower volume, not stop)
+    try { getTTS().duck(); } catch {}
 
     openWebSocket();
 
@@ -275,6 +287,9 @@ export default function MicInputBar({
     if (!isRecording) return;
     setIsRecording(false);
     await cleanup();
+
+    // ✅ Restore TTS volume after recording
+    try { getTTS().unduck(); } catch {}
   }, [cleanup, isRecording]);
 
   // ---------- Pointer handlers implementing Tap OR Hold ----------

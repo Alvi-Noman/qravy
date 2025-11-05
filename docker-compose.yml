@@ -60,6 +60,9 @@ services:
       SSL_CERT_PATH: /app/certs/localhost.pem
       # ✅ WS target for AI Waiter
       VOICE_WS_TARGET: http://ai-waiter-service:7071
+      # ✅ Azure Speech credentials
+      AZURE_SPEECH_KEY: ${AZURE_SPEECH_KEY:?Set AZURE_SPEECH_KEY in your .env}
+      AZURE_SPEECH_REGION: ${AZURE_SPEECH_REGION:?Set AZURE_SPEECH_REGION in your .env}
     ports:
       - "8080:8080"
     depends_on:

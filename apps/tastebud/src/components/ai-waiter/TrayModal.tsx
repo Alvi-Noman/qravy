@@ -3,7 +3,6 @@ import React from 'react';
 import { Link, useLocation, useParams, useSearchParams } from 'react-router-dom';
 import { useCart } from '../../context/CartContext';
 import MicInputBar from './MicInputBar';
-import { useConversationStore } from '../../state/conversation'; // ✅ ADDED
 
 type Props = {
   open: boolean;
@@ -58,10 +57,6 @@ export default function TrayModal({
 }: Props) {
   const { items, subtotal, removeItem, clear } = useCart();
   const checkoutHref = useCheckoutHref(checkoutHrefOverride);
-
-  // ✅ Read latest AI text globally (shared from MicInputBar / AiWaiterHome)
-  //    IMPORTANT: hooks must come before any conditional return.
-  const aiText = useConversationStore((s) => s.aiText);
 
   // ✅ Hard guard: tray must not show if cart is empty
   const hasItems = items.length > 0;
@@ -124,24 +119,7 @@ export default function TrayModal({
           </button>
         </div>
 
-        {/* ✅ AI banner (shows only when tray is open AND there are items) */}
-        {(recentAiItems?.length ?? 0) > 0 && (
-          <div className="px-4 pt-3">
-            <div className="rounded-xl bg-[#FFF0F3] text-[#FA2851] text-[13px] px-3 py-2 border border-[#FFD6DE]">
-              Added {recentAiItems!.length} item
-              {recentAiItems!.length > 1 ? 's' : ''} from the assistant.
-            </div>
-          </div>
-        )}
-
-        {/* ✅ AI speaking area (auto-inherits current conversation text) */}
-        {aiText && (
-          <div className="px-4 pt-3">
-            <div className="rounded-xl bg-gray-50 text-gray-700 text-[14px] px-3 py-2 border border-gray-100">
-              {aiText}
-            </div>
-          </div>
-        )}
+        {/* (Removed AI in-modal texts as requested) */}
 
         {/* Content */}
         <div className="px-4 pt-3 pb-4 max-h-[64vh] overflow-y-auto">

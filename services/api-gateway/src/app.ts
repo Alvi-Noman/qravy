@@ -8,6 +8,7 @@ import { createProxyMiddleware } from 'http-proxy-middleware';
 import type { ClientRequest, IncomingMessage } from 'http';
 import logger from './utils/logger.js';
 import registerUploadsProxy from './proxy/uploads.js';
+import azureRouter from './proxy/azure.js'; // ← ADDED
 
 type NodeErr = Error & { code?: string };
 
@@ -95,6 +96,9 @@ const corsOptions: cors.CorsOptions = {
 // CORS before any proxies/body-parsers
 app.use(cors(corsOptions));
 app.options('*', cors(corsOptions));
+
+// ── Azure Speech: secure token relay ───────────────────────────────────────────
+app.use('/azure', azureRouter); // ← ADDED
 
 /* >>> MOUNT UPLOADS PROXY BEFORE BODY PARSERS <<< */
 registerUploadsProxy(app);
