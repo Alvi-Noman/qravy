@@ -7,14 +7,11 @@ import SuggestionsModal from '../components/ai-waiter/SuggestionsModal';
 import TrayModal from '../components/ai-waiter/TrayModal';
 import type { WaiterIntent, AiReplyMeta } from '../types/waiter-intents';
 
-// 🧩 NEW imports
 import { buildMenuIndex, resolveItemIdByName } from '../utils/item-resolver';
 import { useCart } from '../context/CartContext';
-import { usePublicMenu } from '../hooks/usePublicMenu'; // ✅ added
-
-// ✅ NEW: global conversation store (to surface text in modals / mic bars)
+import { usePublicMenu } from '../hooks/usePublicMenu';
 import { useConversationStore } from '../state/conversation';
-import { useTTS } from '../state/TTSProvider'; // ✅ ADDED
+import { useTTS } from '../state/TTSProvider';
 
 type UIMode = 'idle' | 'thinking' | 'talking';
 
@@ -24,41 +21,154 @@ export default function AiWaiterHome() {
   const [search] = useSearchParams();
   const location = useLocation();
 
-  // ✅ pull each method separately to keep snapshots stable (prevents infinite re-sub loops)
   const appendAi        = useConversationStore((s: any) => s.appendAi);
   const clearAi         = useConversationStore((s: any) => s.clearAi);
   const setAi           = useConversationStore((s: any) => s.setAi);
   const startTtsReveal  = useConversationStore((s: any) => s.startTtsReveal)  ?? (() => {});
   const appendTtsReveal = useConversationStore((s: any) => s.appendTtsReveal) ?? (() => {});
   const finishTtsReveal = useConversationStore((s: any) => s.finishTtsReveal) ?? (() => {});
-  const aiLive          = useConversationStore((s: any) => s.aiTextLive); // ✅ live buffer for word-by-word
+  const aiLive          = useConversationStore((s: any) => s.aiTextLive);
 
-  // 🔊 TTS
-  const tts = useTTS(); // ✅ ADDED
+  const tts = useTTS();
 
-  // 🔊 Schedule reveal using Azure audio offsets
-  const synthStartAtRef = useRef<number>(0);
+  // ===================== TTS TIMING (ROBUST + GUARDED) =====================
+  const WARMUP_MS = 160;
+  const MIN_STEP_MS = 80;
+  const FALLBACK_STEP_MS = 120;
+  const START_PACK_COUNT = 3;
+
+  const anchorSetRef   = useRef(false);
+  const baseStartRef   = useRef(0);
+  const lastDueRef     = useRef(0);
+  const startedTextRef = useRef<string>('');
+  const packedCountRef = useRef(0);
+
+  // Generation guards
+  const speakGenRef    = useRef(0);     // increments only on the *first* onStart of a speech
+  const activeGenRef   = useRef(0);     // the gen we accept
+  const inSpeechRef    = useRef(false); // true between first onStart .. onEnd
+
+  const normToken = (raw: string) =>
+    String(raw ?? '').replace(/\s+/g, ' ').trim();
+
+  function scheduleAt(due: number, token: string) {
+    const w = normToken(token);
+    if (!w) return;
+    const safeDue = Math.max(due, lastDueRef.current + MIN_STEP_MS, performance.now() + 1);
+    lastDueRef.current = safeDue;
+    const delay = Math.max(0, safeDue - performance.now());
+    setTimeout(() => {
+      if (activeGenRef.current !== speakGenRef.current) return; // stale
+      try {
+        console.debug('[TTS->Store] appendTtsReveal token=', w);
+        appendTtsReveal(w);
+      } catch {}
+    }, delay);
+  }
+
   useEffect(() => {
+    console.debug('[TTS] subscribe() set up');
     const unsubscribe = tts.subscribe({
       onStart: (text) => {
-        synthStartAtRef.current = performance.now();
-        try { startTtsReveal(text); } catch {}
-      },
-      onWord:  (w, offsetMs) => {
-        if (typeof offsetMs === 'number' && isFinite(offsetMs)) {
-          const due = synthStartAtRef.current + offsetMs;
-          const delay = Math.max(0, due - performance.now());
-          setTimeout(() => { try { appendTtsReveal(w); } catch {} }, delay);
+        const liveNow = (useConversationStore as any).getState?.().aiTextLive || '';
+        const isContinuation = inSpeechRef.current || !!liveNow;
+
+        if (!isContinuation) {
+          // true start of a new utterance
+          speakGenRef.current += 1;
+          activeGenRef.current  = speakGenRef.current;
+          inSpeechRef.current   = true;
+
+          console.debug('[TTS] onStart (NEW) text=', text, 'gen=', activeGenRef.current);
+
+          // reset timing anchors
+          anchorSetRef.current = false;
+          baseStartRef.current = 0;
+          lastDueRef.current   = 0;
+          packedCountRef.current = 0;
+          startedTextRef.current = text || '';
+
+          setTimeout(() => {
+            if (activeGenRef.current !== speakGenRef.current) return; // stale
+            console.debug('[TTS->Store] startTtsReveal("") gen=', activeGenRef.current);
+            try { startTtsReveal(''); } catch {}
+            try { console.debug('[Store] setAi("") (clear final banner)'); setAi(''); } catch {}
+          }, WARMUP_MS);
         } else {
-          try { appendTtsReveal(w); } catch {}
+          // Azure split / chunk continuation: do NOT clear buffers, do NOT bump gen
+          console.debug('[TTS] onStart (CONTINUATION) text=', text, 'use existing gen=', speakGenRef.current);
         }
       },
-      onEnd:   () => { try { finishTtsReveal(); } catch {} },
+
+      onWord: (wRaw, offsetMs) => {
+        if (activeGenRef.current !== speakGenRef.current) return; // stale
+        console.debug('[TTS] onWord token=', wRaw, 'offsetMs=', offsetMs, 'gen=', activeGenRef.current);
+
+        const hasOffset = typeof offsetMs === 'number' && isFinite(offsetMs) && offsetMs >= 0;
+
+        if (!anchorSetRef.current) {
+          anchorSetRef.current = true;
+          baseStartRef.current = performance.now() + WARMUP_MS;
+          const firstDue = baseStartRef.current;
+          console.debug('[TTS] first token due@', firstDue);
+          scheduleAt(firstDue, wRaw);
+          packedCountRef.current = 1;
+          return;
+        }
+
+        if (packedCountRef.current > 0 && packedCountRef.current < START_PACK_COUNT) {
+          const due = lastDueRef.current > 0
+            ? lastDueRef.current + MIN_STEP_MS
+            : baseStartRef.current + packedCountRef.current * MIN_STEP_MS;
+          console.debug('[TTS] packed token due@', due);
+          scheduleAt(due, wRaw);
+          packedCountRef.current += 1;
+          return;
+        }
+
+        if (hasOffset) {
+          const due = baseStartRef.current + (offsetMs ?? 0);
+          console.debug('[TTS] offset token due@', due);
+          scheduleAt(due, wRaw);
+        } else {
+          const due = Math.max(performance.now(), lastDueRef.current + FALLBACK_STEP_MS);
+          console.debug('[TTS] fallback token due@', due);
+          scheduleAt(due, wRaw);
+        }
+      },
+
+      onEnd: () => {
+        if (!inSpeechRef.current) {
+          console.debug('[TTS] onEnd IGNORED (already ended) gen=', activeGenRef.current, 'speakGen=', speakGenRef.current);
+          return;
+        }
+
+        // Wait for the last scheduled token to flush, then finalize once.
+        const myGen = speakGenRef.current;
+        const waitMs = Math.max(0, lastDueRef.current - performance.now() + 60); // small buffer
+        console.debug('[TTS] onEnd -> will finalize after', waitMs, 'ms gen=', myGen);
+
+        setTimeout(() => {
+          // If a new speech started, abort this finalize.
+          if (activeGenRef.current !== myGen) return;
+
+          try { finishTtsReveal(); } catch {}
+          inSpeechRef.current = false;
+
+          // Invalidate any late timers from this generation.
+          speakGenRef.current += 1;
+        }, waitMs);
+      },
+
     });
-    return unsubscribe;
-    // Only resubscribe when the TTS instance changes
+    
+    return () => {
+      console.debug('[TTS] unsubscribe()');
+      unsubscribe();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tts]);
+  // =================== END TTS TIMING (ROBUST + GUARDED) ====================
 
   // Load Noto Sans Bengali
   useEffect(() => {
@@ -66,9 +176,7 @@ export default function AiWaiterHome() {
     link.href = 'https://fonts.googleapis.com/css2?family=Noto+Sans+Bengali:wght@400;500;600;700&display=swap';
     link.rel = 'stylesheet';
     document.head.appendChild(link);
-    return () => {
-      document.head.removeChild(link);
-    };
+    return () => { document.head.removeChild(link); };
   }, []);
 
   const resolvedSub =
@@ -96,16 +204,13 @@ export default function AiWaiterHome() {
   const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
 
-  // analyser for level metering
   const analyserRef = useRef<AnalyserNode | null>(null);
   const rafLevelRef = useRef<number | null>(null);
 
   const [listening, setListening] = useState(false);
   const [level, setLevel] = useState(0);
-
   const [uiMode, setUiMode] = useState<UIMode>('idle');
 
-  // Language toggle (now globally broadcast from here)
   const [selectedLang, setSelectedLang] = useState<'auto' | 'bn' | 'en'>(() => {
     const fromUrl = (search.get('lang') as 'auto' | 'bn' | 'en' | null) || null;
     const fromLs =
@@ -113,81 +218,55 @@ export default function AiWaiterHome() {
     return (fromUrl || fromLs || 'bn') as 'auto' | 'bn' | 'en';
   });
 
-  // 🔊 Broadcast language globally so MicInputBar & others can reflect it without edits
   const broadcastLang = (lang: 'auto' | 'bn' | 'en') => {
     if (typeof window !== 'undefined') {
-      (window as any).__WAITER_LANG__ = lang; // simple global read
-      try {
-        window.dispatchEvent(new CustomEvent('qravy:lang', { detail: { lang } }));
-      } catch {}
-      try {
-        document.documentElement.setAttribute('lang', lang === 'bn' ? 'bn' : 'en');
-      } catch {}
+      (window as any).__WAITER_LANG__ = lang;
+      try { window.dispatchEvent(new CustomEvent('qravy:lang', { detail: { lang } } )); } catch {}
+      try { document.documentElement.setAttribute('lang', lang === 'bn' ? 'bn' : 'en'); } catch {}
     }
   };
 
-  // On mount: ensure current lang is broadcast & html@lang set
-  useEffect(() => {
-    broadcastLang(selectedLang);
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { broadcastLang(selectedLang); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Whenever selectedLang changes: persist, broadcast, and inform live WS session
   useEffect(() => {
     if (typeof window !== 'undefined') {
-      try {
-        localStorage.setItem('qravy:lang', selectedLang);
-      } catch {}
+      try { localStorage.setItem('qravy:lang', selectedLang); } catch {}
     }
+    console.debug('[Lang] selectedLang ->', selectedLang);
     broadcastLang(selectedLang);
-    // inform server-side session immediately if WS is up
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      console.debug('[WS] send set_lang', selectedLang);
       wsRef.current.send(JSON.stringify({ t: 'set_lang', lang: selectedLang }));
     }
   }, [selectedLang]);
 
   const stoppingRef = useRef<boolean>(false);
 
-  // --- latches for waiting on events ---
   const finalSeenRef = useRef<boolean>(false);
   const pendingFinalResolverRef = useRef<null | ((ok: boolean) => void)>(null);
 
   const aiSeenRef = useRef<boolean>(false);
   const pendingAiResolverRef = useRef<null | ((ok: boolean) => void)>(null);
 
-  // ===== Intent-driven UI contexts =====
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [showTray, setShowTray] = useState(false);
 
-  // Helpers to open/close contexts
-  const openSuggestions = () => {
-    setShowTray(false);
-    setShowSuggestions(true);
-  };
-  const openTray = () => {
-    setShowSuggestions(false);
-    setShowTray(true);
-  };
-  const goMenu = () => {
-    setShowSuggestions(false);
-    setShowTray(false);
-    navigate(seeMenuHref);
-  };
+  const openSuggestions = () => { setShowTray(false); setShowSuggestions(true); };
+  const openTray = () => { setShowSuggestions(false); setShowTray(true); };
+  const goMenu = () => { setShowSuggestions(false); setShowTray(false); navigate(seeMenuHref); };
 
-  // 🧩 NEW: menu + cart
   const { addItem } = useCart();
-  const { items: storeItems } = usePublicMenu(resolvedSub, resolvedBranch, 'dine-in'); // ✅ replace manual fetch
+  const { items: storeItems } = usePublicMenu(resolvedSub, resolvedBranch, 'dine-in');
   const [menuIndex, setMenuIndex] = useState<ReturnType<typeof buildMenuIndex> | null>(null);
 
-  useEffect(() => {
-    if (storeItems?.length) setMenuIndex(buildMenuIndex(storeItems));
-  }, [storeItems]);
+  useEffect(() => { if (storeItems?.length) setMenuIndex(buildMenuIndex(storeItems)); }, [storeItems]);
 
-  // ✅ NEW: carry items to SuggestionsModal
   type SuggestedItem = { id?: string; name?: string; price?: number; imageUrl?: string };
   const [suggestedItems, setSuggestedItems] = useState<SuggestedItem[]>([]);
 
   function handleIntentRouting(intent: WaiterIntent | undefined) {
     if (!intent) return;
+    console.debug('[Intent] route', intent, { showSuggestions, showTray });
 
     if (showSuggestions) {
       if (intent === 'order') return openTray();
@@ -207,9 +286,7 @@ export default function AiWaiterHome() {
 
   function waitForFinal(timeoutMs = 8000) {
     if (pendingFinalResolverRef.current) {
-      try {
-        pendingFinalResolverRef.current(false);
-      } catch {}
+      try { pendingFinalResolverRef.current(false); } catch {}
       pendingFinalResolverRef.current = null;
     }
     return new Promise<boolean>((resolve) => {
@@ -221,9 +298,7 @@ export default function AiWaiterHome() {
         resolve(false);
       }, timeoutMs);
       pendingFinalResolverRef.current = (ok: boolean) => {
-        try {
-          clearTimeout(timer);
-        } catch {}
+        try { clearTimeout(timer); } catch {}
         pendingFinalResolverRef.current = null;
         resolve(ok);
       };
@@ -232,9 +307,7 @@ export default function AiWaiterHome() {
 
   function waitForAiReply(timeoutMs = 8000) {
     if (pendingAiResolverRef.current) {
-      try {
-        pendingAiResolverRef.current(false);
-      } catch {}
+      try { pendingAiResolverRef.current(false); } catch {}
       pendingAiResolverRef.current = null;
     }
     return new Promise<boolean>((resolve) => {
@@ -246,9 +319,7 @@ export default function AiWaiterHome() {
         resolve(false);
       }, timeoutMs);
       pendingAiResolverRef.current = (ok: boolean) => {
-        try {
-          clearTimeout(timer);
-        } catch {}
+        try { clearTimeout(timer); } catch {}
         pendingAiResolverRef.current = null;
         resolve(ok);
       };
@@ -280,7 +351,6 @@ export default function AiWaiterHome() {
     setLevel(0);
   };
 
-  // ---------- Smart suggestion mappers (LLM-driven, no keywords) ----------
   function resolveStoreItemById(id?: string) {
     if (!id) return undefined as any;
     return storeItems?.find((s: any) => String(s?.id) === String(id));
@@ -299,12 +369,10 @@ export default function AiWaiterHome() {
     };
   }
 
-  // Use LLM meta first; if IDs missing, resolve by name via menuIndex.
   function buildSuggestionsFromMeta(meta: AiReplyMeta | undefined): SuggestedItem[] {
     if (!menuIndex) return [];
     const out: SuggestedItem[] = [];
 
-    // 1) Direct items list
     const metaItems = Array.isArray(meta?.items) ? (meta!.items as any[]) : [];
     for (const it of metaItems) {
       const name = it?.name as string | undefined;
@@ -317,7 +385,6 @@ export default function AiWaiterHome() {
       out.push(mergeFromStore(it, itemId));
     }
 
-    // 2) Optional groups: meta.suggestions = [{title?, items:[{...}]}]
     const groups: any[] = Array.isArray((meta as any)?.suggestions) ? (meta as any).suggestions : [];
     for (const g of groups) {
       const gItems = Array.isArray(g?.items) ? g.items : [];
@@ -332,7 +399,6 @@ export default function AiWaiterHome() {
       }
     }
 
-    // Deduplicate by id/name combo
     const seen = new Set<string>();
     return out.filter((x) => {
       const key = `${x.id ?? ''}|${(x.name ?? '').toLowerCase()}`;
@@ -342,7 +408,6 @@ export default function AiWaiterHome() {
     });
   }
 
-  // If LLM doesn't structure items, harvest names directly from reply text.
   function buildSuggestionsFromReplyText(replyText: string): SuggestedItem[] {
     if (!replyText || !storeItems?.length) return [];
     const lc = replyText.toLowerCase();
@@ -352,10 +417,7 @@ export default function AiWaiterHome() {
       const name = (s?.name ?? '').toString();
       if (!name) continue;
 
-      // Match canonical name
       const nameHit = lc.includes(name.toLowerCase());
-
-      // Also check aliases if present
       const aliases: string[] = Array.isArray(s?.aliases) ? s.aliases : [];
       const aliasHit = aliases.some((a) => lc.includes(a.toLowerCase()));
 
@@ -369,7 +431,6 @@ export default function AiWaiterHome() {
       }
     }
 
-    // Deduplicate
     const seen = new Set<string>();
     return hits.filter((x) => {
       const key = `${x.id ?? ''}|${(x.name ?? '').toLowerCase()}`;
@@ -383,10 +444,11 @@ export default function AiWaiterHome() {
     try {
       if (listening || wsRef.current || ctxRef.current) return;
 
-      // 🔇 ensure no TTS is playing over mic
-      try { tts.stop(); } catch {}
-
-      // ✅ start fresh subtitle each turn
+      try {
+        console.debug('[TTS] stop() before capture');
+        tts.stop();
+      } catch {}
+      console.debug('[Store] clearAi()');
       clearAi();
 
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -397,12 +459,9 @@ export default function AiWaiterHome() {
       const ctx = new AudioContext({ sampleRate: 16000, latencyHint: 'interactive' });
       ctxRef.current = ctx;
       if (ctx.state === 'suspended') {
-        try {
-          await ctx.resume();
-        } catch {}
+        try { await ctx.resume(); } catch {}
       }
 
-      // Make sure the worklet module is loaded before constructing the node
       await ctx.audioWorklet.addModule('/worklets/audio-capture.worklet.js');
 
       const src = ctx.createMediaStreamSource(stream);
@@ -414,11 +473,9 @@ export default function AiWaiterHome() {
       analyserRef.current = analyser;
       startLevelMeter(analyser);
 
-      // Must match registerProcessor('audio-capture', ...)
       const node = new AudioWorkletNode(ctx, 'capture-processor', { numberOfInputs: 1, numberOfOutputs: 0 });
       nodeRef.current = node;
 
-      // Build WS with auto ?sid=... inside getWsURL
       const ws = new WebSocket(getWsURL('/ws/voice'));
       wsRef.current = ws;
       ws.binaryType = 'arraybuffer';
@@ -426,23 +483,22 @@ export default function AiWaiterHome() {
       ws.onopen = () => {
         const sid = getStableSessionId();
         stoppingRef.current = false;
-        finalSeenRef.current = true; // ensure we don't block waiting stt_final to show AI
+        finalSeenRef.current = true;
         aiSeenRef.current = false;
 
-        ws.send(
-          JSON.stringify({
-            t: 'hello',
-            sid,
-            sessionId: sid,
-            userId: 'guest',
-            rate: 16000,
-            ch: 1,
-            lang: selectedLang,
-            tenant: resolvedSub ?? null,
-            branch: resolvedBranch ?? null,
-            channel: resolvedChannel,
-          }),
-        );
+        console.debug('[WS] open -> hello', { sid, lang: selectedLang, resolvedSub, resolvedBranch, resolvedChannel });
+        ws.send(JSON.stringify({
+          t: 'hello',
+          sid,
+          sessionId: sid,
+          userId: 'guest',
+          rate: 16000,
+          ch: 1,
+          lang: selectedLang,
+          tenant: resolvedSub ?? null,
+          branch: resolvedBranch ?? null,
+          channel: resolvedChannel,
+        }));
         setListening(true);
       };
 
@@ -450,6 +506,7 @@ export default function AiWaiterHome() {
         if (typeof ev.data !== 'string') return;
         try {
           const msg = JSON.parse(ev.data as string);
+          console.debug('[WS<-]', msg);
 
           if (msg.t === 'stt_final') {
             finalSeenRef.current = true;
@@ -459,26 +516,23 @@ export default function AiWaiterHome() {
 
           if (msg.t === 'ai_reply_pending') {
             setUiMode('thinking');
-            // Optional: tiny stub; will be overwritten by live reveal
-            setAi('Thinking…');
+            try { console.debug('[Store] setAi("") on pending'); setAi(''); } catch {}
             return;
           }
 
           if (msg.t === 'ai_reply') {
             const text = (msg.replyText as string) || '';
+            console.debug('[AI] final replyText=', text);
             if (text) {
-              // ❗ do NOT append full text to store; reveal will come from TTS word boundaries
-              try { tts.speak(text); } catch {}
+              try { console.debug('[TTS] speak()'); tts.speak(text); } catch {}
             }
             aiSeenRef.current = true;
             pendingAiResolverRef.current?.(true);
             setUiMode('talking');
 
-            // 🧩 Enhanced intent logic
             const meta: AiReplyMeta | undefined = msg.meta;
             const intent = (meta?.intent ?? 'chitchat') as WaiterIntent;
 
-            // ✅ LLM-driven suggestions (no keyword gating)
             if (intent === 'suggestions') {
               let mapped: SuggestedItem[] = [];
 
@@ -543,8 +597,9 @@ export default function AiWaiterHome() {
         } catch {}
       };
 
-      ws.onerror = () => {};
+      ws.onerror = () => { console.warn('[WS] error'); };
       ws.onclose = () => {
+        console.debug('[WS] close');
         setListening(false);
         pendingFinalResolverRef.current?.(false);
         pendingFinalResolverRef.current = null;
@@ -552,7 +607,6 @@ export default function AiWaiterHome() {
         pendingAiResolverRef.current = null;
       };
 
-      // 🔧 IMPORTANT: forward Int16 frames coming from the worklet
       (node.port as MessagePort).onmessage = (ev) => {
         if (stoppingRef.current) return;
         const msg = ev.data;
@@ -562,7 +616,6 @@ export default function AiWaiterHome() {
         }
       };
 
-      // connect mic → worklet
       src.connect(node);
     } catch (e) {
       console.error(e);
@@ -571,6 +624,7 @@ export default function AiWaiterHome() {
   }
 
   async function stopListening() {
+    console.debug('[Voice] stopListening()');
     stoppingRef.current = true;
     let gotFinal = finalSeenRef.current;
     try {
@@ -585,38 +639,23 @@ export default function AiWaiterHome() {
       console.error(e);
     }
 
-    try {
-      stopLevelMeter();
-    } catch {}
-    try {
-      sourceRef.current?.disconnect();
-    } catch {}
+    try { stopLevelMeter(); } catch {}
+    try { sourceRef.current?.disconnect(); } catch {}
     sourceRef.current = null;
-    try {
-      nodeRef.current?.port.close();
-    } catch {}
-    try {
-      nodeRef.current?.disconnect();
-    } catch {}
+    try { nodeRef.current?.port.close(); } catch {}
+    try { nodeRef.current?.disconnect(); } catch {}
     nodeRef.current = null;
-    try {
-      streamRef.current?.getTracks().forEach((t) => t.stop());
-    } catch {}
+    try { streamRef.current?.getTracks().forEach((t) => t.stop()); } catch {}
     streamRef.current = null;
-    try {
-      await ctxRef.current?.close();
-    } catch {}
+    try { await ctxRef.current?.close(); } catch {}
     ctxRef.current = null;
-    try {
-      wsRef.current?.close();
-    } catch {}
+    try { wsRef.current?.close(); } catch {}
     wsRef.current = null;
 
     setListening(false);
     setUiMode('idle');
   }
 
-  // ===== visuals =====
   const ACCENT = '#FA2851';
   const bgWhite = '#FFFFFF';
   const bgPink = '#FFF0F3';
@@ -689,7 +728,6 @@ export default function AiWaiterHome() {
             style={{ background: '#FA2851', boxShadow: '0 8px 24px rgba(250,40,81,0.3)' }}
             aria-label="Start voice"
           >
-            {/* simple, valid mic icon */}
             <svg width="40" height="40" viewBox="0 0 24 24" fill="#fff" aria-hidden="true">
               <rect x="9" y="3" width="6" height="10" rx="3" />
               <path d="M5 11a7 7 0 0014 0h-2a5 5 0 01-10 0H5z" />
