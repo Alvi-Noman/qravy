@@ -1,4 +1,3 @@
-// apps/tastebud/src/pages/AiWaiterHome.tsx
 import React, { useRef, useState, useEffect } from 'react';
 import { useParams, useSearchParams, Link, useNavigate } from 'react-router-dom';
 import { getWsURL, getStableSessionId } from '../utils/ws';
@@ -68,7 +67,6 @@ function SwipeViewport({ text, showCursor }: { text: string; showCursor: boolean
     const next = Math.max(0, Math.min(maxOverflowRef.current, startOffsetRef.current - dy));
     setOffset(next);
   };
-  
   const onTouchEnd = () => {
     draggingRef.current = false;
     if (Math.abs(maxOverflowRef.current - offset) < 8) setOffset(maxOverflowRef.current);
@@ -141,9 +139,13 @@ export default function AiWaiterHome() {
     }, delay);
   }
 
+  // speaking drives orb “talking” state only (no ring sync)
+  const [speaking, setSpeaking] = useState(false);
+
   useEffect(() => {
     const un = tts.subscribe({
       onStart: (text) => {
+        setSpeaking(true);
         const liveNow = (useConversationStore as any).getState?.().aiTextLive || '';
         const cont = inSpeechRef.current || !!liveNow;
         if (!cont) {
@@ -180,7 +182,7 @@ export default function AiWaiterHome() {
       onEnd: () => {
         if (!inSpeechRef.current) return;
         const myGen = speakGenRef.current;
-        const wait = Math.max(0, lastDueRef.current - performance.now() + 60);
+        const wait = Math.max(0, lastDueRef.current - performance.now() + 80);
         setTimeout(() => {
           if (activeGenRef.current !== myGen) return;
           try { finishTtsReveal(); } catch {}
@@ -192,6 +194,7 @@ export default function AiWaiterHome() {
           } catch {}
           inSpeechRef.current = false;
           speakGenRef.current += 1;
+          setSpeaking(false);
         }, wait);
       },
     });
@@ -224,11 +227,13 @@ export default function AiWaiterHome() {
   const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
 
-  // NEW: analyser + mic level state
+  // analyser + mic level
   const analyserRef = useRef<AnalyserNode | null>(null);
-  const timeDataRef = useRef<Uint8Array | null>(null);
+  // 🔐 pin typing to avoid TS2345
+  const timeDataRef = useRef<Uint8Array<ArrayBuffer> | null>(null);
+
   const levelRafRef = useRef<number | null>(null);
-  const [micLevel, setMicLevel] = useState(0); // 0..1
+  const [micLevel, setMicLevel] = useState(0);
 
   const [listening, setListening] = useState(false);
   const [uiMode, setUiMode] = useState<UIMode>('idle');
@@ -255,7 +260,7 @@ export default function AiWaiterHome() {
     }
   }, [selectedLang]);
 
-  // promise gates
+  // gates
   const stoppingRef = useRef<boolean>(false);
   const finalSeenRef = useRef<boolean>(false);
   const pendingFinalResolverRef = useRef<null | ((ok: boolean) => void)>(null);
@@ -372,29 +377,24 @@ export default function AiWaiterHome() {
       const node = new AudioWorkletNode(ctx, 'capture-processor', { numberOfInputs: 1, numberOfOutputs: 0 });
       nodeRef.current = node;
 
-      // ---- NEW: analyser for live mic level ----
+      // analyser
       const analyser = ctx.createAnalyser();
       analyser.fftSize = 1024;
       analyser.smoothingTimeConstant = 0.08;
       analyserRef.current = analyser;
       src.connect(analyser);
 
-      // Allocate with a concrete ArrayBuffer to satisfy TS
-      const ab = new ArrayBuffer(analyser.fftSize); // length in bytes (>= frequencyBinCount)
-      timeDataRef.current = new Uint8Array(ab) as unknown as Uint8Array<ArrayBuffer>;
+      // pinned buffer to satisfy TS2345
+      const backing = new ArrayBuffer(analyser.frequencyBinCount);
+      timeDataRef.current = new Uint8Array(backing) as Uint8Array<ArrayBuffer>;
 
       const levelLoop = () => {
         if (!analyserRef.current || !timeDataRef.current) return;
-
-        // Cast once to the stricter type for this call
-        const td = timeDataRef.current as unknown as Uint8Array<ArrayBuffer>;
-        analyserRef.current.getByteTimeDomainData(td);
-
-        // Use as a normal Uint8Array to compute RMS
-        const buf = td as unknown as Uint8Array;
+        analyserRef.current.getByteTimeDomainData(timeDataRef.current as Uint8Array<ArrayBuffer>);
+        const buf = new Uint8Array((timeDataRef.current as any).buffer as ArrayBuffer);
         let sum = 0;
         for (let i = 0; i < buf.length; i++) {
-          const v = (buf[i] - 128) / 128; // -1..1
+          const v = (buf[i] - 128) / 128;
           sum += v * v;
         }
         const rms = Math.sqrt(sum / buf.length);
@@ -402,12 +402,9 @@ export default function AiWaiterHome() {
         const norm = Math.max(0, (rms - noiseFloor) / (1 - noiseFloor));
         const clamped = Math.min(0.9, norm);
         setMicLevel(clamped);
-
         levelRafRef.current = requestAnimationFrame(levelLoop);
       };
       levelRafRef.current = requestAnimationFrame(levelLoop);
-      // ------------------------------------------
-
 
       const ws = new WebSocket(getWsURL('/ws/voice'));
       wsRef.current = ws; ws.binaryType = 'arraybuffer';
@@ -510,7 +507,6 @@ export default function AiWaiterHome() {
       }
     } catch (e) { console.error(e); }
 
-    // NEW: level cleanup
     try { if (levelRafRef.current) cancelAnimationFrame(levelRafRef.current); } catch {}
     levelRafRef.current = null;
     try { analyserRef.current?.disconnect(); } catch {}
@@ -537,62 +533,48 @@ export default function AiWaiterHome() {
   // UI mapping
   const bg = '#FFF8FA';
   const orbMode: 'idle' | 'listening' | 'thinking' | 'talking' =
-    uiMode === 'talking' ? 'talking' : (listening ? 'listening' : (uiMode === 'thinking' ? 'thinking' : 'idle'));
+    speaking ? 'talking'
+    : (listening ? 'listening' : (uiMode === 'thinking' ? 'thinking' : 'idle'));
 
-  /* ---- sizes to match your mock ---- */
-  const ORB_SIZE = 480;       // for the orb itself
-  const MIC_OUTER = 120;      // ring outer diameter
-  const MIC_INNER = 92;       // red inner button
+  const ORB_SIZE = 480;
+  const MIC_OUTER = 120;
+  const MIC_INNER = 92;
 
-  // ===== measure real DOM to place text at midpoint between ORB CENTER and MIC BUTTON CENTER =====
   const orbRef = useRef<HTMLDivElement | null>(null);
   const micRingRef = useRef<HTMLDivElement | null>(null);
-  const micBtnRef = useRef<HTMLButtonElement | null>(null);   // NEW
+  const micBtnRef = useRef<HTMLButtonElement | null>(null);
   const textWrapRef = useRef<HTMLDivElement | null>(null);
   const [textTop, setTextTop] = useState<number | null>(null);
 
   const visibleText = (aiLive || aiFinal) ?? '';
 
   useEffect(() => {
-    let rafA = 0, rafB = 0;
-
+    let rafA = 0;
     const placeText = () => {
       if (!orbRef.current || !micBtnRef.current || !textWrapRef.current) return;
-
       const orbRect = orbRef.current.getBoundingClientRect();
       const micRect = micBtnRef.current.getBoundingClientRect();
       const scrollY = window.scrollY || document.documentElement.scrollTop || 0;
 
-      // VoiceOrb draws circle at 0.22 radius = 0.44 diameter of container
       const orbContainerSize = orbRect.height;
       const actualCircleSize = orbContainerSize * 0.44;
       const circlePadding = (orbContainerSize - actualCircleSize) / 2;
 
-      // actual visual circle's bottom edge
       const orbBottomY = orbRect.top + scrollY + circlePadding + actualCircleSize;
-      
-      // mic button's top edge
       const micTopY = micRect.top + scrollY;
-
-      // midpoint between circle bottom and mic top
       const midY = (orbBottomY + micTopY) / 2;
 
-      // center the text box on that line
       const textH = textWrapRef.current.offsetHeight || 0;
       const top = midY - textH / 2;
 
       setTextTop(top);
     };
-
     rafA = requestAnimationFrame(placeText);
     window.addEventListener('resize', placeText);
-
     const ro = new ResizeObserver(placeText);
     if (textWrapRef.current) ro.observe(textWrapRef.current);
-
     return () => {
       cancelAnimationFrame(rafA);
-      cancelAnimationFrame(rafB);
       window.removeEventListener('resize', placeText);
       ro.disconnect();
     };
@@ -603,16 +585,17 @@ export default function AiWaiterHome() {
       className="min-h-screen relative overflow-hidden flex flex-col items-center justify-between px-6"
       style={{ fontFamily: `'Noto Sans Bengali', 'Inter', system-ui, sans-serif`, background: bg }}
     >
-      {/* ORB near top center (measured by ref) */}
+      {/* ORB near top center */}
       <div
         ref={orbRef}
         className="absolute left-1/2 -translate-x-1/2 z-0 pointer-events-none"
         style={{ top: '0px' }}
       >
+        {/* level only while listening; talking animation is independent */}
         <VoiceOrb mode={orbMode} size={ORB_SIZE} level={listening ? micLevel : 0} />
       </div>
 
-      {/* Text layer: independent, centered horizontally, at midpoint between orb center & mic center */}
+      {/* Text layer */}
       <div
         ref={textWrapRef}
         className="absolute left-1/2 -translate-x-1/2 z-[999] w-full max-w-[900px] px-6 text-center pointer-events-auto"
@@ -624,21 +607,17 @@ export default function AiWaiterHome() {
       {/* Bottom cluster */}
       <div className="fixed bottom-14 left-0 right-0 flex items-end justify-center">
         <div className="w-full max-w-[680px] flex items-end justify-between px-8">
-          {/* left dot */}
           <div className="h-16 w-16 rounded-full bg-[#D9DDDE]" />
 
-          {/* mic with ring + See Menu chip under it */}
           <div className="flex flex-col items-center gap-3">
-            {/* ring (measured by ref) */}
             <div
               ref={micRingRef}
               className="rounded-full flex items-center justify-center -translate-y-4 md:-translate-y-3"
               style={{ width: MIC_OUTER, height: MIC_OUTER, background: '#D9DDDE' }}
             >
-              {/* inner mic */}
               {!listening ? (
                 <button
-                  ref={micBtnRef} /* <-- attach to the RED mic button */
+                  ref={micBtnRef}
                   onClick={startListening}
                   className="rounded-full flex items-center justify-center active:scale-95 transition"
                   style={{ width: MIC_INNER, height: MIC_INNER, background: '#FA2851', boxShadow: '0 8px 24px rgba(250,40,81,0.3)' }}
@@ -652,7 +631,7 @@ export default function AiWaiterHome() {
                 </button>
               ) : (
                 <button
-                  ref={micBtnRef} /* <-- keep ref when toggled */
+                  ref={micBtnRef}
                   onClick={stopListening}
                   className="rounded-full flex items-center justify-center active:scale-95 transition"
                   style={{ width: MIC_INNER, height: MIC_INNER, background: '#FA2851', boxShadow: '0 8px 24px rgba(250,40,81,0.3)' }}
@@ -665,7 +644,6 @@ export default function AiWaiterHome() {
               )}
             </div>
 
-            {/* See Menu chip */}
             <Link
               to={seeMenuHref}
               className="px-6 py-2 rounded-full text-[16px] font-medium bg-rose-50 text-rose-500 border border-rose-100 shadow"
@@ -674,7 +652,6 @@ export default function AiWaiterHome() {
             </Link>
           </div>
 
-          {/* right dot (keyboard) */}
           <button
             className="h-16 w-16 rounded-full bg-[#D9DDDE] flex items-center justify-center"
             aria-label="Keyboard"
