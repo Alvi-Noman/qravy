@@ -1,5 +1,5 @@
 import React, { useRef, useState, useEffect } from 'react';
-import { useParams, useSearchParams, Link, useNavigate } from 'react-router-dom';
+import { useParams, useSearchParams, useNavigate } from 'react-router-dom';
 import { getWsURL, getStableSessionId } from '../utils/ws';
 import SuggestionsModal from '../components/ai-waiter/SuggestionsModal';
 import TrayModal from '../components/ai-waiter/TrayModal';
@@ -604,61 +604,118 @@ export default function AiWaiterHome() {
         <SwipeViewport text={visibleText} showCursor={!!aiLive} />
       </div>
 
-      {/* Bottom cluster */}
-      <div className="fixed bottom-14 left-0 right-0 flex items-end justify-center">
-        <div className="w-full max-w-[680px] flex items-end justify-between px-8">
-          <div className="h-16 w-16 rounded-full bg-[#D9DDDE]" />
+      {/* Bottom cluster - Three floating buttons (tap-to-toggle; hold = push-to-talk) */}
+      <div className="fixed bottom-0 left-0 right-0 flex items-end justify-center pb-10 md:pb-12">
+        <div className="relative flex items-end justify-center gap-12 px-6 w-full max-w-[520px]">
 
-          <div className="flex flex-col items-center gap-3">
-            <div
-              ref={micRingRef}
-              className="rounded-full flex items-center justify-center -translate-y-4 md:-translate-y-3"
-              style={{ width: MIC_OUTER, height: MIC_OUTER, background: '#D9DDDE' }}
-            >
-              {!listening ? (
-                <button
-                  ref={micBtnRef}
-                  onClick={startListening}
-                  className="rounded-full flex items-center justify-center active:scale-95 transition"
-                  style={{ width: MIC_INNER, height: MIC_INNER, background: '#FA2851', boxShadow: '0 8px 24px rgba(250,40,81,0.3)' }}
-                  aria-label="Start voice"
-                >
-                  <svg width="36" height="36" viewBox="0 0 24 24" fill="#fff" aria-hidden="true">
-                    <rect x="9" y="3" width="6" height="10" rx="3" />
-                    <path d="M5 11a7 7 0 0014 0h-2a5 5 0 01-10 0H5z" />
-                    <path d="M11 19v2h2v-2h-2z" />
-                  </svg>
-                </button>
-              ) : (
-                <button
-                  ref={micBtnRef}
-                  onClick={stopListening}
-                  className="rounded-full flex items-center justify-center active:scale-95 transition"
-                  style={{ width: MIC_INNER, height: MIC_INNER, background: '#FA2851', boxShadow: '0 8px 24px rgba(250,40,81,0.3)' }}
-                  aria-label="Stop voice"
-                >
-                  <svg width="38" height="38" viewBox="0 0 24 24" fill="#fff" aria-hidden="true">
-                    <rect x="7" y="7" width="10" height="10" rx="2" />
-                  </svg>
-                </button>
-              )}
-            </div>
-
-            <Link
-              to={seeMenuHref}
-              className="px-6 py-2 rounded-full text-[16px] font-medium bg-rose-50 text-rose-500 border border-rose-100 shadow"
-            >
-              See Menu
-            </Link>
-          </div>
-
+          {/* Left: Chat button */}
           <button
-            className="h-16 w-16 rounded-full bg-[#D9DDDE] flex items-center justify-center"
-            aria-label="Keyboard"
-            title="Keyboard"
+            className="group relative h-16 w-16 rounded-full flex items-center justify-center transition-all duration-300 hover:scale-110 active:scale-95 backdrop-blur-xl"
+            style={{ 
+              background: 'rgba(255, 255, 255, 0.95)',
+              boxShadow: '0 8px 24px rgba(0, 0, 0, 0.1), 0 2px 8px rgba(0, 0, 0, 0.06)',
+              border: '1px solid rgba(255, 255, 255, 0.4)'
+            }}
+            aria-label="Chat"
+            title="Chat"
           >
-            <span className="text-black/80 text-xl">⌨️</span>
+            <div 
+              className="absolute inset-0 rounded-full opacity-0 group-hover:opacity-100 transition-opacity duration-300"
+              style={{ background: 'linear-gradient(135deg, rgba(250, 40, 81, 0.08), rgba(250, 40, 81, 0.02))' }}
+            />
+            <img
+              src="/icons/Chat.svg"
+              alt=""
+              draggable={false}
+              className="relative z-10 h-[26px] w-[26px]"
+            />
           </button>
+
+          {/* Center: Mic button - Hero (tap to toggle; hold = push-to-talk) */}
+          <button
+            ref={micBtnRef}
+            // ── TAP: toggle
+            onClick={(e) => {
+              if ((window as any).__qravyPTTHandled) {
+                (window as any).__qravyPTTHandled = false;
+                e.preventDefault();
+                return;
+              }
+              listening ? stopListening() : startListening();
+            }}
+            // ── HOLD: push-to-talk via Pointer Events
+            onPointerDown={() => {
+              (window as any).__qravyPTTActive = true;
+              (window as any).__qravyPTTHandled = true; // suppress the click that follows a hold
+              if (!listening) startListening();
+            }}
+            onPointerUp={() => {
+              if ((window as any).__qravyPTTActive) {
+                (window as any).__qravyPTTActive = false;
+                if (listening) stopListening();
+              }
+            }}
+            onPointerLeave={() => {
+              if ((window as any).__qravyPTTActive) {
+                (window as any).__qravyPTTActive = false;
+                if (listening) stopListening();
+              }
+            }}
+            onPointerCancel={() => {
+              if ((window as any).__qravyPTTActive) {
+                (window as any).__qravyPTTActive = false;
+                if (listening) stopListening();
+              }
+            }}
+
+            className="group relative h-24 w-24 rounded-full flex items-center justify-center transition-all duration-300 hover:scale-110 active:scale-95 -mb-1 select-none touch-none"
+            style={{ 
+              background: listening 
+                ? 'linear-gradient(135deg, #FA2851 0%, #FF5470 100%)'
+                : 'linear-gradient(135deg, #FA2851 0%, #FF3D5C 100%)',
+              boxShadow: listening
+                ? '0 16px 48px rgba(250, 40, 81, 0.4), 0 8px 16px rgba(250, 40, 81, 0.25), inset 0 -2px 8px rgba(0, 0, 0, 0.15)'
+                : '0 12px 40px rgba(250, 40, 81, 0.35), 0 6px 12px rgba(250, 40, 81, 0.2), inset 0 -2px 8px rgba(0, 0, 0, 0.1)'
+            }}
+            aria-label={listening ? "Stop voice" : "Start voice"}
+            title={listening ? "Release to stop" : "Hold to talk • Tap to start"}
+          >
+            {!listening ? (
+              <svg width="36" height="36" viewBox="0 0 24 24" fill="#fff" className="relative z-10 drop-shadow-md" aria-hidden="true">
+                <path d="M12 2C10.34 2 9 3.34 9 5V12C9 13.66 10.34 15 12 15C13.66 15 15 13.66 15 12V5C15 3.34 13.66 2 12 2Z"/>
+                <path d="M19 11C19 14.53 16.39 17.44 13 17.93V21H11V17.93C7.61 17.44 5 14.53 5 11H7C7 13.76 9.24 16 12 16C14.76 16 17 13.76 17 11H19Z"/>
+              </svg>
+            ) : (
+              <svg width="32" height="32" viewBox="0 0 24 24" fill="#fff" className="relative z-10 drop-shadow-md" aria-hidden="true">
+                <rect x="6" y="6" width="12" height="12" rx="2.5"/>
+              </svg>
+            )}
+          </button>
+
+          {/* Right: Menu button */}
+          <button
+            className="group relative h-16 w-16 rounded-full flex items-center justify-center transition-all duration-300 hover:scale-110 active:scale-95 backdrop-blur-xl"
+            style={{ 
+              background: 'rgba(255, 255, 255, 0.95)',
+              boxShadow: '0 8px 24px rgba(0, 0, 0, 0.1), 0 2px 8px rgba(0, 0, 0, 0.06)',
+              border: '1px solid rgba(255, 255, 255, 0.4)'
+            }}
+            aria-label="Menu"
+            title="Menu"
+            onClick={() => navigate(seeMenuHref)}
+          >
+            <div 
+              className="absolute inset-0 rounded-full opacity-0 group-hover:opacity-100 transition-opacity duration-300"
+              style={{ background: 'linear-gradient(135deg, rgba(250, 40, 81, 0.08), rgba(250, 40, 81, 0.02))' }}
+            />
+            <img
+              src="/icons/Dish.svg"
+              alt=""
+              draggable={false}
+              className="relative z-10 h-[26px] w-[26px]"
+            />
+          </button>
+
         </div>
       </div>
 

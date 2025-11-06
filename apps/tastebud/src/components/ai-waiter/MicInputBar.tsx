@@ -48,7 +48,6 @@ export default function MicInputBar({
   // Store bits
   const setAi           = useConversationStore((s) => s.setAi);
   const aiLive          = useConversationStore((s) => s.aiTextLive);
-  // NOTE: do NOT read aiText here to avoid flashing the previous final line
   const startTtsReveal  = useConversationStore((s) => s.startTtsReveal);
   const appendTtsReveal = useConversationStore((s) => s.appendTtsReveal);
   const finishTtsReveal = useConversationStore((s) => s.finishTtsReveal);
@@ -94,10 +93,8 @@ export default function MicInputBar({
 
     const unsub = tts.subscribe({
       onStart: () => {
-        // Hide "Thinking…" immediately when TTS actually begins
         setThinking(false);
 
-        // New speech → new generation, clear any residual text without flashing
         speakGenRef.current += 1;
         activeGenRef.current  = speakGenRef.current;
         inSpeechRef.current   = true;
@@ -107,12 +104,11 @@ export default function MicInputBar({
         lastDueRef.current   = 0;
         packedCountRef.current = 0;
 
-        // Ensure live area is empty before the first token arrives
         try { startTtsReveal(""); } catch {}
         try { setAi(""); } catch {}
       },
 
-      // @ts-ignore: (word, offsetMs) signature
+      // @ts-ignore
       onWord: (w: string, offsetMs?: number) => {
         if (activeGenRef.current !== speakGenRef.current) return;
 
@@ -145,7 +141,6 @@ export default function MicInputBar({
           if (activeGenRef.current !== myGen) return;
           try { finishTtsReveal(); } catch {}
           inSpeechRef.current = false;
-          // invalidate any late timers from this generation
           speakGenRef.current += 1;
         }, waitMs);
       },
@@ -278,19 +273,16 @@ export default function MicInputBar({
         const data = JSON.parse(ev.data);
 
         if (data.t === "stt_partial") {
-          // ignore partial STT text
           return;
         }
 
         if (data.t === "ai_reply_pending") {
-          // already set locally on stop(), but keep this in case server sends first
           setThinking(true);
           setAi("Thinking…");
           return;
         }
 
         if (data.t === "ai_reply") {
-          // Final answer arrives → speak (word callbacks will reveal text)
           const replyText = data.replyText || "";
           if (shouldSpeakOnce(replyText)) {
             try { tts.speak(replyText); } catch {}
@@ -315,7 +307,6 @@ export default function MicInputBar({
     if (disabled || isRecording) return;
     setIsRecording(true);
 
-    // Clear any previous texts immediately to avoid flash
     try { startTtsReveal(""); finishTtsReveal(); } catch {}
     try { setAi(""); } catch {}
     setThinking(false);
@@ -365,7 +356,6 @@ export default function MicInputBar({
     if (!isRecording) return;
     setIsRecording(false);
 
-    // Immediately show Thinking… and clear live
     try { startTtsReveal(""); finishTtsReveal(); } catch {}
     setThinking(true);
     setAi("Thinking…");
@@ -382,7 +372,6 @@ export default function MicInputBar({
     isHoldModeRef.current = false;
     lastDownAtRef.current = Date.now();
 
-    // Clear immediately on press so no previous line flashes
     try { startTtsReveal(""); finishTtsReveal(); } catch {}
     try { setAi(""); } catch {}
 
@@ -435,72 +424,248 @@ export default function MicInputBar({
     }
   }, [disabled, endPressCycle]);
 
-  // Only ever show Thinking… (before TTS) or the live word-by-word text
+  // Display logic
   const subtitle = thinking ? "Thinking…" : (aiLive || "");
+  const hasContent = (subtitle?.length ?? 0) > 0;
+
+  // Linger the panel for 1s after finish, and freeze last text
+  const [showExpanded, setShowExpanded] = useState(false);
+  const lastSubtitleRef = useRef("");
+  useEffect(() => {
+    if (hasContent) lastSubtitleRef.current = subtitle;
+  }, [subtitle, hasContent]);
+  const displayText = hasContent ? subtitle : (showExpanded ? lastSubtitleRef.current : "");
+
+  useEffect(() => {
+    if (hasContent) {
+      setShowExpanded(true);
+    } else {
+      const t = setTimeout(() => setShowExpanded(false), 1000);
+      return () => clearTimeout(t);
+    }
+  }, [hasContent]);
 
   return (
     <div ref={rootRef} className={["relative w-full", className].join(" ")}>
+      {/* Soft floor gradient */}
       <div
         className="fixed left-0 right-0 bottom-0 h-40 bg-gradient-to-t from-[#F6F5F8]/100 from-[60%] to-[#F6F5F8]/0 to-[100%]"
         aria-hidden="true"
       />
 
-      <div
-        className={[
-          "w-full rounded-full bg-white shadow-[0_6px_20px_rgba(255,0,64,0.12)]",
-          "border border-white/60 px-4 py-2 flex items-center gap-3",
-          "backdrop-blur",
-          "relative z-10",
-        ].join(" ")}
-      >
-        <div className="grow min-h-6 flex items-center text-sm text-gray-700">
-          <div className="relative w-full">
-            <div
-              ref={lastLinesRef}
-              className="h-[2.8em] leading-snug overflow-y-auto pr-1"
-              style={{ scrollbarWidth: "none", msOverflowStyle: "none" }}
-            >
-              <div className="whitespace-pre-wrap break-words">
-                {subtitle}
+      <div className="relative">
+        {/* EXPANDABLE AI RESPONSE PANEL (slides above the bar) */}
+        <div
+          className={[
+            "absolute bottom-full left-0 right-0 mb-3 transition-all duration-500 ease-out",
+            showExpanded ? "opacity-100 translate-y-0 scale-100 pointer-events-auto" : "opacity-0 translate-y-4 scale-95 pointer-events-none",
+          ].join(" ")}
+        >
+          <div className="relative">
+            <div className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-violet-50 via-white to-indigo-50/50 border border-violet-200/60 shadow-xl shadow-violet-500/10 backdrop-blur-sm">
+              <div className="absolute top-0 left-0 right-0 h-0.5 bg-gradient-to-r from-violet-500 via-indigo-500 to-violet-500" />
+              <div className="p-4">
+                <div className="flex items-start gap-3">
+                  {/* AI Avatar */}
+                  <div className="shrink-0">
+                    <div
+                      className={[
+                        "w-9 h-9 rounded-xl bg-gradient-to-br from-violet-500 to-indigo-600 flex items-center justify-center shadow-md transition-transform duration-300",
+                        thinking ? "scale-95" : "scale-100",
+                      ].join(" ")}
+                    >
+                      {thinking ? (
+                        <div className="flex gap-0.5">
+                          <div className="w-1 h-1 rounded-full bg-white animate-bounce" style={{ animationDelay: "0ms" }} />
+                          <div className="w-1 h-1 rounded-full bg-white animate-bounce" style={{ animationDelay: "150ms" }} />
+                          <div className="w-1 h-1 rounded-full bg-white animate-bounce" style={{ animationDelay: "300ms" }} />
+                        </div>
+                      ) : (
+                        <svg className="w-5 h-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                        </svg>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Text */}
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="text-xs font-semibold text-violet-700 tracking-wide">AI ASSISTANT</span>
+                      {!thinking && aiLive && (
+                        <div className="flex gap-0.5">
+                          {[...Array(3)].map((_, i) => (
+                            <div
+                              key={i}
+                              className="w-0.5 h-3 bg-gradient-to-t from-violet-400 to-indigo-400 rounded-full"
+                              style={{ animation: "pulse 1.2s ease-in-out infinite", animationDelay: `${i * 150}ms`, opacity: 0.6 }}
+                            />
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    <p className="text-sm leading-relaxed text-gray-700 font-medium">
+                      {displayText || <span className="text-gray-400 italic">Processing...</span>}
+                    </p>
+                  </div>
+
+                  {/* Dismiss (visual only; no behavior change) */}
+                  <button
+                    onClick={() => { /* visual close only; leaving logic intact */ }}
+                    className="shrink-0 w-6 h-6 rounded-full hover:bg-gray-100 flex items-center justify-center transition-colors"
+                    aria-label="Dismiss"
+                  >
+                    <svg className="w-4 h-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                  </button>
+                </div>
               </div>
+
+              {/* Shimmer while speaking */}
+              {aiLive && !thinking && (
+                <div
+                  className="pointer-events-none absolute inset-0 bg-gradient-to-r from-transparent via-white/30 to-transparent"
+                  style={{ animation: "shimmer 3s ease-in-out infinite", backgroundSize: "200% 100%" }}
+                />
+              )}
             </div>
-            <div className="pointer-events-none absolute -top-1 left-0 right-0 h-3 bg-gradient-to-b from-white to-transparent" />
+
+            {/* Connector arrow */}
+            <div className="absolute -bottom-2 left-8 w-4 h-4 bg-gradient-to-br from-violet-50 to-white border-r border-b border-violet-200/60 transform rotate-45" />
           </div>
         </div>
 
-        <button
-          type="button"
-          disabled={disabled}
-          onPointerDown={onPointerDown}
-          onPointerUp={onPointerUp}
-          onPointerLeave={onPointerLeave}
+        {/* MAIN CONTROL BAR */}
+        <div
           className={[
-            "relative h-12 w-12 shrink-0 rounded-full",
-            isRecording ? "bg-rose-600" : "bg-rose-500",
-            "flex items-center justify-center text-white",
-            "shadow-lg active:scale-95 transition-transform",
-            disabled ? "opacity-50 cursor-not-allowed" : "cursor-pointer",
+            "relative overflow-hidden rounded-full transition-all duration-300",
+            isRecording
+              ? "bg-gradient-to-r from-rose-500 to-pink-600 shadow-lg shadow-rose-500/30 border border-rose-400/50"
+              : "bg-white shadow-md hover:shadow-lg border border-gray-100",
           ].join(" ")}
-          style={{ touchAction: "manipulation" }}
-          aria-label={isRecording ? "Stop recording" : "Start recording"}
-          title="Tap to toggle • Hold to talk"
         >
-          <svg
-            xmlns="http://www.w3.org/2000/svg"
-            className="h-6 w-6"
-            fill="none"
-            viewBox="0 0 24 24"
-            stroke="currentColor"
-            strokeWidth="2"
-            aria-hidden="true"
-          >
-            <path strokeLinecap="round" strokeLinejoin="round" d="M12 2a3 3 0 00-3 3v6a3 3 0 106 0V5a3 3 0 00-3-3z" />
-            <path strokeLinecap="round" strokeLinejoin="round" d="M19 11a7 7 0 01-14 0M12 18v4" />
-          </svg>
+          {/* Recording pulse rings */}
+          {isRecording && (
+            <>
+              <div className="absolute inset-0 rounded-full animate-[ping_1.5s_ease-in-out_infinite] bg-rose-400/30" />
+              <div className="absolute inset-0 rounded-full animate-[ping_2s_ease-in-out_infinite] bg-rose-400/20" style={{ animationDelay: "0.5s" }} />
+            </>
+          )}
 
-          {isRecording && <span className="absolute inset-0 rounded-full animate-ping bg-rose-400/40" />}
-        </button>
+          <div className="relative flex items-center gap-2 pl-4 pr-2 py-2">
+            {/* LEFT: status + compact text/wave */}
+            <div className="flex-1 flex items-center gap-3 min-h-[44px]">
+              {/* Status dot */}
+              <div className="shrink-0">
+                <div
+                  className={[
+                    "w-2 h-2 rounded-full transition-all duration-300",
+                    isRecording ? "bg-white shadow-lg shadow-white/50 animate-pulse"
+                    : hasContent ? "bg-violet-500 animate-pulse"
+                    : "bg-gray-300",
+                  ].join(" ")}
+                />
+              </div>
+
+              {/* Compact content area */}
+              <div className="flex-1 flex items-center min-w-0">
+                {isRecording ? (
+                  // Live waveform bars
+                  <div className="flex items-center gap-0.5 h-5">
+                    {Array.from({ length: 12 }).map((_, i) => (
+                      <div
+                        key={i}
+                        className="w-0.5 rounded-full bg-white/90"
+                        style={{
+                          height: `${8 + Math.sin(Date.now() / 200 + i * 0.5) * 8}px`,
+                          animation: "wave 0.6s ease-in-out infinite alternate",
+                          animationDelay: `${i * 0.05}s`,
+                        }}
+                      />
+                    ))}
+                  </div>
+                ) : hasContent ? (
+                  // Speaking indicator (compact)
+                  <div className="flex items-center gap-2 text-xs">
+                    <div className="flex items-center gap-1">
+                      <svg className="w-3.5 h-3.5 text-violet-500" fill="currentColor" viewBox="0 0 20 20">
+                        <path d="M2 5a2 2 0 012-2h7a2 2 0 012 2v4a2 2 0 01-2 2H9l-3 3v-3H4a2 2 0 01-2-2V5z"/>
+                        <path d="M15 7v2a4 4 0 01-4 4H9.828l-1.766 1.767c.28.149.599.233.938.233h2l3 3v-3h2a2 2 0 002-2V9a2 2 0 00-2-2h-1z"/>
+                      </svg>
+                      <span className="font-medium text-violet-600">AI Assistant</span>
+                    </div>
+                    <div className="flex gap-0.5">
+                      {[0, 1, 2].map((i) => (
+                        <div
+                          key={i}
+                          className="w-1 h-1 rounded-full bg-violet-400 animate-bounce"
+                          style={{ animationDelay: `${i * 150}ms`, animationDuration: "1s" }}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                ) : (
+                  // Idle hint
+                  <span className="text-sm text-gray-500 font-medium truncate">
+                    Hold or tap to talk
+                  </span>
+                )}
+              </div>
+            </div>
+
+            {/* RIGHT: mic button (unchanged handlers/logic) */}
+            <button
+              type="button"
+              disabled={disabled}
+              onPointerDown={onPointerDown}
+              onPointerUp={onPointerUp}
+              onPointerLeave={onPointerLeave}
+              className={[
+                "relative h-12 w-12 shrink-0 rounded-full transition-all duration-200 flex items-center justify-center",
+                isRecording
+                  ? "bg-white text-rose-600 scale-110 shadow-xl"
+                  : "bg-gradient-to-br from-rose-500 to-pink-600 text-white hover:scale-105 active:scale-95 shadow-lg",
+                disabled ? "opacity-50 cursor-not-allowed" : "cursor-pointer",
+              ].join(" ")}
+              style={{ touchAction: "manipulation" }}
+              aria-label={isRecording ? "Stop recording" : "Start recording"}
+              title="Tap to toggle • Hold to talk"
+            >
+              <svg
+                className="w-5 h-5 relative z-10"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth={2.5}
+                aria-hidden="true"
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 2a3 3 0 00-3 3v6a3 3 0 106 0V5a3 3 0 00-3-3z" />
+                <path strokeLinecap="round" strokeLinejoin="round" d="M19 11a7 7 0 01-14 0M12 18v4" />
+              </svg>
+
+              {isRecording && <span className="absolute inset-0 rounded-full animate-ping bg-rose-400/40" />}
+            </button>
+          </div>
+        </div>
+
+        {/* Hidden original live text scroller to preserve behavior (kept but visually replaced) */}
+        <div className="sr-only">
+          <div ref={lastLinesRef} className="h-[2.8em] leading-snug overflow-y-auto pr-1">
+            <div className="whitespace-pre-wrap break-words">{subtitle}</div>
+          </div>
+        </div>
       </div>
+
+      <style>{`
+        @keyframes wave {
+          to { height: ${12 + Math.random() * 12}px; }
+        }
+        @keyframes shimmer {
+          0% { background-position: -200% 0; }
+          100% { background-position: 200% 0; }
+        }
+      `}</style>
     </div>
   );
 }
