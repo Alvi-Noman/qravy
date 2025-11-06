@@ -64,11 +64,11 @@ function SwipeViewport({ text, showCursor }: { text: string; showCursor: boolean
     startOffsetRef.current = offset;
   };
   const onTouchMove = (e: React.TouchEvent) => {
-    e.preventDefault();
     const dy = e.touches[0].clientY - startYRef.current;
     const next = Math.max(0, Math.min(maxOverflowRef.current, startOffsetRef.current - dy));
     setOffset(next);
   };
+  
   const onTouchEnd = () => {
     draggingRef.current = false;
     if (Math.abs(maxOverflowRef.current - offset) < 8) setOffset(maxOverflowRef.current);
@@ -224,6 +224,12 @@ export default function AiWaiterHome() {
   const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
 
+  // NEW: analyser + mic level state
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const timeDataRef = useRef<Uint8Array | null>(null);
+  const levelRafRef = useRef<number | null>(null);
+  const [micLevel, setMicLevel] = useState(0); // 0..1
+
   const [listening, setListening] = useState(false);
   const [uiMode, setUiMode] = useState<UIMode>('idle');
 
@@ -366,6 +372,43 @@ export default function AiWaiterHome() {
       const node = new AudioWorkletNode(ctx, 'capture-processor', { numberOfInputs: 1, numberOfOutputs: 0 });
       nodeRef.current = node;
 
+      // ---- NEW: analyser for live mic level ----
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 1024;
+      analyser.smoothingTimeConstant = 0.08;
+      analyserRef.current = analyser;
+      src.connect(analyser);
+
+      // Allocate with a concrete ArrayBuffer to satisfy TS
+      const ab = new ArrayBuffer(analyser.fftSize); // length in bytes (>= frequencyBinCount)
+      timeDataRef.current = new Uint8Array(ab) as unknown as Uint8Array<ArrayBuffer>;
+
+      const levelLoop = () => {
+        if (!analyserRef.current || !timeDataRef.current) return;
+
+        // Cast once to the stricter type for this call
+        const td = timeDataRef.current as unknown as Uint8Array<ArrayBuffer>;
+        analyserRef.current.getByteTimeDomainData(td);
+
+        // Use as a normal Uint8Array to compute RMS
+        const buf = td as unknown as Uint8Array;
+        let sum = 0;
+        for (let i = 0; i < buf.length; i++) {
+          const v = (buf[i] - 128) / 128; // -1..1
+          sum += v * v;
+        }
+        const rms = Math.sqrt(sum / buf.length);
+        const noiseFloor = 0.02;
+        const norm = Math.max(0, (rms - noiseFloor) / (1 - noiseFloor));
+        const clamped = Math.min(0.9, norm);
+        setMicLevel(clamped);
+
+        levelRafRef.current = requestAnimationFrame(levelLoop);
+      };
+      levelRafRef.current = requestAnimationFrame(levelLoop);
+      // ------------------------------------------
+
+
       const ws = new WebSocket(getWsURL('/ws/voice'));
       wsRef.current = ws; ws.binaryType = 'arraybuffer';
 
@@ -467,6 +510,14 @@ export default function AiWaiterHome() {
       }
     } catch (e) { console.error(e); }
 
+    // NEW: level cleanup
+    try { if (levelRafRef.current) cancelAnimationFrame(levelRafRef.current); } catch {}
+    levelRafRef.current = null;
+    try { analyserRef.current?.disconnect(); } catch {}
+    analyserRef.current = null;
+    timeDataRef.current = null;
+    setMicLevel(0);
+
     try { sourceRef.current?.disconnect(); } catch {}
     sourceRef.current = null;
     try { nodeRef.current?.port.close(); } catch {}
@@ -558,7 +609,7 @@ export default function AiWaiterHome() {
         className="absolute left-1/2 -translate-x-1/2 z-0 pointer-events-none"
         style={{ top: '0px' }}
       >
-        <VoiceOrb mode={orbMode} size={ORB_SIZE} />
+        <VoiceOrb mode={orbMode} size={ORB_SIZE} level={listening ? micLevel : 0} />
       </div>
 
       {/* Text layer: independent, centered horizontally, at midpoint between orb center & mic center */}
