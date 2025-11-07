@@ -241,9 +241,11 @@ export default function MicInputBar({
 
   // WebSocket
   const openWebSocket = useCallback(() => {
-    if (wsRef.current &&
-        (wsRef.current.readyState === WebSocket.OPEN ||
-         wsRef.current.readyState === WebSocket.CONNECTING)) {
+    if (
+      wsRef.current &&
+      (wsRef.current.readyState === WebSocket.OPEN ||
+        wsRef.current.readyState === WebSocket.CONNECTING)
+    ) {
       return;
     }
 
@@ -253,26 +255,69 @@ export default function MicInputBar({
     ws.binaryType = "arraybuffer";
 
     ws.onopen = () => {
+    const tz =
+      typeof Intl !== "undefined" &&
+      Intl.DateTimeFormat().resolvedOptions().timeZone
+        ? Intl.DateTimeFormat().resolvedOptions().timeZone
+        : undefined;
+
+    const localHour =
+      typeof window !== "undefined"
+        ? new Date().getHours()
+        : undefined;
+
+    let helloSent = false;
+    const sendHello = (extra?: any) => {
+      if (helloSent) return;
+      helloSent = true;
       try {
-        ws.send(JSON.stringify({
-          t: "hello",
-          sessionId: sid,
-          userId: "guest",
-          rate: 16000,
-          ch: 1,
-          lang: currentLang,
-          tenant: tenant ?? undefined,
-          branch: branch ?? undefined,
-          channel: channel ?? undefined,
-        }));
+        ws.send(
+          JSON.stringify({
+            t: "hello",
+            sessionId: sid,
+            userId: "guest",
+            rate: 16000,
+            ch: 1,
+            lang: currentLang,
+            tenant: tenant ?? undefined,
+            branch: branch ?? undefined,
+            channel: channel ?? undefined,
+            tz,
+            localHour,
+            ...(extra || {}),
+          })
+        );
       } catch {}
     };
+
+    // Try geolocation for weather; fallback to tz + localHour
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          sendHello({
+            geo: {
+              lat: pos.coords.latitude,
+              lon: pos.coords.longitude,
+            },
+          });
+        },
+        () => sendHello(),
+        { enableHighAccuracy: false, maximumAge: 5 * 60 * 1000, timeout: 1500 }
+      );
+    } else {
+      sendHello();
+    }
+  };
 
     ws.onmessage = (ev) => {
       try {
         const data = JSON.parse(ev.data);
 
         if (data.t === "stt_partial") {
+          if (data.text && onPartial) {
+            onPartial(data.text);
+            setPartial(data.text);
+          }
           return;
         }
 
@@ -300,7 +345,7 @@ export default function MicInputBar({
     ws.onclose = () => {};
 
     wsRef.current = ws;
-  }, [branch, channel, currentLang, onAiReply, tenant, wsPath, tts]);
+  }, [branch, channel, currentLang, onAiReply, onPartial, tenant, wsPath, tts, setAi]);
 
   // Start capture
   const start = useCallback(async () => {
@@ -511,7 +556,7 @@ export default function MicInputBar({
 
                   {/* Dismiss (visual only; no behavior change) */}
                   <button
-                    onClick={() => { /* visual close only; leaving logic intact */ }}
+                    onClick={() => { /* visual close only */ }}
                     className="shrink-0 w-6 h-6 rounded-full hover:bg-gray-100 flex items-center justify-center transition-colors"
                     aria-label="Dismiss"
                   >
@@ -522,7 +567,6 @@ export default function MicInputBar({
                 </div>
               </div>
 
-              {/* Shimmer while speaking */}
               {aiLive && !thinking && (
                 <div
                   className="pointer-events-none absolute inset-0 bg-gradient-to-r from-transparent via-white/30 to-transparent"
@@ -531,7 +575,6 @@ export default function MicInputBar({
               )}
             </div>
 
-            {/* Connector arrow */}
             <div className="absolute -bottom-2 left-8 w-4 h-4 bg-gradient-to-br from-violet-50 to-white border-r border-b border-violet-200/60 transform rotate-45" />
           </div>
         </div>
@@ -545,7 +588,6 @@ export default function MicInputBar({
               : "bg-white shadow-md hover:shadow-lg border border-gray-100",
           ].join(" ")}
         >
-          {/* Recording pulse rings */}
           {isRecording && (
             <>
               <div className="absolute inset-0 rounded-full animate-[ping_1.5s_ease-in-out_infinite] bg-rose-400/30" />
@@ -554,9 +596,7 @@ export default function MicInputBar({
           )}
 
           <div className="relative flex items-center gap-2 pl-4 pr-2 py-2">
-            {/* LEFT: status + compact text/wave */}
             <div className="flex-1 flex items-center gap-3 min-h-[44px]">
-              {/* Status dot */}
               <div className="shrink-0">
                 <div
                   className={[
@@ -568,10 +608,8 @@ export default function MicInputBar({
                 />
               </div>
 
-              {/* Compact content area */}
               <div className="flex-1 flex items-center min-w-0">
                 {isRecording ? (
-                  // Live waveform bars
                   <div className="flex items-center gap-0.5 h-5">
                     {Array.from({ length: 12 }).map((_, i) => (
                       <div
@@ -586,7 +624,6 @@ export default function MicInputBar({
                     ))}
                   </div>
                 ) : hasContent ? (
-                  // Speaking indicator (compact)
                   <div className="flex items-center gap-2 text-xs">
                     <div className="flex items-center gap-1">
                       <svg className="w-3.5 h-3.5 text-violet-500" fill="currentColor" viewBox="0 0 20 20">
@@ -606,7 +643,6 @@ export default function MicInputBar({
                     </div>
                   </div>
                 ) : (
-                  // Idle hint
                   <span className="text-sm text-gray-500 font-medium truncate">
                     Hold or tap to talk
                   </span>
@@ -614,7 +650,6 @@ export default function MicInputBar({
               </div>
             </div>
 
-            {/* RIGHT: mic button (unchanged handlers/logic) */}
             <button
               type="button"
               disabled={disabled}
@@ -624,8 +659,8 @@ export default function MicInputBar({
               className={[
                 "relative h-12 w-12 shrink-0 rounded-full transition-all duration-200 flex items-center justify-center",
                 isRecording
-                  ? "bg-white text-rose-600 scale-110 shadow-xl"
-                  : "bg-gradient-to-br from-rose-500 to-pink-600 text-white hover:scale-105 active:scale-95 shadow-lg",
+                  ? "bg-white text-[#FA2851] scale-110 shadow-xl"
+                  : "bg-gradient-to-br from-[#FF8EA3] via-[#FA2851] to-[#D91440] text-white hover:scale-105 active:scale-95 shadow-lg",
                 disabled ? "opacity-50 cursor-not-allowed" : "cursor-pointer",
               ].join(" ")}
               style={{ touchAction: "manipulation" }}
@@ -649,7 +684,6 @@ export default function MicInputBar({
           </div>
         </div>
 
-        {/* Hidden original live text scroller to preserve behavior (kept but visually replaced) */}
         <div className="sr-only">
           <div ref={lastLinesRef} className="h-[2.8em] leading-snug overflow-y-auto pr-1">
             <div className="whitespace-pre-wrap break-words">{subtitle}</div>

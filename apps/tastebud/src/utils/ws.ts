@@ -1,5 +1,3 @@
-// apps/tastebud/src/utils/ws.ts
-
 function uuidv4(): string {
   return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
     const r = (crypto.getRandomValues(new Uint8Array(1))[0] & 15) >>> 0;
@@ -51,4 +49,32 @@ export function getWsURL(path: string): string {
   const url = new URL(path, base);
   url.searchParams.set('sid', sid);
   return url.toString();
+}
+
+/**
+ * Collect user environment context:
+ * - Timezone
+ * - Optional geolocation (lat/lon)
+ */
+export async function getUserContext(): Promise<{
+  tz: string;
+  geo?: { lat: number; lon: number };
+}> {
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  let geo;
+  try {
+    const pos = await new Promise<GeolocationPosition>((resolve, reject) =>
+      navigator.geolocation.getCurrentPosition(resolve, reject, {
+        enableHighAccuracy: false,
+        timeout: 3000,
+      })
+    );
+    geo = {
+      lat: pos.coords.latitude,
+      lon: pos.coords.longitude,
+    };
+  } catch {
+    geo = undefined;
+  }
+  return { tz, geo };
 }
