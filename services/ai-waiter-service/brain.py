@@ -153,7 +153,7 @@ def _build_candidate_index(
             return
         if item_id not in by_id:
             by_id[item_id] = c
-        # Name → id map (shortlists small; first wins)
+        # Name → id map
         if title:
             key = title.lower()
             if key and key not in name_to_id:
@@ -335,6 +335,11 @@ def _build_system_with_lang(lang_hint: str) -> str:
         "If the request is about choosing or recommending items, use intent=\"suggestions\". "
         "If it's casual talk, use intent=\"chitchat\". "
         "If it clearly specifies items to add, use intent=\"order\". "
+        "If the intent is \"order\" and UpsellCandidates is non-empty, "
+        "you MUST also: "
+        "- pick 1-3 relevant items from UpsellCandidates into upsell[], and "
+        "- set decision.showUpsellTray = true. "
+        "Never invent upsell items outside UpsellCandidates. "
         + directive
     )
 
@@ -484,13 +489,11 @@ def _normalize_intent(raw: Any, has_items: bool) -> str:
         "add_to_cart": "order",
         "place_order": "order",
         "confirm_order": "order",
-
         "menuinquiry": "menu",
         "menu_inquiry": "menu",
         "menu_query": "menu",
         "show_menu": "menu",
         "see_menu": "menu",
-
         "recommendation": "suggestions",
         "recommendations": "suggestions",
         "recommend": "suggestions",
@@ -705,7 +708,7 @@ async def generate_reply(
     user_id: Optional[str] = None,
     history: Optional[List[Dict[str, str]]] = None,
     dialog_state: Optional[Dict[str, Any]] = None,
-    # NEW: rich orchestration inputs (all optional for backward-compat)
+    # NEW: rich orchestration inputs
     context: Optional[Dict[str, Any]] = None,
     suggestion_candidates: Optional[List[Dict[str, Any]]] = None,
     upsell_candidates: Optional[List[Dict[str, Any]]] = None,
@@ -793,7 +796,7 @@ async def generate_reply(
         if lang_hint in ("bn", "en"):
             language = lang_hint
 
-        # Normalize lists against candidates (if provided)
+        # Normalize lists against candidates
         items = _normalize_items(
             obj.get("items"),
             cand_by_id=cand_by_id,
@@ -870,7 +873,7 @@ async def generate_reply(
                 "ctxLen": len(history or []),
                 "stateLen": len(dialog_state or {}),
                 "hasCandidates": bool(cand_by_id),
-                "contextSnapshot": context or None,  # 👈 debug: what the model saw
+                "contextSnapshot": context or None,
             },
         }
 

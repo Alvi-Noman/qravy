@@ -245,7 +245,7 @@ def _time_of_day() -> str:
         return "breakfast"
     if 11 <= h < 16:
         return "lunch"
-    if 16 <= h < 22:
+    if 16 <= h < 21:
         return "evening"
     return "late"
 
@@ -1116,6 +1116,7 @@ async def handle_conn(ws: WebSocketServerProtocol):
                     try:
                         while True:
                             work_q.get_nowait()
+                        # noqa
                     except asyncio.QueueEmpty:
                         pass
                     try:
