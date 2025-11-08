@@ -1,7 +1,8 @@
-// apps/tastebud/src/components/ai-waiter/SuggestionsModal.tsx
 import React from 'react';
 import { Link, useLocation, useParams, useSearchParams } from 'react-router-dom';
 import MicInputBar from './MicInputBar';
+import type { AiReplyMeta, WaiterIntent } from '../../types/waiter-intents';
+import { normalizeIntent, localHeuristicIntent } from '../../utils/intent-routing';
 
 type Suggestion = {
   id: string;
@@ -23,6 +24,8 @@ type Props = {
   onClose: () => void;
   menuHrefOverride?: string;
   items?: MinimalMenuItem[];
+  /** Bubble AI intent up so parent (DigitalMenu / AiWaiterHome) can switch modals */
+  onIntent?: (intent: WaiterIntent, meta?: AiReplyMeta, replyText?: string) => void;
 };
 
 function useMenuHref(menuHrefOverride?: string) {
@@ -66,15 +69,21 @@ const DUMMY_SUGGESTIONS: Suggestion[] = [
   { id: 'sweet', title: 'Desserts', blurb: 'Finish with something sweet', emoji: '🍰', query: 'dessert' },
 ];
 
+function resolveIntent(meta?: AiReplyMeta, replyText?: string): WaiterIntent {
+  if (meta?.intent) return normalizeIntent(meta.intent);
+  if (Array.isArray(meta?.items) && meta.items.length) return 'order';
+  return localHeuristicIntent(replyText || '');
+}
+
 export default function SuggestionsModal({
   open,
   onClose,
   menuHrefOverride,
   items = [],
+  onIntent,
 }: Props) {
   const menuHref = useMenuHref(menuHrefOverride);
 
-  // ✅ Call all hooks unconditionally (before any return)
   const hasAiItems = Array.isArray(items) && items.length > 0;
   const tenant =
     (typeof window !== 'undefined'
@@ -85,14 +94,13 @@ export default function SuggestionsModal({
       ? (window as any).__STORE__?.branch
       : undefined) ?? undefined;
 
-  // ✅ Escape close listener
+  // Escape close listener
   React.useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
     if (open) document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
   }, [open, onClose]);
 
-  // ✅ Now safe to conditionally return
   if (!open) return null;
 
   return (
@@ -126,15 +134,13 @@ export default function SuggestionsModal({
           </button>
         </div>
 
-        {/* (Removed AI in-modal texts as requested) */}
-
         {/* Body */}
         <div className="px-4 pt-3 pb-4">
           <p className="text-sm text-gray-600 mb-3">
             Based on what you said, here are a few quick paths. Tap any card to jump into the menu.
           </p>
 
-          {/* ✅ AI-driven suggestions */}
+          {/* AI-driven suggestions */}
           {hasAiItems && (
             <div className="mb-5">
               <h3 className="text-[15px] font-semibold text-gray-900 mb-2">
@@ -230,15 +236,18 @@ export default function SuggestionsModal({
             </Link>
           </div>
 
-          {/* ✅ Mic input bar */}
+          {/* Mic input bar */}
           <div className="mt-4">
             <MicInputBar
-              className=""
               tenant={tenant}
               branch={branch}
               channel="dine-in"
               onAiReply={({ replyText, meta }) => {
                 console.debug('AI reply (SuggestionsModal):', replyText, meta);
+                const m = meta as AiReplyMeta | undefined;
+                const intent = resolveIntent(m, replyText);
+                // Let parent decide what to do (e.g. open Tray when intent === 'order')
+                onIntent?.(intent, m, replyText);
               }}
             />
           </div>

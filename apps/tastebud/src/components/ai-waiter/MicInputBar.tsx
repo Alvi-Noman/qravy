@@ -193,17 +193,15 @@ export default function MicInputBar({
 
   // WS & audio refs
   const wsRef = useRef<WebSocket | null>(null);
+  const wsGenRef = useRef(0); // track WS generation to ignore stale handlers
   const acRef = useRef<AudioContext | null>(null);
   const nodeRef = useRef<AudioWorkletNode | null>(null);
   const srcRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const mediaRef = useRef<MediaStream | null>(null);
 
-  // Cleanup (NOTE: do NOT reset thinking here; we keep "Thinking…" until reply)
-  const cleanup = useCallback(async () => {
+  // Stop only audio (keep WS for reply)
+  const stopCaptureOnly = useCallback(async () => {
     try {
-      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-        try { wsRef.current.send(JSON.stringify({ t: "end" })); } catch {}
-      }
       if (nodeRef.current) {
         try { (nodeRef.current.port as any).onmessage = null; } catch {}
         try { nodeRef.current.disconnect(); } catch {}
@@ -218,13 +216,32 @@ export default function MicInputBar({
         try { await acRef.current.close(); } catch {}
       }
     } catch {}
-
     nodeRef.current = null;
     srcRef.current = null;
     acRef.current = null;
     mediaRef.current = null;
     setPartial("");
   }, []);
+
+  // Hard reset: audio + WS + state (used on unmount / WS error)
+  const hardReset = useCallback(async () => {
+    try {
+      await stopCaptureOnly();
+      if (wsRef.current) {
+        try {
+          wsRef.current.onopen = wsRef.current.onmessage = wsRef.current.onerror = wsRef.current.onclose = null;
+          if (wsRef.current.readyState === WebSocket.OPEN || wsRef.current.readyState === WebSocket.CONNECTING) {
+            wsRef.current.close();
+          }
+        } catch {}
+      }
+    } catch {}
+    wsRef.current = null;
+    try { getTTS().unduck(); } catch {}
+    setIsRecording(false);
+    setThinking(false);
+    setPartial("");
+  }, [stopCaptureOnly]);
 
   // speak dedupe
   function shouldSpeakOnce(text: string): boolean {
@@ -239,14 +256,20 @@ export default function MicInputBar({
     return true;
   }
 
-  // WebSocket
+  // WebSocket: always fresh per recording session
   const openWebSocket = useCallback(() => {
-    if (
-      wsRef.current &&
-      (wsRef.current.readyState === WebSocket.OPEN ||
-        wsRef.current.readyState === WebSocket.CONNECTING)
-    ) {
-      return;
+    // close any existing socket before starting a new one
+    if (wsRef.current) {
+      try {
+        wsRef.current.onopen = wsRef.current.onmessage = wsRef.current.onerror = wsRef.current.onclose = null;
+        if (
+          wsRef.current.readyState === WebSocket.OPEN ||
+          wsRef.current.readyState === WebSocket.CONNECTING
+        ) {
+          wsRef.current.close();
+        }
+      } catch {}
+      wsRef.current = null;
     }
 
     const sid = getStableSessionId();
@@ -254,62 +277,68 @@ export default function MicInputBar({
     const ws = new WebSocket(url);
     ws.binaryType = "arraybuffer";
 
+    const myGen = ++wsGenRef.current;
+    wsRef.current = ws;
+
     ws.onopen = () => {
-    const tz =
-      typeof Intl !== "undefined" &&
-      Intl.DateTimeFormat().resolvedOptions().timeZone
-        ? Intl.DateTimeFormat().resolvedOptions().timeZone
-        : undefined;
+      if (wsGenRef.current !== myGen) return;
 
-    const localHour =
-      typeof window !== "undefined"
-        ? new Date().getHours()
-        : undefined;
+      const tz =
+        typeof Intl !== "undefined" &&
+        Intl.DateTimeFormat().resolvedOptions().timeZone
+          ? Intl.DateTimeFormat().resolvedOptions().timeZone
+          : undefined;
 
-    let helloSent = false;
-    const sendHello = (extra?: any) => {
-      if (helloSent) return;
-      helloSent = true;
-      try {
-        ws.send(
-          JSON.stringify({
-            t: "hello",
-            sessionId: sid,
-            userId: "guest",
-            rate: 16000,
-            ch: 1,
-            lang: currentLang,
-            tenant: tenant ?? undefined,
-            branch: branch ?? undefined,
-            channel: channel ?? undefined,
-            tz,
-            localHour,
-            ...(extra || {}),
-          })
+      const localHour =
+        typeof window !== "undefined"
+          ? new Date().getHours()
+          : undefined;
+
+      const helloBase: any = {
+        t: "hello",
+        sessionId: sid,
+        userId: "guest",
+        rate: 16000,
+        ch: 1,
+        lang: currentLang,
+        tenant: tenant ?? undefined,
+        branch: branch ?? undefined,
+        channel: channel ?? undefined,
+        tz,
+        localHour,
+      };
+
+      const sendHello = (extra?: any) => {
+        const msg = { ...helloBase, ...(extra || {}) };
+        try { ws.send(JSON.stringify(msg)); } catch {}
+      };
+
+      // Try geolocation for weather; fallback to tz + localHour
+      if (navigator.geolocation) {
+        navigator.geolocation.getCurrentPosition(
+          (pos) => {
+            if (wsGenRef.current !== myGen) return;
+            sendHello({
+              geo: {
+                lat: pos.coords.latitude,
+                lon: pos.coords.longitude,
+              },
+            });
+          },
+          () => {
+            if (wsGenRef.current !== myGen) return;
+            sendHello();
+          },
+          { enableHighAccuracy: false, maximumAge: 5 * 60 * 1000, timeout: 1500 }
         );
-      } catch {}
+      } else {
+        sendHello();
+      }
     };
 
-    // Try geolocation for weather; fallback to tz + localHour
-    if (navigator.geolocation) {
-      navigator.geolocation.getCurrentPosition(
-        (pos) => {
-          sendHello({
-            geo: {
-              lat: pos.coords.latitude,
-              lon: pos.coords.longitude,
-            },
-          });
-        },
-        () => sendHello(),
-        { enableHighAccuracy: false, maximumAge: 5 * 60 * 1000, timeout: 1500 }
-      );
-    } else {
-      sendHello();
-    }
-  };
-
     ws.onmessage = (ev) => {
+      if (wsGenRef.current !== myGen) return;
+
       try {
         const data = JSON.parse(ev.data);
 
@@ -334,6 +363,28 @@ export default function MicInputBar({
           }
           setThinking(false);
           onAiReply?.({ replyText, meta: data.meta });
+
+          // close this session socket after reply
+          try {
+            ws.onopen = ws.onmessage = ws.onerror = ws.onclose = null;
+            if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+              ws.close();
+            }
+          } catch {}
+          if (wsRef.current === ws) wsRef.current = null;
+          return;
+        }
+
+        if (data.t === "ai_reply_error") {
+          setThinking(false);
+          // close on error
+          try {
+            ws.onopen = ws.onmessage = ws.onerror = ws.onclose = null;
+            if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+              ws.close();
+            }
+          } catch {}
+          if (wsRef.current === ws) wsRef.current = null;
           return;
         }
       } catch {
@@ -341,11 +392,21 @@ export default function MicInputBar({
       }
     };
 
-    ws.onerror = () => {};
-    ws.onclose = () => {};
+    ws.onerror = () => {
+      if (wsGenRef.current !== myGen) return;
+      hardReset();
+    };
 
-    wsRef.current = ws;
-  }, [branch, channel, currentLang, onAiReply, onPartial, tenant, wsPath, tts, setAi]);
+    ws.onclose = () => {
+      if (wsGenRef.current !== myGen) return;
+      // if we are mid session (recording/thinking) and it closes unexpectedly, hard reset
+      if (isRecording || thinking) {
+        hardReset();
+      } else if (wsRef.current === ws) {
+        wsRef.current = null;
+      }
+    };
+  }, [branch, channel, currentLang, hardReset, isRecording, thinking, onAiReply, onPartial, tenant, tts, setAi, wsPath]);
 
   // Start capture
   const start = useCallback(async () => {
@@ -366,6 +427,13 @@ export default function MicInputBar({
     acRef.current = ac;
 
     await ac.audioWorklet.addModule("/worklets/audio-capture.worklet.js");
+
+    // ensure audio context is running so worklet can process
+    if (ac.state === "suspended") {
+      try {
+        await ac.resume();
+      } catch {}
+    }
 
     const media = await navigator.mediaDevices.getUserMedia({
       audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
@@ -405,9 +473,23 @@ export default function MicInputBar({
     setThinking(true);
     setAi("Thinking…");
 
-    await cleanup();
+    // tell server no more audio, but keep WS open for ai_reply
+    try {
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({ t: "end" }));
+      }
+    } catch {}
+
+    await stopCaptureOnly();
     try { getTTS().unduck(); } catch {}
-  }, [cleanup, finishTtsReveal, isRecording, setAi, startTtsReveal]);
+  }, [isRecording, setAi, startTtsReveal, finishTtsReveal, stopCaptureOnly]);
+
+  // Unmount → full reset
+  useEffect(() => {
+    return () => {
+      hardReset();
+    };
+  }, [hardReset]);
 
   // Pointer handlers
   const onPointerDown = useCallback(async (e: React.PointerEvent) => {
@@ -453,7 +535,7 @@ export default function MicInputBar({
         await start();
       }
     }
-  }, [start, stop]);
+  }, [start, stop, isRecording]);
 
   const onPointerUp = useCallback(async (e: React.PointerEvent) => {
     if (disabled) return;

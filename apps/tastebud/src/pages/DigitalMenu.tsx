@@ -1,4 +1,3 @@
-// apps/tastebud/src/pages/DigitalMenu.tsx
 import React from 'react';
 import { useLocation, useParams, useSearchParams, Link, Navigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
@@ -11,6 +10,11 @@ import SearchBar from '../components/SearchBar';
 import RestaurantSkeleton from '../components/RestaurantSkeleton';
 import ChannelSwitch from '../components/ChannelSwitch';
 import MicInputBar from '../components/ai-waiter/MicInputBar';
+import SuggestionsModal from '../components/ai-waiter/SuggestionsModal';
+import TrayModal from '../components/ai-waiter/TrayModal';
+import { useCart } from '../context/CartContext';
+import type { AiReplyMeta, WaiterIntent } from '../types/waiter-intents';
+import { normalizeIntent, localHeuristicIntent } from '../utils/intent-routing';
 
 const SWITCH_FLAG_KEY = 'qravy:just-switched';
 const SWITCH_DELAY_MS = 1000;     // show skeleton for ~1s after a switch
@@ -58,6 +62,7 @@ function useRuntimeRoute() {
 export default function DigitalMenu() {
   const { subdomain, branchSlug, channel } = useRuntimeRoute();
   const location = useLocation();
+  const { addItem } = useCart();
 
   if (!subdomain) return <Navigate to="/t/demo/menu" replace />;
 
@@ -241,7 +246,10 @@ export default function DigitalMenu() {
   const sections = React.useMemo(() => {
     if (!hasCategories) return [] as Array<{ id: string; name: string; key?: string }>;
     const pairs = Object.entries(grouped);
-    return [{ id: 'all', name: 'All' }, ...pairs.map(([key, g]) => ({ id: `cat-${key}`, name: g.name, key }))];
+    return [
+      { id: 'all', name: 'All' },
+      ...pairs.map(([key, g]) => ({ id: `cat-${key}`, name: g.name, key })),
+    ];
   }, [grouped, hasCategories]);
 
   const [activeCatId, setActiveCatId] = React.useState<string>('all');
@@ -310,7 +318,15 @@ export default function DigitalMenu() {
 
   React.useEffect(() => {
     setVisibleCount(initialPageSize);
-  }, [initialPageSize, query, activeCatId, channel, subdomain, normalizedBranch, filteredItems.length]);
+  }, [
+    initialPageSize,
+    query,
+    activeCatId,
+    channel,
+    subdomain,
+    normalizedBranch,
+    filteredItems.length,
+  ]);
 
   const totalItemsInView = React.useMemo(() => {
     if (hasCategories) {
@@ -347,6 +363,205 @@ export default function DigitalMenu() {
     obs.observe(node);
     return () => obs.disconnect();
   }, [pageStep, totalItemsInView, visibleCount]);
+
+  /* ===================== AI Waiter: intent → modals ======================= */
+
+  type SuggestedItem = {
+    id?: string;
+    name?: string;
+    price?: number;
+    imageUrl?: string;
+  };
+
+  const [showSuggestions, setShowSuggestions] = React.useState(false);
+  const [showTray, setShowTray] = React.useState(false);
+  const [suggestedItems, setSuggestedItems] = React.useState<SuggestedItem[]>([]);
+  const [upsellItems, setUpsellItems] = React.useState<
+    { itemId?: string; id?: string; title: string; price?: number }[]
+  >([]);
+
+  const openSuggestions = () => {
+    setShowTray(false);
+    setShowSuggestions(true);
+  };
+
+  const openTray = () => {
+    setShowSuggestions(false);
+    setShowTray(true);
+  };
+
+  const resolveMenuItem = (id?: string, name?: string) => {
+    if (!items || !items.length) return undefined as any;
+    const anyItems = items as any[];
+
+    if (id) {
+      const hit = anyItems.find((m) => String(m.id) === String(id));
+      if (hit) return hit;
+    }
+    if (name) {
+      const lc = String(name).toLowerCase();
+      const hit = anyItems.find(
+        (m) => String(m.name || '').toLowerCase() === lc
+      );
+      if (hit) return hit;
+    }
+    return undefined as any;
+  };
+
+  const buildSuggestionsFromMeta = (meta?: AiReplyMeta): SuggestedItem[] => {
+    if (!meta) return [];
+    const out: SuggestedItem[] = [];
+
+    const metaSuggestions = Array.isArray(meta.suggestions) ? meta.suggestions : [];
+    for (const s of metaSuggestions as any[]) {
+      const itemId = s.itemId || s.id;
+      const src = resolveMenuItem(itemId, s.title || s.name);
+      if (src) {
+        out.push({
+          id: String(src.id),
+          name: src.name,
+          price: typeof src.price === 'number' ? src.price : undefined,
+          imageUrl: src.imageUrl ?? src.image ?? undefined,
+        });
+      }
+    }
+
+    const metaItems = Array.isArray(meta.items) ? meta.items : [];
+    for (const it of metaItems as any[]) {
+      const itemId = it.itemId || it.id;
+      const src = resolveMenuItem(itemId, it.name);
+      if (src) {
+        out.push({
+          id: String(src.id),
+          name: src.name,
+          price: typeof src.price === 'number' ? src.price : undefined,
+          imageUrl: src.imageUrl ?? src.image ?? undefined,
+        });
+      }
+    }
+
+    const seen = new Set<string>();
+    return out.filter((x) => {
+      const key = `${x.id ?? ''}|${(x.name ?? '').toLowerCase()}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  };
+
+  const buildSuggestionsFromReplyText = (replyText: string): SuggestedItem[] => {
+    if (!replyText || !items || !items.length) return [];
+    const lc = replyText.toLowerCase();
+    const hits: SuggestedItem[] = [];
+
+    for (const s of items as any[]) {
+      const name = (s?.name ?? '').toString();
+      if (!name) continue;
+
+      const nameHit = lc.includes(name.toLowerCase());
+      const aliases: string[] = Array.isArray(s?.aliases) ? s.aliases : [];
+      const aliasHit = aliases.some((a) => lc.includes(String(a).toLowerCase()));
+
+      if (nameHit || aliasHit) {
+        hits.push({
+          id: String(s.id),
+          name: s.name,
+          price: typeof s.price === 'number' ? s.price : undefined,
+          imageUrl: s.imageUrl ?? s.image ?? undefined,
+        });
+      }
+    }
+
+    const seen = new Set<string>();
+    return hits.filter((x) => {
+      const key = `${x.id ?? ''}|${(x.name ?? '').toLowerCase()}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  };
+
+  const resolveIntent = (meta?: AiReplyMeta, replyText?: string): WaiterIntent => {
+    if (meta?.intent) return normalizeIntent(meta.intent);
+    if (Array.isArray(meta?.items) && meta.items.length) return 'order';
+    return localHeuristicIntent(replyText || '');
+  };
+
+  // Central router used by:
+  // - main MicInputBar
+  // - SuggestionsModal.onIntent
+  // - TrayModal.onIntent
+  const handleIntent = (
+    rawIntent: WaiterIntent | undefined,
+    meta?: AiReplyMeta,
+    replyText?: string
+  ) => {
+    const intent = rawIntent ?? resolveIntent(meta, replyText);
+
+    if (intent === 'suggestions') {
+      let mapped = buildSuggestionsFromMeta(meta);
+
+      if ((!mapped || !mapped.length) && replyText) {
+        mapped = buildSuggestionsFromReplyText(replyText);
+      }
+
+      if ((!mapped || !mapped.length) && items && items.length) {
+        mapped = (items as any[])
+          .slice(0, Math.min(8, (items as any[]).length))
+          .map((it: any) => ({
+            id: String(it.id),
+            name: it.name,
+            price: typeof it.price === 'number' ? it.price : undefined,
+            imageUrl: it.imageUrl ?? it.image ?? undefined,
+          }));
+      }
+
+      setSuggestedItems(mapped);
+      openSuggestions();
+      return;
+    }
+
+    if (intent === 'order') {
+      const orderItems = Array.isArray(meta?.items) ? (meta!.items as any[]) : [];
+
+      for (const it of orderItems) {
+        const src = resolveMenuItem(it.itemId, it.name);
+        if (!src) continue;
+
+        const qty = Math.max(1, Number(it.quantity ?? 1));
+        const price =
+          (typeof (src as any).price === 'number' ? (src as any).price : undefined) ??
+          (typeof it.price === 'number' ? it.price : 0);
+
+        addItem({
+          id: String((src as any).id),
+          name: (src as any).name ?? it.name ?? '',
+          price,
+          qty,
+        });
+      }
+
+      const decision = (meta?.decision || {}) as any;
+      const upsell = (meta?.upsell || (meta as any)?.Upsell || []) as any[];
+
+      if (decision?.showUpsellTray && Array.isArray(upsell) && upsell.length) {
+        setUpsellItems(
+          upsell.map((u: any) => ({
+            id: u.itemId || u.id,
+            itemId: u.itemId || u.id,
+            title: String(u.title || u.name || ''),
+            price: typeof u.price === 'number' ? u.price : undefined,
+          }))
+        );
+      }
+
+      openTray();
+      return;
+    }
+
+    // intent === 'menu' → already here
+    // intent === 'chitchat' → no modal change
+  };
 
   /* ============================== Rendering =============================== */
 
@@ -393,16 +608,8 @@ export default function DigitalMenu() {
 
           <ChannelSwitch
             channel={channel}
-            dineInHref={
-              normalizedBranch
-                ? `/t/${subdomain}/${normalizedBranch}/menu/dine-in`
-                : `/t/${subdomain}/menu/dine-in`
-            }
-            onlineHref={
-              normalizedBranch
-                ? `/t/${subdomain}/${normalizedBranch}/menu`
-                : `/t/${subdomain}/menu`
-            }
+            dineInHref={dineInHref}
+            onlineHref={onlineHref}
             showSkeleton={showSkeleton}
             onSwitch={(targetPath) => {
               try {
@@ -433,7 +640,13 @@ export default function DigitalMenu() {
             return hasAll ? (
               <>
                 <CategoryList
-                  sections={[{ id: 'all', name: 'All' }, ...Object.entries(grouped).map(([key, g]) => ({ id: `cat-${key}`, name: g.name }))]}
+                  sections={[
+                    { id: 'all', name: 'All' },
+                    ...Object.entries(grouped).map(([key, g]) => ({
+                      id: `cat-${key}`,
+                      name: g.name,
+                    })),
+                  ]}
                   activeId={activeCatId}
                   onJump={(id) => setActiveCatId(id)}
                 />
@@ -448,7 +661,9 @@ export default function DigitalMenu() {
                       if (slice.length > 0) {
                         blocks.push(
                           <section key={key} id={`cat-${key}`} className="scroll-mt-20">
-                            <h2 className="mb-3 text-base font-semibold text-gray-900 sm:text-lg">{group.name}</h2>
+                            <h2 className="mb-3 text-base font-semibold text-gray-900 sm:text-lg">
+                              {group.name}
+                            </h2>
                             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                               {slice.map((item) => (
                                 <ProductCard key={item.id} item={item} />
@@ -472,29 +687,39 @@ export default function DigitalMenu() {
               </>
             ) : (
               (() => {
-                const idToKey = new Map<string, string>(
+                const idToKeyLocal = new Map<string, string>(
                   Object.entries(grouped).map(([key, g]) => [`cat-${key}`, key])
                 );
-                const key = idToKey.get(activeCatId);
+                const key = idToKeyLocal.get(activeCatId);
                 const g = key ? grouped[key] : undefined;
                 if (!g) return null;
                 const itemsSlice = g.items.slice(0, visibleCount);
                 return (
                   <>
                     <CategoryList
-                      sections={[{ id: 'all', name: 'All' }, ...Object.entries(grouped).map(([k, gg]) => ({ id: `cat-${k}`, name: gg.name }))]}
+                      sections={[
+                        { id: 'all', name: 'All' },
+                        ...Object.entries(grouped).map(([k, gg]) => ({
+                          id: `cat-${k}`,
+                          name: gg.name,
+                        })),
+                      ]}
                       activeId={activeCatId}
                       onJump={(id) => setActiveCatId(id)}
                     />
                     <section id={`cat-${key}`} className="scroll-mt-20">
-                      <h2 className="mb-3 text-base font-semibold text-gray-900 sm:text-lg">{g.name}</h2>
+                      <h2 className="mb-3 text-base font-semibold text-gray-900 sm:text-lg">
+                        {g.name}
+                      </h2>
                       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                         {itemsSlice.map((item) => (
                           <ProductCard key={item.id} item={item} />
                         ))}
                       </div>
                     </section>
-                    {visibleCount < g.items.length && <div ref={sentinelRef} className="h-10 w-full" />}
+                    {visibleCount < g.items.length && (
+                      <div ref={sentinelRef} className="h-10 w-full" />
+                    )}
                   </>
                 );
               })()
@@ -513,7 +738,9 @@ export default function DigitalMenu() {
                 <ProductCard key={item.id} item={item} />
               ))}
             </div>
-            {visibleCount < filteredItems.length && <div ref={sentinelRef} className="h-10 w-full" />}
+            {visibleCount < filteredItems.length && (
+              <div ref={sentinelRef} className="h-10 w-full" />
+            )}
           </>
         )}
 
@@ -524,7 +751,27 @@ export default function DigitalMenu() {
         ) : null}
       </div>
 
-      {/* ✅ Sticky mic bar (bottom) — follows global language from AiWaiterHome */}
+      {/* Modals driven by AI Waiter intents */}
+      <SuggestionsModal
+        open={showSuggestions}
+        onClose={() => setShowSuggestions(false)}
+        items={suggestedItems}
+        onIntent={(intent, meta, replyText) => {
+          // When user talks inside SuggestionsModal, route based on new intent
+          handleIntent(intent, meta, replyText);
+        }}
+      />
+      <TrayModal
+        open={showTray}
+        onClose={() => setShowTray(false)}
+        upsellItems={upsellItems}
+        onIntent={(intent, meta, replyText) => {
+          // When user talks inside TrayModal, route based on new intent
+          handleIntent(intent, meta, replyText);
+        }}
+      />
+
+      {/* Sticky mic bar (bottom) */}
       <div className="sticky bottom-0 inset-x-0 z-40">
         <div className="mx-auto max-w-6xl px-4 pb-4">
           <div className="rounded-[999px] bg-white shadow-[0_12px_32px_rgba(250,40,81,0.08)] border border-gray-100 p-2">
@@ -533,8 +780,10 @@ export default function DigitalMenu() {
               branch={branchHint}
               channel={channel}
               onAiReply={({ replyText, meta }) => {
-                // You can optionally add-to-cart if meta.items present.
                 console.debug('AI reply (DigitalMenu):', replyText, meta);
+                const m = meta as AiReplyMeta | undefined;
+                const intent = resolveIntent(m, replyText);
+                handleIntent(intent, m, replyText);
               }}
             />
           </div>

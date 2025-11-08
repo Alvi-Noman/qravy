@@ -2,13 +2,17 @@ import React from 'react';
 import { Link, useLocation, useParams, useSearchParams } from 'react-router-dom';
 import { useCart } from '../../context/CartContext';
 import MicInputBar from './MicInputBar';
+import type { AiReplyMeta, WaiterIntent } from '../../types/waiter-intents';
+import { normalizeIntent, localHeuristicIntent } from '../../utils/intent-routing';
 
 type Props = {
   open: boolean;
   onClose: () => void;
   checkoutHrefOverride?: string;
   recentAiItems?: { id: string; name: string }[]; // optional
-  upsellItems?: { itemId?: string; id?: string; title: string; price?: number }[]; // NEW
+  upsellItems?: { itemId?: string; id?: string; title: string; price?: number }[];
+  /** Bubble AI intent up so parent can switch modals (e.g. to Suggestions) */
+  onIntent?: (intent: WaiterIntent, meta?: AiReplyMeta, replyText?: string) => void;
 };
 
 function useCheckoutHref(override?: string) {
@@ -54,12 +58,19 @@ function useCheckoutHref(override?: string) {
 const BDT = new Intl.NumberFormat('en-BD');
 const formatBDT = (n: number) => `৳${BDT.format(n)}`;
 
+function resolveIntent(meta?: AiReplyMeta, replyText?: string): WaiterIntent {
+  if (meta?.intent) return normalizeIntent(meta.intent);
+  if (Array.isArray(meta?.items) && meta.items.length) return 'order';
+  return localHeuristicIntent(replyText || '');
+}
+
 export default function TrayModal({
   open,
   onClose,
   checkoutHrefOverride,
   recentAiItems = [],
   upsellItems = [],
+  onIntent,
 }: Props) {
   const { items, subtotal, removeItem, clear, addItem } = useCart();
   const checkoutHref = useCheckoutHref(checkoutHrefOverride);
@@ -261,10 +272,13 @@ export default function TrayModal({
               onAiReply={({ replyText, meta }) => {
                 console.debug('AI reply (TrayModal):', replyText, meta);
 
-                const upsell = (meta?.upsell || (meta as any)?.Upsell || []) as
-                  | any[]
-                  | undefined;
-                const showUpsell = meta?.decision?.showUpsellTray;
+                const m = meta as AiReplyMeta | undefined;
+                const intent = resolveIntent(m, replyText);
+
+                const upsell =
+                  (m?.upsell || (m as any)?.Upsell || []) as any[] | undefined;
+                const decision = (m as any)?.decision || {};
+                const showUpsell = decision?.showUpsellTray;
 
                 if (
                   showUpsell &&
@@ -273,6 +287,9 @@ export default function TrayModal({
                 ) {
                   setAutoUpsell(upsell);
                 }
+
+                // Bubble up so parent can switch to Suggestions when needed
+                onIntent?.(intent, m, replyText);
               }}
             />
           </div>

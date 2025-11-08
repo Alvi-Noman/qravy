@@ -4,6 +4,7 @@ import { getWsURL, getStableSessionId } from '../utils/ws';
 import SuggestionsModal from '../components/ai-waiter/SuggestionsModal';
 import TrayModal from '../components/ai-waiter/TrayModal';
 import type { WaiterIntent, AiReplyMeta } from '../types/waiter-intents';
+import { normalizeIntent, localHeuristicIntent } from '../utils/intent-routing';
 
 import VoiceOrb from '../components/ai-waiter/VoiceOrb';
 
@@ -15,7 +16,7 @@ import { useTTS } from '../state/TTSProvider';
 
 type UIMode = 'idle' | 'thinking' | 'talking';
 
-/* ------------ touch-swipe 4-line viewport (unchanged core) ------------ */
+/* ------------ touch-swipe 4-line viewport ------------ */
 function SwipeViewport({ text, showCursor }: { text: string; showCursor: boolean }) {
   const measureRef = React.useRef<HTMLParagraphElement | null>(null);
   const contentRef = React.useRef<HTMLParagraphElement | null>(null);
@@ -157,15 +158,13 @@ export default function AiWaiterHome() {
     }, delay);
   }
 
-  // speaking drives orb “talking” state only
   const [speaking, setSpeaking] = useState(false);
 
   useEffect(() => {
     const un = tts.subscribe({
       onStart: (text) => {
         setSpeaking(true);
-        const liveNow =
-          (useConversationStore as any).getState?.().aiTextLive || '';
+        const liveNow = (useConversationStore as any).getState?.().aiTextLive || '';
         const cont = inSpeechRef.current || !!liveNow;
         if (!cont) {
           speakGenRef.current += 1;
@@ -200,10 +199,7 @@ export default function AiWaiterHome() {
           packedCountRef.current = 1;
           return;
         }
-        if (
-          packedCountRef.current > 0 &&
-          packedCountRef.current < START_PACK_COUNT
-        ) {
+        if (packedCountRef.current > 0 && packedCountRef.current < START_PACK_COUNT) {
           const due =
             lastDueRef.current > 0
               ? lastDueRef.current + MIN_STEP_MS
@@ -212,38 +208,31 @@ export default function AiWaiterHome() {
           packedCountRef.current += 1;
           return;
         }
-        const hasOff =
-          typeof off === 'number' && isFinite(off) && off >= 0;
-        if (hasOff)
+        const hasOff = typeof off === 'number' && isFinite(off) && off >= 0;
+        if (hasOff) {
           scheduleAt(baseStartRef.current + (off ?? 0), w);
-        else
+        } else {
           scheduleAt(
-            Math.max(
-              performance.now(),
-              lastDueRef.current + FALLBACK_STEP_MS,
-            ),
+            Math.max(performance.now(), lastDueRef.current + FALLBACK_STEP_MS),
             w,
           );
+        }
       },
       onEnd: () => {
         if (!inSpeechRef.current) return;
         const myGen = speakGenRef.current;
-        const wait = Math.max(
-          0,
-          lastDueRef.current - performance.now() + 80,
-        );
+        const wait = Math.max(0, lastDueRef.current - performance.now() + 80);
         setTimeout(() => {
           if (activeGenRef.current !== myGen) return;
           try {
             finishTtsReveal();
           } catch {}
           try {
-            const st =
-              (useConversationStore as any).getState?.() || {};
-            const finalText = (st.aiTextLive &&
-              String(st.aiTextLive).trim())
-              ? String(st.aiTextLive)
-              : String(startedTextRef.current || '');
+            const st = (useConversationStore as any).getState?.() || {};
+            const finalText =
+              (st.aiTextLive && String(st.aiTextLive).trim())
+                ? String(st.aiTextLive)
+                : String(startedTextRef.current || '');
             setAi(finalText);
           } catch {}
           inSpeechRef.current = false;
@@ -271,24 +260,18 @@ export default function AiWaiterHome() {
   const resolvedSub =
     subdomain ??
     search.get('subdomain') ??
-    (typeof window !== 'undefined'
-      ? (window as any).__STORE__?.subdomain
-      : null) ??
+    (typeof window !== 'undefined' ? (window as any).__STORE__?.subdomain : null) ??
     'demo';
 
   const resolvedBranch =
     branch ??
     branchSlug ??
     search.get('branch') ??
-    (typeof window !== 'undefined'
-      ? (window as any).__STORE__?.branch
-      : null) ??
+    (typeof window !== 'undefined' ? (window as any).__STORE__?.branch : null) ??
     undefined;
 
   const resolvedChannel =
-    (typeof window !== 'undefined'
-      ? (window as any).__STORE__?.channel
-      : null) ?? null;
+    (typeof window !== 'undefined' ? (window as any).__STORE__?.channel : null) ?? null;
 
   const seeMenuHref = resolvedBranch
     ? `/t/${resolvedSub}/${resolvedBranch}/menu`
@@ -310,43 +293,31 @@ export default function AiWaiterHome() {
   const [listening, setListening] = useState(false);
   const [uiMode, setUiMode] = useState<UIMode>('idle');
 
-  const [selectedLang, setSelectedLang] = useState<'auto' | 'bn' | 'en'>(
-    () => {
-      const fromUrl =
-        (search.get('lang') as 'auto' | 'bn' | 'en' | null) ||
-        null;
-      const fromLs =
-        typeof window !== 'undefined'
-          ? ((localStorage.getItem(
-              'qravy:lang',
-            ) as 'auto' | 'bn' | 'en' | null) || null)
-          : null;
-      return (fromUrl || fromLs || 'bn') as
-        | 'auto'
-        | 'bn'
-        | 'en';
-    },
-  );
+  const [selectedLang, setSelectedLang] = useState<'auto' | 'bn' | 'en'>(() => {
+    const fromUrl = (search.get('lang') as 'auto' | 'bn' | 'en' | null) || null;
+    const fromLs =
+      typeof window !== 'undefined'
+        ? ((localStorage.getItem('qravy:lang') as 'auto' | 'bn' | 'en' | null) || null)
+        : null;
+    return (fromUrl || fromLs || 'bn') as 'auto' | 'bn' | 'en';
+  });
 
   const broadcastLang = (lang: 'auto' | 'bn' | 'en') => {
     if (typeof window !== 'undefined') {
       (window as any).__WAITER_LANG__ = lang;
       try {
-        window.dispatchEvent(
-          new CustomEvent('qravy:lang', { detail: { lang } }),
-        );
+        window.dispatchEvent(new CustomEvent('qravy:lang', { detail: { lang } }));
       } catch {}
       try {
-        document.documentElement.setAttribute(
-          'lang',
-          lang === 'bn' ? 'bn' : 'en',
-        );
+        document.documentElement.setAttribute('lang', lang === 'bn' ? 'bn' : 'en');
       } catch {}
     }
   };
+
   useEffect(() => {
     broadcastLang(selectedLang);
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
@@ -354,24 +325,17 @@ export default function AiWaiterHome() {
         localStorage.setItem('qravy:lang', selectedLang);
       } catch {}
     }
-    if (
-      wsRef.current &&
-      wsRef.current.readyState === WebSocket.OPEN
-    ) {
-      wsRef.current.send(
-        JSON.stringify({ t: 'set_lang', lang: selectedLang }),
-      );
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ t: 'set_lang', lang: selectedLang }));
     }
   }, [selectedLang]);
 
   // gates
   const stoppingRef = useRef<boolean>(false);
   const finalSeenRef = useRef<boolean>(false);
-  const pendingFinalResolverRef =
-    useRef<null | ((ok: boolean) => void)>(null);
+  const pendingFinalResolverRef = useRef<null | ((ok: boolean) => void)>(null);
   const aiSeenRef = useRef<boolean>(false);
-  const pendingAiResolverRef =
-    useRef<null | ((ok: boolean) => void)>(null);
+  const pendingAiResolverRef = useRef<null | ((ok: boolean) => void)>(null);
 
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [showTray, setShowTray] = useState(false);
@@ -392,16 +356,11 @@ export default function AiWaiterHome() {
 
   // catalog
   const { addItem } = useCart();
-  const { items: storeItems } = usePublicMenu(
-    resolvedSub,
-    resolvedBranch,
-    'dine-in',
-  );
-  const [menuIndex, setMenuIndex] =
-    useState<ReturnType<typeof buildMenuIndex> | null>(null);
+  const { items: storeItems } = usePublicMenu(resolvedSub, resolvedBranch, 'dine-in');
+  const [menuIndex, setMenuIndex] = useState<ReturnType<typeof buildMenuIndex> | null>(null);
+
   useEffect(() => {
-    if (storeItems?.length)
-      setMenuIndex(buildMenuIndex(storeItems));
+    if (storeItems?.length) setMenuIndex(buildMenuIndex(storeItems));
   }, [storeItems]);
 
   type SuggestedItem = {
@@ -410,38 +369,26 @@ export default function AiWaiterHome() {
     price?: number;
     imageUrl?: string;
   };
-  const [suggestedItems, setSuggestedItems] = useState<
-    SuggestedItem[]
-  >([]);
 
-  // NEW: upsell tray items from brain meta
+  const [suggestedItems, setSuggestedItems] = useState<SuggestedItem[]>([]);
+
   const [upsellItems, setUpsellItems] = useState<
     { itemId?: string; id?: string; title: string; price?: number }[]
   >([]);
 
   function resolveStoreItemById(id?: string) {
     if (!id) return undefined as any;
-    return storeItems?.find(
-      (s: any) => String(s?.id) === String(id),
-    );
+    return storeItems?.find((s: any) => String(s?.id) === String(id));
   }
 
   function mergeFromStore(it: any, itemId?: string): SuggestedItem {
-    const storeItem = itemId
-      ? resolveStoreItemById(itemId)
-      : undefined;
+    const storeItem = itemId ? resolveStoreItemById(itemId) : undefined;
     const priceFromStore =
-      typeof (storeItem as any)?.price === 'number'
-        ? (storeItem as any).price
-        : undefined;
-    const priceFromMeta =
-      typeof it?.price === 'number' ? it.price : undefined;
+      typeof (storeItem as any)?.price === 'number' ? (storeItem as any).price : undefined;
+    const priceFromMeta = typeof it?.price === 'number' ? it.price : undefined;
     return {
       id: itemId ?? undefined,
-      name:
-        (storeItem as any)?.name ??
-        it?.name ??
-        undefined,
+      name: (storeItem as any)?.name ?? it?.name ?? undefined,
       price: priceFromStore ?? priceFromMeta,
       imageUrl:
         (storeItem as any)?.imageUrl ??
@@ -450,15 +397,11 @@ export default function AiWaiterHome() {
     };
   }
 
-  function buildSuggestionsFromMeta(
-    meta: AiReplyMeta | undefined,
-  ): SuggestedItem[] {
+  function buildSuggestionsFromMeta(meta: AiReplyMeta | undefined): SuggestedItem[] {
     if (!menuIndex) return [];
     const out: SuggestedItem[] = [];
 
-    const metaItems = Array.isArray(meta?.items)
-      ? (meta!.items as any[])
-      : [];
+    const metaItems = Array.isArray(meta?.items) ? (meta!.items as any[]) : [];
     for (const it of metaItems) {
       const name = it?.name as string | undefined;
       let itemId = it?.itemId as string | undefined;
@@ -469,15 +412,11 @@ export default function AiWaiterHome() {
       out.push(mergeFromStore(it, itemId));
     }
 
-    const groups: any[] = Array.isArray(
-      (meta as any)?.suggestions,
-    )
+    const groups: any[] = Array.isArray((meta as any)?.suggestions)
       ? (meta as any).suggestions
       : [];
     for (const g of groups) {
-      const gItems = Array.isArray(g?.items)
-        ? g.items
-        : [];
+      const gItems = Array.isArray(g?.items) ? g.items : [];
       for (const it of gItems) {
         const name = it?.name as string | undefined;
         let itemId = it?.itemId as string | undefined;
@@ -491,68 +430,105 @@ export default function AiWaiterHome() {
 
     const seen = new Set<string>();
     return out.filter((x) => {
-      const key = `${x.id ?? ''}|${(
-        x.name ?? ''
-      ).toLowerCase()}`;
+      const key = `${x.id ?? ''}|${(x.name ?? '').toLowerCase()}`;
       if (seen.has(key)) return false;
       seen.add(key);
       return true;
     });
   }
 
-  function buildSuggestionsFromReplyText(
-    replyText: string,
-  ): SuggestedItem[] {
+  function buildSuggestionsFromReplyText(replyText: string): SuggestedItem[] {
     if (!replyText || !storeItems?.length) return [];
     const lc = replyText.toLowerCase();
     const hits: SuggestedItem[] = [];
+
     for (const s of storeItems as any[]) {
       const name = (s?.name ?? '').toString();
       if (!name) continue;
+
       const nameHit = lc.includes(name.toLowerCase());
-      const aliases: string[] = Array.isArray(s?.aliases)
-        ? s.aliases
-        : [];
-      const aliasHit = aliases.some((a) =>
-        lc.includes(a.toLowerCase()),
-      );
-      if (nameHit || aliasHit)
+      const aliases: string[] = Array.isArray(s?.aliases) ? s.aliases : [];
+      const aliasHit = aliases.some((a) => lc.includes(a.toLowerCase()));
+
+      if (nameHit || aliasHit) {
         hits.push({
           id: String(s.id),
           name: s.name,
-          price:
-            typeof s.price === 'number'
-              ? s.price
-              : undefined,
-          imageUrl:
-            s.imageUrl ?? s.image ?? undefined,
+          price: typeof s.price === 'number' ? s.price : undefined,
+          imageUrl: s.imageUrl ?? s.image ?? undefined,
         });
+      }
     }
+
     const seen = new Set<string>();
     return hits.filter((x) => {
-      const key = `${x.id ?? ''}|${(
-        x.name ?? ''
-      ).toLowerCase()}`;
+      const key = `${x.id ?? ''}|${(x.name ?? '').toLowerCase()}`;
       if (seen.has(key)) return false;
       seen.add(key);
       return true;
     });
+  }
+
+  function resolveIntent(meta?: AiReplyMeta, replyText?: string): WaiterIntent {
+    if (meta?.intent) return normalizeIntent(meta.intent);
+    if (Array.isArray(meta?.items) && meta.items.length) return 'order';
+    return localHeuristicIntent(replyText || '');
   }
 
   function handleIntentRouting(intent: WaiterIntent | undefined) {
     if (!intent) return;
+
+    // If Suggestions modal is open
     if (showSuggestions) {
-      if (intent === 'order') return openTray();
-      if (intent === 'menu') return goMenu();
+      if (intent === 'order') {
+        openTray();
+        return;
+      }
+      if (intent === 'menu') {
+        goMenu();
+        return;
+      }
+      // suggestions/chitchat → stay
       return;
     }
+
+    // If Tray modal is open
     if (showTray) {
-      if (intent === 'menu') return goMenu();
+      if (intent === 'suggestions') {
+        openSuggestions();
+        return;
+      }
+      if (intent === 'menu') {
+        goMenu();
+        return;
+      }
+      // order/chitchat → stay
       return;
     }
-    if (intent === 'suggestions') return openSuggestions();
-    if (intent === 'order') return openTray();
-    if (intent === 'menu') return goMenu();
+
+    // From home state
+    if (intent === 'suggestions') {
+      openSuggestions();
+      return;
+    }
+    if (intent === 'order') {
+      openTray();
+      return;
+    }
+    if (intent === 'menu') {
+      goMenu();
+      return;
+    }
+    // chitchat → no modal change
+  }
+
+  function mapUpsell(upsell: any[]): { itemId?: string; id?: string; title: string; price?: number }[] {
+    return upsell.map((u: any) => ({
+      itemId: u.itemId || u.id,
+      id: u.itemId || u.id,
+      title: String(u.title ?? u.name ?? ''),
+      price: typeof u.price === 'number' ? u.price : undefined,
+    }));
   }
 
   // small gates
@@ -613,15 +589,14 @@ export default function AiWaiterHome() {
         tts.stop();
       } catch {}
 
-      const stream =
-        await navigator.mediaDevices.getUserMedia({
-          audio: {
-            channelCount: 1,
-            echoCancellation: true,
-            noiseSuppression: true,
-            autoGainControl: true,
-          },
-        });
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: 1,
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+      });
       streamRef.current = stream;
 
       const ctx = new AudioContext({
@@ -634,17 +609,14 @@ export default function AiWaiterHome() {
           await ctx.resume();
         } catch {}
       }
-      await ctx.audioWorklet.addModule(
-        '/worklets/audio-capture.worklet.js',
-      );
+      await ctx.audioWorklet.addModule('/worklets/audio-capture.worklet.js');
 
       const src = ctx.createMediaStreamSource(stream);
       sourceRef.current = src;
-      const node = new AudioWorkletNode(
-        ctx,
-        'capture-processor',
-        { numberOfInputs: 1, numberOfOutputs: 0 },
-      );
+      const node = new AudioWorkletNode(ctx, 'capture-processor', {
+        numberOfInputs: 1,
+        numberOfOutputs: 0,
+      });
       nodeRef.current = node;
 
       // analyser
@@ -655,8 +627,7 @@ export default function AiWaiterHome() {
       src.connect(analyser);
 
       const backing = new ArrayBuffer(analyser.frequencyBinCount);
-      timeDataRef.current =
-        new Uint8Array(backing) as Uint8Array<ArrayBuffer>;
+      timeDataRef.current = new Uint8Array(backing) as Uint8Array<ArrayBuffer>;
 
       const levelLoop = () => {
         if (!analyserRef.current || !timeDataRef.current) return;
@@ -673,14 +644,10 @@ export default function AiWaiterHome() {
         }
         const rms = Math.sqrt(sum / buf.length);
         const noiseFloor = 0.02;
-        const norm = Math.max(
-          0,
-          (rms - noiseFloor) / (1 - noiseFloor),
-        );
+        const norm = Math.max(0, (rms - noiseFloor) / (1 - noiseFloor));
         const clamped = Math.min(0.9, norm);
         setMicLevel(clamped);
-        levelRafRef.current =
-          requestAnimationFrame(levelLoop);
+        levelRafRef.current = requestAnimationFrame(levelLoop);
       };
       levelRafRef.current = requestAnimationFrame(levelLoop);
 
@@ -701,9 +668,7 @@ export default function AiWaiterHome() {
             : undefined;
 
         const localHour =
-          typeof window !== 'undefined'
-            ? new Date().getHours()
-            : undefined;
+          typeof window !== 'undefined' ? new Date().getHours() : undefined;
 
         let helloSent = false;
         const sendHello = (extra?: any) => {
@@ -730,7 +695,6 @@ export default function AiWaiterHome() {
           } catch {}
         };
 
-        // Try geolocation for weather/context; fallback to tz+localHour
         if (navigator.geolocation) {
           navigator.geolocation.getCurrentPosition(
             (pos) => {
@@ -759,172 +723,111 @@ export default function AiWaiterHome() {
         if (typeof ev.data !== 'string') return;
         try {
           const msg = JSON.parse(ev.data);
+
           if (msg.t === 'stt_final') {
             finalSeenRef.current = true;
             pendingFinalResolverRef.current?.(true);
             return;
           }
+
           if (msg.t === 'ai_reply_pending') {
             setUiMode('thinking');
             return;
           }
+
           if (msg.t === 'ai_reply') {
-            const text = (msg.replyText as string) || '';
+            const text: string = msg.replyText || '';
             if (text) {
               try {
                 tts.speak(text);
               } catch {}
             }
+
             aiSeenRef.current = true;
             pendingAiResolverRef.current?.(true);
             setUiMode('talking');
 
             const meta: AiReplyMeta | undefined = msg.meta;
-            const intent = (meta?.intent ??
-              'chitchat') as WaiterIntent;
+            const intent = resolveIntent(meta, text);
+            const decision = (meta?.decision || {}) as any;
+            const upsell = (meta?.upsell || (meta as any)?.Upsell || []) || [];
 
-            // 🔑 Upsell handling from brain meta
-            const decision = (meta?.decision ||
-              {}) as any;
-            const upsell =
-              (meta?.upsell ||
-                (meta as any)?.Upsell ||
-                []) || [];
-
-            if (
-              Array.isArray(upsell) &&
-              upsell.length > 0 &&
-              decision?.showUpsellTray
-            ) {
-              setUpsellItems(
-                upsell.map(
-                  (u: any) =>
-                    ({
-                      itemId: u.itemId || u.id,
-                      id: u.itemId || u.id,
-                      title: u.title ?? u.name ?? '',
-                      price:
-                        typeof u.price === 'number'
-                          ? u.price
-                          : undefined,
-                    } as {
-                      itemId?: string;
-                      id?: string;
-                      title: string;
-                      price?: number;
-                    }),
-                ),
-              );
-              setShowTray(true);
-            }
-
-            // Suggestions flow
+            // Suggestions intent → populate & route
             if (intent === 'suggestions') {
-              let mapped: SuggestedItem[] = [];
-              mapped = buildSuggestionsFromMeta(meta);
-              if (
-                (!mapped || mapped.length === 0) &&
-                text
-              ) {
-                mapped =
-                  buildSuggestionsFromReplyText(text);
+              let mapped = buildSuggestionsFromMeta(meta);
+              if ((!mapped || !mapped.length) && text) {
+                mapped = buildSuggestionsFromReplyText(text);
               }
               if (
-                (!mapped || mapped.length === 0) &&
+                (!mapped || !mapped.length) &&
                 Array.isArray(storeItems) &&
                 storeItems.length
               ) {
                 mapped = (storeItems as any[])
-                  .slice(
-                    0,
-                    Math.min(8, storeItems.length),
-                  )
-                  .map((s) => ({
+                  .slice(0, Math.min(8, storeItems.length))
+                  .map((s: any) => ({
                     id: String(s.id),
                     name: s.name,
-                    price:
-                      typeof s.price === 'number'
-                        ? s.price
-                        : undefined,
-                    imageUrl:
-                      s.imageUrl ??
-                      s.image ??
-                      undefined,
+                    price: typeof s.price === 'number' ? s.price : undefined,
+                    imageUrl: s.imageUrl ?? s.image ?? undefined,
                   }));
               }
-              setSuggestedItems(
-                mapped.filter(Boolean),
-              );
-              openSuggestions();
+              setSuggestedItems(mapped.filter(Boolean));
+              handleIntentRouting('suggestions');
               return;
             }
 
-            // Order flow (cart add)
+            // Order intent → add items, then route to tray
             if (intent === 'order' && menuIndex) {
-              const items = Array.isArray(meta?.items)
-                ? meta.items
-                : [];
-              for (const it of items as any[]) {
+              const orderItems = Array.isArray(meta?.items) ? (meta!.items as any[]) : [];
+              for (const it of orderItems) {
                 let itemId = it.itemId;
                 const name = it.name;
-                const qty = Math.max(
-                  1,
-                  Number(it.quantity ?? 1),
-                );
+                const qty = Math.max(1, Number(it.quantity ?? 1));
                 if (!itemId && name) {
-                  const found =
-                    resolveItemIdByName(
-                      menuIndex,
-                      name,
-                    );
+                  const found = resolveItemIdByName(menuIndex, name);
                   if (found) itemId = found;
                 }
                 if (itemId) {
-                  const storeItem =
-                    storeItems?.find(
-                      (s: any) =>
-                        String(s.id) ===
-                        String(itemId),
-                    );
+                  const storeItem = storeItems?.find(
+                    (s: any) => String(s.id) === String(itemId),
+                  );
                   const priceFromStore =
-                    typeof storeItem?.price ===
-                    'number'
-                      ? storeItem.price
-                      : undefined;
+                    typeof storeItem?.price === 'number' ? storeItem.price : undefined;
                   const priceFromMeta =
-                    typeof it.price === 'number'
-                      ? it.price
-                      : undefined;
-                  const price =
-                    priceFromStore ??
-                    priceFromMeta ??
-                    0;
+                    typeof it.price === 'number' ? it.price : undefined;
+                  const price = priceFromStore ?? priceFromMeta ?? 0;
                   addItem({
                     id: String(itemId),
-                    name: name ?? '',
+                    name: (storeItem as any)?.name ?? name ?? '',
                     price,
                     qty,
                   });
                 }
               }
 
-              // If model suggests showing upsell tray, respect that;
-              // otherwise just open normal tray.
-              if (
-                decision?.showUpsellTray &&
-                Array.isArray(upsell) &&
-                upsell.length
-              ) {
-                setShowTray(true);
+              if (decision?.showUpsellTray && Array.isArray(upsell) && upsell.length) {
+                setUpsellItems(mapUpsell(upsell));
               } else {
-                openTray();
+                setUpsellItems([]);
               }
+
+              handleIntentRouting('order');
               return;
             }
 
+            // Non-order/suggestion but backend wants upsell tray
+            if (decision?.showUpsellTray && Array.isArray(upsell) && upsell.length) {
+              setUpsellItems(mapUpsell(upsell));
+              setShowTray(true);
+              return;
+            }
+
+            // Everything else: let global router decide (handles cross-modal + menu)
             handleIntentRouting(intent);
             return;
           }
+
           if (msg.t === 'ai_reply_error') {
             aiSeenRef.current = true;
             pendingAiResolverRef.current?.(false);
@@ -932,11 +835,14 @@ export default function AiWaiterHome() {
             return;
           }
         } catch {
-          // ignore malformed
+          // ignore malformed frames
         }
       };
 
-      ws.onerror = () => {};
+      ws.onerror = () => {
+        // silent
+      };
+
       ws.onclose = () => {
         setListening(false);
         pendingFinalResolverRef.current?.(false);
@@ -948,20 +854,14 @@ export default function AiWaiterHome() {
       (node.port as MessagePort).onmessage = (ev) => {
         if (stoppingRef.current) return;
         const msg = ev.data;
-        if (
-          msg &&
-          msg.type === 'chunk' &&
-          msg.samples &&
-          msg.samples.buffer
-        ) {
+        if (msg && msg.type === 'chunk' && msg.samples && msg.samples.buffer) {
           const ab = msg.samples.buffer as ArrayBuffer;
           if (ws.readyState === WebSocket.OPEN) ws.send(ab);
         }
       };
 
       src.connect(node);
-    } catch (e) {
-      console.error(e);
+    } catch {
       stopListening();
     }
   }
@@ -970,28 +870,22 @@ export default function AiWaiterHome() {
     stoppingRef.current = true;
     let gotFinal = finalSeenRef.current;
     try {
-      if (
-        wsRef.current &&
-        wsRef.current.readyState === WebSocket.OPEN
-      ) {
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
         const sid = getStableSessionId();
-        wsRef.current.send(
-          JSON.stringify({ t: 'end', sid }),
-        );
+        wsRef.current.send(JSON.stringify({ t: 'end', sid }));
         if (!gotFinal) gotFinal = await waitForFinal(8000);
-        if (!aiSeenRef.current)
-          await waitForAiReply(8000);
+        if (!aiSeenRef.current) await waitForAiReply(8000);
         await new Promise((r) => setTimeout(r, 100));
       }
-    } catch (e) {
-      console.error(e);
+    } catch {
+      // ignore
     }
 
     try {
-      if (levelRafRef.current)
-        cancelAnimationFrame(levelRafRef.current);
+      if (levelRafRef.current) cancelAnimationFrame(levelRafRef.current);
     } catch {}
     levelRafRef.current = null;
+
     try {
       analyserRef.current?.disconnect();
     } catch {}
@@ -1003,6 +897,7 @@ export default function AiWaiterHome() {
       sourceRef.current?.disconnect();
     } catch {}
     sourceRef.current = null;
+
     try {
       nodeRef.current?.port.close();
     } catch {}
@@ -1010,16 +905,17 @@ export default function AiWaiterHome() {
       nodeRef.current?.disconnect();
     } catch {}
     nodeRef.current = null;
+
     try {
-      streamRef.current
-        ?.getTracks()
-        .forEach((t) => t.stop());
+      streamRef.current?.getTracks().forEach((t) => t.stop());
     } catch {}
     streamRef.current = null;
+
     try {
       await ctxRef.current?.close();
     } catch {}
     ctxRef.current = null;
+
     try {
       wsRef.current?.close();
     } catch {}
@@ -1042,65 +938,43 @@ export default function AiWaiterHome() {
 
   const ORB_SIZE = 480;
 
-  const orbRef =
-    useRef<HTMLDivElement | null>(null);
-  const micBtnRef =
-    useRef<HTMLButtonElement | null>(null);
-  const textWrapRef =
-    useRef<HTMLDivElement | null>(null);
-  const [textTop, setTextTop] =
-    useState<number | null>(null);
+  const orbRef = useRef<HTMLDivElement | null>(null);
+  const micBtnRef = useRef<HTMLButtonElement | null>(null);
+  const textWrapRef = useRef<HTMLDivElement | null>(null);
+  const [textTop, setTextTop] = useState<number | null>(null);
 
   const visibleText = (aiLive || aiFinal) ?? '';
 
   useEffect(() => {
-    let rafA = 0;
+    let rafId = 0;
     const placeText = () => {
-      if (
-        !orbRef.current ||
-        !micBtnRef.current ||
-        !textWrapRef.current
-      )
-        return;
-      const orbRect =
-        orbRef.current.getBoundingClientRect();
-      const micRect =
-        micBtnRef.current.getBoundingClientRect();
+      if (!orbRef.current || !micBtnRef.current || !textWrapRef.current) return;
+
+      const orbRect = orbRef.current.getBoundingClientRect();
+      const micRect = micBtnRef.current.getBoundingClientRect();
       const scrollY =
-        window.scrollY ||
-        document.documentElement.scrollTop ||
-        0;
+        window.scrollY || document.documentElement.scrollTop || 0;
 
       const orbContainerSize = orbRect.height;
-      const actualCircleSize =
-        orbContainerSize * 0.44;
-      const circlePadding =
-        (orbContainerSize - actualCircleSize) / 2;
+      const actualCircleSize = orbContainerSize * 0.44;
+      const circlePadding = (orbContainerSize - actualCircleSize) / 2;
 
-      const orbBottomY =
-        orbRect.top +
-        scrollY +
-        circlePadding +
-        actualCircleSize;
+      const orbBottomY = orbRect.top + scrollY + circlePadding + actualCircleSize;
       const micTopY = micRect.top + scrollY;
       const midY = (orbBottomY + micTopY) / 2;
 
-      const textH =
-        textWrapRef.current.offsetHeight || 0;
+      const textH = textWrapRef.current.offsetHeight || 0;
       const top = midY - textH / 2;
 
       setTextTop(top);
     };
-    rafA = requestAnimationFrame(placeText);
+    rafId = requestAnimationFrame(placeText);
     window.addEventListener('resize', placeText);
     const ro = new ResizeObserver(placeText);
     if (textWrapRef.current) ro.observe(textWrapRef.current);
     return () => {
-      cancelAnimationFrame(rafA);
-      window.removeEventListener(
-        'resize',
-        placeText,
-      );
+      cancelAnimationFrame(rafId);
+      window.removeEventListener('resize', placeText);
       ro.disconnect();
     };
   }, [visibleText]);
@@ -1109,49 +983,39 @@ export default function AiWaiterHome() {
     <div
       className="min-h-screen relative overflow-hidden flex flex-col items-center justify-between px-6"
       style={{
-        fontFamily:
-          `'Noto Sans Bengali', 'Inter', system-ui, sans-serif`,
+        fontFamily: `'Noto Sans Bengali', 'Inter', system-ui, sans-serif`,
         background: bg,
       }}
     >
-      {/* ORB near top center */}
+      {/* ORB */}
       <div
         ref={orbRef}
         className="absolute left-1/2 -translate-x-1/2 z-0 pointer-events-none"
         style={{ top: '0px' }}
       >
-        <VoiceOrb
-          mode={orbMode}
-          size={ORB_SIZE}
-          level={listening ? micLevel : 0}
-        />
+        <VoiceOrb mode={orbMode} size={ORB_SIZE} level={listening ? micLevel : 0} />
       </div>
 
-      {/* Text layer */}
+      {/* Text */}
       <div
         ref={textWrapRef}
         className="absolute left-1/2 -translate-x-1/2 z-[999] w-full max-w-[900px] px-6 text-center pointer-events-auto"
         style={{ top: textTop ?? '50vh' }}
       >
-        <SwipeViewport
-          text={visibleText}
-          showCursor={!!aiLive}
-        />
+        <SwipeViewport text={visibleText} showCursor={!!aiLive} />
       </div>
 
-      {/* Bottom cluster - Three floating buttons (tap-to-toggle; hold = push-to-talk) */}
+      {/* Bottom controls */}
       <div className="fixed bottom-0 left-0 right-0 flex items-end justify-center pb-10 md:pb-12">
         <div className="relative flex items-end justify-center gap-12 px-6 w-full max-w-[520px]">
-          {/* Left: Chat button */}
+          {/* Left: Chat (visual only for now) */}
           <button
             className="group relative h-16 w-16 rounded-full flex items-center justify-center transition-all duration-300 hover:scale-110 active:scale-95 backdrop-blur-xl"
             style={{
-              background:
-                'rgba(255, 255, 255, 0.95)',
+              background: 'rgba(255, 255, 255, 0.95)',
               boxShadow:
                 '0 8px 24px rgba(0, 0, 0, 0.1), 0 2px 8px rgba(0, 0, 0, 0.06)',
-              border:
-                '1px solid rgba(255, 255, 255, 0.4)',
+              border: '1px solid rgba(255, 255, 255, 0.4)',
             }}
             aria-label="Chat"
             title="Chat"
@@ -1171,7 +1035,7 @@ export default function AiWaiterHome() {
             />
           </button>
 
-          {/* Center: Mic button - Hero (tap to toggle; hold = push-to-talk) */}
+          {/* Center: Mic */}
           <button
             ref={micBtnRef}
             onClick={(e) => {
@@ -1180,9 +1044,11 @@ export default function AiWaiterHome() {
                 e.preventDefault();
                 return;
               }
-              listening
-                ? stopListening()
-                : startListening();
+              if (listening) {
+                stopListening();
+              } else {
+                startListening();
+              }
             }}
             onPointerDown={() => {
               (window as any).__qravyPTTActive = true;
@@ -1216,16 +1082,8 @@ export default function AiWaiterHome() {
                 ? '0 16px 48px rgba(250, 40, 81, 0.4), 0 8px 16px rgba(250, 40, 81, 0.25), inset 0 -2px 8px rgba(0, 0, 0, 0.15)'
                 : '0 12px 40px rgba(250, 40, 81, 0.35), 0 6px 12px rgba(250, 40, 81, 0.2), inset 0 -2px 8px rgba(0, 0, 0, 0.1)',
             }}
-            aria-label={
-              listening
-                ? 'Stop voice'
-                : 'Start voice'
-            }
-            title={
-              listening
-                ? 'Release to stop'
-                : 'Hold to talk • Tap to start'
-            }
+            aria-label={listening ? 'Stop voice' : 'Start voice'}
+            title={listening ? 'Release to stop' : 'Hold to talk • Tap to start'}
           >
             {!listening ? (
               <svg
@@ -1248,27 +1106,19 @@ export default function AiWaiterHome() {
                 className="relative z-10 drop-shadow-md"
                 aria-hidden="true"
               >
-                <rect
-                  x="6"
-                  y="6"
-                  width="12"
-                  height="12"
-                  rx="2.5"
-                />
+                <rect x="6" y="6" width="12" height="12" rx="2.5" />
               </svg>
             )}
           </button>
 
-          {/* Right: Menu button */}
+          {/* Right: Menu */}
           <button
             className="group relative h-16 w-16 rounded-full flex items-center justify-center transition-all duration-300 hover:scale-110 active:scale-95 backdrop-blur-xl"
             style={{
-              background:
-                'rgba(255, 255, 255, 0.95)',
+              background: 'rgba(255, 255, 255, 0.95)',
               boxShadow:
                 '0 8px 24px rgba(0, 0, 0, 0.1), 0 2px 8px rgba(0, 0, 0, 0.06)',
-              border:
-                '1px solid rgba(255, 255, 255, 0.4)',
+              border: '1px solid rgba(255, 255, 255, 0.4)',
             }}
             aria-label="Menu"
             title="Menu"
@@ -1291,16 +1141,18 @@ export default function AiWaiterHome() {
         </div>
       </div>
 
-      {/* Modals */}
+      {/* Modals: hook into shared intent router so mic inside modal can switch between them */}
       <SuggestionsModal
         open={showSuggestions}
         onClose={() => setShowSuggestions(false)}
         items={suggestedItems}
+        onIntent={(intent) => handleIntentRouting(intent)}
       />
       <TrayModal
         open={showTray}
         onClose={() => setShowTray(false)}
         upsellItems={upsellItems}
+        onIntent={(intent) => handleIntentRouting(intent)}
       />
     </div>
   );

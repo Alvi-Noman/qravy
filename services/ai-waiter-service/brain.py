@@ -1,74 +1,3 @@
-"""
-Upgraded Qravy AI Waiter brain.
-
-Key properties:
-- Single LLM call (no extra hops).
-- Server passes:
-    - transcript
-    - optional menu_snapshot
-    - optional dialog_state
-    - NEW: optional context
-    - NEW: optional suggestion_candidates
-    - NEW: optional upsell_candidates
-- Model must:
-    - classify intent
-    - pick items ONLY from provided candidates
-    - output a SINGLE JSON object.
-
-Expected model output (single JSON object):
-
-{
-  "replyText": "string",
-  "intent": "order|menu|suggestions|chitchat",
-  "language": "bn|en",
-  "items": [
-    { "name": "Cheesy Fries", "itemId": "item_123", "quantity": 1 }
-  ],  # optional, for intent=order
-  "suggestions": [
-    {
-      "title": "Cheesy Fries",
-      "subtitle": "Crispy fries with cheese",
-      "itemId": "item_123",
-      "categoryId": "cat_sides",
-      "price": 220
-    }
-  ],  # optional
-  "upsell": [
-    {
-      "title": "Coke",
-      "itemId": "item_999",
-      "price": 60
-    }
-  ],  # optional
-  "decision": {
-    "showSuggestionsModal": true,
-    "showUpsellTray": false
-  },  # optional
-  "notes": "optional free-form notes"
-}
-
-The adapter below:
-- Enforces the contract via system message + response_format=json_object.
-- Validates + normalizes the model output:
-    - intent → canonical WaiterIntent-like set.
-    - items/suggestions/upsell restricted to provided candidate lists when present.
-    - canonicalizes item names using menu_snapshot.
-- Returns:
-    {
-      "replyText": str,
-      "meta": {
-        "model": ...,
-        "language": ...,
-        "intent": ...,
-        "items": [...],
-        "suggestions": [...],
-        "upsell": [...],
-        "decision": {...},
-        ...debug/ctx info...
-      }
-    }
-"""
-
 from __future__ import annotations
 
 import os
@@ -124,6 +53,85 @@ def _safe_snip(s: str | bytes, n: int = 800) -> str:
     return s if len(s) <= n else (s[:n] + "…")
 
 
+def _is_very_short_turn(transcript: str) -> bool:
+    """
+    Language-agnostic structural heuristic:
+    Treat extremely short user turns as non-committal (often greetings/politeness).
+    No keywords, no locale assumptions.
+    """
+    return len((transcript or "").strip()) <= 24
+
+
+def _is_price_or_availability_query(transcript: str) -> bool:
+    """
+    Detect turns that ONLY ask about price or availability
+    (e.g. 'do you have X', 'what's the price of Y'),
+    and are NOT explicit order/modify-cart requests.
+
+    If this returns True, we force intent='chitchat' with no items/suggestions/upsell.
+    """
+    if not transcript:
+        return False
+
+    t = (transcript or "").strip().lower()
+
+    # Price-ish cues (en + bn, including noisy spellings)
+    price_kw = [
+        "price",
+        "how much",
+        "tk",
+        "taka",
+        "টাকা",
+        "দাম",
+        "কত",
+        "কতো",
+    ]
+
+    # Availability-ish cues (en + bn)
+    avail_kw = [
+        "do you have",
+        "have ",
+        "available",
+        "availability",
+        "in stock",
+        "আছে",
+        "পাবো",
+        "পাওয়া যায়",
+        "পাওয়া যায়",
+        "আভেইলেবল",
+    ]
+
+    # Strong order / add-to-cart cues (en + bn)
+    order_kw = [
+        "order",
+        "add to cart",
+        "add this",
+        "i'll take",
+        "i will take",
+        "give me",
+        "need",
+        "want",
+        "confirm",
+        "place it",
+        "place the order",
+        "একটা দিন",
+        "দুইটা দিন",
+        "দিন",
+        "দাও",
+        "চাই",
+        "অর্ডার",
+        "নিয়ে নেব",
+        "নেব",
+    ]
+
+    has_price = any(kw in t for kw in price_kw)
+    has_avail = any(kw in t for kw in avail_kw)
+    has_order = any(kw in t for kw in order_kw)
+
+    # Price/availability query WITHOUT explicit order verbs
+    return (has_price or has_avail) and not has_order
+
+
 # --------------------------- Candidate helpers ---------------------------
 
 
@@ -153,7 +161,6 @@ def _build_candidate_index(
             return
         if item_id not in by_id:
             by_id[item_id] = c
-        # Name → id map
         if title:
             key = title.lower()
             if key and key not in name_to_id:
@@ -204,7 +211,10 @@ def _build_menu_maps(menu_snapshot: Optional[Dict[str, Any]]):
     return id_to_name, token_to_id, id_to_aliases
 
 
-def _find_id_for_name(name: Optional[str], token_to_id: Dict[str, str]) -> Optional[str]:
+def _find_id_for_name(
+    name: Optional[str],
+    token_to_id: Dict[str, str],
+) -> Optional[str]:
     if not name:
         return None
     return token_to_id.get((name or "").strip().lower())
@@ -332,13 +342,13 @@ def _build_system_with_lang(lang_hint: str) -> str:
         "},  /* optional */ "
         "\"notes\"?: string  /* optional */ "
         "}. "
-        "If the request is about choosing or recommending items, use intent=\"suggestions\". "
-        "If it's casual talk, use intent=\"chitchat\". "
-        "If it clearly specifies items to add, use intent=\"order\". "
-        "If the intent is \"order\" and UpsellCandidates is non-empty, "
-        "you MUST also: "
-        "- pick 1-3 relevant items from UpsellCandidates into upsell[], and "
-        "- set decision.showUpsellTray = true. "
+        "Use intent=\"chitchat\" for purely social or polite exchanges that do not contain a clear, "
+        "explicit request to view the menu, get recommendations, or place/change an order. "
+        "Use intent=\"chitchat\" also when the user is ONLY asking about price or availability of items "
+        "(e.g., 'do you have X', 'what's the price of Y') and has not clearly requested to place or modify an order. "
+        "These price/availability turns must NOT add items to cart and must NOT trigger suggestions/upsell trays. "
+        "Use intent=\"order\" only when you are confidently adding or modifying concrete items in items[]. "
+        "Use intent=\"suggestions\" only when you are actively recommending from SuggestionCandidates. "
         "Never invent upsell items outside UpsellCandidates. "
         + directive
     )
@@ -482,6 +492,10 @@ def _parse_model_json(text: str) -> Dict[str, Any]:
 
 
 def _normalize_intent(raw: Any, has_items: bool) -> str:
+    """
+    Normalize the model-provided intent into the constrained set.
+    Structural rules only; semantics are decided by the model.
+    """
     r = (str(raw or "")).strip().lower()
 
     intent_map = {
@@ -503,14 +517,13 @@ def _normalize_intent(raw: Any, has_items: bool) -> str:
     if r in intent_map:
         r = intent_map[r]
 
+    # "menu" + items => effectively suggestions
     if r == "menu" and has_items:
         r = "suggestions"
 
+    # Unknown → choose based on items presence
     if r not in {"order", "menu", "suggestions", "chitchat"}:
-        if has_items:
-            r = "order"
-        else:
-            r = "chitchat"
+        r = "order" if has_items else "chitchat"
 
     return r
 
@@ -674,7 +687,11 @@ def _normalize_suggestion_like_list(
     return out
 
 
-def _normalize_decision(raw: Any, has_suggestions: bool, has_upsell: bool) -> Dict[str, bool]:
+def _normalize_decision(
+    raw: Any,
+    has_suggestions: bool,
+    has_upsell: bool,
+) -> Dict[str, bool]:
     if not isinstance(raw, dict):
         raw = {}
 
@@ -815,8 +832,31 @@ async def generate_reply(
             cand_name_to_id=cand_name_to_id,
         )
 
-        # Intent
+        # Intent (from model, structurally normalized)
         intent = _normalize_intent(obj.get("intent"), has_items=bool(items))
+
+        # Structural guard 1:
+        # "order" without concrete items is not allowed → treat as chitchat.
+        if intent == "order" and not items:
+            intent = "chitchat"
+
+        # Structural guard 2:
+        # Very short turns (often greetings/politeness) must not escalate to
+        # suggestions/order purely based on context. No keywords used.
+        if _is_very_short_turn(transcript) and not items:
+            if intent in ("order", "suggestions"):
+                intent = "chitchat"
+                suggestions = []
+                upsell = []
+
+        # Structural guard 3:
+        # Pure price/availability queries must be chitchat:
+        # no cart mutation, no suggestions/upsell triggers.
+        if _is_price_or_availability_query(transcript):
+            intent = "chitchat"
+            items = []
+            suggestions = []
+            upsell = []
 
         # Decision / UI hints
         decision = _normalize_decision(
@@ -824,6 +864,13 @@ async def generate_reply(
             has_suggestions=bool(suggestions),
             has_upsell=bool(upsell),
         )
+
+        # If we collapsed to chitchat structurally, ensure UI doesn't open trays/modals
+        if intent == "chitchat":
+            decision = {
+                "showSuggestionsModal": False,
+                "showUpsellTray": False,
+            }
 
         # Canonicalize reply text item mentions based on validated items[]
         reply_text = _canonicalize_reply_text(
