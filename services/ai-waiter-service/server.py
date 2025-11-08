@@ -27,6 +27,9 @@ from brain import generate_reply
 # ✅ Normalizer (exact pairs + phonetic + fuzzy)
 from normalizer import normalize_text
 
+# ✅ Local speech-to-text (PCM → text)
+from stt import stt_np_float32
+
 # ---------- Config ----------
 
 MONGO_URI = os.environ.get("MONGO_URI", "mongodb://mongo:27017")
@@ -1353,7 +1356,7 @@ async def handle_conn(ws: WebSocketServerProtocol):
                     meta = {
                         "model": "deterministic",
                         "language": final_lang,
-                        "intent": "availability_check",
+                        "intent": "order",
                         "items": [
                             {
                                 "name": m.get("name"),

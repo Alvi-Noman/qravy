@@ -1,3 +1,4 @@
+// apps/tastebud/src/pages/DigitalMenu.tsx
 import React from 'react';
 import { useLocation, useParams, useSearchParams, Link, Navigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
@@ -15,10 +16,12 @@ import TrayModal from '../components/ai-waiter/TrayModal';
 import { useCart } from '../context/CartContext';
 import type { AiReplyMeta, WaiterIntent } from '../types/waiter-intents';
 import { normalizeIntent, localHeuristicIntent } from '../utils/intent-routing';
+import { usePublicMenu } from '../hooks/usePublicMenu';
+import { applyVoiceCartOps } from '../utils/voice-cart';
 
 const SWITCH_FLAG_KEY = 'qravy:just-switched';
-const SWITCH_DELAY_MS = 1000;     // show skeleton for ~1s after a switch
-const SWITCH_VALID_MS = 1200;     // accept flag only if set <1.2s before navigation
+const SWITCH_DELAY_MS = 1000;
+const SWITCH_VALID_MS = 1200;
 
 function resolveChannelFromPath(pathname: string): Channel {
   const p = pathname.toLowerCase();
@@ -62,11 +65,14 @@ function useRuntimeRoute() {
 export default function DigitalMenu() {
   const { subdomain, branchSlug, channel } = useRuntimeRoute();
   const location = useLocation();
-  const { addItem } = useCart();
+  const { addItem, setQty, updateQty, removeItem, clear } = useCart();
 
   if (!subdomain) return <Navigate to="/t/demo/menu" replace />;
 
   const normalizedBranch = branchSlug || undefined;
+
+  /** Full menu for voice cart ops (shared catalog) */
+  const { items: fullMenuItems = [] } = usePublicMenu(subdomain, normalizedBranch, channel);
 
   /** TENANT INFO (optional) */
   const { data: tenant } = useQuery({
@@ -82,7 +88,7 @@ export default function DigitalMenu() {
     refetchOnWindowFocus: false,
   });
 
-  /** MENU */
+  /** MENU (for visible grid; can be same as fullMenuItems but kept separate for now) */
   const menuKey = ['publicMenu', { subdomain, branchSlug: normalizedBranch, channel }];
   const {
     data: items = [],
@@ -185,7 +191,10 @@ export default function DigitalMenu() {
           row,
           boostedScore,
           hasMatch:
-            nameScore > -100000 || descScore > -100000 || catScore > -100000 || tagsScore > -100000,
+            nameScore > -100000 ||
+            descScore > -100000 ||
+            catScore > -100000 ||
+            tagsScore > -100000,
         };
       })
       .filter((item) => item.hasMatch)
@@ -269,8 +278,12 @@ export default function DigitalMenu() {
   // Route targets for the segmented switch
   const isDevPath = location.pathname.startsWith('/t/');
   const backHref = isDevPath
-    ? (normalizedBranch ? `/t/${subdomain}/${normalizedBranch}` : `/t/${subdomain}`)
-    : (normalizedBranch ? `/${normalizedBranch}` : `/`);
+    ? normalizedBranch
+      ? `/t/${subdomain}/${normalizedBranch}`
+      : `/t/${subdomain}`
+    : normalizedBranch
+    ? `/${normalizedBranch}`
+    : `/`;
 
   const onlineHref =
     normalizedBranch ? `/t/${subdomain}/${normalizedBranch}/menu` : `/t/${subdomain}/menu`;
@@ -279,7 +292,7 @@ export default function DigitalMenu() {
       ? `/t/${subdomain}/${normalizedBranch}/menu/dine-in`
       : `/t/${subdomain}/menu/dine-in`;
 
-  /** Switch-only skeleton (never on initial load/refresh) */
+  /** Switch-only skeleton */
   const [isSwitchSkeleton, setIsSwitchSkeleton] = React.useState(false);
   React.useEffect(() => {
     try {
@@ -300,7 +313,6 @@ export default function DigitalMenu() {
     } catch {}
   }, [location.pathname]);
 
-  // SINGLE source of truth for skeleton:
   const showSkeleton = isSwitchSkeleton || isMenuLoading || isCatLoading;
 
   /* ======================= Infinite scroll (client) ======================== */
@@ -357,7 +369,7 @@ export default function DigitalMenu() {
           }
         }
       },
-      { rootMargin: '600px 0px 600px 0px', threshold: 0.01 }
+      { rootMargin: '600px 0px 600px 0px', threshold: 0.01 },
     );
 
     obs.observe(node);
@@ -380,6 +392,9 @@ export default function DigitalMenu() {
     { itemId?: string; id?: string; title: string; price?: number }[]
   >([]);
 
+  // store latest AI reply meta
+  const [aiReplyMeta, setAiReplyMeta] = React.useState<AiReplyMeta | null>(null);
+
   const openSuggestions = () => {
     setShowTray(false);
     setShowSuggestions(true);
@@ -391,18 +406,16 @@ export default function DigitalMenu() {
   };
 
   const resolveMenuItem = (id?: string, name?: string) => {
-    if (!items || !items.length) return undefined as any;
-    const anyItems = items as any[];
+    const src = (items as any[]) || [];
+    if (!src.length) return undefined as any;
 
     if (id) {
-      const hit = anyItems.find((m) => String(m.id) === String(id));
+      const hit = src.find((m) => String(m.id) === String(id));
       if (hit) return hit;
     }
     if (name) {
       const lc = String(name).toLowerCase();
-      const hit = anyItems.find(
-        (m) => String(m.name || '').toLowerCase() === lc
-      );
+      const hit = src.find((m) => String(m.name || '').toLowerCase() === lc);
       if (hit) return hit;
     }
     return undefined as any;
@@ -487,17 +500,57 @@ export default function DigitalMenu() {
     return localHeuristicIntent(replyText || '');
   };
 
-  // Central router used by:
+  // Central router:
   // - main MicInputBar
   // - SuggestionsModal.onIntent
   // - TrayModal.onIntent
   const handleIntent = (
     rawIntent: WaiterIntent | undefined,
     meta?: AiReplyMeta,
-    replyText?: string
+    replyText?: string,
   ) => {
     const intent = rawIntent ?? resolveIntent(meta, replyText);
+    const hasCartOps = Array.isArray(meta?.cartOps) && meta!.cartOps.length > 0;
+    const didClear = !!meta?.clearCart;
 
+    const menuSource =
+      (fullMenuItems && fullMenuItems.length ? fullMenuItems : items) as any[];
+
+    // 1) Apply voice cart ops (single source of truth for cart mutations)
+    if (meta && (hasCartOps || didClear)) {
+      try {
+        applyVoiceCartOps(meta, menuSource, {
+          addItem,
+          setQty,
+          updateQty,
+          removeItem,
+          clear,
+        });
+      } catch {
+        // ignore bad ops
+      }
+
+      const decision = (meta.decision || {}) as any;
+      const upsell = (meta.upsell || (meta as any).Upsell || []) as any[];
+
+      if (decision?.showUpsellTray && Array.isArray(upsell) && upsell.length) {
+        setUpsellItems(
+          upsell.map((u: any) => ({
+            id: u.itemId || u.id,
+            itemId: u.itemId || u.id,
+            title: String(u.title || u.name || ''),
+            price: typeof u.price === 'number' ? u.price : undefined,
+          })),
+        );
+      }
+
+      // If AI touched cart, default to showing tray unless it clearly wanted suggestions/menu.
+      if (!intent || intent === 'order' || intent === 'chitchat') {
+        openTray();
+      }
+    }
+
+    // 2) Suggestions intent
     if (intent === 'suggestions') {
       let mapped = buildSuggestionsFromMeta(meta);
 
@@ -521,62 +574,78 @@ export default function DigitalMenu() {
       return;
     }
 
+    // 3) Order intent (fallback when no cartOps were emitted)
     if (intent === 'order') {
-      const orderItems = Array.isArray(meta?.items) ? (meta!.items as any[]) : [];
+      if (!hasCartOps && meta) {
+        const orderItems = Array.isArray(meta.items) ? (meta.items as any[]) : [];
 
-      for (const it of orderItems) {
-        const src = resolveMenuItem(it.itemId, it.name);
-        if (!src) continue;
+        for (const it of orderItems) {
+          const src = resolveMenuItem(it.itemId, it.name);
+          if (!src) continue;
 
-        const qty = Math.max(1, Number(it.quantity ?? 1));
-        const price =
-          (typeof (src as any).price === 'number' ? (src as any).price : undefined) ??
-          (typeof it.price === 'number' ? it.price : 0);
+          const qty = Math.max(1, Number(it.quantity ?? 1));
+          const price =
+            (typeof (src as any).price === 'number' ? (src as any).price : undefined) ??
+            (typeof it.price === 'number' ? it.price : 0);
 
-        addItem({
-          id: String((src as any).id),
-          name: (src as any).name ?? it.name ?? '',
-          price,
-          qty,
-        });
-      }
+          addItem({
+            id: String((src as any).id),
+            name: (src as any).name ?? it.name ?? '',
+            price,
+            qty,
+          });
+        }
 
-      const decision = (meta?.decision || {}) as any;
-      const upsell = (meta?.upsell || (meta as any)?.Upsell || []) as any[];
+        const decision = (meta.decision || {}) as any;
+        const upsell = (meta.upsell || (meta as any).Upsell || []) as any[];
 
-      if (decision?.showUpsellTray && Array.isArray(upsell) && upsell.length) {
-        setUpsellItems(
-          upsell.map((u: any) => ({
-            id: u.itemId || u.id,
-            itemId: u.itemId || u.id,
-            title: String(u.title || u.name || ''),
-            price: typeof u.price === 'number' ? u.price : undefined,
-          }))
-        );
+        if (decision?.showUpsellTray && Array.isArray(upsell) && upsell.length) {
+          setUpsellItems(
+            upsell.map((u: any) => ({
+              id: u.itemId || u.id,
+              itemId: u.itemId || u.id,
+              title: String(u.title || u.name || ''),
+              price: typeof u.price === 'number' ? u.price : undefined,
+            })),
+          );
+        }
       }
 
       openTray();
       return;
     }
 
-    // intent === 'menu' → already here
-    // intent === 'chitchat' → no modal change
+    // 4) intent === 'menu' → we're already here
+    // 5) intent === 'chitchat' → no modal change
   };
 
   /* ============================== Rendering =============================== */
 
-  // Safe runtime hints for mic bar
   const tenantSlug =
     subdomain ??
-    ((typeof window !== 'undefined' ? (window as any).__STORE__?.subdomain : undefined) || undefined);
+    ((typeof window !== 'undefined'
+      ? (window as any).__STORE__?.subdomain
+      : undefined) || undefined);
   const branchHint =
     normalizedBranch ??
-    ((typeof window !== 'undefined' ? (window as any).__STORE__?.branch : undefined) || undefined);
+    ((typeof window !== 'undefined'
+      ? (window as any).__STORE__?.branch
+      : undefined) || undefined);
+
+  // Log what modals will see (non-JSX, avoids ReactNode issues)
+  console.log('[MODAL PROPS]', {
+    source: 'DigitalMenu',
+    suggestions: aiReplyMeta?.suggestions || [],
+    upsell: aiReplyMeta?.upsell || [],
+  });
 
   return (
     <div
       className="min-h-screen bg-[#F6F5F8] font-[Inter]"
-      style={{ fontFamily: 'Inter, ui-sans-serif, system-ui, Segoe UI, Roboto, Helvetica, Arial' }}
+      style={{
+        fontFamily:
+          'Inter, ui-sans-serif, system-ui, Segoe UI, Roboto, Helvetica, Arial',
+      }}
     >
       {/* Top Bar: Back + Title */}
       <div className="sticky top-0 z-30 bg-[#F6F5F8]">
@@ -587,12 +656,25 @@ export default function DigitalMenu() {
               aria-label="Back"
               className="h-9 w-9 rounded-full bg-white border border-gray-200 flex items-center justify-center shadow-sm active:scale-95"
             >
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                <path d="M15 6l-6 6 6 6" stroke="#111827" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+              <svg
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="none"
+                aria-hidden="true"
+              >
+                <path
+                  d="M15 6l-6 6 6 6"
+                  stroke="#111827"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
               </svg>
             </Link>
-            <h1 className="text-[22px] sm:text-[24px] font-semibold text-gray-900">Menu</h1>
-            {/* spacer to keep title centered */}
+            <h1 className="text-[22px] sm:text-[24px] font-semibold text-gray-900">
+              Menu
+            </h1>
             <span className="h-9 w-9" />
           </div>
         </div>
@@ -600,7 +682,12 @@ export default function DigitalMenu() {
 
       <div className="mx-auto max-w-6xl px-4 py-4 pb-28">
         {/* Search bar */}
-        <SearchBar value={query} onChange={setQuery} onSubmit={(v) => setQuery(v)} className="mb-3" />
+        <SearchBar
+          value={query}
+          onChange={setQuery}
+          onSubmit={(v) => setQuery(v)}
+          className="mb-3"
+        />
 
         {/* Category header + segmented switch */}
         <div className="mt-6 mb-6 flex items-center justify-between sm:mt-8 sm:mb-8">
@@ -615,18 +702,18 @@ export default function DigitalMenu() {
               try {
                 sessionStorage.setItem(
                   SWITCH_FLAG_KEY,
-                  JSON.stringify({ ts: Date.now(), path: targetPath })
+                  JSON.stringify({ ts: Date.now(), path: targetPath }),
                 );
               } catch {}
             }}
           />
         </div>
 
-        {/* ONE skeleton everywhere, otherwise full UI */}
+        {/* Content */}
         {showSkeleton ? (
           <RestaurantSkeleton />
         ) : isMenuError ? (
-          <div className="rounded-xl border border-red-2 00 bg-red-50 p-4 text-sm text-red-700">
+          <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">
             Failed to load menu. {(menuError as Error)?.message ?? 'Unknown error'}
           </div>
         ) : filteredItems.length === 0 ? (
@@ -660,7 +747,11 @@ export default function DigitalMenu() {
                       const slice = group.items.slice(0, Math.max(0, remaining));
                       if (slice.length > 0) {
                         blocks.push(
-                          <section key={key} id={`cat-${key}`} className="scroll-mt-20">
+                          <section
+                            key={key}
+                            id={`cat-${key}`}
+                            className="scroll-mt-20"
+                          >
                             <h2 className="mb-3 text-base font-semibold text-gray-900 sm:text-lg">
                               {group.name}
                             </h2>
@@ -669,7 +760,7 @@ export default function DigitalMenu() {
                                 <ProductCard key={item.id} item={item} />
                               ))}
                             </div>
-                          </section>
+                          </section>,
                         );
                         remaining -= slice.length;
                       } else {
@@ -681,14 +772,15 @@ export default function DigitalMenu() {
                 </div>
 
                 {visibleCount <
-                  Object.values(grouped).reduce((sum, g) => sum + g.items.length, 0) && (
-                  <div ref={sentinelRef} className="h-10 w-full" />
-                )}
+                  Object.values(grouped).reduce(
+                    (sum, g) => sum + g.items.length,
+                    0,
+                  ) && <div ref={sentinelRef} className="h-10 w-full" />}
               </>
             ) : (
               (() => {
                 const idToKeyLocal = new Map<string, string>(
-                  Object.entries(grouped).map(([key, g]) => [`cat-${key}`, key])
+                  Object.entries(grouped).map(([key]) => [`cat-${key}`, key]),
                 );
                 const key = idToKeyLocal.get(activeCatId);
                 const g = key ? grouped[key] : undefined;
@@ -707,7 +799,10 @@ export default function DigitalMenu() {
                       activeId={activeCatId}
                       onJump={(id) => setActiveCatId(id)}
                     />
-                    <section id={`cat-${key}`} className="scroll-mt-20">
+                    <section
+                      id={`cat-${key}`}
+                      className="scroll-mt-20"
+                    >
                       <h2 className="mb-3 text-base font-semibold text-gray-900 sm:text-lg">
                         {g.name}
                       </h2>
@@ -751,23 +846,30 @@ export default function DigitalMenu() {
         ) : null}
       </div>
 
-      {/* Modals driven by AI Waiter intents */}
+      {/* Modals driven by AI Waiter intents (backend-driven meta) */}
       <SuggestionsModal
         open={showSuggestions}
         onClose={() => setShowSuggestions(false)}
-        items={suggestedItems}
+        items={aiReplyMeta?.suggestions || []}
         onIntent={(intent, meta, replyText) => {
-          // When user talks inside SuggestionsModal, route based on new intent
-          handleIntent(intent, meta, replyText);
+          const m = (meta as AiReplyMeta | undefined) ?? aiReplyMeta ?? undefined;
+          console.log('[AI PAGE][SuggestionsModal.onIntent]', { intent, meta: m, replyText });
+          handleIntent(intent, m, replyText);
         }}
       />
       <TrayModal
         open={showTray}
         onClose={() => setShowTray(false)}
-        upsellItems={upsellItems}
+        upsellItems={(aiReplyMeta?.upsell || []).map((u: any) => ({
+          itemId: u.itemId || u.id,
+          id: u.itemId || u.id,
+          title: String(u.title || u.name || ''),
+          price: typeof u.price === 'number' ? u.price : undefined,
+        }))}
         onIntent={(intent, meta, replyText) => {
-          // When user talks inside TrayModal, route based on new intent
-          handleIntent(intent, meta, replyText);
+          const m = (meta as AiReplyMeta | undefined) ?? aiReplyMeta ?? undefined;
+          console.log('[AI PAGE][TrayModal.onIntent]', { intent, meta: m, replyText });
+          handleIntent(intent, m, replyText);
         }}
       />
 
@@ -780,10 +882,10 @@ export default function DigitalMenu() {
               branch={branchHint}
               channel={channel}
               onAiReply={({ replyText, meta }) => {
-                console.debug('AI reply (DigitalMenu):', replyText, meta);
                 const m = meta as AiReplyMeta | undefined;
-                const intent = resolveIntent(m, replyText);
-                handleIntent(intent, m, replyText);
+                console.log('[AI PAGE]', { replyText, meta: m });
+                setAiReplyMeta(m ?? null);
+                handleIntent(undefined, m, replyText);
               }}
             />
           </div>

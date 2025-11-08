@@ -1,3 +1,4 @@
+// apps/tastebud/src/components/ai-waiter/SuggestionsModal.tsx
 import React from 'react';
 import { Link, useLocation, useParams, useSearchParams } from 'react-router-dom';
 import MicInputBar from './MicInputBar';
@@ -24,8 +25,12 @@ type Props = {
   onClose: () => void;
   menuHrefOverride?: string;
   items?: MinimalMenuItem[];
-  /** Bubble AI intent up so parent (DigitalMenu / AiWaiterHome) can switch modals */
-  onIntent?: (intent: WaiterIntent, meta?: AiReplyMeta, replyText?: string) => void;
+  /**
+   * Bubble AI result up so parent (DigitalMenu / AiWaiterHome) can:
+   * - apply voice cart ops
+   * - switch modals / navigate
+   */
+  onIntent?: (intent?: WaiterIntent, meta?: AiReplyMeta, replyText?: string) => void;
 };
 
 function useMenuHref(menuHrefOverride?: string) {
@@ -40,13 +45,17 @@ function useMenuHref(menuHrefOverride?: string) {
   const sd =
     subdomain ??
     search.get('subdomain') ??
-    (typeof window !== 'undefined' ? (window as any).__STORE__?.subdomain ?? null : null);
+    (typeof window !== 'undefined'
+      ? (window as any).__STORE__?.subdomain ?? null
+      : null);
 
   const br =
     branch ??
     branchSlug ??
     search.get('branch') ??
-    (typeof window !== 'undefined' ? (window as any).__STORE__?.branch ?? null : null) ??
+    (typeof window !== 'undefined'
+      ? (window as any).__STORE__?.branch ?? null
+      : null) ??
     undefined;
 
   if (menuHrefOverride) return menuHrefOverride;
@@ -54,6 +63,7 @@ function useMenuHref(menuHrefOverride?: string) {
   const isDevTenantPath =
     /\/t\/[^/]+/.test(location.pathname) ||
     (sd && location.pathname.startsWith('/t/'));
+
   if (isDevTenantPath || subdomain) {
     return br ? `/t/${sd}/${br}/menu` : `/t/${sd}/menu`;
   }
@@ -61,12 +71,47 @@ function useMenuHref(menuHrefOverride?: string) {
 }
 
 const DUMMY_SUGGESTIONS: Suggestion[] = [
-  { id: 'best', title: 'Best Sellers', blurb: 'Customer favorites picked for you', emoji: '⭐' },
-  { id: 'burger', title: 'Juicy Burgers', blurb: 'Cheesy, double-stack, or spicy', emoji: '🍔', query: 'burger' },
-  { id: 'pizza', title: 'Fresh Pizzas', blurb: 'Classic margherita to loaded', emoji: '🍕', query: 'pizza' },
-  { id: 'rice', title: 'Rice Bowls', blurb: 'Hearty & flavorful bowls', emoji: '🍲', query: 'rice' },
-  { id: 'drinks', title: 'Chilled Drinks', blurb: 'Cool down with something nice', emoji: '🥤', query: 'drinks' },
-  { id: 'sweet', title: 'Desserts', blurb: 'Finish with something sweet', emoji: '🍰', query: 'dessert' },
+  {
+    id: 'best',
+    title: 'Best Sellers',
+    blurb: 'Customer favorites picked for you',
+    emoji: '⭐',
+  },
+  {
+    id: 'burger',
+    title: 'Juicy Burgers',
+    blurb: 'Cheesy, double-stack, or spicy',
+    emoji: '🍔',
+    query: 'burger',
+  },
+  {
+    id: 'pizza',
+    title: 'Fresh Pizzas',
+    blurb: 'Classic margherita to loaded',
+    emoji: '🍕',
+    query: 'pizza',
+  },
+  {
+    id: 'rice',
+    title: 'Rice Bowls',
+    blurb: 'Hearty & flavorful bowls',
+    emoji: '🍲',
+    query: 'rice',
+  },
+  {
+    id: 'drinks',
+    title: 'Chilled Drinks',
+    blurb: 'Cool down with something nice',
+    emoji: '🥤',
+    query: 'drinks',
+  },
+  {
+    id: 'sweet',
+    title: 'Desserts',
+    blurb: 'Finish with something sweet',
+    emoji: '🍰',
+    query: 'dessert',
+  },
 ];
 
 function resolveIntent(meta?: AiReplyMeta, replyText?: string): WaiterIntent {
@@ -94,9 +139,16 @@ export default function SuggestionsModal({
       ? (window as any).__STORE__?.branch
       : undefined) ?? undefined;
 
-  // Escape close listener
+  if (typeof window !== 'undefined') {
+    console.log('[SUG_MODAL_PROPS]', { open, hasAiItems, items, tenant, branch });
+  }
+
+
+  // Escape key closes
   React.useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
     if (open) document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
   }, [open, onClose]);
@@ -119,13 +171,20 @@ export default function SuggestionsModal({
       <div className="relative z-[101] w-full sm:max-w-2xl sm:rounded-2xl sm:shadow-2xl bg-white">
         {/* Header */}
         <div className="sticky top-0 flex items-center justify-between px-4 py-3 border-b border-gray-100">
-          <h2 className="text-lg font-semibold text-gray-900">Suggestions for you</h2>
+          <h2 className="text-lg font-semibold text-gray-900">
+            Suggestions for you
+          </h2>
           <button
             onClick={onClose}
             className="h-9 w-9 grid place-items-center rounded-full hover:bg-gray-100 active:scale-95 transition"
             aria-label="Close"
           >
-            <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
+            <svg
+              width="18"
+              height="18"
+              viewBox="0 0 24 24"
+              aria-hidden="true"
+            >
               <path
                 fill="currentColor"
                 d="M18.3 5.71a1 1 0 0 0-1.41 0L12 10.59 7.11 5.7a1 1 0 0 0-1.41 1.41L10.59 12l-4.9 4.89a1 1 0 1 0 1.41 1.41L12 13.41l4.89 4.9a1 1 0 0 0 1.41-1.41L13.41 12l4.9-4.89a1 1 0 0 0-.01-1.4Z"
@@ -137,7 +196,8 @@ export default function SuggestionsModal({
         {/* Body */}
         <div className="px-4 pt-3 pb-4">
           <p className="text-sm text-gray-600 mb-3">
-            Based on what you said, here are a few quick paths. Tap any card to jump into the menu.
+            Based on what you said, here are a few quick paths. Tap any card to
+            jump into the menu.
           </p>
 
           {/* AI-driven suggestions */}
@@ -149,7 +209,8 @@ export default function SuggestionsModal({
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 {items.map((it, idx) => {
                   const title = String(it?.name ?? 'Item');
-                  const price = typeof it?.price === 'number' ? it.price : undefined;
+                  const price =
+                    typeof it?.price === 'number' ? it.price : undefined;
                   return (
                     <div
                       key={String(it?.id ?? idx)}
@@ -170,15 +231,21 @@ export default function SuggestionsModal({
                           )}
                         </div>
                         <div className="min-w-0">
-                          <h4 className="text-[15px] font-semibold text-gray-900">{title}</h4>
+                          <h4 className="text-[15px] font-semibold text-gray-900">
+                            {title}
+                          </h4>
                           {price !== undefined && (
-                            <p className="text-[13px] text-gray-600 mt-0.5">{price} ৳</p>
+                            <p className="text-[13px] text-gray-600 mt-0.5">
+                              {price} ৳
+                            </p>
                           )}
                         </div>
                       </div>
 
                       <div className="mt-3 flex items-center justify-between">
-                        <span className="text-[12px] text-gray-500">#suggested</span>
+                        <span className="text-[12px] text-gray-500">
+                          #suggested
+                        </span>
                         <Link
                           to={menuHref}
                           onClick={onClose}
@@ -208,8 +275,12 @@ export default function SuggestionsModal({
                     {s.emoji ?? '🍽️'}
                   </div>
                   <div className="min-w-0">
-                    <h3 className="text-[15px] font-semibold text-gray-900">{s.title}</h3>
-                    <p className="text-[13px] text-gray-600 mt-0.5 line-clamp-2">{s.blurb}</p>
+                    <h3 className="text-[15px] font-semibold text-gray-900">
+                      {s.title}
+                    </h3>
+                    <p className="text-[13px] text-gray-600 mt-0.5 line-clamp-2">
+                      {s.blurb}
+                    </p>
                   </div>
                 </div>
 
@@ -236,17 +307,15 @@ export default function SuggestionsModal({
             </Link>
           </div>
 
-          {/* Mic input bar */}
+          {/* Mic input bar (bubbles intent + meta + replyText up) */}
           <div className="mt-4">
             <MicInputBar
               tenant={tenant}
               branch={branch}
               channel="dine-in"
               onAiReply={({ replyText, meta }) => {
-                console.debug('AI reply (SuggestionsModal):', replyText, meta);
                 const m = meta as AiReplyMeta | undefined;
                 const intent = resolveIntent(m, replyText);
-                // Let parent decide what to do (e.g. open Tray when intent === 'order')
                 onIntent?.(intent, m, replyText);
               }}
             />

@@ -1,3 +1,4 @@
+// apps/tastebud/src/components/ai-waiter/TrayModal.tsx
 import React from 'react';
 import { Link, useLocation, useParams, useSearchParams } from 'react-router-dom';
 import { useCart } from '../../context/CartContext';
@@ -9,10 +10,19 @@ type Props = {
   open: boolean;
   onClose: () => void;
   checkoutHrefOverride?: string;
-  recentAiItems?: { id: string; name: string }[]; // optional
-  upsellItems?: { itemId?: string; id?: string; title: string; price?: number }[];
-  /** Bubble AI intent up so parent can switch modals (e.g. to Suggestions) */
-  onIntent?: (intent: WaiterIntent, meta?: AiReplyMeta, replyText?: string) => void;
+  recentAiItems?: { id: string; name: string }[];
+  upsellItems?: {
+    itemId?: string;
+    id?: string;
+    title: string;
+    price?: number;
+  }[];
+  /**
+   * Bubble AI result up so parent (DigitalMenu / AiWaiterHome) can:
+   * - apply voice cart ops
+   * - switch between tray/suggestions/menu
+   */
+  onIntent?: (intent?: WaiterIntent, meta?: AiReplyMeta, replyText?: string) => void;
 };
 
 function useCheckoutHref(override?: string) {
@@ -47,9 +57,7 @@ function useCheckoutHref(override?: string) {
     (sd && location.pathname.startsWith('/t/'));
 
   if (isDev || subdomain) {
-    return br
-      ? `/t/${sd}/${br}/checkout`
-      : `/t/${sd}/checkout`;
+    return br ? `/t/${sd}/${br}/checkout` : `/t/${sd}/checkout`;
   }
 
   return '/checkout';
@@ -75,10 +83,10 @@ export default function TrayModal({
   const { items, subtotal, removeItem, clear, addItem } = useCart();
   const checkoutHref = useCheckoutHref(checkoutHrefOverride);
 
-  // Local upsell state that can be driven by props or MicInputBar
+  // Local upsell state (can be driven by props or MicInputBar)
   const [autoUpsell, setAutoUpsell] = React.useState(upsellItems);
 
-  // Sync when parent passes fresh upsellItems
+  // Keep local upsell in sync when parent passes fresh data
   React.useEffect(() => {
     if (upsellItems && upsellItems.length) {
       setAutoUpsell(upsellItems);
@@ -92,12 +100,14 @@ export default function TrayModal({
   const hasItems = items.length > 0;
   const effectiveOpen = open && hasItems;
 
+  // Auto-close if opened but cart became empty
   React.useEffect(() => {
     if (open && !hasItems) {
       onClose?.();
     }
   }, [open, hasItems, onClose]);
 
+  // Escape key
   React.useEffect(() => {
     if (!effectiveOpen) return;
     const onKey = (e: KeyboardEvent) => {
@@ -217,7 +227,7 @@ export default function TrayModal({
             ))}
           </div>
 
-          {/* Upsell block under cart items */}
+          {/* Upsell block */}
           {visibleUpsell.length > 0 && (
             <div className="mt-4 pt-3 border-t border-gray-100">
               <div className="text-sm font-semibold text-gray-800 mb-2">
@@ -263,32 +273,29 @@ export default function TrayModal({
 
         {/* Footer */}
         <div className="sticky bottom-0 border-t border-gray-100 bg-white px-4 py-3">
-          {/* Mic input bar inside the tray footer */}
+          {/* Mic input bar inside tray footer */}
           <div className="mb-3">
             <MicInputBar
               tenant={tenant}
               branch={branch}
               channel="dine-in"
               onAiReply={({ replyText, meta }) => {
-                console.debug('AI reply (TrayModal):', replyText, meta);
-
                 const m = meta as AiReplyMeta | undefined;
                 const intent = resolveIntent(m, replyText);
 
+                // Handle upsell-only signals locally for UX
                 const upsell =
                   (m?.upsell || (m as any)?.Upsell || []) as any[] | undefined;
                 const decision = (m as any)?.decision || {};
                 const showUpsell = decision?.showUpsellTray;
 
-                if (
-                  showUpsell &&
-                  Array.isArray(upsell) &&
-                  upsell.length
-                ) {
+                if (showUpsell && Array.isArray(upsell) && upsell.length) {
                   setAutoUpsell(upsell);
                 }
 
-                // Bubble up so parent can switch to Suggestions when needed
+                // Bubble up so parent can:
+                // - apply voice cart ops (meta.cartOps / meta.clearCart)
+                // - route between tray/suggestions/menu
                 onIntent?.(intent, m, replyText);
               }}
             />

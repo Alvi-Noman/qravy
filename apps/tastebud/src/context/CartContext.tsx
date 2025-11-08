@@ -1,3 +1,4 @@
+// apps/tastebud/src/context/CartContext.tsx
 import React, {
   createContext,
   useCallback,
@@ -29,7 +30,14 @@ export type CartItem = {
 
 export type AddItemInput = Omit<CartItem, 'qty'> & { qty?: number };
 
-type CartState = { items: CartItem[] };
+/**
+ * CartState is persisted.
+ * `updatedAt` is used as TTL marker so voice/cart stays short-lived (~15 minutes).
+ */
+type CartState = {
+  items: CartItem[];
+  updatedAt: number | null;
+};
 
 export type CartContextValue = {
   items: CartItem[];
@@ -64,65 +72,107 @@ function isRestaurantRoutePath(pathname: string): boolean {
 
 function deriveSubdomain(pathname: string): string | null {
   const m = pathname.match(/^\/t\/([^/]+)/);
-  return m ? decodeURIComponent(m[1]) : (window as any).__STORE__?.subdomain ?? null;
+  if (m) return decodeURIComponent(m[1]);
+  if (typeof window !== 'undefined') {
+    return (window as any).__STORE__?.subdomain ?? null;
+  }
+  return null;
 }
 
 function deriveBranch(pathname: string): string | null {
   const m = pathname.match(/^\/t\/[^/]+\/branch\/([^/]+)/);
-  return m ? decodeURIComponent(m[1]) : (window as any).__STORE__?.branch ?? null;
+  if (m) return decodeURIComponent(m[1]);
+  if (typeof window !== 'undefined') {
+    return (window as any).__STORE__?.branch ?? null;
+  }
+  return null;
 }
 
 function deriveChannel(pathname: string): Channel {
-  if (/^\/t\/[^/]+\/dine-in/.test(pathname) || /^\/t\/[^/]+\/branch\/[^/]+\/dine-in/.test(pathname)) {
+  if (
+    /^\/t\/[^/]+\/dine-in/.test(pathname) ||
+    /^\/t\/[^/]+\/branch\/[^/]+\/dine-in/.test(pathname)
+  ) {
     return 'dine-in';
   }
-  return (window as any).__STORE__?.channel === 'dine-in' ? 'dine-in' : 'online';
+  if (typeof window !== 'undefined') {
+    return (window as any).__STORE__?.channel === 'dine-in' ? 'dine-in' : 'online';
+  }
+  return 'online';
 }
 
 function cartStorageKey(subdomain: string | null, branch: string | null) {
   return `tastebud:cart:${subdomain ?? 'anon'}:${branch ?? 'default'}`;
 }
 
+/* TTL: 15 minutes */
+const CART_TTL_MS = 15 * 60 * 1000;
+
 /* -------------------------------------------------------------------------- */
 /*                                   Reducer                                  */
 /* -------------------------------------------------------------------------- */
 
 type Action =
-  | { type: 'ADD'; payload: AddItemInput & { qty: number } }
-  | { type: 'DEL'; payload: { id: string; variation?: string } }
-  | { type: 'SET_QTY'; payload: { id: string; qty: number; variation?: string } }
-  | { type: 'CLEAR' };
+  | { type: 'HYDRATE'; payload: CartItem[]; now: number }
+  | { type: 'ADD'; payload: AddItemInput & { qty: number }; now: number }
+  | { type: 'DEL'; payload: { id: string; variation?: string }; now: number }
+  | { type: 'SET_QTY'; payload: { id: string; qty: number; variation?: string }; now: number }
+  | { type: 'CLEAR'; now: number };
 
 function sameLine(a: CartItem, b: { id: string; variation?: string }) {
   return a.id === b.id && (a.variation ?? '') === (b.variation ?? '');
 }
 
+function withUpdatedAt(items: CartItem[], now: number): CartState {
+  return {
+    items,
+    updatedAt: items.length ? now : null,
+  };
+}
+
 function reducer(state: CartState, action: Action): CartState {
   switch (action.type) {
+    case 'HYDRATE': {
+      const safeItems = (action.payload || []).filter(
+        (it) => it && typeof it.id === 'string' && (it.qty ?? 0) > 0,
+      );
+      return withUpdatedAt(safeItems, action.now);
+    }
+
     case 'ADD': {
       const { id, variation, qty } = action.payload;
       const idx = state.items.findIndex((it) => sameLine(it, { id, variation }));
       if (idx >= 0) {
         const next = [...state.items];
         next[idx] = { ...next[idx], qty: next[idx].qty + qty };
-        return { items: next.filter((it) => it.qty > 0) };
+        return withUpdatedAt(next.filter((it) => it.qty > 0), action.now);
       }
-      return { items: [...state.items, { ...action.payload, qty }] };
+      return withUpdatedAt(
+        [...state.items, { ...action.payload, qty }],
+        action.now,
+      );
     }
 
-    case 'DEL':
-      return { items: state.items.filter((it) => !sameLine(it, action.payload)) };
+    case 'DEL': {
+      const next = state.items.filter((it) => !sameLine(it, action.payload));
+      return withUpdatedAt(next, action.now);
+    }
 
     case 'SET_QTY': {
       const { id, variation, qty } = action.payload;
       const next = state.items.map((it) =>
-        sameLine(it, { id, variation }) ? { ...it, qty: Math.max(0, qty) } : it
+        sameLine(it, { id, variation })
+          ? { ...it, qty: Math.max(0, qty) }
+          : it,
       );
-      return { items: next.filter((it) => it.qty > 0) };
+      return withUpdatedAt(
+        next.filter((it) => it.qty > 0),
+        action.now,
+      );
     }
 
     case 'CLEAR':
-      return { items: [] };
+      return withUpdatedAt([], action.now);
 
     default:
       return state;
@@ -142,45 +192,70 @@ export function CartProvider({ children }: PropsWithChildren<{}>) {
   const branch = deriveBranch(pathname);
 
   const derivedChannel = deriveChannel(pathname);
-  const [freeChannel, setFreeChannel] = useState<Channel>(
-    (window as any).__STORE__?.channel ?? 'online'
-  );
+  const [freeChannel, setFreeChannel] = useState<Channel>(() => {
+    if (typeof window !== 'undefined') {
+      return (window as any).__STORE__?.channel === 'dine-in' ? 'dine-in' : 'online';
+    }
+    return 'online';
+  });
+
   const channel: Channel = isRestaurantRoute ? derivedChannel : freeChannel;
 
   const storageKey = cartStorageKey(subdomain, branch);
 
   const initialLoaded = useRef(false);
-  const [state, dispatch] = useReducer(reducer, { items: [] });
+  const [state, dispatch] = useReducer(reducer, {
+    items: [],
+    updatedAt: null,
+  });
 
   /* --------------------------- Load from storage --------------------------- */
+
   useEffect(() => {
     try {
       const raw = localStorage.getItem(storageKey);
       if (raw) {
-        const parsed = JSON.parse(raw) as CartState;
-        if (parsed?.items) {
-          dispatch({ type: 'CLEAR' });
-          for (const it of parsed.items) {
-            dispatch({
-              type: 'ADD',
-              payload: { ...it, qty: it.qty ?? 1 },
-            });
-          }
+        const parsed = JSON.parse(raw) as Partial<CartState> | { items: CartItem[] };
+
+        const items = Array.isArray((parsed as any).items)
+          ? ((parsed as any).items as CartItem[])
+          : [];
+
+        const now = Date.now();
+        const updatedAt =
+          typeof (parsed as any).updatedAt === 'number'
+            ? (parsed as any).updatedAt
+            : null;
+
+        const isFresh =
+          updatedAt !== null ? now - updatedAt <= CART_TTL_MS : true;
+
+        if (items.length && isFresh) {
+          dispatch({
+            type: 'HYDRATE',
+            payload: items,
+            now: updatedAt ?? now,
+          });
+        } else {
+          // Stale or invalid → start empty
+          dispatch({ type: 'CLEAR', now });
         }
       }
     } catch {
-      /* ignore parse errors */
+      // ignore parse errors
     }
     initialLoaded.current = true;
+    // storageKey changes when tenant/branch changes → new scope, so we re-run
   }, [storageKey]);
 
   /* --------------------------- Persist to storage -------------------------- */
+
   useEffect(() => {
     if (!initialLoaded.current) return;
     try {
       localStorage.setItem(storageKey, JSON.stringify(state));
     } catch {
-      /* ignore quota */
+      // ignore quota errors
     }
   }, [state, storageKey]);
 
@@ -188,40 +263,59 @@ export function CartProvider({ children }: PropsWithChildren<{}>) {
 
   const addItem = useCallback((input: AddItemInput) => {
     const qty = Math.max(1, input.qty ?? 1);
-    dispatch({ type: 'ADD', payload: { ...input, qty } });
+    dispatch({
+      type: 'ADD',
+      payload: { ...input, qty },
+      now: Date.now(),
+    });
   }, []);
 
   const updateQty = useCallback(
     (id: string, delta: number, variation?: string) => {
       const line = state.items.find((it) => sameLine(it, { id, variation }));
       const nextQty = Math.max(0, (line?.qty ?? 0) + delta);
-      dispatch({ type: 'SET_QTY', payload: { id, variation, qty: nextQty } });
+      dispatch({
+        type: 'SET_QTY',
+        payload: { id, variation, qty: nextQty },
+        now: Date.now(),
+      });
     },
-    [state.items]
+    [state.items],
   );
 
-  const setQty = useCallback((id: string, qty: number, variation?: string) => {
-    dispatch({ type: 'SET_QTY', payload: { id, variation, qty: Math.max(0, qty) } });
-  }, []);
+  const setQty = useCallback(
+    (id: string, qty: number, variation?: string) => {
+      dispatch({
+        type: 'SET_QTY',
+        payload: { id, variation, qty: Math.max(0, qty) },
+        now: Date.now(),
+      });
+    },
+    [],
+  );
 
   const removeItem = useCallback((id: string, variation?: string) => {
-    dispatch({ type: 'DEL', payload: { id, variation } });
+    dispatch({
+      type: 'DEL',
+      payload: { id, variation },
+      now: Date.now(),
+    });
   }, []);
 
   const clear = useCallback(() => {
-    dispatch({ type: 'CLEAR' });
+    dispatch({ type: 'CLEAR', now: Date.now() });
   }, []);
 
   /* --------------------------- Derived computations ------------------------ */
 
   const subtotal = useMemo(
     () => state.items.reduce((sum, it) => sum + it.price * it.qty, 0),
-    [state.items]
+    [state.items],
   );
 
   const count = useMemo(
     () => state.items.reduce((n, it) => n + it.qty, 0),
-    [state.items]
+    [state.items],
   );
 
   /* ------------------------------- Context obj ----------------------------- */

@@ -362,6 +362,10 @@ export default function MicInputBar({
             try { tts.speak(replyText); } catch {}
           }
           setThinking(false);
+
+          // Log raw AI response right before bubbling up
+          console.log("[AI RAW][MicInputBar]", { replyText, meta: data.meta });
+
           onAiReply?.({ replyText, meta: data.meta });
 
           // close this session socket after reply
@@ -406,7 +410,20 @@ export default function MicInputBar({
         wsRef.current = null;
       }
     };
-  }, [branch, channel, currentLang, hardReset, isRecording, thinking, onAiReply, onPartial, tenant, tts, setAi, wsPath]);
+  }, [
+    branch,
+    channel,
+    currentLang,
+    hardReset,
+    isRecording,
+    thinking,
+    onAiReply,
+    onPartial,
+    tenant,
+    tts,
+    setAi,
+    wsPath,
+  ]);
 
   // Start capture
   const start = useCallback(async () => {

@@ -1,3 +1,4 @@
+// apps/tastebud/src/pages/AIWaiterHome.tsx
 import React, { useRef, useState, useEffect } from 'react';
 import { useParams, useSearchParams, useNavigate } from 'react-router-dom';
 import { getWsURL, getStableSessionId } from '../utils/ws';
@@ -13,6 +14,7 @@ import { useCart } from '../context/CartContext';
 import { usePublicMenu } from '../hooks/usePublicMenu';
 import { useConversationStore } from '../state/conversation';
 import { useTTS } from '../state/TTSProvider';
+import { applyVoiceCartOps } from '../utils/voice-cart';
 
 type UIMode = 'idle' | 'thinking' | 'talking';
 
@@ -66,11 +68,13 @@ function SwipeViewport({ text, showCursor }: { text: string; showCursor: boolean
     startYRef.current = e.touches[0].clientY;
     startOffsetRef.current = offset;
   };
+
   const onTouchMove = (e: React.TouchEvent) => {
     const dy = e.touches[0].clientY - startYRef.current;
     const next = Math.max(0, Math.min(maxOverflowRef.current, startOffsetRef.current - dy));
     setOffset(next);
   };
+
   const onTouchEnd = () => {
     draggingRef.current = false;
     if (Math.abs(maxOverflowRef.current - offset) < 8) setOffset(maxOverflowRef.current);
@@ -128,6 +132,9 @@ export default function AiWaiterHome() {
   const aiFinal = useConversationStore((s: any) => s.aiText ?? s.ai ?? '');
 
   const tts = useTTS();
+
+  // 🧠 track last AI meta for modals
+  const [lastMeta, setLastMeta] = useState<AiReplyMeta | null>(null);
 
   // ===== word-sync (gapless) =====
   const MIN_STEP_MS = 80;
@@ -354,8 +361,8 @@ export default function AiWaiterHome() {
     navigate(seeMenuHref);
   };
 
-  // catalog
-  const { addItem } = useCart();
+  // catalog + cart
+  const { addItem, setQty, updateQty, removeItem, clear } = useCart();
   const { items: storeItems } = usePublicMenu(resolvedSub, resolvedBranch, 'dine-in');
   const [menuIndex, setMenuIndex] = useState<ReturnType<typeof buildMenuIndex> | null>(null);
 
@@ -401,6 +408,7 @@ export default function AiWaiterHome() {
     if (!menuIndex) return [];
     const out: SuggestedItem[] = [];
 
+    // Items (order-style)
     const metaItems = Array.isArray(meta?.items) ? (meta!.items as any[]) : [];
     for (const it of metaItems) {
       const name = it?.name as string | undefined;
@@ -412,19 +420,36 @@ export default function AiWaiterHome() {
       out.push(mergeFromStore(it, itemId));
     }
 
-    const groups: any[] = Array.isArray((meta as any)?.suggestions)
+    // Suggestions: flat + legacy grouped
+    const suggestions: any[] = Array.isArray((meta as any)?.suggestions)
       ? (meta as any).suggestions
       : [];
-    for (const g of groups) {
-      const gItems = Array.isArray(g?.items) ? g.items : [];
-      for (const it of gItems) {
-        const name = it?.name as string | undefined;
-        let itemId = it?.itemId as string | undefined;
+
+    for (const s of suggestions) {
+      if (Array.isArray(s?.items)) {
+        // legacy grouped form
+        for (const it of s.items) {
+          const name = it?.name as string | undefined;
+          let itemId = it?.itemId as string | undefined;
+          if (!itemId && name) {
+            const found = resolveItemIdByName(menuIndex, name);
+            if (found) itemId = String(found);
+          }
+          out.push(mergeFromStore(it, itemId));
+        }
+      } else {
+        // flat form
+        const name = (s?.name as string | undefined) ?? (s?.title as string | undefined);
+        let itemId =
+          (s?.itemId as string | undefined) ??
+          (s?.id as string | undefined);
+
         if (!itemId && name) {
           const found = resolveItemIdByName(menuIndex, name);
           if (found) itemId = String(found);
         }
-        out.push(mergeFromStore(it, itemId));
+
+        out.push(mergeFromStore(s, itemId));
       }
     }
 
@@ -522,7 +547,9 @@ export default function AiWaiterHome() {
     // chitchat → no modal change
   }
 
-  function mapUpsell(upsell: any[]): { itemId?: string; id?: string; title: string; price?: number }[] {
+  function mapUpsell(
+    upsell: any[],
+  ): { itemId?: string; id?: string; title: string; price?: number }[] {
     return upsell.map((u: any) => ({
       itemId: u.itemId || u.id,
       id: u.itemId || u.id,
@@ -644,8 +671,8 @@ export default function AiWaiterHome() {
         }
         const rms = Math.sqrt(sum / buf.length);
         const noiseFloor = 0.02;
-        const norm = Math.max(0, (rms - noiseFloor) / (1 - noiseFloor));
-        const clamped = Math.min(0.9, norm);
+        const normLvl = Math.max(0, (rms - noiseFloor) / (1 - noiseFloor));
+        const clamped = Math.min(0.9, normLvl);
         setMicLevel(clamped);
         levelRafRef.current = requestAnimationFrame(levelLoop);
       };
@@ -748,12 +775,51 @@ export default function AiWaiterHome() {
             setUiMode('talking');
 
             const meta: AiReplyMeta | undefined = msg.meta;
+            setLastMeta(meta ?? null);
+
+            console.log('[AI PAGE][AIWaiterHome]', { replyText: text, meta });
+
             const intent = resolveIntent(meta, text);
             const decision = (meta?.decision || {}) as any;
             const upsell = (meta?.upsell || (meta as any)?.Upsell || []) || [];
 
+            let cartChanged = false;
+
+            // Unified voice cart ops (clearCart + cartOps) from brain
+            if (meta && storeItems && storeItems.length) {
+              const hasCartSignal =
+                !!meta.clearCart ||
+                (Array.isArray((meta as any).cartOps) &&
+                  (meta as any).cartOps.length > 0);
+              if (hasCartSignal) {
+                try {
+                  applyVoiceCartOps(meta, storeItems as any[], {
+                    addItem,
+                    setQty,
+                    updateQty,
+                    removeItem,
+                    clear,
+                  });
+                  cartChanged = true;
+                } catch {
+                  // ignore malformed ops
+                }
+              }
+            }
+
+            if (cartChanged) {
+              if (decision?.showUpsellTray && Array.isArray(upsell) && upsell.length) {
+                setUpsellItems(mapUpsell(upsell));
+              }
+              setShowTray(true);
+
+              if (!intent || intent === 'order' || intent === 'chitchat') {
+                return;
+              }
+            }
+
             // Suggestions intent → populate & route
-            if (intent === 'suggestions') {
+            if (intent === 'suggestions' || decision?.showSuggestionsModal) {
               let mapped = buildSuggestionsFromMeta(meta);
               if ((!mapped || !mapped.length) && text) {
                 mapped = buildSuggestionsFromReplyText(text);
@@ -772,14 +838,14 @@ export default function AiWaiterHome() {
                     imageUrl: s.imageUrl ?? s.image ?? undefined,
                   }));
               }
-              setSuggestedItems(mapped.filter(Boolean));
+              setSuggestedItems((mapped || []).filter(Boolean));
               handleIntentRouting('suggestions');
               return;
             }
 
-            // Order intent → add items, then route to tray
-            if (intent === 'order' && menuIndex) {
-              const orderItems = Array.isArray(meta?.items) ? (meta!.items as any[]) : [];
+            // Order intent → add items (fallback when no cartOps), then route
+            if (intent === 'order' && menuIndex && meta) {
+              const orderItems = Array.isArray(meta.items) ? (meta.items as any[]) : [];
               for (const it of orderItems) {
                 let itemId = it.itemId;
                 const name = it.name;
@@ -823,7 +889,7 @@ export default function AiWaiterHome() {
               return;
             }
 
-            // Everything else: let global router decide (handles cross-modal + menu)
+            // Everything else
             handleIntentRouting(intent);
             return;
           }
@@ -1141,18 +1207,56 @@ export default function AiWaiterHome() {
         </div>
       </div>
 
-      {/* Modals: hook into shared intent router so mic inside modal can switch between them */}
+      {/* Modals: consume lastMeta (with fallback) and apply cartOps */}
       <SuggestionsModal
         open={showSuggestions}
         onClose={() => setShowSuggestions(false)}
         items={suggestedItems}
-        onIntent={(intent) => handleIntentRouting(intent)}
+        onIntent={(intent, meta, replyText) => {
+          const m = meta as AiReplyMeta | undefined;
+          if (m && storeItems && storeItems.length) {
+            try {
+              applyVoiceCartOps(m, storeItems as any[], {
+                addItem,
+                setQty,
+                updateQty,
+                removeItem,
+                clear,
+              });
+            } catch {
+              // ignore
+            }
+          }
+          const finalIntent = intent ?? resolveIntent(m, replyText);
+          handleIntentRouting(finalIntent);
+        }}
       />
-      <TrayModal
+            <TrayModal
         open={showTray}
         onClose={() => setShowTray(false)}
-        upsellItems={upsellItems}
-        onIntent={(intent) => handleIntentRouting(intent)}
+        upsellItems={
+          lastMeta?.upsell?.length
+            ? mapUpsell(lastMeta.upsell as any[])
+            : upsellItems
+        }
+        onIntent={(intent, meta, replyText) => {
+          const m = meta as AiReplyMeta | undefined;
+          if (m && storeItems && storeItems.length) {
+            try {
+              applyVoiceCartOps(m, storeItems as any[], {
+                addItem,
+                setQty,
+                updateQty,
+                removeItem,
+                clear,
+              });
+            } catch {
+              // ignore
+            }
+          }
+          const finalIntent = intent ?? resolveIntent(m, replyText);
+          handleIntentRouting(finalIntent);
+        }}
       />
     </div>
   );
