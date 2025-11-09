@@ -357,16 +357,20 @@ export default function MicInputBar({
         }
 
         if (data.t === "ai_reply") {
-          const replyText = data.replyText || "";
-          if (shouldSpeakOnce(replyText)) {
-            try { tts.speak(replyText); } catch {}
+          const meta = data.meta || {};
+          const replyText = (data.replyText || "").toString().trim();
+          const voiceText = (meta.voiceReplyText || "").toString().trim();
+          const speakText = voiceText || replyText;
+
+          if (speakText && shouldSpeakOnce(speakText)) {
+            try { tts.speak(speakText); } catch {}
           }
+
           setThinking(false);
 
-          // Log raw AI response right before bubbling up
-          console.log("[AI RAW][MicInputBar]", { replyText, meta: data.meta });
+          console.log("[AI RAW][MicInputBar]", { replyText, voiceText, meta });
 
-          onAiReply?.({ replyText, meta: data.meta });
+          onAiReply?.({ replyText, meta });
 
           // close this session socket after reply
           try {

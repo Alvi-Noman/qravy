@@ -763,10 +763,17 @@ export default function AiWaiterHome() {
           }
 
           if (msg.t === 'ai_reply') {
-            const text: string = msg.replyText || '';
-            if (text) {
+            const meta: AiReplyMeta | undefined = msg.meta;
+            const replyText = (msg.replyText || '').toString().trim();
+            const voiceText = (meta?.voiceReplyText || '').toString().trim();
+            const speakText = voiceText || replyText;
+
+            if (speakText) {
               try {
-                tts.speak(text);
+                tts.stop();
+              } catch {}
+              try {
+                tts.speak(speakText);
               } catch {}
             }
 
@@ -774,12 +781,11 @@ export default function AiWaiterHome() {
             pendingAiResolverRef.current?.(true);
             setUiMode('talking');
 
-            const meta: AiReplyMeta | undefined = msg.meta;
             setLastMeta(meta ?? null);
 
-            console.log('[AI PAGE][AIWaiterHome]', { replyText: text, meta });
+            console.log('[AI PAGE][AIWaiterHome]', { replyText, voiceText, meta });
 
-            const intent = resolveIntent(meta, text);
+            const intent = resolveIntent(meta, replyText || speakText);
             const decision = (meta?.decision || {}) as any;
             const upsell = (meta?.upsell || (meta as any)?.Upsell || []) || [];
 
@@ -821,8 +827,8 @@ export default function AiWaiterHome() {
             // Suggestions intent → populate & route
             if (intent === 'suggestions' || decision?.showSuggestionsModal) {
               let mapped = buildSuggestionsFromMeta(meta);
-              if ((!mapped || !mapped.length) && text) {
-                mapped = buildSuggestionsFromReplyText(text);
+              if ((!mapped || !mapped.length) && replyText) {
+                mapped = buildSuggestionsFromReplyText(replyText);
               }
               if (
                 (!mapped || !mapped.length) &&
@@ -1231,7 +1237,7 @@ export default function AiWaiterHome() {
           handleIntentRouting(finalIntent);
         }}
       />
-            <TrayModal
+      <TrayModal
         open={showTray}
         onClose={() => setShowTray(false)}
         upsellItems={
