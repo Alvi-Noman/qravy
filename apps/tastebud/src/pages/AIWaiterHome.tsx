@@ -938,64 +938,78 @@ export default function AiWaiterHome() {
     }
   }
 
-  async function stopListening() {
-    stoppingRef.current = true;
-    let gotFinal = finalSeenRef.current;
-    try {
-      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-        const sid = getStableSessionId();
-        wsRef.current.send(JSON.stringify({ t: 'end', sid }));
-        if (!gotFinal) gotFinal = await waitForFinal(8000);
-        if (!aiSeenRef.current) await waitForAiReply(8000);
-        await new Promise((r) => setTimeout(r, 100));
-      }
-    } catch {
-      // ignore
+ async function stopListening() {
+  stoppingRef.current = true;
+
+  // Tell backend we're done, but don't block on replies
+  try {
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      const sid = getStableSessionId();
+      wsRef.current.send(JSON.stringify({ t: "end", sid }));
     }
-
-    try {
-      if (levelRafRef.current) cancelAnimationFrame(levelRafRef.current);
-    } catch {}
-    levelRafRef.current = null;
-
-    try {
-      analyserRef.current?.disconnect();
-    } catch {}
-    analyserRef.current = null;
-    timeDataRef.current = null;
-    setMicLevel(0);
-
-    try {
-      sourceRef.current?.disconnect();
-    } catch {}
-    sourceRef.current = null;
-
-    try {
-      nodeRef.current?.port.close();
-    } catch {}
-    try {
-      nodeRef.current?.disconnect();
-    } catch {}
-    nodeRef.current = null;
-
-    try {
-      streamRef.current?.getTracks().forEach((t) => t.stop());
-    } catch {}
-    streamRef.current = null;
-
-    try {
-      await ctxRef.current?.close();
-    } catch {}
-    ctxRef.current = null;
-
-    try {
-      wsRef.current?.close();
-    } catch {}
-    wsRef.current = null;
-
-    setListening(false);
-    setUiMode('idle');
+  } catch {
+    // ignore
   }
+
+  // Stop mic level loop
+  try {
+    if (levelRafRef.current) cancelAnimationFrame(levelRafRef.current);
+  } catch {}
+  levelRafRef.current = null;
+
+  // Tear down analyser
+  try {
+    analyserRef.current?.disconnect();
+  } catch {}
+  analyserRef.current = null;
+  timeDataRef.current = null;
+  setMicLevel(0);
+
+  // Tear down audio graph
+  try {
+    sourceRef.current?.disconnect();
+  } catch {}
+  sourceRef.current = null;
+
+  try {
+    if (nodeRef.current?.port) {
+      try {
+        nodeRef.current.port.close();
+      } catch {}
+    }
+    nodeRef.current?.disconnect();
+  } catch {}
+  nodeRef.current = null;
+
+  // Stop media tracks
+  try {
+    streamRef.current?.getTracks().forEach((t) => t.stop());
+  } catch {}
+  streamRef.current = null;
+
+  // Close AudioContext
+  try {
+    await ctxRef.current?.close();
+  } catch {}
+  ctxRef.current = null;
+
+  // Let existing ws.onmessage handle late ai_reply,
+  // but don't leave sockets hanging forever.
+  try {
+    if (wsRef.current) {
+      const ws = wsRef.current;
+      wsRef.current = null; // ✅ clear ref so mic can restart next time
+      setTimeout(() => {
+        try {
+          if (ws.readyState === WebSocket.OPEN) ws.close();
+        } catch {}
+      }, 8000); // safety timeout
+    }
+  } catch {}
+
+  setListening(false);
+  setUiMode("idle");
+}
 
   // UI mapping
   const bg = '#FFF8FA';

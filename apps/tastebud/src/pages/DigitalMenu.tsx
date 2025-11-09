@@ -850,7 +850,7 @@ export default function DigitalMenu() {
       <SuggestionsModal
         open={showSuggestions}
         onClose={() => setShowSuggestions(false)}
-        items={aiReplyMeta?.suggestions || []}
+        items={suggestedItems}
         onIntent={(intent, meta, replyText) => {
           const m = (meta as AiReplyMeta | undefined) ?? aiReplyMeta ?? undefined;
           console.log('[AI PAGE][SuggestionsModal.onIntent]', { intent, meta: m, replyText });
@@ -860,12 +860,7 @@ export default function DigitalMenu() {
       <TrayModal
         open={showTray}
         onClose={() => setShowTray(false)}
-        upsellItems={(aiReplyMeta?.upsell || []).map((u: any) => ({
-          itemId: u.itemId || u.id,
-          id: u.itemId || u.id,
-          title: String(u.title || u.name || ''),
-          price: typeof u.price === 'number' ? u.price : undefined,
-        }))}
+        upsellItems={upsellItems}
         onIntent={(intent, meta, replyText) => {
           const m = (meta as AiReplyMeta | undefined) ?? aiReplyMeta ?? undefined;
           console.log('[AI PAGE][TrayModal.onIntent]', { intent, meta: m, replyText });
