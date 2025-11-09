@@ -772,6 +772,7 @@ def _parse_model_json(text: str) -> Dict[str, Any]:
                 return {
                     "replyText": reply_text,
                     "language": lang,
+                    "_minimalFromFallback": True,
                 }
     except Exception:
         pass
@@ -1141,6 +1142,7 @@ def _finalize_backend_decision(
       - upsell
       - decision
     """
+    minimal = bool(raw_obj.get("_minimalFromFallback"))
 
     # 1) Normalize model-proposed items
     proposed_items = _normalize_items(
@@ -1149,6 +1151,33 @@ def _finalize_backend_decision(
         cand_name_to_id=cand_name_to_id,
     )
     has_items = bool(proposed_items)
+
+    # If we only have minimal replyText (truncated JSON salvage), treat as text-only:
+    if minimal:
+        if locked_intent in ("order", "menu", "suggestions", "chitchat"):
+            intent = locked_intent
+        else:
+            last_intent = _extract_last_intent(context, dialog_state)
+            intent = _infer_intent_from_query(
+                transcript=transcript,
+                has_items=has_items,
+                last_intent=last_intent,
+            )
+            if intent not in ("order", "menu", "suggestions", "chitchat"):
+                intent = "chitchat"
+        if intent == "order":
+            intent = "chitchat"
+
+        return {
+            "intent": intent,
+            "items": [],
+            "suggestions": [],
+            "upsell": [],
+            "decision": {
+                "showSuggestionsModal": False,
+                "showUpsellTray": False,
+            },
+        }
 
     # 2) Start from lockedIntent if valid
     intent: Optional[str] = None
