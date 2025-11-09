@@ -309,6 +309,7 @@ def _build_system_with_lang(lang_hint: str, locked_intent: Optional[str]) -> str
             f"- Make sure replyText, items, suggestions, upsell, and decision are all consistent with \"{locked_intent}\".\n"
             f"- Do NOT contradict or override lockedIntent."
         )
+
     else:
         locked_intent_clause = (
             " The backend will derive the final intent from the user's request and context. "
@@ -709,58 +710,78 @@ _JSON_FIRST_OBJECT = re.compile(r"\{.*\}", re.DOTALL)
 def _parse_model_json(text: str) -> Dict[str, Any]:
     """
     Parse a single JSON object from model text.
-    - Prefer the first {...} span.
-    - If json.loads fails, progressively trim from the end to salvage.
+
+    Strategy:
+      1. Try direct json.loads(raw).
+      2. If that fails, try to extract the first {...} span and load it.
+      3. If that fails, progressively trim from the end to the last '}' or ']'
+         and retry.
+      4. If still invalid BUT a replyText field is present and well-formed,
+         return a minimal dict with replyText (and guessed language).
+      5. Only if none of the above works, raise so caller can use fallback.
     """
     raw = (text or "").strip()
+    if not raw:
+        raise ValueError("Empty model response")
+
+    # 1) Fast path: whole string is JSON
+    try:
+        obj = json.loads(raw)
+        if isinstance(obj, dict):
+            return obj
+        print("[brain:json] Top-level is not an object. raw=", _safe_snip(raw, 800))
+    except json.JSONDecodeError:
+        pass
+
+    # 2) Extract first {...} span if needed
     candidate = raw
-
-    if not raw.startswith("{"):
+    if not candidate.lstrip().startswith("{"):
         m = _JSON_FIRST_OBJECT.search(raw)
-        if not m:
-            print("[brain:json] no top-level { } found. raw=", _safe_snip(raw, 800))
-            raise ValueError("No JSON object found in model response")
-        candidate = m.group(0)
+        if m:
+            candidate = m.group(0)
 
-    # Fast path
+    # 2a) Try again on candidate
     try:
         obj = json.loads(candidate)
-        if not isinstance(obj, dict):
-            print(
-                "[brain:json] Top-level is not an object. raw=",
-                _safe_snip(candidate, 800),
-            )
-            raise ValueError("Top-level JSON is not an object")
-        return obj
-    except json.JSONDecodeError as e:
-        print("[brain:json] JSONDecodeError on first attempt:", repr(e))
-        print(
-            "[brain:json] Full candidate (truncated for log):",
-            _safe_snip(candidate, 1500),
-        )
+        if isinstance(obj, dict):
+            return obj
+    except json.JSONDecodeError:
+        pass
 
-    # Salvage: trim from end to last '}' or ']' and retry
+    # 3) Salvage: trim at last '}' or ']' and retry
     s = candidate
-    for i in range(len(s) - 1, -1, -1):
-        if i < len(s) and s[i] in ("}", "]"):
-            trimmed = s[: i + 1]
-            try:
-                obj = json.loads(trimmed)
-                if isinstance(obj, dict):
-                    print("[brain:json] Salvaged valid JSON after trimming at", i)
-                    return obj
-            except json.JSONDecodeError:
-                continue
+    last_brace = max(s.rfind("}"), s.rfind("]"))
+    if last_brace != -1:
+        trimmed = s[: last_brace + 1]
+        try:
+            obj = json.loads(trimmed)
+            if isinstance(obj, dict):
+                print("[brain:json] Salvaged valid JSON after trimming")
+                return obj
+        except json.JSONDecodeError:
+            pass
 
-    # Log detailed error region if still invalid
+    # 4) Minimal fallback: if replyText is intact, use it so TTS/UI still work
+    try:
+        m = re.search(r'"replyText"\s*:\s*"([^"]*)"', raw)
+        if m:
+            reply_text = m.group(1).strip()
+            if reply_text:
+                lang = _guess_lang(reply_text)
+                print("[brain:json] Using minimal fallback object with replyText")
+                return {
+                    "replyText": reply_text,
+                    "language": lang,
+                }
+    except Exception:
+        pass
+
+    # 5) Give up: log and raise so caller triggers deterministic fallback
     try:
         json.loads(candidate)
     except json.JSONDecodeError as e:
-        start = max(e.pos - 120, 0)
-        end = min(e.pos + 120, len(candidate))
-        snippet = candidate[start:end]
-        print("[brain:json] Final JSONDecodeError:", repr(e))
-        print("[brain:json] Around pos", e.pos, "=>", snippet)
+        print("[brain:json] JSONDecodeError:", repr(e))
+        print("[brain:json] raw (truncated):", _safe_snip(candidate, 1500))
 
     raise ValueError("Unable to parse JSON object from model response")
 
