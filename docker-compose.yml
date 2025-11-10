@@ -162,6 +162,7 @@ services:
       - mongo
     ports:
       - "7071:7071"
+      - "7081:7081"
     restart: unless-stopped
 
   # === Sidecar: continuous export of transcripts to review JSONL ===

@@ -3,7 +3,8 @@ import React, { useRef, useState, useEffect } from 'react';
 import { useParams, useSearchParams, useNavigate } from 'react-router-dom';
 import { getWsURL, getStableSessionId } from '../utils/ws';
 import SuggestionsModal from '../components/ai-waiter/SuggestionsModal';
-import TrayModal from '../components/ai-waiter/TrayModal';
+import TrayModal from '../components/ai-waiter/CartModal';
+import CartFab from '../components/ai-waiter/CartFab';
 import type { WaiterIntent, AiReplyMeta } from '../types/waiter-intents';
 import { normalizeIntent, localHeuristicIntent } from '../utils/intent-routing';
 
@@ -938,78 +939,78 @@ export default function AiWaiterHome() {
     }
   }
 
- async function stopListening() {
-  stoppingRef.current = true;
+  async function stopListening() {
+    stoppingRef.current = true;
 
-  // Tell backend we're done, but don't block on replies
-  try {
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      const sid = getStableSessionId();
-      wsRef.current.send(JSON.stringify({ t: "end", sid }));
+    // Tell backend we're done, but don't block on replies
+    try {
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        const sid = getStableSessionId();
+        wsRef.current.send(JSON.stringify({ t: 'end', sid }));
+      }
+    } catch {
+      // ignore
     }
-  } catch {
-    // ignore
-  }
 
-  // Stop mic level loop
-  try {
-    if (levelRafRef.current) cancelAnimationFrame(levelRafRef.current);
-  } catch {}
-  levelRafRef.current = null;
+    // Stop mic level loop
+    try {
+      if (levelRafRef.current) cancelAnimationFrame(levelRafRef.current);
+    } catch {}
+    levelRafRef.current = null;
 
-  // Tear down analyser
-  try {
-    analyserRef.current?.disconnect();
-  } catch {}
-  analyserRef.current = null;
-  timeDataRef.current = null;
-  setMicLevel(0);
+    // Tear down analyser
+    try {
+      analyserRef.current?.disconnect();
+    } catch {}
+    analyserRef.current = null;
+    timeDataRef.current = null;
+    setMicLevel(0);
 
-  // Tear down audio graph
-  try {
-    sourceRef.current?.disconnect();
-  } catch {}
-  sourceRef.current = null;
+    // Tear down audio graph
+    try {
+      sourceRef.current?.disconnect();
+    } catch {}
+    sourceRef.current = null;
 
-  try {
-    if (nodeRef.current?.port) {
-      try {
-        nodeRef.current.port.close();
-      } catch {}
-    }
-    nodeRef.current?.disconnect();
-  } catch {}
-  nodeRef.current = null;
-
-  // Stop media tracks
-  try {
-    streamRef.current?.getTracks().forEach((t) => t.stop());
-  } catch {}
-  streamRef.current = null;
-
-  // Close AudioContext
-  try {
-    await ctxRef.current?.close();
-  } catch {}
-  ctxRef.current = null;
-
-  // Let existing ws.onmessage handle late ai_reply,
-  // but don't leave sockets hanging forever.
-  try {
-    if (wsRef.current) {
-      const ws = wsRef.current;
-      wsRef.current = null; // ✅ clear ref so mic can restart next time
-      setTimeout(() => {
+    try {
+      if (nodeRef.current?.port) {
         try {
-          if (ws.readyState === WebSocket.OPEN) ws.close();
+          nodeRef.current.port.close();
         } catch {}
-      }, 8000); // safety timeout
-    }
-  } catch {}
+      }
+      nodeRef.current?.disconnect();
+    } catch {}
+    nodeRef.current = null;
 
-  setListening(false);
-  setUiMode("idle");
-}
+    // Stop media tracks
+    try {
+      streamRef.current?.getTracks().forEach((t) => t.stop());
+    } catch {}
+    streamRef.current = null;
+
+    // Close AudioContext
+    try {
+      await ctxRef.current?.close();
+    } catch {}
+    ctxRef.current = null;
+
+    // Let existing ws.onmessage handle late ai_reply,
+    // but don't leave sockets hanging forever.
+    try {
+      if (wsRef.current) {
+        const ws = wsRef.current;
+        wsRef.current = null; // ✅ clear ref so mic can restart next time
+        setTimeout(() => {
+          try {
+            if (ws.readyState === WebSocket.OPEN) ws.close();
+          } catch {}
+        }, 8000); // safety timeout
+      }
+    } catch {}
+
+    setListening(false);
+    setUiMode('idle');
+  }
 
   // UI mapping
   const bg = '#FFF8FA';
@@ -1277,6 +1278,12 @@ export default function AiWaiterHome() {
           const finalIntent = intent ?? resolveIntent(m, replyText);
           handleIntentRouting(finalIntent);
         }}
+      />
+
+      {/* Floating minimized cart button (only when tray is closed & cart has items) */}
+      <CartFab
+        trayOpen={showTray}
+        onOpenTray={() => setShowTray(true)}
       />
     </div>
   );

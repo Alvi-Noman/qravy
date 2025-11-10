@@ -11,6 +11,7 @@ import React, {
   PropsWithChildren,
 } from 'react';
 import { useLocation } from 'react-router-dom';
+import { loadCart as apiLoadCart, saveCart as apiSaveCart, CartItemDTO } from '../api/storefront';
 
 /* -------------------------------------------------------------------------- */
 /*                                Type Definitions                            */
@@ -32,7 +33,7 @@ export type AddItemInput = Omit<CartItem, 'qty'> & { qty?: number };
 
 /**
  * CartState is persisted.
- * `updatedAt` is used as TTL marker so voice/cart stays short-lived (~15 minutes).
+ * `updatedAt` is used as TTL marker so voice/cart stays short-lived (~10 minutes).
  */
 type CartState = {
   items: CartItem[];
@@ -70,21 +71,51 @@ function isRestaurantRoutePath(pathname: string): boolean {
   return /^\/t\/[^/]+/.test(pathname);
 }
 
-function deriveSubdomain(pathname: string): string | null {
+function deriveSubdomain(pathname: string, search: string): string | null {
+  // 1) /t/:subdomain/...
   const m = pathname.match(/^\/t\/([^/]+)/);
   if (m) return decodeURIComponent(m[1]);
+
+  // 2) ?subdomain=...
+  if (search) {
+    try {
+      const params = new URLSearchParams(search);
+      const fromQuery = params.get('subdomain');
+      if (fromQuery) return decodeURIComponent(fromQuery);
+    } catch {
+      // ignore malformed search
+    }
+  }
+
+  // 3) window.__STORE__
   if (typeof window !== 'undefined') {
     return (window as any).__STORE__?.subdomain ?? null;
   }
+
   return null;
 }
 
-function deriveBranch(pathname: string): string | null {
+function deriveBranch(pathname: string, search: string): string | null {
+  // 1) /t/:subdomain/branch/:branch
   const m = pathname.match(/^\/t\/[^/]+\/branch\/([^/]+)/);
   if (m) return decodeURIComponent(m[1]);
+
+  // 2) ?branch=...
+  if (search) {
+    try {
+      const params = new URLSearchParams(search);
+      const fromQuery = params.get('branch');
+      if (fromQuery) return decodeURIComponent(fromQuery);
+    } catch {
+      // ignore malformed search
+    }
+  }
+
+  // 3) window.__STORE__
   if (typeof window !== 'undefined') {
     return (window as any).__STORE__?.branch ?? null;
   }
+
   return null;
 }
 
@@ -105,8 +136,21 @@ function cartStorageKey(subdomain: string | null, branch: string | null) {
   return `tastebud:cart:${subdomain ?? 'anon'}:${branch ?? 'default'}`;
 }
 
-/* TTL: 15 minutes */
-const CART_TTL_MS = 15 * 60 * 1000;
+/* TTL: 10 minutes (in ms) */
+const CART_TTL_MS = 10 * 60 * 1000;
+
+/* --------------------------- Session ID helper ---------------------------- */
+
+function getCartSessionId(): string | null {
+  if (typeof window === 'undefined') return null;
+  const key = 'tastebud:cartSessionId';
+  let sid = window.localStorage.getItem(key);
+  if (!sid) {
+    sid = `${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`;
+    window.localStorage.setItem(key, sid);
+  }
+  return sid;
+}
 
 /* -------------------------------------------------------------------------- */
 /*                                   Reducer                                  */
@@ -147,10 +191,7 @@ function reducer(state: CartState, action: Action): CartState {
         next[idx] = { ...next[idx], qty: next[idx].qty + qty };
         return withUpdatedAt(next.filter((it) => it.qty > 0), action.now);
       }
-      return withUpdatedAt(
-        [...state.items, { ...action.payload, qty }],
-        action.now,
-      );
+      return withUpdatedAt([...state.items, { ...action.payload, qty }], action.now);
     }
 
     case 'DEL': {
@@ -185,11 +226,11 @@ function reducer(state: CartState, action: Action): CartState {
 
 export function CartProvider({ children }: PropsWithChildren<{}>) {
   const location = useLocation();
-  const pathname = location.pathname;
+  const { pathname, search } = location;
 
   const isRestaurantRoute = isRestaurantRoutePath(pathname);
-  const subdomain = deriveSubdomain(pathname);
-  const branch = deriveBranch(pathname);
+  const subdomain = deriveSubdomain(pathname, search);
+  const branch = deriveBranch(pathname, search);
 
   const derivedChannel = deriveChannel(pathname);
   const [freeChannel, setFreeChannel] = useState<Channel>(() => {
@@ -204,60 +245,165 @@ export function CartProvider({ children }: PropsWithChildren<{}>) {
   const storageKey = cartStorageKey(subdomain, branch);
 
   const initialLoaded = useRef(false);
+  const cartSessionIdRef = useRef<string | null>(null);
+
   const [state, dispatch] = useReducer(reducer, {
     items: [],
     updatedAt: null,
   });
 
-  /* --------------------------- Load from storage --------------------------- */
+  /* --------------------------- Load from storage + API -------------------- */
 
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem(storageKey);
-      if (raw) {
-        const parsed = JSON.parse(raw) as Partial<CartState> | { items: CartItem[] };
+    let cancelled = false;
 
-        const items = Array.isArray((parsed as any).items)
-          ? ((parsed as any).items as CartItem[])
-          : [];
+    const hydrate = async () => {
+      const now = Date.now();
 
-        const now = Date.now();
-        const updatedAt =
-          typeof (parsed as any).updatedAt === 'number'
-            ? (parsed as any).updatedAt
-            : null;
+      // Ensure we have a stable per-device/session id
+      if (typeof window !== 'undefined') {
+        cartSessionIdRef.current = getCartSessionId();
+      }
 
-        const isFresh =
-          updatedAt !== null ? now - updatedAt <= CART_TTL_MS : true;
+      // 1) Local storage baseline
+      let localItems: CartItem[] = [];
+      let localUpdatedAt: number | null = null;
 
-        if (items.length && isFresh) {
-          dispatch({
-            type: 'HYDRATE',
-            payload: items,
-            now: updatedAt ?? now,
-          });
-        } else {
-          // Stale or invalid → start empty
+      try {
+        const raw = localStorage.getItem(storageKey);
+        if (raw) {
+          const parsed = JSON.parse(raw) as Partial<CartState> | { items: CartItem[] };
+
+          const items = Array.isArray((parsed as any).items)
+            ? ((parsed as any).items as CartItem[])
+            : [];
+
+          const updatedAt =
+            typeof (parsed as any).updatedAt === 'number'
+              ? (parsed as any).updatedAt
+              : null;
+
+          const isFresh =
+            updatedAt !== null ? now - updatedAt <= CART_TTL_MS : true;
+
+          if (items.length && isFresh) {
+            localItems = items;
+            localUpdatedAt = updatedAt ?? now;
+            if (!cancelled) {
+              dispatch({
+                type: 'HYDRATE',
+                payload: items,
+                now: localUpdatedAt,
+              });
+            }
+          } else if (!cancelled) {
+            dispatch({ type: 'CLEAR', now });
+          }
+        } else if (!cancelled) {
+          dispatch({ type: 'CLEAR', now });
+        }
+      } catch {
+        if (!cancelled) {
           dispatch({ type: 'CLEAR', now });
         }
       }
-    } catch {
-      // ignore parse errors
-    }
-    initialLoaded.current = true;
-    // storageKey changes when tenant/branch changes → new scope, so we re-run
-  }, [storageKey]);
 
-  /* --------------------------- Persist to storage -------------------------- */
+      // 2) Remote cart (Mongo) – only for public restaurant routes with subdomain
+      const sessionId = cartSessionIdRef.current;
+      if (!subdomain || !sessionId) {
+        if (!cancelled) {
+          initialLoaded.current = true;
+        }
+        return;
+      }
+
+      try {
+        const remote = await apiLoadCart({
+          subdomain,
+          branch: branch ?? undefined,
+          sessionId,
+        });
+
+        if (!remote || !Array.isArray(remote.items) || !remote.items.length) {
+          if (!cancelled) {
+            initialLoaded.current = true;
+          }
+          return;
+        }
+
+        const remoteUpdatedAt =
+          typeof remote.updatedAt === 'number' ? remote.updatedAt : null;
+
+        const now2 = Date.now();
+        const remoteFresh =
+          remoteUpdatedAt !== null ? now2 - remoteUpdatedAt <= CART_TTL_MS : true;
+
+        const useRemote =
+          remoteFresh &&
+          remote.items.length > 0 &&
+          (
+            localUpdatedAt === null ||
+            (remoteUpdatedAt !== null && remoteUpdatedAt >= localUpdatedAt)
+          );
+
+        if (!cancelled && useRemote) {
+          // Cast from DTO to CartItem (same shape)
+          const normalized = remote.items as CartItem[];
+          dispatch({
+            type: 'HYDRATE',
+            payload: normalized,
+            now: remoteUpdatedAt ?? now2,
+          });
+        }
+      } catch {
+        // ignore remote errors
+      } finally {
+        if (!cancelled) {
+          initialLoaded.current = true;
+        }
+      }
+    };
+
+    hydrate();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [storageKey, subdomain, branch]);
+
+  /* --------------------------- Persist to storage + API ------------------- */
 
   useEffect(() => {
     if (!initialLoaded.current) return;
+
+    // Local storage
     try {
       localStorage.setItem(storageKey, JSON.stringify(state));
     } catch {
-      // ignore quota errors
+      // ignore quota / serialization errors
     }
-  }, [state, storageKey]);
+
+    // Remote (Mongo) – best-effort, only if we have identifiers
+    const sessionId =
+      cartSessionIdRef.current || getCartSessionId();
+    if (!sessionId || !subdomain) {
+      return;
+    }
+
+    const items = state.items || [];
+    const updatedAt = state.updatedAt ?? Date.now();
+
+    // fire-and-forget
+    apiSaveCart({
+      subdomain,
+      branch: branch ?? undefined,
+      sessionId,
+      items: items as CartItemDTO[],
+      updatedAt,
+    }).catch(() => {
+      // ignore errors
+    });
+  }, [state, storageKey, subdomain, branch]);
 
   /* ------------------------------- API methods ----------------------------- */
 

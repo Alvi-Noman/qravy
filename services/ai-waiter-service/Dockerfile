@@ -31,9 +31,10 @@ RUN python -m pip install --upgrade pip && \
       huggingface-hub==0.36.0 \
       tokenizers==0.15.2 \
       onnxruntime==1.23.2 \
-      av>=12.0.0 \
+      "av>=12.0.0" \
       httpx==0.27.2 \
-      rapidfuzz>=3.9.0 && \
+      "rapidfuzz>=3.9.0" \
+      aiohttp==3.9.5 && \
     pip install --no-cache-dir --no-deps faster-whisper==1.0.1
 
 COPY . .

@@ -11,6 +11,7 @@ import httpx
 from typing import Dict, Any, List, Tuple, Optional, Deque
 from bson import ObjectId  # ✅
 from collections import defaultdict, deque
+from aiohttp import web  # ✅ HTTP server for cart API
 
 # ✅ rolling context/state helpers (same folder)
 from session_ctx import (
@@ -29,6 +30,9 @@ from normalizer import normalize_text
 
 # ✅ Local speech-to-text (PCM → text)
 from stt import stt_np_float32
+
+# ✅ Cart persistence helper
+from cart_store import save_cart, load_cart
 
 # ---------- Config ----------
 
@@ -166,6 +170,84 @@ async def writer():
 
 
 WRITER_TASK = None
+
+# ---------- NEW: Minimal HTTP API for cart persistence ----------
+
+def _cart_cors_headers() -> Dict[str, str]:
+    return {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type",
+    }
+
+
+async def handle_cart_load(request: web.Request) -> web.StreamResponse:
+    try:
+        tenant = request.query.get("tenant") or "unknown"
+        sid = (
+            request.query.get("sessionId")
+            or request.query.get("sid")
+            or "anon"
+        )
+        items = load_cart(tenant, sid)
+        return web.json_response(
+            {"ok": True, "items": items},
+            headers=_cart_cors_headers(),
+        )
+    except Exception as e:
+        print("[ai-waiter-service] ❌ cart_load error:", e)
+        return web.json_response(
+            {"ok": False, "error": str(e)},
+            status=500,
+            headers=_cart_cors_headers(),
+        )
+
+
+async def handle_cart_save(request: web.Request) -> web.StreamResponse:
+    try:
+        data = await request.json()
+        tenant = data.get("tenant") or "unknown"
+        sid = data.get("sessionId") or "anon"
+        items = data.get("items") or []
+        save_cart(tenant, sid, items)
+        return web.json_response(
+            {"ok": True},
+            headers=_cart_cors_headers(),
+        )
+    except Exception as e:
+        print("[ai-waiter-service] ❌ cart_save error:", e)
+        return web.json_response(
+            {"ok": False, "error": str(e)},
+            status=500,
+            headers=_cart_cors_headers(),
+        )
+
+
+async def handle_cart_options(request: web.Request) -> web.StreamResponse:
+    # CORS preflight handler for /cart/load and /cart/save
+    return web.Response(
+        status=204,
+        headers=_cart_cors_headers(),
+    )
+
+
+async def start_http_server():
+    app = web.Application()
+
+    # CORS / preflight
+    app.router.add_route("OPTIONS", "/cart/load", handle_cart_options)
+    app.router.add_route("OPTIONS", "/cart/save", handle_cart_options)
+
+    # Actual endpoints
+    app.router.add_get("/cart/load", handle_cart_load)
+    app.router.add_post("/cart/save", handle_cart_save)
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.environ.get("CART_HTTP_PORT", "7081"))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    print(f"[ai-waiter-service] 🛒 Cart HTTP API listening on :{port}")
 
 # ---------- Helpers ----------
 
@@ -1119,7 +1201,6 @@ async def handle_conn(ws: WebSocketServerProtocol):
                     try:
                         while True:
                             work_q.get_nowait()
-                        # noqa
                     except asyncio.QueueEmpty:
                         pass
                     try:
@@ -1632,6 +1713,9 @@ async def handle_conn(ws: WebSocketServerProtocol):
 async def main():
     global WRITER_TASK
     WRITER_TASK = asyncio.create_task(writer())
+
+    # Start Cart HTTP API in background
+    asyncio.create_task(start_http_server())
 
     import signal
     loop = asyncio.get_running_loop()

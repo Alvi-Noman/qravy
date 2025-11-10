@@ -10,6 +10,11 @@ const api = axios.create({
   withCredentials: true, // default; override per-request for public routes
 });
 
+// Dedicated base for cart API (ai-waiter-service)
+const CART_API_BASE =
+  (typeof window !== 'undefined' && (window as any).__STORE__?.cartApiBase) ||
+  'http://localhost:7081';
+
 export type Channel = 'dine-in' | 'online';
 
 export type ListQuery = {
@@ -53,7 +58,7 @@ export function listMenu(channel?: Channel, locationId?: string): Promise<v1.Men
 export function listMenu(query?: ListQuery): Promise<v1.MenuItemDTO[]>;
 export async function listMenu(
   a?: Channel | ListQuery,
-  b?: string
+  b?: string,
 ): Promise<v1.MenuItemDTO[]> {
   // Normalize args
   const query: ListQuery =
@@ -91,11 +96,14 @@ export async function listMenu(
 /* ------------------------------- CATEGORIES ------------------------------- */
 
 // Overloads: keep old signature (channel, locationId) working
-export function listCategories(channel?: Channel, locationId?: string): Promise<v1.CategoryDTO[]>;
+export function listCategories(
+  channel?: Channel,
+  locationId?: string,
+): Promise<v1.CategoryDTO[]>;
 export function listCategories(query?: ListQuery): Promise<v1.CategoryDTO[]>;
 export async function listCategories(
   a?: Channel | ListQuery,
-  b?: string
+  b?: string,
 ): Promise<v1.CategoryDTO[]> {
   // Normalize args
   const query: ListQuery =
@@ -126,4 +134,89 @@ export async function listCategories(
   // Fallback to private/admin endpoint (current behavior)
   const { data } = await api.get('/auth/categories', { params });
   return (data?.items as v1.CategoryDTO[] | undefined) ?? [];
+}
+
+/* ------------------------------- CART (NEW) ------------------------------- */
+
+export type CartItemDTO = {
+  id: string;
+  name: string;
+  price: number;
+  qty: number;
+  variation?: string;
+  notes?: string;
+  imageUrl?: string;
+};
+
+export type CartSnapshot = {
+  items: CartItemDTO[];
+  updatedAt?: number | null;
+};
+
+/**
+ * Load cart for a given public storefront session.
+ * Best-effort: returns null if nothing or on error.
+ */
+export async function loadCart(params: {
+  subdomain?: string | null;
+  branch?: string | null; // currently unused by backend, safe to keep
+  sessionId: string;
+}): Promise<CartSnapshot | null> {
+  try {
+    const { data } = await axios.get(`${CART_API_BASE}/cart/load`, {
+      params: {
+        tenant: params.subdomain ?? undefined,
+        sid: params.sessionId, // ✅ matches server.py
+      },
+      withCredentials: false,
+    });
+
+    if (!data || typeof data !== 'object' || (data as any).ok !== true) {
+      return null;
+    }
+
+    const items = Array.isArray((data as any).items)
+      ? ((data as any).items as CartItemDTO[])
+      : [];
+
+    if (!items.length) return null;
+
+    const updatedAt =
+      typeof (data as any).updatedAt === 'number'
+        ? (data as any).updatedAt
+        : null;
+
+    return { items, updatedAt };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Save cart snapshot for a given public storefront session.
+ * Fire-and-forget; silent on failure.
+ */
+export async function saveCart(payload: {
+  subdomain?: string | null;
+  branch?: string | null; // unused by backend, safe to keep
+  sessionId: string;
+  items: CartItemDTO[];
+  updatedAt?: number | null;
+}): Promise<void> {
+  try {
+    await axios.post(
+      `${CART_API_BASE}/cart/save`,
+      {
+        tenant: payload.subdomain ?? undefined,
+        sessionId: payload.sessionId, // ✅ matches server.py
+        items: payload.items ?? [],
+        // updatedAt is optional; backend currently ignores it safely
+      },
+      {
+        withCredentials: false,
+      },
+    );
+  } catch {
+    // best-effort; ignore errors
+  }
 }

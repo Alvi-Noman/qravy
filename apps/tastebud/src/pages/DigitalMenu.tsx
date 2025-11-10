@@ -12,7 +12,8 @@ import RestaurantSkeleton from '../components/RestaurantSkeleton';
 import ChannelSwitch from '../components/ChannelSwitch';
 import MicInputBar from '../components/ai-waiter/MicInputBar';
 import SuggestionsModal from '../components/ai-waiter/SuggestionsModal';
-import TrayModal from '../components/ai-waiter/TrayModal';
+import TrayModal from '../components/ai-waiter/CartModal';
+import CartFab from '../components/ai-waiter/CartFab';
 import { useCart } from '../context/CartContext';
 import type { AiReplyMeta, WaiterIntent } from '../types/waiter-intents';
 import { normalizeIntent, localHeuristicIntent } from '../utils/intent-routing';
@@ -866,6 +867,12 @@ export default function DigitalMenu() {
           console.log('[AI PAGE][TrayModal.onIntent]', { intent, meta: m, replyText });
           handleIntent(intent, m, replyText);
         }}
+      />
+
+      {/* Floating minimized cart button (only when tray is closed & cart has items) */}
+      <CartFab
+        trayOpen={showTray}
+        onOpenTray={() => setShowTray(true)}
       />
 
       {/* Sticky mic bar (bottom) */}
