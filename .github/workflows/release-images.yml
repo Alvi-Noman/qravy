@@ -38,6 +38,7 @@ jobs:
       RENDER_HOOK_API_GATEWAY: ${{ secrets.RENDER_DEPLOY_HOOK_API_GATEWAY }}
       RENDER_HOOK_AUTH:        ${{ secrets.RENDER_DEPLOY_HOOK_AUTH }}
       RENDER_HOOK_UPLOAD:      ${{ secrets.RENDER_DEPLOY_HOOK_UPLOAD }}
+      RENDER_HOOK_STOREFRONT:  ${{ secrets.RENDER_DEPLOY_HOOK_STOREFRONT }}
 
     strategy:
       fail-fast: false
@@ -55,6 +56,10 @@ jobs:
             file: services/upload-service/Dockerfile
             context: .
             image_suffix: qravy-upload
+          - name: storefront-host
+            file: services/storefront-host/Dockerfile
+            context: .
+            image_suffix: qravy-storefront-host
 
     steps:
       - name: Checkout
@@ -145,6 +150,7 @@ jobs:
             api-gateway) HOOK="${RENDER_HOOK_API_GATEWAY}";;
             auth)        HOOK="${RENDER_HOOK_AUTH}";;
             upload)      HOOK="${RENDER_HOOK_UPLOAD}";;
+            storefront-host) HOOK="${RENDER_HOOK_STOREFRONT}";;
           esac
 
           if [ -z "$HOOK" ]; then

@@ -750,9 +750,7 @@ async def _classify_intent_llm(
         for k in ("timeOfDay", "channel", "tenant", "branch", "languageHint"):
             if k in context:
                 ctx[k] = context[k]
-        locked = context.get("lockedIntent") or context.get(
-            "locked_intent"
-        )
+        locked = context.get("lockedIntent") or context.get("locked_intent")
         if locked:
             ctx["lockedIntentUpstream"] = locked
 
@@ -2367,14 +2365,62 @@ def _fallback_menu_reply(
         "suggestions": suggestions,
         "upsell": [],
         "decision": {
-            "showSuggestionsModal": locked_intent
-            == "suggestions",
+            "showSuggestionsModal": locked_intent == "suggestions",
             "showUpsellTray": False,
         },
         "cartOps": [],
         "clearCart": False,
         "fallback": True,
     }
+
+
+# --------------------- Confirmation helpers ---------------------
+
+
+def _was_last_bot_asking_confirm(history: Optional[List[Dict[str, str]]]) -> bool:
+    if not history:
+        return False
+    for m in reversed(history):
+        if m.get("role") != "assistant":
+            continue
+        txt = (m.get("content") or "").lower()
+        patterns = [
+            "অর্ডারটা কি কনফার্ম করবো",
+            "অর্ডার কনফার্ম করবো",
+            "অর্ডার কন্ফাম করবো",
+            "অর্ডার কনফাম করবো",
+            "confirm your order",
+            "should i confirm",
+            "shall i confirm",
+        ]
+        return any(p in txt for p in patterns)
+    return False
+
+
+def _is_yes_like_reply(text: str) -> bool:
+    if not text:
+        return False
+    t = text.strip().lower()
+    if not t or len(t) > 32:
+        return False
+
+    yes_tokens = [
+        "yes", "y", "yeah", "yep", "ok", "okay", "okk", "okey",
+        "জি", "জী", "হ্যাঁ", "হ্যা", "হ", "হুম", "ঠিক আছে",
+    ]
+    confirm_tokens = [
+        "confirm", "konfirm", "konfarm", "confam", "konfam",
+        "কনফাম", "কন্ফাম", "কনফার্ম", "কন্ফার্ম",
+    ]
+
+    if any(t == yt or t.startswith(yt) for yt in yes_tokens):
+        return True
+
+    if any(yt in t for yt in yes_tokens) and any(ct in t for ct in confirm_tokens):
+        # e.g. "হ্যাঁ কনফার্ম করেন", "ok confirm"
+        return True
+
+    return False
 
 
 # ----------------------------- Public API -----------------------------
@@ -2397,6 +2443,53 @@ async def generate_reply(
     upsell_candidates: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     transcript = _clamp(transcript or "", 2000)
+
+    ctx = context or {}
+    snapshot = ctx.get("contextSnapshot") or ctx
+    cart_items = _extract_cart_from_context(snapshot)
+
+    # Contextual + explicit confirmation
+    if cart_items and _was_last_bot_asking_confirm(history) and (
+        _is_yes_like_reply(transcript) or _is_confirm_message(transcript)
+    ):
+        lang = _resolve_lang_hint(locale, transcript)
+        reply_text = "আপনার অর্ডার কনফার্ম করা হয়েছে।" if lang == "bn" else "Your order is confirmed."
+
+        meta: Dict[str, Any] = {
+            "model": OPENAI_CHAT_MODEL,
+            "language": lang,
+            "intent": "order",
+            "lockedIntent": "order",
+            "items": cart_items,
+            "suggestions": [],
+            "upsell": [],
+            "decision": {
+                "showSuggestionsModal": False,
+                "showUpsellTray": False,
+                "openConfirmationPage": True,
+            },
+            "notes": "confirmed_via_contextual_yes_or_confirm",
+            "tenant": tenant,
+            "branch": branch,
+            "channel": channel,
+            "conversationId": conversation_id,
+            "userId": user_id,
+            "fallback": False,
+            "ctxLen": len(history or []),
+            "stateLen": len(dialog_state or {}) if isinstance(dialog_state, dict) else 0,
+            "hasCandidates": False,
+            "contextSnapshot": context or None,
+            "cartOps": [],
+            "clearCart": False,
+        }
+
+        voice_reply_text = _build_voice_reply_text(reply_text, language=lang, model_obj={})
+        if voice_reply_text:
+            meta["voiceReplyText"] = voice_reply_text
+
+        print("[brain] final replyText:", reply_text)
+        print("[brain] final decision.openConfirmationPage:", True)
+        return {"replyText": reply_text, "meta": meta}
 
     if not transcript:
         lang = "en"
@@ -2444,63 +2537,6 @@ async def generate_reply(
             )
         except Exception:
             print("[brain] final meta.suggestions: <error printing>")
-        return {
-            "replyText": reply_text,
-            "meta": meta,
-        }
-
-    # --- Global confirmation shortcut (pre-LLM, any depth) ---
-    ctx = context or {}
-    snapshot = ctx.get("contextSnapshot") or ctx
-    cart_items = _extract_cart_from_context(snapshot)
-
-    if _is_confirm_message(transcript) and cart_items:
-        lang = _resolve_lang_hint(locale, transcript)
-        if lang == "bn":
-            reply_text = "আপনার অর্ডার কনফার্ম করা হয়েছে।"
-        else:
-            reply_text = "Your order is confirmed."
-
-        meta: Dict[str, Any] = {
-            "model": OPENAI_CHAT_MODEL,
-            "language": lang,
-            "intent": "order",
-            "lockedIntent": "order",
-            "items": cart_items,
-            "suggestions": [],
-            "upsell": [],
-            "decision": {
-                "showSuggestionsModal": False,
-                "showUpsellTray": False,
-                "openConfirmationPage": True,
-            },
-            "notes": "confirmed_via_global_shortcut",
-            "tenant": tenant,
-            "branch": branch,
-            "channel": channel,
-            "conversationId": conversation_id,
-            "userId": user_id,
-            "fallback": False,
-            "ctxLen": len(history or []),
-            "stateLen": len(dialog_state or {}) if isinstance(dialog_state, dict) else 0,
-            "hasCandidates": False,
-            "contextSnapshot": context or None,
-            "cartOps": [],
-            "clearCart": False,
-        }
-
-        voice_reply_text = _build_voice_reply_text(
-            reply_text,
-            language=lang,
-            model_obj={},
-        )
-        if voice_reply_text:
-            meta["voiceReplyText"] = voice_reply_text
-
-        print("[brain] final replyText:", reply_text)
-        print("[brain] final voiceReplyText:", meta.get("voiceReplyText", ""))
-        print("[brain] final decision.openConfirmationPage:", True)
-
         return {
             "replyText": reply_text,
             "meta": meta,
@@ -2727,88 +2763,6 @@ async def generate_reply(
                     f"এগুলো সাজেস্ট করছি: {', '.join(names)}"
                     if language == "bn"
                     else "Here are some options I recommend: " + ", ".join(names)
-                )
-            else:
-                reply_text = (
-                    "এগুলো সাজেস্ট করছি:"
-                    if language == "bn"
-                    else "Here are some options I recommend:"
-                )
-
-        if intent in ("menu", "chitchat") and not reply_text:
-            reply_text = "ঠিক আছে।" if language == "bn" else "Alright."
-
-        elif intent == "order":
-            # Non-Bangla order → simple deterministic from cartOps/items
-            if is_conf and (items or cart_items):
-                reply_text = "Your order is confirmed."
-                decision["openConfirmationPage"] = True
-            elif cart_ops or items:
-                last_intent = _extract_last_intent(
-                    context,
-                    dialog_state,
-                )
-                reply_text = _build_reply_from_cart_ops(
-                    cart_ops=cart_ops,
-                    items=items,
-                    upsell=upsell,
-                    transcript=transcript,
-                    language=language,
-                    last_intent=last_intent,
-                )
-            # else: keep whatever minimal or fallback reply_text (rare edge)
-
-        elif intent == "order":
-            # Non-Bangla order → simple deterministic from cartOps/items
-            if is_conf and (items or cart_items):
-                reply_text = "Your order is confirmed."
-                decision["openConfirmationPage"] = True
-            elif cart_ops or items:
-                last_intent = _extract_last_intent(
-                    context,
-                    dialog_state,
-                )
-                reply_text = _build_reply_from_cart_ops(
-                    cart_ops=cart_ops,
-                    items=items,
-                    upsell=upsell,
-                    transcript=transcript,
-                    language=language,
-                    last_intent=last_intent,
-                )
-            # else: keep whatever minimal or fallback reply_text (rare edge)
-
-            elif intent == "order":
-                # Non-Bangla order → simple deterministic from cartOps/items
-                if is_conf and (items or cart_items):
-                    reply_text = "Your order is confirmed."
-                    decision["openConfirmationPage"] = True
-                elif cart_ops or items:
-                    last_intent = _extract_last_intent(
-                        context,
-                        dialog_state,
-                    )
-                    reply_text = _build_reply_from_cart_ops(
-                        cart_ops=cart_ops,
-                        items=items,
-                        upsell=upsell,
-                        transcript=transcript,
-                        language=language,
-                        last_intent=last_intent,
-                    )
-
-            # else: keep whatever minimal or fallback reply_text (rare edge)
-
-        # Non-order intents: keep previous behavior if reply_text empty
-        if intent == "suggestions" and suggestions and not reply_text:
-            names = [s["title"] for s in suggestions if s.get("title")]
-            if names:
-                reply_text = (
-                    f"এগুলো সাজেস্ট করছি: {', '.join(names)}"
-                    if language == "bn"
-                    else "Here are some options I recommend: " + ", ".join(
-                        names
-                    )
                 )
             else:
                 reply_text = (
