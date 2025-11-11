@@ -3,7 +3,9 @@ import axios from 'axios';
 import type { v1 } from '../../../../packages/shared/src/types';
 
 const baseURL =
-  (typeof window !== 'undefined' && (window as any).__STORE__?.apiBase) || '/api/v1';
+  (import.meta.env.VITE_API_URL as string | undefined) ||
+  ((typeof window !== 'undefined' && (window as any).__STORE__?.apiBase) as string | undefined) ||
+  '/api/v1';
 
 const api = axios.create({
   baseURL,
