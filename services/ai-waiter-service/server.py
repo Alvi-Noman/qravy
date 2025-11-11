@@ -1573,28 +1573,30 @@ async def handle_conn(ws: WebSocketServerProtocol):
                         tenant=tenant_hint,
                         branch=branch_hint,
                         channel=channel_hint,
-                        lang_hint=(
-                            session_lang
-                            or last_detected_lang
-                        ),
+                        lang_hint=(session_lang or last_detected_lang),
                         dialog_state=dialog_state,
                         user_tz=user_tz,
                         climate_bucket=climate_bucket,
                         user_local_hour=user_local_hour,
                     )
-                    suggestion_candidates = (
-                        build_suggestion_candidates(
-                            snapshot, ctx, limit=40
-                        )
-                    )
-                    upsell_candidates = (
-                        build_upsell_candidates(
-                            snapshot,
-                            ctx,
-                            dialog_state,
-                            limit=16,
-                        )
-                    )
+
+                    # 🔗 NEW: include persisted cart so brain can merge quantities
+                    cart_items = load_cart(tenant_hint or "unknown", session_id or "anon") or []
+                    ctx["cartItems"] = [
+                        {
+                            "itemId": (
+                                it.get("itemId")
+                                or it.get("id")
+                                or it.get("_id")
+                            ),
+                            "quantity": int(it.get("qty") or it.get("quantity") or 0),
+                        }
+                        for it in cart_items
+                        if int(it.get("qty") or it.get("quantity") or 0) > 0
+                    ]
+
+                    suggestion_candidates = build_suggestion_candidates(snapshot, ctx, limit=40)
+                    upsell_candidates = build_upsell_candidates(snapshot, ctx, dialog_state, limit=16)
 
                     last_ai = await call_brain_and_push(
                         ws,

@@ -11,7 +11,7 @@ import React, {
   PropsWithChildren,
 } from 'react';
 import { useLocation } from 'react-router-dom';
-import { loadCart as apiLoadCart, saveCart as apiSaveCart, CartItemDTO } from '../api/storefront';
+import { loadCart as apiLoadCart, saveCart as apiSaveCart } from '../api/cart';
 
 /* -------------------------------------------------------------------------- */
 /*                                Type Definitions                            */
@@ -308,7 +308,7 @@ export function CartProvider({ children }: PropsWithChildren<{}>) {
         }
       }
 
-      // 2) Remote cart (Mongo) – only for public restaurant routes with subdomain
+      // 2) Remote cart (Mongo via ai-waiter-service) – only for public restaurant routes with subdomain
       const sessionId = cartSessionIdRef.current;
       if (!subdomain || !sessionId) {
         if (!cancelled) {
@@ -318,11 +318,7 @@ export function CartProvider({ children }: PropsWithChildren<{}>) {
       }
 
       try {
-        const remote = await apiLoadCart({
-          subdomain,
-          branch: branch ?? undefined,
-          sessionId,
-        });
+        const remote = await apiLoadCart(subdomain, sessionId);
 
         if (!remote || !Array.isArray(remote.items) || !remote.items.length) {
           if (!cancelled) {
@@ -331,28 +327,18 @@ export function CartProvider({ children }: PropsWithChildren<{}>) {
           return;
         }
 
-        const remoteUpdatedAt =
-          typeof remote.updatedAt === 'number' ? remote.updatedAt : null;
-
         const now2 = Date.now();
-        const remoteFresh =
-          remoteUpdatedAt !== null ? now2 - remoteUpdatedAt <= CART_TTL_MS : true;
 
         const useRemote =
-          remoteFresh &&
           remote.items.length > 0 &&
-          (
-            localUpdatedAt === null ||
-            (remoteUpdatedAt !== null && remoteUpdatedAt >= localUpdatedAt)
-          );
+          (localUpdatedAt === null || !localItems.length);
 
         if (!cancelled && useRemote) {
-          // Cast from DTO to CartItem (same shape)
           const normalized = remote.items as CartItem[];
           dispatch({
             type: 'HYDRATE',
             payload: normalized,
-            now: remoteUpdatedAt ?? now2,
+            now: now2,
           });
         }
       } catch {
@@ -383,7 +369,7 @@ export function CartProvider({ children }: PropsWithChildren<{}>) {
       // ignore quota / serialization errors
     }
 
-    // Remote (Mongo) – best-effort, only if we have identifiers
+    // Remote (Mongo via ai-waiter-service) – best-effort, only if we have identifiers
     const sessionId =
       cartSessionIdRef.current || getCartSessionId();
     if (!sessionId || !subdomain) {
@@ -391,16 +377,9 @@ export function CartProvider({ children }: PropsWithChildren<{}>) {
     }
 
     const items = state.items || [];
-    const updatedAt = state.updatedAt ?? Date.now();
 
     // fire-and-forget
-    apiSaveCart({
-      subdomain,
-      branch: branch ?? undefined,
-      sessionId,
-      items: items as CartItemDTO[],
-      updatedAt,
-    }).catch(() => {
+    apiSaveCart(subdomain, sessionId, items).catch(() => {
       // ignore errors
     });
   }, [state, storageKey, subdomain, branch]);
