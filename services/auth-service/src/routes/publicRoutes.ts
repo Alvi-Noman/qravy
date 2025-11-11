@@ -26,14 +26,50 @@ function parseChannel(v: unknown): 'dine-in' | 'online' | undefined {
   if (s === 'online') return 'online';
   return undefined;
 }
+
 function visKey(ch: 'dine-in' | 'online'): 'dineIn' | 'online' {
   return ch === 'dine-in' ? 'dineIn' : 'online';
 }
+
 function baseVisible(doc: MenuItemDoc, ch: 'dine-in' | 'online'): boolean {
   const k = visKey(ch);
   const v = doc.visibility?.[k as 'dineIn' | 'online'];
   return typeof v === 'boolean' ? v : true;
 }
+
+/* -------------------------------------------------------------------------- */
+/*                             Tenant lookup helper                           */
+/* -------------------------------------------------------------------------- */
+
+async function findTenantBySubdomain(subdomain: string): Promise<TenantDoc | null> {
+  const tenants = client.db('authDB').collection<TenantDoc>('tenants');
+  return tenants.findOne({ subdomain });
+}
+
+function toPublicTenantItem(tenant: TenantDoc, fallbackSub: string) {
+  return {
+    id: tenant._id!.toString(),
+    name:
+      (tenant as any).name ??
+      (tenant as any).restaurantName ??
+      (tenant as any).title ??
+      fallbackSub,
+    subdomain: tenant.subdomain,
+    logoUrl:
+      (tenant as any).branding?.logoUrl ??
+      (tenant as any).logoUrl ??
+      (tenant as any).logo?.url ??
+      null,
+    brandColor:
+      (tenant as any).branding?.primaryColor ??
+      (tenant as any).brandColor ??
+      null,
+  };
+}
+
+/* -------------------------------------------------------------------------- */
+/*                               Public tenant                                */
+/* -------------------------------------------------------------------------- */
 
 /**
  * GET /api/v1/public/tenant?subdomain=...
@@ -51,38 +87,51 @@ router.get('/public/tenant', async (req: Request, res: Response, next: NextFunct
     }
     const { subdomain } = parsed.data;
 
-    const tenants = client.db('authDB').collection<TenantDoc>('tenants');
-    const tenant = await tenants.findOne({ subdomain });
+    const tenant = await findTenantBySubdomain(subdomain);
     if (!tenant?._id) {
       return res.status(404).json({ message: 'Tenant not found' });
     }
 
-    // Minimal public shape
-    const item = {
-      id: tenant._id.toString(),
-      name:
-        (tenant as any).name ??
-        (tenant as any).restaurantName ??
-        (tenant as any).title ??
-        subdomain,
-      subdomain: tenant.subdomain,
-      logoUrl:
-        (tenant as any).branding?.logoUrl ??
-        (tenant as any).logoUrl ??
-        (tenant as any).logo?.url ??
-        null,
-      brandColor:
-        (tenant as any).branding?.primaryColor ??
-        (tenant as any).brandColor ??
-        null,
-    };
-
+    const item = toPublicTenantItem(tenant, subdomain);
     return res.json({ item });
   } catch (err) {
     logger.error(`[PUBLIC TENANT] ${String((err as Error)?.message || err)}`);
     next(err);
   }
 });
+
+/**
+ * GET /api/v1/public/tenant/:subdomain
+ * Path-style alias: /public/tenant/chillox → same shape as query version.
+ */
+router.get(
+  '/public/tenant/:subdomain',
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const subdomain = String(req.params.subdomain || '').trim();
+      if (!subdomain) {
+        return res.status(400).json({ message: 'subdomain is required' });
+      }
+
+      const tenant = await findTenantBySubdomain(subdomain);
+      if (!tenant?._id) {
+        return res.status(404).json({ message: 'Tenant not found' });
+      }
+
+      const item = toPublicTenantItem(tenant, subdomain);
+      return res.json({ item });
+    } catch (err) {
+      logger.error(
+        `[PUBLIC TENANT PARAM] ${String((err as Error)?.message || err)}`
+      );
+      next(err);
+    }
+  }
+);
+
+/* -------------------------------------------------------------------------- */
+/*                                 Public menu                                */
+/* -------------------------------------------------------------------------- */
 
 /**
  * GET /api/v1/public/menu?subdomain=...&branch=...&channel=online|dine-in
@@ -98,12 +147,11 @@ router.get('/public/menu', async (req: Request, res: Response, next: NextFunctio
     const { subdomain, branch, channel } = parsed.data;
     const qCh = parseChannel(channel);
 
-    const tenants = client.db('authDB').collection<TenantDoc>('tenants');
-    const tenant = await tenants.findOne({ subdomain });
+    const tenant = await findTenantBySubdomain(subdomain);
     if (!tenant?._id) {
       return res.status(404).json({ message: 'Tenant not found' });
     }
-    const tenantOid = tenant._id;
+    const tenantOid = tenant._id!;
 
     // Resolve branch (location) if provided
     let locId: ObjectId | null = null;
@@ -138,7 +186,14 @@ router.get('/public/menu', async (req: Request, res: Response, next: NextFunctio
 
     const filter: any =
       locId
-        ? { tenantId: tenantOid, $or: [{ locationId: { $exists: false } }, { locationId: null }, { locationId: locId }] }
+        ? {
+            tenantId: tenantOid,
+            $or: [
+              { locationId: { $exists: false } },
+              { locationId: null },
+              { locationId: locId },
+            ],
+          }
         : { tenantId: tenantOid };
 
     const docs = await itemsCol.find(filter).sort({ createdAt: -1 }).toArray();
@@ -169,7 +224,7 @@ router.get('/public/menu', async (req: Request, res: Response, next: NextFunctio
     const catVis = catIds.length ? await catVisCol.find(catVisQuery).toArray() : [];
 
     const catOverlayByCat = new Map<string, Map<'dine-in' | 'online', boolean>>();
-    const catRemovedByCat = new Map<string, Set<'dine-in' | 'online'>>(); // <-- fixed generic here
+    const catRemovedByCat = new Map<string, Set<'dine-in' | 'online'>>();
     for (const v of catVis as any[]) {
       const catKey = v.categoryId.toString();
       const ch = v.channel as 'dine-in' | 'online';
@@ -213,6 +268,7 @@ router.get('/public/menu', async (req: Request, res: Response, next: NextFunctio
       if (!s || s === 'all') return true;
       return s === ch;
     };
+
     const catVisibleForCh = (
       catId: string | undefined,
       ch: 'dine-in' | 'online'
@@ -221,7 +277,7 @@ router.get('/public/menu', async (req: Request, res: Response, next: NextFunctio
       return catOverlayByCat.get(catId)?.get(ch);
     };
 
-    const out = [];
+    const out: any[] = [];
     for (const d of docs) {
       const itmKey = d._id!.toString();
 
@@ -233,7 +289,9 @@ router.get('/public/menu', async (req: Request, res: Response, next: NextFunctio
 
         if (cat?.scope === 'location') {
           const catLoc =
-            cat.locationId && ObjectId.isValid(cat.locationId) ? (cat.locationId as ObjectId) : null;
+            cat.locationId && ObjectId.isValid(cat.locationId)
+              ? (cat.locationId as ObjectId)
+              : null;
           if (locId && (!catLoc || catLoc.toString() !== locId.toString())) {
             continue;
           }
@@ -291,6 +349,10 @@ router.get('/public/menu', async (req: Request, res: Response, next: NextFunctio
   }
 });
 
+/* -------------------------------------------------------------------------- */
+/*                             Public categories                              */
+/* -------------------------------------------------------------------------- */
+
 /**
  * GET /api/v1/public/categories?subdomain=...&branch=...&channel=...
  * Public, read-only categories list for storefront
@@ -305,12 +367,11 @@ router.get('/public/categories', async (req: Request, res: Response, next: NextF
     const { subdomain, branch, channel } = parsed.data;
     const qCh = parseChannel(channel);
 
-    const tenants = client.db('authDB').collection<TenantDoc>('tenants');
-    const tenant = await tenants.findOne({ subdomain });
+    const tenant = await findTenantBySubdomain(subdomain);
     if (!tenant?._id) {
       return res.status(404).json({ message: 'Tenant not found' });
     }
-    const tenantOid = tenant._id;
+    const tenantOid = tenant._id!;
 
     // Resolve branch (location) if provided
     let locId: ObjectId | null = null;
@@ -372,7 +433,9 @@ router.get('/public/categories', async (req: Request, res: Response, next: NextF
     // Respect channelScope when channel is requested, remove tombstoned, include hidden flag
     const filteredByChannel = qCh
       ? catsScoped.filter(
-          (c) => (c.channelScope ?? 'all') === 'all' || c.channelScope === qCh
+          (c) =>
+            (c.channelScope ?? 'all') === 'all' ||
+            c.channelScope === qCh
         )
       : catsScoped;
 
