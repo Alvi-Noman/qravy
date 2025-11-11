@@ -63,7 +63,7 @@ jobs:
             image_suffix: qravy-storefront-host
           - name: ai-waiter
             file: services/ai-waiter-service/Dockerfile
-            context: .
+            context: services/ai-waiter-service
             image_suffix: qravy-ai-waiter
 
     steps:
@@ -152,11 +152,11 @@ jobs:
         run: |
           HOOK=""
           case "${{ matrix.service.name }}" in
-            api-gateway)    HOOK="${RENDER_HOOK_API_GATEWAY}";;
-            auth)           HOOK="${RENDER_HOOK_AUTH}";;
-            upload)         HOOK="${RENDER_HOOK_UPLOAD}";;
+            api-gateway)     HOOK="${RENDER_HOOK_API_GATEWAY}";;
+            auth)            HOOK="${RENDER_HOOK_AUTH}";;
+            upload)          HOOK="${RENDER_HOOK_UPLOAD}";;
             storefront-host) HOOK="${RENDER_HOOK_STOREFRONT}";;
-            ai-waiter)      HOOK="${RENDER_HOOK_AI_WAITER}";;
+            ai-waiter)       HOOK="${RENDER_HOOK_AI_WAITER}";;
           esac
 
           if [ -z "$HOOK" ]; then
