@@ -5,6 +5,10 @@
       "destination": "https://muvance-api-gateway.onrender.com/api/v1/:path*"
     },
     {
+      "source": "/ws/voice",
+      "destination": "https://muvance-api-gateway.onrender.com/ws/voice"
+    },
+    {
       "source": "/(.*)",
       "destination": "/index.html"
     }
