@@ -1,6 +1,13 @@
 // apps/tastebud/src/pages/DigitalMenu.tsx
 import React from 'react';
-import { useLocation, useParams, useSearchParams, Link, Navigate } from 'react-router-dom';
+import {
+  useLocation,
+  useParams,
+  useSearchParams,
+  Link,
+  Navigate,
+  useNavigate,
+} from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import Fuzzysort from 'fuzzysort';
 import type { v1 } from '../../../../packages/shared/src/types';
@@ -66,6 +73,7 @@ function useRuntimeRoute() {
 export default function DigitalMenu() {
   const { subdomain, branchSlug, channel } = useRuntimeRoute();
   const location = useLocation();
+  const navigate = useNavigate();
   const { addItem, setQty, updateQty, removeItem, clear } = useCart();
 
   if (!subdomain) return <Navigate to="/t/demo/menu" replace />;
@@ -293,6 +301,11 @@ export default function DigitalMenu() {
       ? `/t/${subdomain}/${normalizedBranch}/menu/dine-in`
       : `/t/${subdomain}/menu/dine-in`;
 
+  const confirmationHref =
+    normalizedBranch
+      ? `/t/${subdomain}/${normalizedBranch}/confirmation`
+      : `/t/${subdomain}/confirmation`;
+
   /** Switch-only skeleton */
   const [isSwitchSkeleton, setIsSwitchSkeleton] = React.useState(false);
   React.useEffect(() => {
@@ -511,6 +524,14 @@ export default function DigitalMenu() {
     replyText?: string,
   ) => {
     const intent = rawIntent ?? resolveIntent(meta, replyText);
+    const decision = (meta?.decision || {}) as any;
+
+    // 🔁 Global confirmation redirect: if backend says so, go straight to confirmation page
+    if (decision?.openConfirmationPage) {
+      navigate(confirmationHref);
+      return;
+    }
+
     const hasCartOps = Array.isArray(meta?.cartOps) && meta!.cartOps.length > 0;
     const didClear = !!meta?.clearCart;
 
@@ -531,7 +552,6 @@ export default function DigitalMenu() {
         // ignore bad ops
       }
 
-      const decision = (meta.decision || {}) as any;
       const upsell = (meta.upsell || (meta as any).Upsell || []) as any[];
 
       if (decision?.showUpsellTray && Array.isArray(upsell) && upsell.length) {
@@ -597,7 +617,6 @@ export default function DigitalMenu() {
           });
         }
 
-        const decision = (meta.decision || {}) as any;
         const upsell = (meta.upsell || (meta as any).Upsell || []) as any[];
 
         if (decision?.showUpsellTray && Array.isArray(upsell) && upsell.length) {

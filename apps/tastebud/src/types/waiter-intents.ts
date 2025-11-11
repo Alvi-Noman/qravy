@@ -105,6 +105,7 @@ export type AiUpsellItem = {
 export type AiDecision = {
   /** If true, UI should show the upsell tray/modal. */
   showUpsellTray?: boolean;
+  openConfirmationPage?: boolean;
 };
 
 /* -------------------------------------------------------------------------- */

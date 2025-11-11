@@ -1,11 +1,15 @@
 import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
+import type { AiReplyMeta } from "../types/waiter-intents";
 
 type ConversationState = {
   /** Authoritative, finalized AI text (what we keep across pages) */
   aiText: string;
   /** Live, word-by-word text revealed while TTS is speaking */
   aiTextLive: string;
+
+  /** Last full AI meta payload from backend (includes decision, items, etc.) */
+  lastMeta: AiReplyMeta | null;
 
   /** Append a new final AI reply chunk (legacy helper) */
   appendAi: (chunk: string) => void;
@@ -20,6 +24,11 @@ type ConversationState = {
   appendTtsReveal: (str: string) => void;
   /** Finalize: copy live → final, then clear live */
   finishTtsReveal: () => void;
+
+  /** Store the latest meta object from AI Waiter backend */
+  setMeta: (meta: AiReplyMeta | null) => void;
+  /** Clear stored meta (e.g. on new session) */
+  clearMeta: () => void;
 
   /** Utility: last N sentences from final buffer */
   getLastLines: (n: number) => string;
@@ -39,6 +48,7 @@ function createConversationStore() {
       (set, get) => ({
         aiText: "",
         aiTextLive: "",
+        lastMeta: null,
 
         appendAi: (chunk) => {
           if (!chunk) return;
@@ -59,7 +69,9 @@ function createConversationStore() {
         },
 
         startTtsReveal: (original) => {
-          DBG("startTtsReveal()", { originalPreview: String(original ?? "").slice(0, 80) });
+          DBG("startTtsReveal()", {
+            originalPreview: String(original ?? "").slice(0, 80),
+          });
           set({ aiTextLive: "" });
         },
 
@@ -73,7 +85,7 @@ function createConversationStore() {
           // Punctuation sets that should *not* get a leading space
           const noLeadSpace = new Set([",", ".", "!", "?", ":", ";", ")", "’", "”", "।"]);
           // Opening quotes/brackets that shouldn't have trailing space before them
-          const noTrailSpace = new Set(["(", "“", "‘"]); // kept for clarity/future use
+          const noTrailSpace = new Set(["(", "“", "‘"]); // reserved for future rules
 
           const needsLead =
             curr.length === 0
@@ -85,8 +97,8 @@ function createConversationStore() {
 
           // Ensure a space AFTER comma or Bangla danda; remove stray spaces before closing punct
           const normalized = nextRaw
-            .replace(/\s+([,.:;!?)]|।)/g, "$1")  // remove space before closing punctuation
-            .replace(/([,]|।)(?!\s)/g, "$1 ");   // ensure space after comma or danda
+            .replace(/\s+([,.:;!?)]|।)/g, "$1") // remove space before closing punctuation
+            .replace(/([,]|।)(?!\s)/g, "$1 "); // ensure space after comma or danda
 
           DBG("appendTtsReveal()", {
             token: t,
@@ -117,30 +129,56 @@ function createConversationStore() {
           set({ aiText: merged, aiTextLive: "" });
         },
 
+        setMeta: (meta) => {
+          DBG("setMeta()", {
+            hasMeta: !!meta,
+            intent: meta?.intent,
+            decision: meta?.decision,
+          });
+          set({ lastMeta: meta });
+        },
+
+        clearMeta: () => {
+          DBG("clearMeta()");
+          set({ lastMeta: null });
+        },
+
         getLastLines: (n) => {
           const raw = get().aiText || "";
-          const parts = raw.replace(/\s+/g, " ").trim().split(/(?<=[.!?।])\s+/);
+          const parts = raw
+            .replace(/\s+/g, " ")
+            .trim()
+            .split(/(?<=[.!?।])\s+/);
           const out = parts.slice(-n).join(" ");
-          DBG("getLastLines()", { n, outPreview: out.slice(0, 120) });
+          DBG("getLastLines()", {
+            n,
+            outPreview: out.slice(0, 120),
+          });
           return out;
         },
       }),
       {
         name: "qravy-conversation",
-        // Persist only the finalized text; live buffer is ephemeral/UI-only
-        partialize: (s) => ({ aiText: s.aiText }),
+        // Persist only what should survive navigation: final text + lastMeta.
+        partialize: (s) => ({
+          aiText: s.aiText,
+          lastMeta: s.lastMeta,
+        }),
         storage: createJSONStorage(() => {
           DBG("createJSONStorage(sessionStorage)");
           return sessionStorage;
         }),
-        version: 1,
+        version: 2,
         onRehydrateStorage: () => {
           DBG("onRehydrateStorage -> start");
           return (state, error) => {
             if (error) {
               console.warn("[ConvStore] rehydrate error", error);
             } else {
-              DBG("onRehydrateStorage -> done", { aiTextPreview: (state?.aiText || "").slice(0, 120) });
+              DBG("onRehydrateStorage -> done", {
+                aiTextPreview: (state?.aiText || "").slice(0, 120),
+                hasMeta: !!state?.lastMeta,
+              });
             }
           };
         },
@@ -158,6 +196,9 @@ function createConversationStore() {
         aiTextLiveLen: s.aiTextLive.length,
         aiTextTail: s.aiText.slice(-140),
         aiTextLiveTail: s.aiTextLive.slice(-140),
+        hasMeta: !!s.lastMeta,
+        metaIntent: s.lastMeta?.intent,
+        metaDecision: s.lastMeta?.decision,
       });
     };
     DBG("Dev helper available: window.__qravyConvDump()");
@@ -167,9 +208,7 @@ function createConversationStore() {
 }
 
 // Reuse one store instance during Vite HMR to avoid multiple subscriptions/snapshots
-let _store:
-  | ReturnType<typeof createConversationStore>
-  | undefined;
+let _store: ReturnType<typeof createConversationStore> | undefined;
 
 declare global {
   // eslint-disable-next-line no-var

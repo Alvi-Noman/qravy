@@ -4,7 +4,6 @@ import os
 import json
 import re
 from typing import Any, Dict, Optional, List, Tuple
-
 import httpx
 
 # --------------------------- Configuration ---------------------------
@@ -260,8 +259,8 @@ def _build_candidate_index(
 ) -> Tuple[Dict[str, Dict[str, Any]], Dict[str, str]]:
     """
     Build:
-      by_id: itemId -> candidate dict
-      name_to_id: normalized name -> itemId
+    by_id: itemId -> candidate dict
+    name_to_id: normalized name -> itemId
     """
     by_id: Dict[str, Dict[str, Any]] = {}
     name_to_id: Dict[str, str] = {}
@@ -311,9 +310,9 @@ def _build_candidate_index(
 def _build_menu_maps(menu_snapshot: Optional[Dict[str, Any]]):
     """
     Build lookup maps from the full menu snapshot:
-      id -> canonical name
-      lower(name/alias) -> id
-      id -> aliases (including its own name)
+    id -> canonical name
+    lower(name/alias) -> id
+    id -> aliases (including its own name)
     """
     id_to_name: Dict[str, str] = {}
     token_to_id: Dict[str, str] = {}
@@ -498,6 +497,48 @@ def _extract_locked_intent(context: Optional[Dict[str, Any]]) -> Optional[str]:
     if v in ("order", "menu", "suggestions", "chitchat"):
         return v
     return None
+
+
+# -------------------- NEW: existing cart extractor --------------------
+
+
+def _extract_cart_from_context(ctx: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Read existing cart items from context/cart snapshot and normalize into
+    [{ itemId, name, quantity, price }].
+    """
+    if not ctx:
+        return []
+
+    raw = ctx.get("cartItems") or ctx.get("cart") or []
+    items: List[Dict[str, Any]] = []
+
+    for it in raw:
+        if not it or not isinstance(it, dict):
+            continue
+
+        item_id = str(it.get("itemId") or it.get("id") or "").strip()
+        name = (it.get("name") or "").strip()
+        qty = it.get("quantity") or it.get("qty") or 1
+
+        if not item_id and not name:
+            continue
+
+        try:
+            q = int(qty)
+        except Exception:
+            q = 1
+
+        items.append(
+            {
+                "itemId": item_id or None,
+                "name": name,
+                "quantity": q,
+                "price": it.get("price"),
+            }
+        )
+
+    return items
 
 
 # -------------------- Language helpers & system prompt ----------------------
@@ -1647,8 +1688,8 @@ def _maybe_adjust_quantities_from_transcript(
         if idx == -1:
             return None
 
-        before = t[max(0, idx - 24) : idx]
-        after = t[idx + len(key) : idx + len(key) + 24]
+        before = t[max(0, idx - 24): idx]
+        after = t[idx + len(key): idx + len(key) + 24]
 
         q = _parse_quantity_any(before)
         if q:
@@ -1762,21 +1803,100 @@ def _is_negative_reply(text: str) -> bool:
 
 
 def _is_confirm_message(text: str) -> bool:
-    t = (text or "").strip().lower()
-    if not t:
+    if not text:
         return False
-    # Accept both bn+en confirmation cues
-    confirm_kw = [
-        "কনফার্ম",
-        "confirm",
-        "হ্যা কনফার্ম",
-        "হ্যাঁ কনফার্ম",
-        "অর্ডার কনফার্ম",
-        "place order",
-        "done",
-        "ডান",
+
+    t = text.strip().lower()
+
+    # Cheap normalization for common ASR / spelling quirks
+    norm = t
+    norm = norm.replace("ড়", "ড").replace("ড়", "ড")
+    norm = norm.replace("হার ডাক্টা", "অর্ডার টা")
+    norm = norm.replace("হারডাক্টা", "অর্ডার টা")
+    norm = norm.replace("আর্ডার", "অর্ডার")
+
+    # Early exit for explicit *negative* confirmation phrases
+    negative_cancel_patterns = [
+        "dont confirm",
+        "don't confirm",
+        "do not confirm",
+        "কনফার্ম করব না",
+        "কনফার্ম করবো না",
+        "কনফাম করব না",
+        "কনফাম করবো না",
     ]
-    return any(k in t for k in confirm_kw)
+    if any(p in norm for p in negative_cancel_patterns):
+        return False
+
+    # English-ish confirm tokens
+    confirm_tokens_en = [
+        "confirm",
+        "konfirm",
+        "konfarm",
+        "confam",
+        "konfam",
+    ]
+
+    # Bangla-ish confirm tokens (incl. noisy spellings)
+    confirm_tokens_bn = [
+        "কনফাম",
+        "কন্ফাম",
+        "কনফার্ম",
+        "কন্ফার্ম",
+    ]
+
+    confirm_tokens = confirm_tokens_en + confirm_tokens_bn
+
+    # Order tokens (Bangla + English)
+    order_tokens = [
+        "অর্ডার",
+        "অর্ডার টা",
+        "অর্ডারটা",
+        "order",
+    ]
+
+    # 1) Short pure-confirm messages: just "confirm"/"কনফাম"/etc.
+    short_norm = norm.replace(" ", "")
+    if len(short_norm) <= 18:
+        if any(tok in short_norm for tok in confirm_tokens):
+            return True
+
+    # 2) Confirm token + polite verb → covers
+    # "ওডাটা কন্ফাম করেন", "কনফাম করে দিন", etc.
+    if any(c in norm for c in confirm_tokens):
+        if (
+            "করুন" in norm
+            or "করেন" in norm
+            or "করে দিন" in norm
+            or "কোরুন" in norm
+        ):
+            return True
+
+    # 3) Contains both an order token and a confirm-ish token
+    if any(o in norm for o in order_tokens) and any(
+        c in norm for c in confirm_tokens
+    ):
+        return True
+
+    # 4) Common explicit phrases (extra safety net)
+    common_phrases = [
+        "অর্ডার কনফাম করুন",
+        "অর্ডার কন্ফাম করুন",
+        "অর্ডারটা কনফাম করুন",
+        "অর্ডারটা কন্ফাম করুন",
+        "অর্ডার টা কনফাম করুন",
+        "অর্ডার টা কনফাম করুন",
+        "কনফাম করে দিন",
+        "কন্ফাম করে দিন",
+        "please confirm",
+        "plz confirm",
+        "ok confirm",
+        "okay confirm",
+    ]
+    if any(p in norm for p in common_phrases):
+        return True
+
+    return False
 
 
 # --------------------- cartOps → replyText (hardcoded logic) ---------------------
@@ -1796,14 +1916,14 @@ def _build_reply_from_cart_ops(
 
     Bangla rules:
     1) Initial order with only add ops:
-       "অসাধারণ চয়েস! আপনি {items} অর্ডার করতে চাইছেন। সাথে কি আপনি {u1} কিংবা {u2} নিতে চান?"
-       (if upsell available)
-       Else: "অসাধারণ চয়েস! আপনি {items} অর্ডার করতে চাইছেন। অর্ডারটা কি কনফার্ম করবো?"
+    "অসাধারণ চয়েস! আপনি {items} অর্ডার করতে চাইছেন। সাথে কি আপনি {u1} কিংবা {u2} নিতে চান?"
+    (if upsell available)
+    Else: "অসাধারণ চয়েস! আপনি {items} অর্ডার করতে চাইছেন। অর্ডারটা কি কনফার্ম করবো?"
     2) Add new product (single add) after order flow:
-       "{name} আপনার ট্রে তে যোগ করা হলো, আর কিছু নিতে চান? নাকি অর্ডার কনফার্ম করবো?"
+    "{name} আপনার ট্রে তে যোগ করা হলো, আর কিছু নিতে চান? নাকি অর্ডার কনফার্ম করবো?"
     3) Quantity change:
-       Add: "{name} Xটি যোগ করা হলো। আপনি অর্ডার করতে চাইছেন {items}। অর্ডারটা কি কনফার্ম করবো?"
-       Remove: "{name} Xটি বাদ দেয়া হলো। আপনি অর্ডার করতে চাইছেন {items}। অর্ডারটা কি কনফার্ম করবো?"
+    Add: "{name} Xটি যোগ করা হলো। আপনি অর্ডার করতে চাইছেন {items}। অর্ডারটা কি কনফার্ম করবো?"
+    Remove: "{name} Xটি বাদ দেয়া হলো। আপনি অর্ডার করতে চাইছেন {items}। অর্ডারটা কি কনফার্ম করবো?"
     English: simple generic confirmations (fallback).
     """
     if not cart_ops and not items:
@@ -2306,9 +2426,7 @@ async def generate_reply(
             "cartOps": [],
             "clearCart": False,
         }
-        reply_text = (
-            "Sorry, I didn’t catch that. Could you say that again?"
-        )
+        reply_text = "Sorry, I didn’t catch that. Could you say that again?"
         voice_reply_text = _build_voice_reply_text(
             reply_text,
             language=lang,
@@ -2318,24 +2436,71 @@ async def generate_reply(
             meta["voiceReplyText"] = voice_reply_text
 
         print("[brain] final replyText:", reply_text)
-        print(
-            "[brain] final voiceReplyText:",
-            meta.get("voiceReplyText", ""),
-        )
+        print("[brain] final voiceReplyText:", meta.get("voiceReplyText", ""))
         try:
             print(
                 "[brain] final meta.suggestions:",
-                [
-                    s.get("title")
-                    for s in meta.get(
-                        "suggestions", []
-                    )
-                ],
+                [s.get("title") for s in meta.get("suggestions", [])],
             )
         except Exception:
-            print(
-                "[brain] final meta.suggestions: <error printing>"
-            )
+            print("[brain] final meta.suggestions: <error printing>")
+        return {
+            "replyText": reply_text,
+            "meta": meta,
+        }
+
+    # --- Global confirmation shortcut (pre-LLM, any depth) ---
+    ctx = context or {}
+    snapshot = ctx.get("contextSnapshot") or ctx
+    cart_items = _extract_cart_from_context(snapshot)
+
+    if _is_confirm_message(transcript) and cart_items:
+        lang = _resolve_lang_hint(locale, transcript)
+        if lang == "bn":
+            reply_text = "আপনার অর্ডার কনফার্ম করা হয়েছে।"
+        else:
+            reply_text = "Your order is confirmed."
+
+        meta: Dict[str, Any] = {
+            "model": OPENAI_CHAT_MODEL,
+            "language": lang,
+            "intent": "order",
+            "lockedIntent": "order",
+            "items": cart_items,
+            "suggestions": [],
+            "upsell": [],
+            "decision": {
+                "showSuggestionsModal": False,
+                "showUpsellTray": False,
+                "openConfirmationPage": True,
+            },
+            "notes": "confirmed_via_global_shortcut",
+            "tenant": tenant,
+            "branch": branch,
+            "channel": channel,
+            "conversationId": conversation_id,
+            "userId": user_id,
+            "fallback": False,
+            "ctxLen": len(history or []),
+            "stateLen": len(dialog_state or {}) if isinstance(dialog_state, dict) else 0,
+            "hasCandidates": False,
+            "contextSnapshot": context or None,
+            "cartOps": [],
+            "clearCart": False,
+        }
+
+        voice_reply_text = _build_voice_reply_text(
+            reply_text,
+            language=lang,
+            model_obj={},
+        )
+        if voice_reply_text:
+            meta["voiceReplyText"] = voice_reply_text
+
+        print("[brain] final replyText:", reply_text)
+        print("[brain] final voiceReplyText:", meta.get("voiceReplyText", ""))
+        print("[brain] final decision.openConfirmationPage:", True)
+
         return {
             "replyText": reply_text,
             "meta": meta,
@@ -2349,9 +2514,7 @@ async def generate_reply(
                 print(
                     "[debug][generate_reply] menu_snapshot has:",
                     it.get("name"),
-                    it.get("id")
-                    or it.get("_id")
-                    or it.get("itemId"),
+                    it.get("id") or it.get("_id") or it.get("itemId"),
                 )
 
     # Decide language + locked intent up front
@@ -2363,18 +2526,13 @@ async def generate_reply(
     )
 
     # Unified candidate pool: suggestions + upsell + full menu
-    unified_candidates: List[Dict[str, Any]] = (
-        suggestion_candidates or []
-    ) + (upsell_candidates or [])
-    if menu_snapshot and menu_snapshot.get("items"):
-        unified_candidates = unified_candidates + (
-            menu_snapshot.get("items") or []
-        )
-
-    print(
-        "[debug][generate_reply] unified_candidates count:",
-        len(unified_candidates),
+    unified_candidates: List[Dict[str, Any]] = (suggestion_candidates or []) + (
+        upsell_candidates or []
     )
+    if menu_snapshot and menu_snapshot.get("items"):
+        unified_candidates += menu_snapshot.get("items") or []
+
+    print("[debug][generate_reply] unified_candidates count:", len(unified_candidates))
     _debug_log_kw(
         "[debug][generate_reply] unified_candidate:",
         unified_candidates,
@@ -2407,9 +2565,7 @@ async def generate_reply(
             r = t.get("role")
             c = (t.get("content") or "").strip()
             if r in ("user", "assistant") and c:
-                messages.append(
-                    {"role": r, "content": c}
-                )
+                messages.append({"role": r, "content": c})
 
     # INPUT payload
     user_payload = _build_user_input_payload(
@@ -2420,38 +2576,21 @@ async def generate_reply(
         menu_snapshot=menu_snapshot,
         locked_intent=locked_intent,
     )
-    messages.append(
-        {
-            "role": "user",
-            "content": f"[INPUT]: {user_payload}",
-        }
-    )
+    messages.append({"role": "user", "content": f"[INPUT]: {user_payload}"})
 
     try:
         raw = await _call_openai(messages)
         obj = _parse_model_json(raw)
 
-        if any(
-            _debug_has_kw(
-                json.dumps(obj, ensure_ascii=False)
-            )
-            for _ in [None]
-        ):
+        if any(_debug_has_kw(json.dumps(obj, ensure_ascii=False)) for _ in [None]):
             print(
                 "[debug][generate_reply] model_obj:",
-                _safe_snip(
-                    json.dumps(
-                        obj, ensure_ascii=False
-                    ),
-                    800,
-                ),
+                _safe_snip(json.dumps(obj, ensure_ascii=False), 800),
             )
 
         # Model-provided language is advisory; clamp to hint if given
         reply_text = str(obj.get("replyText") or "").strip()
-        language = (
-            obj.get("language") or ""
-        ).strip() or _guess_lang(
+        language = (obj.get("language") or "").strip() or _guess_lang(
             reply_text or transcript
         )
         if lang_hint in ("bn", "en"):
@@ -2485,13 +2624,7 @@ async def generate_reply(
         )
 
         # If it's an order with items but no cartOps → synthesize ADD ops
-        # from the model snapshot (this turn's items)
-        if (
-            intent == "order"
-            and items
-            and not cart_ops
-            and not clear_all_from_ops
-        ):
+        if intent == "order" and items and not cart_ops and not clear_all_from_ops:
             synth_ops: List[Dict[str, Any]] = []
             for it in items:
                 iid = it.get("itemId")
@@ -2507,17 +2640,11 @@ async def generate_reply(
                     )
             if synth_ops:
                 cart_ops = synth_ops
-                print(
-                    "[debug][cartOps] synthesized_from_items:",
-                    cart_ops,
-                )
+                print("[debug][cartOps] synthesized_from_items:", cart_ops)
 
-        clear_cart_flag = bool(
-            obj.get("clearCart") is True
-            or clear_all_from_ops
-        )
+        clear_cart_flag = bool(obj.get("clearCart") is True or clear_all_from_ops)
 
-        # --- NEW: compute real tray from DB cartItems + this turn's ops ---
+        # --- compute real tray from DB cartItems + this turn's ops ---
         if intent == "order":
             merged_qty = _merge_cart_state(
                 context or {},
@@ -2530,7 +2657,7 @@ async def generate_reply(
                 cand_by_id,
             )
         else:
-            # for non-order intents, items should not pretend to be full tray
+            # For non-order intents, an explicit clearCart empties items
             if clear_cart_flag:
                 items = []
 
@@ -2541,23 +2668,17 @@ async def generate_reply(
         if clear_cart_flag:
             # Clear cart has highest precedence
             if language == "bn":
-                reply_text = (
-                    "আপনার ট্রে খালি করা হলো। আর কিছু নিতে চান?"
-                )
+                reply_text = "আপনার ট্রে খালি করা হলো। আর কিছু নিতে চান?"
             else:
-                reply_text = (
-                    "Your tray has been cleared. Anything else?"
-                )
+                reply_text = "Your tray has been cleared. Anything else?"
 
         elif intent == "order" and language == "bn":
-            if is_conf:
-                # Final confirmation reply
-                reply_text = (
-                    "আপনার অর্ডার টি কনফার্ম করা হলো। "
-                    "দয়া করে ১৫ মিনিট সময় দিন, আমরা খাবারটি প্রস্তুত করছি।"
-                )
+            if is_conf and (items or cart_items):
+                # Confirm only if there is something to confirm
+                reply_text = "আপনার অর্ডার টি কনফার্ম করা হয়েছে।"
+                decision["openConfirmationPage"] = True
             elif is_neg:
-                # After upsell declined
+                # After upsell declined etc.
                 reply_text = (
                     "গ্রেট! সব কিছু ঠিক আছে কিনা দেখে আমাকে "
                     "অর্ডার কনফার্ম করতে বলুন।"
@@ -2576,18 +2697,13 @@ async def generate_reply(
                     language=language,
                     last_intent=last_intent,
                 )
-            # else: keep whatever minimal or fallback (rare edge)
+            # else: keep whatever minimal/fallback reply_text from model
 
         elif intent == "order":
-            # Non-Bangla order → simple deterministic from cartOps/items
-            if clear_cart_flag:
-                reply_text = (
-                    "Your tray has been cleared. Anything else?"
-                )
-            elif is_conf:
-                reply_text = (
-                    "Your order is confirmed. Please allow 15 minutes for preparation."
-                )
+            # Non-Bangla order → simple deterministic behavior
+            if is_conf and (items or cart_items):
+                reply_text = "Your order is confirmed."
+                decision["openConfirmationPage"] = True
             elif cart_ops or items:
                 last_intent = _extract_last_intent(
                     context,
@@ -2601,25 +2717,97 @@ async def generate_reply(
                     language=language,
                     last_intent=last_intent,
                 )
+            # else: keep whatever minimal/fallback reply_text from model
 
-        # Non-order intents: keep previous behavior if reply_text empty
-        if (
-            intent == "suggestions"
-            and suggestions
-            and not reply_text
-        ):
-            names = [
-                s["title"]
-                for s in suggestions
-                if s.get("title")
-            ]
+        # Non-order intents: if model didn't give replyText, synthesize concise ones
+        if intent == "suggestions" and suggestions and not reply_text:
+            names = [s["title"] for s in suggestions if s.get("title")]
             if names:
                 reply_text = (
                     f"এগুলো সাজেস্ট করছি: {', '.join(names)}"
                     if language == "bn"
-                    else (
-                        "Here are some options I recommend: "
-                        + ", ".join(names)
+                    else "Here are some options I recommend: " + ", ".join(names)
+                )
+            else:
+                reply_text = (
+                    "এগুলো সাজেস্ট করছি:"
+                    if language == "bn"
+                    else "Here are some options I recommend:"
+                )
+
+        if intent in ("menu", "chitchat") and not reply_text:
+            reply_text = "ঠিক আছে।" if language == "bn" else "Alright."
+
+        elif intent == "order":
+            # Non-Bangla order → simple deterministic from cartOps/items
+            if is_conf and (items or cart_items):
+                reply_text = "Your order is confirmed."
+                decision["openConfirmationPage"] = True
+            elif cart_ops or items:
+                last_intent = _extract_last_intent(
+                    context,
+                    dialog_state,
+                )
+                reply_text = _build_reply_from_cart_ops(
+                    cart_ops=cart_ops,
+                    items=items,
+                    upsell=upsell,
+                    transcript=transcript,
+                    language=language,
+                    last_intent=last_intent,
+                )
+            # else: keep whatever minimal or fallback reply_text (rare edge)
+
+        elif intent == "order":
+            # Non-Bangla order → simple deterministic from cartOps/items
+            if is_conf and (items or cart_items):
+                reply_text = "Your order is confirmed."
+                decision["openConfirmationPage"] = True
+            elif cart_ops or items:
+                last_intent = _extract_last_intent(
+                    context,
+                    dialog_state,
+                )
+                reply_text = _build_reply_from_cart_ops(
+                    cart_ops=cart_ops,
+                    items=items,
+                    upsell=upsell,
+                    transcript=transcript,
+                    language=language,
+                    last_intent=last_intent,
+                )
+            # else: keep whatever minimal or fallback reply_text (rare edge)
+
+            elif intent == "order":
+                # Non-Bangla order → simple deterministic from cartOps/items
+                if is_conf and (items or cart_items):
+                    reply_text = "Your order is confirmed."
+                    decision["openConfirmationPage"] = True
+                elif cart_ops or items:
+                    last_intent = _extract_last_intent(
+                        context,
+                        dialog_state,
+                    )
+                    reply_text = _build_reply_from_cart_ops(
+                        cart_ops=cart_ops,
+                        items=items,
+                        upsell=upsell,
+                        transcript=transcript,
+                        language=language,
+                        last_intent=last_intent,
+                    )
+
+            # else: keep whatever minimal or fallback reply_text (rare edge)
+
+        # Non-order intents: keep previous behavior if reply_text empty
+        if intent == "suggestions" and suggestions and not reply_text:
+            names = [s["title"] for s in suggestions if s.get("title")]
+            if names:
+                reply_text = (
+                    f"এগুলো সাজেস্ট করছি: {', '.join(names)}"
+                    if language == "bn"
+                    else "Here are some options I recommend: " + ", ".join(
+                        names
                     )
                 )
             else:
@@ -2629,15 +2817,8 @@ async def generate_reply(
                     else "Here are some options I recommend:"
                 )
 
-        if (
-            intent in ("menu", "chitchat")
-            and not reply_text
-        ):
-            reply_text = (
-                "ঠিক আছে।"
-                if language == "bn"
-                else "Alright."
-            )
+        if intent in ("menu", "chitchat") and not reply_text:
+            reply_text = "ঠিক আছে।" if language == "bn" else "Alright."
 
         # Canonicalize names & fix false unavailability
         reply_text = _canonicalize_reply_text(
@@ -2645,10 +2826,7 @@ async def generate_reply(
             model_items=items,
             menu_snapshot=menu_snapshot,
         )
-        reply_text = _fix_false_unavailability(
-            reply_text,
-            menu_snapshot,
-        )
+        reply_text = _fix_false_unavailability(reply_text, menu_snapshot)
 
         meta: Dict[str, Any] = {
             "model": OPENAI_CHAT_MODEL,
@@ -2686,46 +2864,21 @@ async def generate_reply(
         if voice_reply_text:
             meta["voiceReplyText"] = voice_reply_text
 
-        if any(
-            _debug_has_kw(i.get("name", ""))
-            for i in items
-        ):
-            print(
-                "[debug][generate_reply] FINAL intent:",
-                intent,
-            )
-            print(
-                "[debug][generate_reply] FINAL items:",
-                items,
-            )
-            print(
-                "[debug][generate_reply] FINAL cartOps:",
-                cart_ops,
-            )
-            print(
-                "[debug][generate_reply] FINAL replyText:",
-                reply_text,
-            )
+        if any(_debug_has_kw(i.get("name", "")) for i in items):
+            print("[debug][generate_reply] FINAL intent:", intent)
+            print("[debug][generate_reply] FINAL items:", items)
+            print("[debug][generate_reply] FINAL cartOps:", cart_ops)
+            print("[debug][generate_reply] FINAL replyText:", reply_text)
 
         print("[brain] final replyText:", reply_text)
-        print(
-            "[brain] final voiceReplyText:",
-            meta.get("voiceReplyText", ""),
-        )
+        print("[brain] final voiceReplyText:", meta.get("voiceReplyText", ""))
         try:
             print(
                 "[brain] final meta.suggestions:",
-                [
-                    s.get("title")
-                    for s in meta.get(
-                        "suggestions", []
-                    )
-                ],
+                [s.get("title") for s in meta.get("suggestions", [])],
             )
         except Exception:
-            print(
-                "[brain] final meta.suggestions: <error printing>"
-            )
+            print("[brain] final meta.suggestions: <error printing>")
 
         return {
             "replyText": reply_text,
@@ -2734,10 +2887,7 @@ async def generate_reply(
 
     except Exception as e:
         lang = _guess_lang(transcript)
-        print(
-            "[debug][generate_reply] exception:",
-            repr(e),
-        )
+        print("[debug][generate_reply] exception:", repr(e))
 
         menu_fallback = _fallback_menu_reply(
             transcript=transcript,
@@ -2749,25 +2899,13 @@ async def generate_reply(
             reply_text = menu_fallback["replyText"]
             meta = {
                 "model": OPENAI_CHAT_MODEL,
-                "language": menu_fallback[
-                    "language"
-                ],
-                "intent": menu_fallback[
-                    "intent"
-                ],
+                "language": menu_fallback["language"],
+                "intent": menu_fallback["intent"],
                 "lockedIntent": locked_intent,
-                "items": menu_fallback[
-                    "items"
-                ],
-                "suggestions": menu_fallback[
-                    "suggestions"
-                ],
-                "upsell": menu_fallback[
-                    "upsell"
-                ],
-                "decision": menu_fallback[
-                    "decision"
-                ],
+                "items": menu_fallback["items"],
+                "suggestions": menu_fallback["suggestions"],
+                "upsell": menu_fallback["upsell"],
+                "decision": menu_fallback["decision"],
                 "tenant": tenant,
                 "branch": branch,
                 "channel": channel,
@@ -2778,63 +2916,36 @@ async def generate_reply(
                 "ctxLen": len(history or []),
                 "stateLen": len(
                     dialog_state or {}
-                    if isinstance(
-                        dialog_state, dict
-                    )
+                    if isinstance(dialog_state, dict)
                     else {}
                 ),
                 "hasCandidates": bool(
-                    menu_snapshot
-                    and menu_snapshot.get(
-                        "items"
-                    )
+                    menu_snapshot and menu_snapshot.get("items")
                 ),
-                "cartOps": menu_fallback[
-                    "cartOps"
-                ],
-                "clearCart": menu_fallback[
-                    "clearCart"
-                ],
+                "cartOps": menu_fallback["cartOps"],
+                "clearCart": menu_fallback["clearCart"],
             }
 
             voice_reply_text = _build_voice_reply_text(
                 reply_text,
-                language=menu_fallback[
-                    "language"
-                ],
+                language=menu_fallback["language"],
                 model_obj={},
             )
             if voice_reply_text:
-                meta["voiceReplyText"] = (
-                    voice_reply_text
-                )
+                meta["voiceReplyText"] = voice_reply_text
 
-            print(
-                "[brain] fallback menu replyText:",
-                reply_text,
-            )
+            print("[brain] fallback menu replyText:", reply_text)
             print(
                 "[brain] final voiceReplyText:",
-                meta.get(
-                    "voiceReplyText",
-                    "",
-                ),
+                meta.get("voiceReplyText", ""),
             )
             try:
                 print(
                     "[brain] final meta.suggestions:",
-                    [
-                        s.get("title")
-                        for s in meta.get(
-                            "suggestions",
-                            [],
-                        )
-                    ],
+                    [s.get("title") for s in meta.get("suggestions", [])],
                 )
             except Exception:
-                print(
-                    "[brain] final meta.suggestions: <error printing>"
-                )
+                print("[brain] final meta.suggestions: <error printing>")
 
             return {
                 "replyText": reply_text,
@@ -2844,9 +2955,7 @@ async def generate_reply(
         text = (
             "দুঃখিত, একটু সমস্যা হচ্ছে। আবার বলবেন কি?"
             if lang == "bn"
-            else (
-                "Sorry, I’m having trouble. Could you try once more?"
-            )
+            else "Sorry, I’m having trouble. Could you try once more?"
         )
 
         meta = {
@@ -2875,8 +2984,7 @@ async def generate_reply(
                 else {}
             ),
             "hasCandidates": bool(
-                suggestion_candidates
-                or upsell_candidates
+                suggestion_candidates or upsell_candidates
             ),
             "cartOps": [],
             "clearCart": False,
@@ -2891,25 +2999,14 @@ async def generate_reply(
             meta["voiceReplyText"] = voice_reply_text
 
         print("[brain] final replyText:", text)
-        print(
-            "[brain] final voiceReplyText:",
-            meta.get("voiceReplyText", ""),
-        )
+        print("[brain] final voiceReplyText:", meta.get("voiceReplyText", ""))
         try:
             print(
                 "[brain] final meta.suggestions:",
-                [
-                    s.get("title")
-                    for s in meta.get(
-                        "suggestions",
-                        [],
-                    )
-                ],
+                [s.get("title") for s in meta.get("suggestions", [])],
             )
         except Exception:
-            print(
-                "[brain] final meta.suggestions: <error printing>"
-            )
+            print("[brain] final meta.suggestions: <error printing>")
 
         return {
             "replyText": text,

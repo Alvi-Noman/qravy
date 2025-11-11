@@ -6,6 +6,7 @@ import { CartProvider } from './context/CartContext';
 const Home = lazy(() => import('./pages/Directory'));
 const Restaurant = lazy(() => import('./pages/DigitalMenu'));
 const AIWaiter = lazy(() => import('./pages/AIWaiterHome'));
+const ConfirmationPage = lazy(() => import('./pages/ConfirmationPage'));
 
 const hasTenantFromRuntime =
   typeof window !== 'undefined' &&
@@ -34,6 +35,13 @@ export default function AppRouter() {
             <Route path="/t/:subdomain/:branchSlug/menu" element={<Restaurant />} />
             <Route path="/t/:subdomain/:branchSlug/menu/dine-in" element={<Restaurant />} />
 
+            {/* Confirmation (dev-style) */}
+            <Route path="/t/:subdomain/confirmation" element={<ConfirmationPage />} />
+            <Route
+              path="/t/:subdomain/:branchSlug/confirmation"
+              element={<ConfirmationPage />}
+            />
+
             {/* Optional helpers / legacy redirects */}
             <Route path="/t/:subdomain/online" element={<Navigate replace to="menu" />} />
             <Route path="/t/:subdomain/dine-in" element={<Navigate replace to="menu/dine-in" />} />
@@ -58,6 +66,10 @@ export default function AppRouter() {
             <Route path="/:branch" element={<AIWaiter />} />
             <Route path="/:branch/menu" element={<Restaurant />} />
             <Route path="/:branch/menu/dine-in" element={<Restaurant />} />
+
+            {/* Confirmation (prod-style) */}
+            <Route path="/confirmation" element={<ConfirmationPage />} />
+            <Route path="/:branch/confirmation" element={<ConfirmationPage />} />
 
             {/* Optional helpers / legacy redirects */}
             <Route path="/dine-in" element={<Navigate replace to="/menu/dine-in" />} />

@@ -131,11 +131,10 @@ export default function AiWaiterHome() {
   const finishTtsReveal = useConversationStore((s: any) => s.finishTtsReveal) ?? (() => {});
   const aiLive = useConversationStore((s: any) => s.aiTextLive);
   const aiFinal = useConversationStore((s: any) => s.aiText ?? s.ai ?? '');
+  const lastMeta = useConversationStore((s: any) => s.lastMeta);
+  const setMeta = useConversationStore((s: any) => s.setMeta);
 
   const tts = useTTS();
-
-  // 🧠 track last AI meta for modals
-  const [lastMeta, setLastMeta] = useState<AiReplyMeta | null>(null);
 
   // ===== word-sync (gapless) =====
   const MIN_STEP_MS = 80;
@@ -284,6 +283,10 @@ export default function AiWaiterHome() {
   const seeMenuHref = resolvedBranch
     ? `/t/${resolvedSub}/${resolvedBranch}/menu`
     : `/t/${resolvedSub}/menu`;
+
+  const confirmationHref = resolvedBranch
+    ? `/t/${resolvedSub}/${resolvedBranch}/confirmation`
+    : `/t/${resolvedSub}/confirmation`;
 
   // ws/audio
   const wsRef = useRef<WebSocket | null>(null);
@@ -782,9 +785,14 @@ export default function AiWaiterHome() {
             pendingAiResolverRef.current?.(true);
             setUiMode('talking');
 
-            setLastMeta(meta ?? null);
+            setMeta(meta ?? null);
 
             console.log('[AI PAGE][AIWaiterHome]', { replyText, voiceText, meta });
+
+            if (meta?.decision?.openConfirmationPage) {
+              navigate(confirmationHref);
+              return;
+            }
 
             const intent = resolveIntent(meta, replyText || speakText);
             const decision = (meta?.decision || {}) as any;
@@ -1093,7 +1101,7 @@ export default function AiWaiterHome() {
       </div>
 
       {/* Bottom controls */}
-      <div className="fixed bottom-0 left-0 right-0 flex items-end justify-center pb-10 md:pb-12">
+      <div className="fixed bottom-0 left-0 right-0 flex items-end justifycenter pb-10 md:pb-12">
         <div className="relative flex items-end justify-center gap-12 px-6 w-full max-w-[520px]">
           {/* Left: Chat (visual only for now) */}
           <button
