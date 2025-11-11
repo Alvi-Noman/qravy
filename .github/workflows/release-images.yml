@@ -39,6 +39,7 @@ jobs:
       RENDER_HOOK_AUTH:        ${{ secrets.RENDER_DEPLOY_HOOK_AUTH }}
       RENDER_HOOK_UPLOAD:      ${{ secrets.RENDER_DEPLOY_HOOK_UPLOAD }}
       RENDER_HOOK_STOREFRONT:  ${{ secrets.RENDER_DEPLOY_HOOK_STOREFRONT }}
+      RENDER_HOOK_AI_WAITER:   ${{ secrets.RENDER_DEPLOY_HOOK_AI_WAITER }}
 
     strategy:
       fail-fast: false
@@ -60,6 +61,10 @@ jobs:
             file: services/storefront-host/Dockerfile
             context: .
             image_suffix: qravy-storefront-host
+          - name: ai-waiter
+            file: services/ai-waiter-service/Dockerfile
+            context: .
+            image_suffix: qravy-ai-waiter
 
     steps:
       - name: Checkout
@@ -147,10 +152,11 @@ jobs:
         run: |
           HOOK=""
           case "${{ matrix.service.name }}" in
-            api-gateway) HOOK="${RENDER_HOOK_API_GATEWAY}";;
-            auth)        HOOK="${RENDER_HOOK_AUTH}";;
-            upload)      HOOK="${RENDER_HOOK_UPLOAD}";;
+            api-gateway)    HOOK="${RENDER_HOOK_API_GATEWAY}";;
+            auth)           HOOK="${RENDER_HOOK_AUTH}";;
+            upload)         HOOK="${RENDER_HOOK_UPLOAD}";;
             storefront-host) HOOK="${RENDER_HOOK_STOREFRONT}";;
+            ai-waiter)      HOOK="${RENDER_HOOK_AI_WAITER}";;
           esac
 
           if [ -z "$HOOK" ]; then
