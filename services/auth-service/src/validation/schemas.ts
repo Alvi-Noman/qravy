@@ -324,6 +324,25 @@ export const restaurantOnboardingSchema = z.object({
   locationMode: z.enum(['single', 'multiple']).optional(),
 });
 
+export const orderCreateSchema = z.object({
+  tenantId: z.string().min(1, 'tenantId is required'),
+  channel: channelEnum.optional(),
+
+  items: z
+    .array(
+      z.object({
+        itemId: z.string().min(1, 'itemId is required'),
+        quantity: z.number().int().min(1, 'quantity must be at least 1'),
+        notes: z.string().max(500).optional(),
+      })
+    )
+    .min(1, 'At least one item is required'),
+
+  tableId: z.string().min(1).optional(),
+  customerName: z.string().max(120).optional(),
+  customerPhone: z.string().max(32).optional(),
+});
+
 export const publicMenuQuerySchema = z.object({
   subdomain: z.string().min(1),
   branch: z.string().optional(),
