@@ -1,7 +1,0 @@
-{
-  "buildCommand": "cd ../.. && pnpm install && cd apps/tastebud && pnpm run build",
-  "outputDirectory": "apps/tastebud/dist",
-  "rewrites": [
-    { "source": "/(.*)", "destination": "/" }
-  ]
-}
