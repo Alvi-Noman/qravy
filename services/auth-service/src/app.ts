@@ -23,7 +23,7 @@ import userRoutes from './routes/userRoutes.js';
 import locationRoutes from './routes/locationRoutes.js';
 import accessRoutes from './routes/accessRoutes.js';
 import categoriesRoutes from './routes/categoriesRoutes.js';
-import orderRoutes from './routes/orderRoutes.js'; // ✅ NEW: orders mounted at /api/v1
+import publicRoutes from './routes/publicRoutes.js'; // ✅ added
 
 import logger from './utils/logger.js';
 import { responseFormatter } from './middleware/response.js';
@@ -35,17 +35,16 @@ const app: Application = express();
 app.set('trust proxy', 1);
 
 /* ---------- CORS (explicit origins + credentials) ---------- */
-// Default includes 5173 (braincell) and 5174 (tastebud). Override via CORS_ORIGIN env.
-const CORS_ORIGINS = (process.env.CORS_ORIGIN || 'https://localhost:5173,https://localhost:5174')
+const CORS_ORIGINS = (process.env.CORS_ORIGIN || 'https://localhost:5173')
   .split(',')
   .map((s) => s.trim())
   .filter(Boolean);
 
-// We do NOT throw on disallowed origins. We just omit CORS headers.
+// We do NOT throw on disallowed origins; we just skip CORS headers.
 app.use(
   cors({
     origin: (origin, cb) => {
-      if (!origin) return cb(null, false); // non-browser / same-origin → no CORS headers
+      if (!origin) return cb(null, false); // non-browser / same-origin / curl → no CORS headers
       const ok = CORS_ORIGINS.includes(origin);
       if (ok) return cb(null, true);
       logger.warn(`[CORS] blocked origin: ${origin}`);
@@ -143,7 +142,8 @@ app.use('/api/v1/auth/magic-link', authLimiter);
 app.use('/api/v1', apiLimiter);
 
 /* ---------- Routes ---------- */
-// Primary surfaces
+// Mount public routes at /api/v1 so router.get('/public/menu') → /api/v1/public/menu
+app.use('/api/v1', publicRoutes);          // ✅ fixed mount
 app.use('/api/v1/auth', authRoutes);
 app.use('/api/v1/menu', menuRoutes);
 app.use('/api/v1/tenant', tenantRoutes);
@@ -151,9 +151,6 @@ app.use('/api/v1/users', userRoutes);
 app.use('/api/v1/locations', locationRoutes);
 app.use('/api/v1/access', accessRoutes);
 app.use('/api/v1/categories', categoriesRoutes);
-
-// ✅ Orders are mounted at /api/v1 (final path: /api/v1/orders)
-app.use('/api/v1', orderRoutes);
 
 /**
  * Legacy aliases under /api/v1/auth

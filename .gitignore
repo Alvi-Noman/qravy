@@ -37,3 +37,7 @@ pnpm-debug.log*
 
 #Others
 *.ps1 
+.env
+.env.local
+.env.development
+.env.production

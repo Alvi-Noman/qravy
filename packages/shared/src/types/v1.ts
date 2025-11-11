@@ -57,15 +57,18 @@ export interface CategoryDTO {
   id: string;
   name: string;
 
-  /** Baseline channel scope */
-  channel?: 'dine-in' | 'online' | 'both';
+  /** Channel scope ('all' | 'dine-in' | 'online') */
+  channelScope?: 'all' | 'dine-in' | 'online';
 
-  /** Optional overlays (only present for global categories) */
+  /** Whether category is hidden for this branch/channel */
+  hidden?: boolean;
+
+  /** Optional overlays (for multi-location/global categories) */
   includeLocationIds?: string[];
   excludeLocationIds?: string[];
 
-  createdAt: string;
-  updatedAt: string;
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 /**

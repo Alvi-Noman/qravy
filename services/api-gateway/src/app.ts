@@ -8,6 +8,7 @@ import { createProxyMiddleware } from 'http-proxy-middleware';
 import type { ClientRequest, IncomingMessage } from 'http';
 import logger from './utils/logger.js';
 import registerUploadsProxy from './proxy/uploads.js';
+import azureRouter from './proxy/azure.js'; // ← ADDED
 
 type NodeErr = Error & { code?: string };
 
@@ -16,6 +17,9 @@ const app: Application = express();
 app.set('trust proxy', 1);
 app.set('etag', false);
 
+// ── Health FIRST so nothing can swallow it ─────────────────────────────────────
+app.get('/health', (_req: Request, res: Response) => res.status(200).json({ status: 'ok' }));
+
 // Basic request log
 app.use((req: Request, _res: Response, next: NextFunction) => {
   logger.http(`[API Gateway] ${req.method} ${req.originalUrl}`);
@@ -23,30 +27,51 @@ app.use((req: Request, _res: Response, next: NextFunction) => {
 });
 
 /* ───────────────────────────── CORS (allow-list + wildcard) ───────────────────────────── */
-// Comma-separated exact origins, e.g. "https://app.qravy.com,https://localhost:5173"
-const RAW_ORIGINS = (process.env.CORS_ORIGIN || 'https://localhost:5173')
+// Comma-separated exact origins.
+// Default covers your current dev: Vite on 3007 and storefront-host on 8090 (http/https).
+const RAW_ORIGINS = (process.env.CORS_ORIGIN ||
+  'http://localhost:3007,https://localhost:3007,http://localhost:8090,https://localhost:8090')
   .split(',')
   .map((s) => s.trim())
   .filter(Boolean);
 
 function isAllowedOrigin(origin?: string): boolean {
-  // Allow SSR/tools (no Origin header)
-  if (!origin) return true;
+  if (!origin) return true; // SSR/tools/no Origin -> allow
 
-  // Exact match first (scheme + host + optional port)
   if (RAW_ORIGINS.includes(origin)) return true;
 
-  // Programmatic wildcard for your multi-tenant domains (adjust as needed)
   try {
     const url = new URL(origin);
-    if (url.protocol !== 'https:') {
-      // if you want to allow http during dev, add http origins to CORS_ORIGIN explicitly
-      return false;
-    }
-    const { hostname } = url;
-    const roots = ['qravy.com', 'onqravy.com'];
-    if (roots.some((root) => hostname === root || hostname.endsWith(`.${root}`))) {
+    const { protocol, hostname, port } = url;
+
+    const prodRoots = ['qravy.com', 'onqravy.com'];
+    if (
+      protocol === 'https:' &&
+      prodRoots.some((root) => hostname === root || hostname.endsWith(`.${root}`))
+    ) {
       return true;
+    }
+
+    // Dev allowances for localhost/lvh.me
+    const devPorts = new Set([
+      '3000',
+      '3001',
+      '3007', // <-- Vite (current)
+      '5173',
+      '5174',
+      '5179', // <-- alternative Vite we tried
+      '8090', // <-- storefront-host
+      '', // some browsers omit explicit port for defaults
+      null as any,
+      undefined as any,
+    ]);
+
+    const isDevPort = devPorts.has(port as any);
+
+    if ((hostname === 'localhost' || hostname === '127.0.0.1') && isDevPort) return true;
+
+    if (hostname === 'lvh.me' || hostname.endsWith('.lvh.me')) {
+      if (isDevPort) return true;
     }
   } catch {
     // malformed Origin
@@ -68,14 +93,12 @@ const corsOptions: cors.CorsOptions = {
   optionsSuccessStatus: 204,
 };
 
-// IMPORTANT: CORS MUST come before any proxies/body-parsers
+// CORS before any proxies/body-parsers
 app.use(cors(corsOptions));
 app.options('*', cors(corsOptions));
 
-/**
- * ⛔ Removed the manual “OPTIONS 204 early” handler:
- * It returned 204 without CORS headers, breaking preflights.
- */
+// ── Azure Speech: secure token relay ───────────────────────────────────────────
+app.use('/azure', azureRouter); // ← ADDED
 
 /* >>> MOUNT UPLOADS PROXY BEFORE BODY PARSERS <<< */
 registerUploadsProxy(app);
@@ -99,7 +122,6 @@ function jsonProxyToAuth() {
     ws: false,
 
     onProxyReq: (proxyReq: ClientRequest, req: Request & { body?: unknown }) => {
-      // Only forward JSON bodies for mutating methods
       const method = (req.method || 'GET').toUpperCase();
       if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) return;
 
@@ -115,7 +137,6 @@ function jsonProxyToAuth() {
     },
 
     onProxyRes(proxyRes: IncomingMessage, _req: Request, res: Response) {
-      // Prevent caching on proxied JSON responses
       try {
         if (proxyRes.headers) {
           delete proxyRes.headers.etag;
@@ -141,16 +162,77 @@ function jsonProxyToAuth() {
   });
 }
 
-// Explicit mounts to auth-service (clear & overridable later)
+/**
+ * Public proxy: forward /api/v1/public/* as-is to auth-service
+ * (No path rewrite; auth-service expects /api/v1/public/*)
+ */
+function publicProxyToAuth() {
+  return createProxyMiddleware({
+    target: AUTH_TARGET,
+    changeOrigin: true,
+    xfwd: true,
+    ws: false,
+
+    onProxyReq: (proxyReq: ClientRequest, req: Request & { body?: unknown }) => {
+      const method = (req.method || 'GET').toUpperCase();
+      if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) return;
+
+      const hasBody = req.body && Object.keys(req.body as object).length > 0;
+      if (!hasBody) return;
+
+      const ct = (proxyReq.getHeader('content-type') as string | undefined) || '';
+      if (!ct.includes('application/json')) return;
+
+      const body = JSON.stringify(req.body);
+      proxyReq.setHeader('content-length', Buffer.byteLength(body));
+      proxyReq.write(body);
+    },
+
+    onProxyRes(proxyRes: IncomingMessage, _req: Request, res: Response) {
+      try {
+        if (proxyRes.headers) {
+          delete proxyRes.headers.etag;
+          delete proxyRes.headers['last-modified'];
+          proxyRes.headers['cache-control'] = 'no-store';
+        }
+        res.removeHeader('ETag');
+        res.setHeader('Cache-Control', 'no-store');
+      } catch {
+        /* noop */
+      }
+    },
+
+    onError(err: NodeErr, req: Request, res: Response) {
+      const code = err.code ?? 'UNKNOWN';
+      logger.error(
+        `[PROXY][PUBLIC] ${req.method} ${req.originalUrl} -> ${AUTH_TARGET} error: ${code} ${err.message}`
+      );
+      if (!res.headersSent) {
+        res.status(502).json({ message: 'Bad gateway (auth-service unavailable)', code });
+      }
+    },
+  });
+}
+
+// Explicit mounts to auth-service
+app.use('/api/v1/public', publicProxyToAuth());  // forward as-is (no rewrite)
 app.use('/api/v1/auth', jsonProxyToAuth());
 app.use('/api/v1/locations', jsonProxyToAuth());
 app.use('/api/v1/access', jsonProxyToAuth());
 
-// Catch-all for any other /api/v1/* paths served by auth-service
+// Catch-all for other /api/v1/* (includes non-public)
 app.use('/api/v1', jsonProxyToAuth());
 
-// Health
-app.get('/health', (_req: Request, res: Response) => res.status(200).json({ status: 'ok' }));
+/* ========================= WS proxy -> ai-waiter-service ========================= */
+const VOICE_WS_TARGET = process.env.VOICE_WS_TARGET || 'http://ai-waiter-service:7071';
+const voiceWsProxy = createProxyMiddleware({
+  target: VOICE_WS_TARGET,
+  changeOrigin: true,
+  ws: true,
+  logLevel: 'warn',
+});
+// Mount the WS route
+app.use('/ws/voice', voiceWsProxy);
 
 // Dev 404 tracer for unhandled API routes (outside /api/v1)
 if (process.env.NODE_ENV !== 'production') {
@@ -160,4 +242,5 @@ if (process.env.NODE_ENV !== 'production') {
   });
 }
 
+export { voiceWsProxy };
 export default app;

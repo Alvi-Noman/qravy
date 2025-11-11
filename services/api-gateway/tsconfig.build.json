@@ -1,0 +1,18 @@
+{
+  "extends": "../../packages/config/tsconfig-preset/tsconfig.json",
+  "compilerOptions": {
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "target": "ES2022",
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "baseUrl": ".",
+    "outDir": "dist",
+    "types": ["node"],
+    "typeRoots": ["../../node_modules/@types", "./node_modules/@types"],
+    "skipLibCheck": true,
+    "paths": { "@/*": ["./src/*"] }
+  },
+  "include": ["src/**/*"],
+  "exclude": ["**/*.test.ts", "**/*.spec.ts", "jest.config.ts", "dist", "node_modules"]
+}

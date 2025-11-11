@@ -1,4 +1,5 @@
-import app from './app.js';
+// services/api-gateway/src/server.ts
+import app, { voiceWsProxy } from './app.js';
 import { config } from 'dotenv';
 import fs from 'fs';
 import http from 'http';
@@ -27,6 +28,24 @@ function tryLoadTLS() {
 const tls = tryLoadTLS();
 
 const server = tls ? https.createServer(tls, app) : http.createServer(app);
+
+// --- WS upgrade handler for /ws/voice ---
+type UpgradeCapableProxy = {
+  upgrade?: (req: http.IncomingMessage, socket: any, head: Buffer) => void;
+};
+
+server.on('upgrade', (req, socket, head) => {
+  if (req.url && req.url.startsWith('/ws/voice')) {
+    (voiceWsProxy as UpgradeCapableProxy).upgrade?.(
+      req as http.IncomingMessage,
+      socket as any,
+      head as Buffer
+    );
+    return;
+  }
+  // If you don't have other WS routes, close others:
+  socket.destroy();
+});
 
 server.listen(PORT, '0.0.0.0', () => {
   logger.info(

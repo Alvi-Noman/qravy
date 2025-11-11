@@ -1,3 +1,5 @@
+version: "3.9"
+
 services:
   auth-service:
     build:
@@ -8,10 +10,8 @@ services:
     environment:
       NODE_ENV: development
       PORT: "3001"
-      # 👇 allow HTTPS Vite origin
-      CORS_ORIGIN: ${CORS_ORIGIN:-https://localhost:5173}
-      # 👇 magic-link base in dev (matches your HTTPS Vite)
-      FRONTEND_URL: ${FRONTEND_URL:-https://localhost:5173}
+      CORS_ORIGIN: ${CORS_ORIGIN:-https://localhost:5501}
+      FRONTEND_URL: ${FRONTEND_URL:-https://localhost:5501}
     working_dir: /app/services/auth-service
     ports:
       - "3001:3001"
@@ -19,8 +19,6 @@ services:
       - 8.8.8.8
       - 1.1.1.1
     restart: unless-stopped
-    #volumes:
-    # - ./services/auth-service/src:/app/services/auth-service/src
     command: ["pnpm", "run", "dev"]
 
   upload-service:
@@ -32,9 +30,7 @@ services:
     environment:
       NODE_ENV: development
       PORT: "4010"
-      # 👇 allow HTTPS Vite origin
-      CORS_ORIGIN: ${CORS_ORIGIN:-https://localhost:5173}
-      # Force upload-service to use the same token as the gateway
+      CORS_ORIGIN: ${CORS_ORIGIN:-https://localhost:5501}
       UPLOAD_TOKEN: ${UPLOAD_SERVICE_TOKEN:?Set UPLOAD_SERVICE_TOKEN (OS env or root .env)}
     working_dir: /app/services/upload-service
     ports:
@@ -42,8 +38,6 @@ services:
     depends_on:
       - auth-service
     restart: unless-stopped
-    #volumes:
-    # - ./services/upload-service/src:/app/services/upload-service/src
     command: ["pnpm", "run", "dev"]
 
   api-gateway:
@@ -55,29 +49,148 @@ services:
     environment:
       NODE_ENV: development
       PORT: "8080"
-      # 👇 Local dev is now HTTPS on Vite, so allow that origin
-      CORS_ORIGIN: "https://localhost:5173,http://localhost:5173"
+      HOST: "0.0.0.0"
+      # Allow all local apps (added Tastebud dev :3007 to avoid CORS issues)
+      CORS_ORIGIN: "http://localhost:5501,https://localhost:5501,http://127.0.0.1:5501,https://127.0.0.1:5501,http://localhost:8090,https://localhost:8090,http://localhost:3007,https://localhost:3007"
       AUTH_SERVICE_URL: http://auth-service:3001
       UPLOAD_SERVICE_URL: http://upload-service:4010
-      # Strict: refuse to start if var is missing (no fallback!)
       UPLOAD_SERVICE_TOKEN: ${UPLOAD_SERVICE_TOKEN:?Set UPLOAD_SERVICE_TOKEN (OS env or root .env)}
-      # 👇 Enable HTTPS inside the container (server auto-falls back to HTTP if missing)
+      # ✅ Enable HTTPS with local certs
       SSL_KEY_PATH: /app/certs/localhost-key.pem
       SSL_CERT_PATH: /app/certs/localhost.pem
-    working_dir: /app/services/api-gateway
+      # ✅ WS target for AI Waiter
+      VOICE_WS_TARGET: http://ai-waiter-service:7071
+      # ✅ Azure Speech credentials
+      AZURE_SPEECH_KEY: ${AZURE_SPEECH_KEY:?Set AZURE_SPEECH_KEY in your .env}
+      AZURE_SPEECH_REGION: ${AZURE_SPEECH_REGION:?Set AZURE_SPEECH_REGION in your .env}
     ports:
       - "8080:8080"
     depends_on:
       - auth-service
       - upload-service
+      - ai-waiter-service
     restart: unless-stopped
-    #volumes:
-    #  - ./services/api-gateway/src:/app/services/api-gateway/src
-    # 👇 Mount your mkcert-generated certs (read-only)
     volumes:
       - ./certs:/app/certs:ro
-    command: ["pnpm", "run", "dev"]
+
+  storefront-host:
+    build:
+      context: .
+      dockerfile: services/storefront-host/Dockerfile
+    env_file:
+      - ./services/storefront-host/.env
+    environment:
+      NODE_ENV: development
+      PORT: "8090"
+      HOST: "0.0.0.0"
+      # storefront-host (container) -> Vite (host)
+      TASTEBUD_DEV_URL: http://host.docker.internal:3007
+      # storefront-host (container) -> api-gateway (container)
+      GATEWAY_URL: https://api-gateway:8080
+      # Allow local Vite + storefront origins
+      CORS_ORIGIN: "http://localhost:3007,https://localhost:3007,http://localhost:8090,https://localhost:8090,http://localhost:5501,https://localhost:5501"
+      NODE_TLS_REJECT_UNAUTHORIZED: "0"
+      AI_WAITER_URL: http://ai-waiter-service:7071
+    ports:
+      - "8090:8090"
+    depends_on:
+      - api-gateway
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # === Persistence for transcripts ===
+  mongo:
+    image: mongo:6
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    restart: unless-stopped
+
+  # === AI Waiter (ASR + Brain in one service) ===
+  ai-waiter-service:
+    build:
+      context: ./services/ai-waiter-service
+    env_file:
+      - ./services/ai-waiter-service/.env   # contains MONGO_URI for Atlas (kept out of git)
+    environment:
+      - PORT=7071
+      - WHISPER_MODEL=tiny
+      - WHISPER_DEVICE=cpu
+      - WHISPER_COMPUTE_TYPE=int8
+      - WHISPER_LANG=auto
+      - OMP_NUM_THREADS=1
+      - MKL_NUM_THREADS=1
+      - OPENBLAS_NUM_THREADS=1
+      - NUMEXPR_NUM_THREADS=1
+
+      # === Groq Whisper v3 (for finalize) ===
+      - GROQ_API_KEY=${GROQ_API_KEY:?Set GROQ_API_KEY in your .env}
+      - GROQ_MODEL=whisper-large-v3
+      - GROQ_BASE=https://api.groq.com
+      - GROQ_TIMEOUT_MS=6000
+
+      # === Mongo / menu snapshot for grounding ===
+      - MONGO_DB=qravy
+      - MENU_DB=authDB
+      - MENU_COLLECTION=menuItems
+
+      # === Normalizer knobs ===
+      - NORMALIZER_FUZZY_THRESHOLD=0.87
+      - NORMALIZER_VOCAB_MAX=200
+      - MENU_SNAPSHOT_MAX=120
+      - NORMALIZER_INCLUDE_ALIASES=1
+
+      # === OpenAI brain (GPT-4.1-mini) ===
+      - OPENAI_API_KEY=${OPENAI_API_KEY:?Set OPENAI_API_KEY in your .env}
+      - OPENAI_BASE=https://api.openai.com
+      - OPENAI_CHAT_MODEL=gpt-4.1-mini
+      # Optional tuning
+      - BRAIN_TIMEOUT_S=8.0
+      - BRAIN_MAX_TOKENS=250
+      - BRAIN_TEMP=0.0
+      - BRAIN_TOP_P=1.0
+      - BRAIN_FREQ_PENALTY=0.0
+      - BRAIN_PRES_PENALTY=0.0
+
+      # === Idle finalize + batching ===
+      - IDLE_FINALIZE_MS=1200
+      - TRANSCRIPT_FLUSH_N=1
+      - TRANSCRIPT_FLUSH_MS=500
+    depends_on:
+      - mongo
+    ports:
+      - "7071:7071"
+      - "7081:7081"
+    restart: unless-stopped
+
+  # === Sidecar: continuous export of transcripts to review JSONL ===
+  transcripts-exporter:
+    image: python:3.11-slim
+    working_dir: /app
+    # 👇 Explicitly source the same .env the waiter uses, then run watcher
+    command: >
+      bash -lc "set -a;
+                . services/ai-waiter-service/.env;
+                set +a;
+                pip install --no-cache-dir 'pymongo[srv]' &&
+                python fine_tuning/export_transcripts.py --watch
+                --mongo \"$MONGO_URI\" --db \"$MONGO_DB\" --coll transcripts"
+    env_file:
+      - ./services/ai-waiter-service/.env
+    environment:
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./:/app
+    depends_on:
+      - mongo
+      - ai-waiter-service
+    restart: unless-stopped
 
 networks:
   default:
     driver: bridge
+
+volumes:
+  mongo_data:

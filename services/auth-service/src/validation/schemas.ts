@@ -324,27 +324,8 @@ export const restaurantOnboardingSchema = z.object({
   locationMode: z.enum(['single', 'multiple']).optional(),
 });
 
-export const orderCreateSchema = z.object({
-  channel: z.enum(['dine-in', 'online']),
-  items: z.array(z.object({
-    id: objectId,
-    qty: z.number().int().positive(),
-    variation: z.string().optional(),
-    notes: z.string().max(500).optional(),
-  })).min(1),
-  // dine-in
-  tableNumber: z.string().min(1).optional(),
-  // online
-  customer: z.object({
-    name: z.string().min(1),
-    phone: z.string().min(5),
-    address: z.string().min(3),
-  }).optional(),
-}).superRefine((data, ctx) => {
-  if (data.channel === 'dine-in' && !data.tableNumber) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['tableNumber'], message: 'tableNumber is required for dine-in' });
-  }
-  if (data.channel === 'online' && !data.customer) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['customer'], message: 'customer block is required for online' });
-  }
+export const publicMenuQuerySchema = z.object({
+  subdomain: z.string().min(1),
+  branch: z.string().optional(),
+  channel: channelEnum.optional(),
 });

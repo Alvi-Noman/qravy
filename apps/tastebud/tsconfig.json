@@ -1,5 +1,4 @@
 {
-  "extends": "@qravy/config/tsconfig-preset/tsconfig.json",
   "compilerOptions": {
     "jsx": "react-jsx",
     "lib": ["DOM", "DOM.Iterable", "ESNext"],
@@ -11,28 +10,25 @@
     },
     "allowJs": true,
     "checkJs": true,
-    "types": [
-      "vite/client",
-      "vitest/globals",
-      "node",
-      "@testing-library/jest-dom"
-    ],
+    "types": ["vite/client", "node"],
     "noImplicitAny": false,
     "forceConsistentCasingInFileNames": true,
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "noEmit": true
   },
   "include": [
-    "**/*.js",
-    "**/*.cjs",
-    "**/*.mjs",
-    "**/*.ts",
-    "**/*.tsx",
-    "**/*.jsx",
-    "**/*.d.ts"
+    "src",
+    "src/**/*.ts",
+    "src/**/*.tsx",
+    "src/**/*.js",
+    "src/**/*.jsx",
+    "vite-env.d.ts",
+    "env.d.ts"
   ],
   "exclude": [
     "node_modules",
     "dist",
+    "public",
     "vite.config.ts",
     "jest.config.mjs",
     "postcss.config.js",

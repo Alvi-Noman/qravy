@@ -1,0 +1,330 @@
+// services/storefront-host/src/app.ts
+import express, { type Application, type Request } from 'express';
+import cors from 'cors';
+import morgan from 'morgan';
+import { createProxyMiddleware, responseInterceptor } from 'http-proxy-middleware';
+import type { ClientRequest, IncomingMessage, ServerResponse } from 'http';
+import https from 'https';
+
+const PORT = Number(process.env.PORT || 8090);
+
+// IMPORTANT:
+// - No localhost fallback here. In dev, set TASTEBUD_DEV_URL explicitly
+//   to http://host.docker.internal:<vite-port> so the container can reach Vite.
+const TASTEBUD_DEV_URL = process.env.TASTEBUD_DEV_URL as string;
+
+// Prefer Docker service name for container-to-container in dev.
+const GATEWAY_URL = process.env.GATEWAY_URL || 'http://api-gateway:8080';
+
+// NEW: direct target for the AI Waiter WS service (Fix A)
+const AI_WAITER_URL = process.env.AI_WAITER_URL || 'http://ai-waiter-service:7071';
+
+// ---- CORS allow-list
+const RAW_ORIGINS = (process.env.CORS_ORIGIN || '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+
+type OriginAllow = boolean | string | RegExp | Array<string | RegExp>;
+type OriginCallback = (err: Error | null, allow?: OriginAllow) => void;
+type CustomOrigin = (origin: string | undefined, cb: OriginCallback) => void;
+
+const corsOrigin: CustomOrigin = (origin, cb) => {
+  if (!origin) return cb(null, true);
+  if (RAW_ORIGINS.includes(origin)) return cb(null, true);
+  try {
+    // cast is safe because we return above when !origin
+    const url = new URL(origin as string);
+    if (
+      url.protocol === 'https:' &&
+      ['qravy.com', 'onqravy.com'].some(
+        (root) => url.hostname === root || url.hostname.endsWith(`.${root}`)
+      )
+    ) {
+      return cb(null, true);
+    }
+  } catch {
+    /* ignore */
+  }
+  return cb(new Error('Not allowed by CORS'));
+};
+
+export function createApp(): Application {
+  if (!TASTEBUD_DEV_URL) {
+    // Fail fast with a helpful message instead of silently pointing at the wrong place.
+    throw new Error(
+      '[storefront-host] Missing TASTEBUD_DEV_URL. Set it to http://host.docker.internal:<vite-port> in services/storefront-host/.env'
+    );
+  }
+
+  const app = express();
+
+  // --- COOP/COEP: enable faster audio timing & future SharedArrayBuffer ---
+  app.use((req, res, next) => {
+    res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+    res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp');
+    next();
+  });
+
+  app.set('trust proxy', 1);
+  app.use(morgan('dev'));
+  app.use(cors({ origin: corsOrigin, credentials: true }));
+  app.use(express.json());
+
+  console.log(
+    `[storefront-host] PORT=${PORT} GATEWAY_URL=${GATEWAY_URL} TASTEBUD_DEV_URL=${TASTEBUD_DEV_URL} AI_WAITER_URL=${AI_WAITER_URL}`
+  );
+
+  // Health
+  app.get('/health', (_req, res) => res.status(200).json({ status: 'ok' }));
+
+  /* ========================= API proxy -> Gateway =========================
+   * Mount at /api. Express sets baseUrl="/api" and url="/v1/...".
+   * We must forward baseUrl + url so the gateway receives "/api/v1/...".
+   */
+  const isHttpsGateway = GATEWAY_URL.startsWith('https://');
+  const apiProxy = createProxyMiddleware({
+    target: GATEWAY_URL,
+    changeOrigin: true,
+    xfwd: true,
+    ws: false,
+
+    // We’re calling an HTTPS gateway with a local mkcert cert.
+    // Two belts & suspenders to avoid resets:
+    secure: false,
+    agent: isHttpsGateway ? new https.Agent({ rejectUnauthorized: false }) : undefined,
+
+    proxyTimeout: 30000,
+    timeout: 30000,
+
+    pathRewrite: (_path, req) => {
+      const base = (req as any).baseUrl || ''; // "/api"
+      const url = req.url || '';               // "/v1/..."
+      return `${base}${url}`;
+    },
+
+    on: {
+      proxyReq(proxyReq: ClientRequest, req: IncomingMessage) {
+        const eReq = req as unknown as Request & { body?: unknown };
+
+        // Drop cookies/auth for public endpoints to avoid 431s
+        const rawUrl = (eReq.originalUrl || eReq.url || '').toLowerCase();
+        if (rawUrl.startsWith('/api/v1/public/')) {
+          proxyReq.removeHeader('cookie');
+          proxyReq.removeHeader('authorization');
+        }
+
+        if (!proxyReq.getHeader('accept')) {
+          proxyReq.setHeader('accept', 'application/json');
+        }
+
+        const method = (eReq.method || 'GET').toUpperCase();
+        if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) return;
+
+        const hasBody = eReq.body && Object.keys(eReq.body as object).length > 0;
+        if (!hasBody) return;
+
+        const ct = (proxyReq.getHeader('content-type') as string | undefined) || '';
+        if (!ct.includes('application/json')) return;
+
+        const body = JSON.stringify(eReq.body);
+        proxyReq.setHeader('content-length', Buffer.byteLength(body));
+        proxyReq.write(body);
+      },
+
+      proxyRes(proxyRes: IncomingMessage, _req: IncomingMessage, res: ServerResponse) {
+        try {
+          if ((proxyRes as any).headers) {
+            delete (proxyRes as any).headers.etag;
+            delete (proxyRes as any).headers['last-modified'];
+            (proxyRes as any).headers['cache-control'] = 'no-store';
+          }
+          (res as any).removeHeader?.('ETag');
+          (res as any).setHeader?.('Cache-Control', 'no-store');
+        } catch {
+          /* noop */
+        }
+      },
+
+      error(err, _req, res) {
+        const sres = res as unknown as ServerResponse;
+        if (
+          typeof (sres as any)?.setHeader === 'function' &&
+          typeof (sres as any)?.end === 'function'
+        ) {
+          if (!(sres as any).headersSent) {
+            sres.statusCode = 502;
+            (sres as any).setHeader('Content-Type', 'application/json');
+            (sres as any).end(
+              JSON.stringify({
+                message: 'Bad gateway (storefront-host could not reach API gateway)',
+                code: (err as any).code || 'E_PROXY',
+              })
+            );
+          }
+        } else {
+          try {
+            (res as any)?.end?.();
+          } catch {
+            /* noop */
+          }
+        }
+      },
+    },
+  });
+
+  // Mount proxy at /api — upstream will receive /api/v1/... because of pathRewrite above.
+  app.use('/api', apiProxy);
+
+  /* ========================= WS proxy -> AI Waiter (voice) ========================= */
+  const isHttpsAi = AI_WAITER_URL.startsWith('https://');
+  const voiceWsProxy = createProxyMiddleware({
+    target: AI_WAITER_URL,            // ← Fix A: point directly to ai-waiter
+    changeOrigin: true,
+    ws: true,
+    // Accept self-signed mkcert when ai-waiter is HTTPS in dev
+    secure: false,
+    agent: isHttpsAi ? new https.Agent({ rejectUnauthorized: false }) : undefined,
+  });
+
+  // Expose the WS proxy for server.ts upgrade handling
+  app.set('voiceWsProxy', voiceWsProxy);
+
+  // Mount the WS route (also handles accidental HTTP hits to the same path)
+  app.use('/ws/voice', voiceWsProxy);
+
+  /* ========================= Frontend proxy -> Tastebud dev ========================= */
+  app.use(
+    '/',
+    createProxyMiddleware({
+      target: TASTEBUD_DEV_URL,
+      changeOrigin: true,
+      ws: true,
+      secure: false,
+      selfHandleResponse: true,
+      on: {
+        proxyRes: responseInterceptor(async (buffer, proxyRes, req, res) => {
+          // Detect HTML using proxy response headers (more reliable than res.getHeader here)
+          const ctHeader =
+            (proxyRes.headers?.['content-type'] as string | undefined) ||
+            res.getHeader('content-type')?.toString() ||
+            '';
+          if (!ctHeader.includes('text/html')) return buffer;
+
+          const raw = buffer.toString('utf8');
+          const host =
+            (req.headers['x-forwarded-host'] as string | undefined) ??
+            (req.headers.host ?? 'localhost');
+          const proto =
+            (req.headers['x-forwarded-proto'] as string | undefined) ?? 'http';
+
+          // Make TS happy: both args are strings
+          const urlPath: string = typeof req.url === 'string' ? req.url : '/';
+          const reqUrl = new URL(urlPath, `${proto}://${host}`);
+
+          const pathname = (reqUrl.pathname || '/').toLowerCase();
+          const search = reqUrl.searchParams;
+
+          // subdomain (prod via host) or /t/:subdomain (dev path)
+          const tenant = parseTenant(host, pathname);
+
+          // channel from path or ?channel=
+          const channel = parseChannel(pathname, search);
+
+          // branch from /t/:sub/branch/:slug  OR  first segment (prod style)  OR  ?branch=
+          const branch = parseBranch(pathname, search);
+
+          const html = injectRuntime(raw, {
+            subdomain: tenant,
+            channel,
+            branch,
+            apiBase: '/api/v1',
+          });
+
+          res.setHeader('Content-Type', 'text/html; charset=utf-8');
+          return html;
+        }),
+      },
+    })
+  );
+
+  return app;
+}
+
+/* ========================= helpers ========================= */
+
+function resolveTenantFromHost(hostHeader: string | undefined): string | null {
+  const host = hostHeader || '';
+  const hostname = (host.split(':')[0] ?? '').toLowerCase();
+
+  const roots = ['onqravy.com', 'qravy.com'];
+  for (const root of roots) {
+    if (hostname === root) return null;
+    if (hostname.endsWith(`.${root}`)) {
+      const sub = hostname.slice(0, -(root.length + 1));
+      return sub || null;
+    }
+  }
+  return null;
+}
+
+function parseTenant(hostHeader: string | undefined, pathname: string): string | null {
+  const fromHost = resolveTenantFromHost(hostHeader);
+  if (fromHost) return fromHost;
+
+  // dev path: /t/:subdomain(/...)
+  const m = pathname.match(/^\/t\/([^/]+)/);
+  const sub = m?.[1];
+  if (sub) return decodeURIComponent(sub);
+  return null;
+}
+
+function parseChannel(
+  pathname: string,
+  search: URLSearchParams
+): 'dine-in' | 'online' | null {
+  // Support detection anywhere in path (/t/:sub/:branch/dine-in or leading)
+  if (pathname.includes('/dine-in')) return 'dine-in';
+  // Treat /menu and /online as the "online" channel
+  if (pathname.includes('/menu') || pathname.includes('/online')) return 'online';
+  const q = (search.get('channel') || '').toLowerCase();
+  if (q === 'dine-in' || q === 'online') return q as 'dine-in' | 'online';
+  return null;
+}
+
+function parseBranch(pathname: string, search: URLSearchParams): string | null {
+  // 1) NEW dev routes: /t/:subdomain/:branchSlug(/...)
+  //    Reserve special segments so they are NOT treated as branch
+  const RESERVED = new Set(['dine-in', 'online', 'menu']);
+  const mNew = pathname.match(/^\/t\/[^/]+\/([^/]+)(?:\/|$)/);
+  const cand = mNew?.[1];
+  if (cand && !RESERVED.has(cand)) {
+    return decodeURIComponent(cand);
+  }
+
+  // 2) LEGACY dev routes: /t/:subdomain/branch/:slug
+  const mLegacy = pathname.match(/^\/t\/[^/]+\/branch\/([^/]+)/);
+  if (mLegacy?.[1]) return decodeURIComponent(mLegacy[1]);
+
+  // 3) prod-style: first segment IF not reserved
+  const seg1 = pathname.split('/')[1] || '';
+  if (seg1 && !RESERVED.has(seg1) && seg1 !== 't' && seg1 !== 'api') {
+    return decodeURIComponent(seg1);
+  }
+
+  // 4) fallback from query
+  const q = search.get('branch');
+  return q ? q : null;
+}
+
+function injectRuntime(html: string, payload: {
+  subdomain: string | null;
+  channel: 'dine-in' | 'online' | null;
+  branch: string | null;
+  apiBase: string;
+}): string {
+  const snippet = `<script>window.__STORE__=${JSON.stringify(payload)};</script>`;
+  if (html.includes('</head>')) return html.replace('</head>', `${snippet}\n</head>`);
+  if (html.includes('</body>')) return html.replace('</body>', `${snippet}\n</body>`);
+  return `${snippet}\n${html}`;
+}

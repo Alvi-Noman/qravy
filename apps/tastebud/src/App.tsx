@@ -1,69 +1,56 @@
-import { Routes, Route, Navigate } from 'react-router-dom';
-import { Suspense } from 'react';
-import { CartProvider } from './context/CartContext';
+// apps/tastebud/src/app.tsx
+import { Suspense } from "react";
+import { Routes, Route, Navigate, useParams } from "react-router-dom";
+import Home from "./pages/Directory";
+import Restaurant from "./pages/DigitalMenu";
+import AIWaiter from "./pages/AIWaiterHome";
 
-// Pages
-import Home from './pages/Home';
-import CheckoutDineIn from './pages/CheckoutDineIn';
-import CheckoutOnline from './pages/CheckoutOnline';
-import OrderPlaced from './pages/OrderPlaced';
-
-// Optional: a tiny fallback to keep UX consistent with braincell
-function Fallback() {
-  return <div className="p-6 text-sm text-slate-600">Loading…</div>;
+function RedirectToTenant() {
+  const { subdomain } = useParams();
+  return <Navigate to={`/t/${subdomain}`} replace />;
 }
 
-/**
- * Storefront App shell:
- * - Uses CartProvider (channel-aware)
- * - Router structure mirrors your other app
- */
 export default function App() {
+  const hasTenantFromRuntime =
+    typeof window !== 'undefined' &&
+    (window as any)?.__STORE__ &&
+    (window as any).__STORE__.subdomain;
+
   return (
-    <CartProvider>
+    <Suspense fallback={<div className="p-6 text-sm text-gray-500">Loading…</div>}>
       <Routes>
+        {/* Generic homepage */}
+        <Route path="/" element={hasTenantFromRuntime ? <AIWaiter /> : <Home />} />
+
+        {/* Tenant storefront routes - AIWaiter as entry */}
+        <Route path="/t/:subdomain" element={<AIWaiter />} />
+        <Route path="/t/:subdomain/menu" element={<Restaurant />} />
+        <Route path="/t/:subdomain/menu/dine-in" element={<Restaurant />} />
+
+        {/* Branch without /branch prefix */}
+        <Route path="/t/:subdomain/:branch" element={<AIWaiter />} />
+        <Route path="/t/:subdomain/:branch/menu" element={<Restaurant />} />
+        <Route path="/t/:subdomain/:branch/menu/dine-in" element={<Restaurant />} />
+
+        {/* Legacy routes still supported (kept for compatibility) */}
+        <Route path="/t/:subdomain/branch/:branchSlug" element={<AIWaiter />} />
+        <Route path="/t/:subdomain/branch/:branchSlug/menu" element={<Restaurant />} />
+        <Route path="/t/:subdomain/branch/:branchSlug/menu/dine-in" element={<Restaurant />} />
+
+        {/* Optional helpers / legacy redirects */}
+        <Route path="/t/:subdomain/online" element={<Navigate replace to="menu" />} />
+        <Route path="/t/:subdomain/dine-in" element={<Navigate replace to="menu/dine-in" />} />
         <Route
-          path="/"
-          element={
-            <Suspense fallback={<Fallback />}>
-              <Home />
-            </Suspense>
-          }
+          path="/t/:subdomain/:branch/dine-in"
+          element={<Navigate replace to="menu/dine-in" />}
         />
 
-        {/* Dine-In checkout (auto table via ?table=12) */}
-        <Route
-          path="/checkout/dine-in"
-          element={
-            <Suspense fallback={<Fallback />}>
-              <CheckoutDineIn />
-            </Suspense>
-          }
-        />
+        {/* Optional short alias -> redirect to /t/:subdomain */}
+        <Route path="/:subdomain" element={<RedirectToTenant />} />
 
-        {/* Online checkout */}
-        <Route
-          path="/checkout/online"
-          element={
-            <Suspense fallback={<Fallback />}>
-              <CheckoutOnline />
-            </Suspense>
-          }
-        />
-
-        {/* Confirmation */}
-        <Route
-          path="/order/placed"
-          element={
-            <Suspense fallback={<Fallback />}>
-              <OrderPlaced />
-            </Suspense>
-          }
-        />
-
-        {/* Legacy/typo guard examples */}
-        <Route path="/checkout" element={<Navigate to="/" replace />} />
+        {/* Fallback */}
+        <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
-    </CartProvider>
+    </Suspense>
   );
 }
