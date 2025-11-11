@@ -1,6 +1,12 @@
 {
-  "buildCommand": "cd apps/tastebud && pnpm run build",
-  "outputDirectory": "apps/tastebud/dist",
-  "framework": "vite",
-  "rewrites": [{ "source": "/(.*)", "destination": "/" }]
+  "projects": [
+    {
+      "src": "apps/tastebud/package.json",
+      "use": "@vercel/static-build",
+      "config": {
+        "buildCommand": "pnpm install && pnpm --filter tastebud... run build",
+        "outputDirectory": "apps/tastebud/dist"
+      }
+    }
+  ]
 }
