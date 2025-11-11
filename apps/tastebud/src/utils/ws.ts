@@ -22,31 +22,55 @@ export function getStableSessionId(): string {
  * 1. VITE_WS_ORIGIN (for AI Waiter WebSocket)
  * 2. VITE_API_ORIGIN (fallback)
  * 3. window.location (final fallback)
+ *
+ * Safe against invalid / partial env values.
  */
 export function getWsURL(path: string): string {
   const env = (import.meta as any).env || {};
-  const wsOrigin = env.VITE_WS_ORIGIN || null;
-  const apiOrigin = env.VITE_API_ORIGIN || null;
+  const rawWs = (env.VITE_WS_ORIGIN || '').toString().trim();
+  const rawApi = (env.VITE_API_ORIGIN || '').toString().trim();
   const sid = getStableSessionId();
+
+  function normalizeBase(raw: string | null | undefined): URL | null {
+    if (!raw) return null;
+    try {
+      // If missing protocol, assume https (we'll map to wss later).
+      if (!/^https?:\/\//i.test(raw) && !/^wss?:\/\//i.test(raw)) {
+        return new URL(`https://${raw}`);
+      }
+      return new URL(raw);
+    } catch {
+      return null; // ignore invalid values
+    }
+  }
+
+  const wsBase = normalizeBase(rawWs);
+  const apiBase = normalizeBase(rawApi);
 
   let scheme: 'ws:' | 'wss:';
   let host: string;
 
-  if (wsOrigin) {
-    const u = new URL(wsOrigin);
-    scheme = u.protocol === 'https:' ? 'wss:' : 'ws:';
-    host = u.host;
-  } else if (apiOrigin) {
-    const u = new URL(apiOrigin);
-    scheme = u.protocol === 'https:' ? 'wss:' : 'ws:';
-    host = u.host;
+  if (wsBase) {
+    scheme = wsBase.protocol === 'https:' || wsBase.protocol === 'wss:' ? 'wss:' : 'ws:';
+    host = wsBase.host;
+  } else if (apiBase) {
+    scheme = apiBase.protocol === 'https:' || apiBase.protocol === 'wss:' ? 'wss:' : 'ws:';
+    host = apiBase.host;
   } else {
-    scheme = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    host = location.host;
+    if (typeof window !== 'undefined' && window.location) {
+      const loc = window.location;
+      scheme = loc.protocol === 'https:' ? 'wss:' : 'ws:';
+      host = loc.host;
+    } else {
+      // ultra-safe fallback to avoid throwing during SSR/init
+      scheme = 'wss:';
+      host = 'localhost';
+    }
   }
 
   const base = `${scheme}//${host}`;
-  const url = new URL(path, base);
+  const effectivePath = path || '/ws/voice';
+  const url = new URL(effectivePath, base);
   url.searchParams.set('sid', sid);
   return url.toString();
 }
