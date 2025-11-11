@@ -215,7 +215,7 @@ function publicProxyToAuth() {
 }
 
 // Explicit mounts to auth-service
-app.use('/api/v1/public', publicProxyToAuth());  // forward as-is (no rewrite)
+app.use('/api/v1/public', publicProxyToAuth()); // forward as-is (no rewrite)
 app.use('/api/v1/auth', jsonProxyToAuth());
 app.use('/api/v1/locations', jsonProxyToAuth());
 app.use('/api/v1/access', jsonProxyToAuth());
@@ -225,13 +225,19 @@ app.use('/api/v1', jsonProxyToAuth());
 
 /* ========================= WS proxy -> ai-waiter-service ========================= */
 const VOICE_WS_TARGET = process.env.VOICE_WS_TARGET || 'http://ai-waiter-service:7071';
+
 const voiceWsProxy = createProxyMiddleware({
   target: VOICE_WS_TARGET,
   changeOrigin: true,
   ws: true,
   logLevel: 'warn',
+  // Map incoming /ws/voice to / on ai-waiter, where websockets.serve(...) is listening.
+  pathRewrite: {
+    '^/ws/voice': '/',
+  },
 });
-// Mount the WS route
+
+// Public WS entry for the mic
 app.use('/ws/voice', voiceWsProxy);
 
 // Dev 404 tracer for unhandled API routes (outside /api/v1)
