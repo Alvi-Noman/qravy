@@ -198,6 +198,7 @@ export default function MicInputBar({
   const nodeRef = useRef<AudioWorkletNode | null>(null);
   const srcRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const mediaRef = useRef<MediaStream | null>(null);
+  const pingTimerRef = useRef<number | null>(null); // 👈 keepalive interval id
 
   // Stop only audio (keep WS for reply)
   const stopCaptureOnly = useCallback(async () => {
@@ -236,6 +237,7 @@ export default function MicInputBar({
         } catch {}
       }
     } catch {}
+    if (pingTimerRef.current) { window.clearInterval(pingTimerRef.current); pingTimerRef.current = null; }
     wsRef.current = null;
     try { getTTS().unduck(); } catch {}
     setIsRecording(false);
@@ -294,46 +296,30 @@ export default function MicInputBar({
           ? new Date().getHours()
           : undefined;
 
-      const helloBase: any = {
-        t: "hello",
+      // 👇 IMPORTANT: send `start` immediately on open (no geolocation delay)
+      const langToSend = currentLang === "auto" ? undefined : currentLang;
+      const startMsg: any = {
+        t: "start",
         sessionId: sid,
         userId: "guest",
         rate: 16000,
         ch: 1,
-        lang: currentLang,
+        lang: langToSend,
         tenant: tenant ?? undefined,
         branch: branch ?? undefined,
         channel: channel ?? undefined,
         tz,
         localHour,
       };
+      try { ws.send(JSON.stringify(startMsg)); } catch {}
 
-      const sendHello = (extra?: any) => {
-        const msg = { ...helloBase, ...(extra || {}) };
-        try { ws.send(JSON.stringify(msg)); } catch {}
-      };
-
-      // Try geolocation for weather; fallback to tz + localHour
-      if (navigator.geolocation) {
-        navigator.geolocation.getCurrentPosition(
-          (pos) => {
-            if (wsGenRef.current !== myGen) return;
-            sendHello({
-              geo: {
-                lat: pos.coords.latitude,
-                lon: pos.coords.longitude,
-              },
-            });
-          },
-          () => {
-            if (wsGenRef.current !== myGen) return;
-            sendHello();
-          },
-          { enableHighAccuracy: false, maximumAge: 5 * 60 * 1000, timeout: 1500 }
-        );
-      } else {
-        sendHello();
-      }
+      // optional keepalive to avoid idle closures across proxies
+      if (pingTimerRef.current) { window.clearInterval(pingTimerRef.current); }
+      pingTimerRef.current = window.setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN) {
+          try { ws.send(JSON.stringify({ t: "ping" })); } catch {}
+        }
+      }, 15000);
     };
 
     ws.onmessage = (ev) => {
@@ -379,6 +365,7 @@ export default function MicInputBar({
               ws.close();
             }
           } catch {}
+          if (pingTimerRef.current) { window.clearInterval(pingTimerRef.current); pingTimerRef.current = null; }
           if (wsRef.current === ws) wsRef.current = null;
           return;
         }
@@ -392,6 +379,7 @@ export default function MicInputBar({
               ws.close();
             }
           } catch {}
+          if (pingTimerRef.current) { window.clearInterval(pingTimerRef.current); pingTimerRef.current = null; }
           if (wsRef.current === ws) wsRef.current = null;
           return;
         }
@@ -402,15 +390,29 @@ export default function MicInputBar({
 
     ws.onerror = () => {
       if (wsGenRef.current !== myGen) return;
+      if (pingTimerRef.current) { window.clearInterval(pingTimerRef.current); pingTimerRef.current = null; }
       hardReset();
     };
 
     ws.onclose = () => {
       if (wsGenRef.current !== myGen) return;
+      if (pingTimerRef.current) { window.clearInterval(pingTimerRef.current); pingTimerRef.current = null; }
+
+      const ac = acRef.current;
+
+      // WS closed before / as AudioContext was created → don't nuke everything
+      if (!ac || ac.state === "closed") {
+        if (wsRef.current === ws) wsRef.current = null;
+        return;
+      }
+
       // if we are mid session (recording/thinking) and it closes unexpectedly, hard reset
       if (isRecording || thinking) {
         hardReset();
-      } else if (wsRef.current === ws) {
+        return;
+      }
+
+      if (wsRef.current === ws) {
         wsRef.current = null;
       }
     };
