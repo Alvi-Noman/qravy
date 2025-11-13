@@ -1169,7 +1169,7 @@ export default function AiWaiterHome() {
       </div>
 
       {/* Bottom controls */}
-      <div className="fixed bottom-0 left-0 right-0 flex items-end justifycenter pb-10 md:pb-12">
+      <div className="fixed bottom-0 left-0 right-0 flex items-end justify-center pb-10 md:pb-12">
         <div className="relative flex items-end justify-center gap-12 px-6 w-full max-w-[520px]">
           {/* Left: Chat (visual only for now) */}
           <button
