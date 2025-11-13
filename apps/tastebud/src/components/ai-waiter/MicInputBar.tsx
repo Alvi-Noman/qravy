@@ -56,10 +56,13 @@ export default function MicInputBar({
 
   // Inside modal? then don't own the live subscription
   useEffect(() => {
-    const el = rootRef.current;
-    const inDialog = !!el?.closest('[role="dialog"]');
-    willOwnLiveRef.current = !inDialog;
-  }, []);
+  const el = rootRef.current;
+  const inDialog = !!el?.closest('[role="dialog"]');
+  if (inDialog) return; // don't subscribe inside modals
+
+  const unsub = tts.subscribe({ /* ...same handlers... */ });
+  return unsub;
+}, [tts]);
 
   /* ---------- Word-by-word reveal (no pre-flash) ---------- */
   const WARMUP_MS = 120;
@@ -247,11 +250,11 @@ export default function MicInputBar({
     if (typeof window === "undefined") return true;
     const key = text.trim();
     const now = performance.now();
-    const lastKey = window.__QRAVY_LAST_SPOKEN__;
-    const lastAt  = window.__QRAVY_LAST_SPOKEN_AT__ ?? 0;
+    const lastKey = window.__QRAVY_LASTSPOKEN__;
+    const lastAt  = window.__QRAVY_LASTSPOKEN_AT__ ?? 0;
     if (lastKey === key && now - lastAt < 8000) return false;
-    window.__QRAVY_LAST_SPOKEN__ = key;
-    window.__QRAVY_LAST_SPOKEN_AT__ = now;
+    window.__QRAVY_LASTSPOKEN__ = key;
+    window.__QRAVY_LASTSPOKEN_AT__ = now;
     return true;
   }
 
@@ -293,16 +296,16 @@ export default function MicInputBar({
           ? new Date().getHours()
           : undefined;
 
-      // 👇 IMPORTANT: send `start` immediately on open, always Bangla
+      // 👇 IMPORTANT: send `hello` immediately on open, always Bangla
       const langToSend: Lang = "bn";
 
       const startMsg: any = {
-        t: "start",
+        t: "hello",                 // 👈 changed from "start" to "hello"
         sessionId: sid,
         userId: "guest",
         rate: 16000,
         ch: 1,
-        lang: langToSend,              // <-- always "bn"
+        lang: langToSend,           // <-- always "bn"
         tenant: tenant ?? undefined,
         branch: branch ?? undefined,
         channel: channel ?? undefined,

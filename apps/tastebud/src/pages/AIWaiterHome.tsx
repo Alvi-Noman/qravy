@@ -21,7 +21,7 @@ type UIMode = 'idle' | 'thinking' | 'talking';
 
 // ✅ Welcome text (Bangla)
 const WELCOME_TEXT =
-  'স্বাগতম! আমি পিক্সি আপনার এআই ওয়েটার। মেনু থেকে যেকোনো কিছু জানতে চাইলে কিংবা অর্ডার করতে আমাকে বলুন।';
+  'স্বাগতম! আমি পিক্সি - আপনার এআই ওয়েটার। মেনু থেকে যেকোনো কিছু জানতে চাইলে কিংবা অর্ডার করতে আমাকে বলুন।';
 
 /* ------------ touch-swipe 4-line viewport ------------ */
 function SwipeViewport({ text, showCursor }: { text: string; showCursor: boolean }) {
@@ -1329,9 +1329,6 @@ export default function AiWaiterHome() {
           <div className="max-w-[420px] text-center">
             <p className="text-[28px] md:text-[34px] font-semibold text-[#1F1F1F] mb-3">
               শুরু করতে যে কোনো জায়গায় ট্যাপ করুন
-            </p>
-            <p className="text-[18px] md:text-[20px] text-[#5A5A5A] leading-relaxed">
-              পিক্সি আপনার সাথে কথা বলতে প্রস্তুত। শব্দ চালু করতে একবার ট্যাপ করলেই হবে।
             </p>
           </div>
         </button>

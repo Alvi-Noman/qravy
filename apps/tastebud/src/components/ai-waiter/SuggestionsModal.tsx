@@ -136,7 +136,6 @@ export default function SuggestionsModal({
   onIntent,
 }: Props) {
   const menuHref = useMenuHref(menuHrefOverride);
-
   const hasAiItems = Array.isArray(items) && items.length > 0;
   const heroItem = hasAiItems ? items.find((i) => i.imageUrl) ?? items[0] : undefined;
   const heroImage = heroItem?.imageUrl;
@@ -157,10 +156,16 @@ export default function SuggestionsModal({
     <div className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center">
       <div className="absolute inset-0 bg-black/40 backdrop-blur-[1.5px]" onClick={onClose} />
 
-      {/* 85vh container */}
-      <div className="relative z-[101] w-full sm:max-w-2xl rounded-t-[26px] sm:rounded-3xl bg-[#F8F8F8] h-[85vh] overflow-hidden sm:shadow-2xl">
+      {/* 85vh SLIDE-UP ANIMATED CONTAINER */}
+      <div
+        className={
+          "relative z-[101] w-full sm:max-w-2xl rounded-t-[26px] sm:rounded-3xl bg-[#F8F8F8] h-[85vh] overflow-hidden sm:shadow-2xl " +
+          "transform transition-all duration-300 ease-out " +
+          (open ? "translate-y-0 opacity-100" : "translate-y-full opacity-0")
+        }
+      >
         
-        {/* HEADER (fixed) */}
+        {/* HEADER */}
         <div className="sticky top-0 z-20 px-4 pt-3 pb-2 border-b border-gray-100 bg-[#F8F8F8] rounded-t-[26px]">
           <div className="relative flex flex-col items-center">
             <div className="mb-2 h-1 w-12 rounded-full bg-gray-300" />
@@ -207,11 +212,11 @@ export default function SuggestionsModal({
           )}
         </div>
 
-        {/* FIXED MIC INPUT BAR */}
-        <div className="absolute bottom-0 left-0 right-0 px-4 pb-1 bg-[#F8F8F8] border-t border-gray-200 z-30">
-          {/* Fade-out gradient above mic bar */}
-          <div className="absolute -top-4 left-0 right-0 h-6 bg-gradient-to-t from-[#F8F8F8] to-transparent pointer-events-none" />
+        {/* GRADIENT */}
+        <div className="pointer-events-none absolute bottom-[88px] left-0 right-0 h-12 bg-gradient-to-t from-[#F8F8F8] to-transparent z-30" />
 
+        {/* FIXED MIC INPUT BAR WITH GAP */}
+        <div className="absolute bottom-0 left-0 right-0 px-4 pb-4 mb-3 bg-[#F8F8F8] border-t border-gray-200 z-40">
           <MicInputBar
             tenant={tenant}
             branch={branch}
@@ -222,6 +227,7 @@ export default function SuggestionsModal({
             }}
           />
         </div>
+
       </div>
     </div>
   );
