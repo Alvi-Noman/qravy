@@ -1046,7 +1046,10 @@ export default function AiWaiterHome() {
   const [textTop, setTextTop] = useState<number | null>(null);
 
   // ✅ Show welcome text until AI says something
-  const visibleText = (aiLive || aiFinal || WELCOME_TEXT) ?? '';
+  const visibleText =
+  uiMode === 'thinking'
+    ? 'Thinking...'
+    : (aiLive || aiFinal || WELCOME_TEXT) ?? '';
 
   useEffect(() => {
     let rafId = 0;

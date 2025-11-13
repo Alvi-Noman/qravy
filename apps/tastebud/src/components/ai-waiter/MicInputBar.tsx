@@ -245,18 +245,23 @@ export default function MicInputBar({
     setPartial("");
   }, [stopCaptureOnly]);
 
-  // speak dedupe
+    // speak dedupe
   function shouldSpeakOnce(text: string): boolean {
     if (typeof window === "undefined") return true;
     const key = text.trim();
     const now = performance.now();
-    const lastKey = window.__QRAVY_LASTSPOKEN__;
-    const lastAt  = window.__QRAVY_LASTSPOKEN_AT__ ?? 0;
+
+    const lastKey = window.__QRAVY_LAST_SPOKEN__;
+    const lastAt  = window.__QRAVY_LAST_SPOKEN_AT__ ?? 0;
+
     if (lastKey === key && now - lastAt < 8000) return false;
-    window.__QRAVY_LASTSPOKEN__ = key;
-    window.__QRAVY_LASTSPOKEN_AT__ = now;
+
+    window.__QRAVY_LAST_SPOKEN__ = key;
+    window.__QRAVY_LAST_SPOKEN_AT__ = now;
+
     return true;
   }
+
 
   // WebSocket: always fresh per recording session
   const openWebSocket = useCallback(() => {
