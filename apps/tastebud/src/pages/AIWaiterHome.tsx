@@ -23,6 +23,10 @@ type UIMode = 'idle' | 'thinking' | 'talking';
 const WELCOME_TEXT =
   'স্বাগতম! আমি পিক্সি - আপনার এআই ওয়েটার। মেনু থেকে যেকোনো কিছু জানতে চাইলে কিংবা অর্ডার করতে আমাকে বলুন।';
 
+// 🔒 Welcome overlay persistence
+const WELCOME_INTERACT_KEY = 'qravy:aiwaiter:lastInteractionAt';
+const WELCOME_INACTIVITY_MS = 10 * 60 * 1000; // 10 minutes
+
 /* ------------ touch-swipe 4-line viewport ------------ */
 function SwipeViewport({ text, showCursor }: { text: string; showCursor: boolean }) {
   const measureRef = React.useRef<HTMLParagraphElement | null>(null);
@@ -140,8 +144,45 @@ export default function AiWaiterHome() {
 
   const tts = useTTS();
 
-  // ✅ Unlock overlay (first tap) state
+  // ✅ Unlock overlay (first tap) state (with persistence)
   const [hasInteracted, setHasInteracted] = useState(false);
+
+  // On mount, decide whether to show overlay based on last interaction timestamp
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      const raw = localStorage.getItem(WELCOME_INTERACT_KEY);
+      if (!raw) {
+        // never interacted → show overlay
+        setHasInteracted(false);
+        return;
+      }
+      const last = parseInt(raw, 10);
+      if (!Number.isFinite(last)) {
+        setHasInteracted(false);
+        return;
+      }
+      const now = Date.now();
+      if (now - last > WELCOME_INACTIVITY_MS) {
+        // too old → show overlay again
+        setHasInteracted(false);
+      } else {
+        // within 10 minutes → skip overlay
+        setHasInteracted(true);
+      }
+    } catch {
+      setHasInteracted(false);
+    }
+  }, []);
+
+  const markWelcomeInteraction = () => {
+    if (typeof window === 'undefined') return;
+    try {
+      localStorage.setItem(WELCOME_INTERACT_KEY, String(Date.now()));
+    } catch {
+      // ignore
+    }
+  };
 
   // ===== word-sync (gapless) =====
   const MIN_STEP_MS = 80;
@@ -622,6 +663,9 @@ export default function AiWaiterHome() {
 
   async function startListening() {
     try {
+      // any voice interaction counts as activity for welcome timer
+      markWelcomeInteraction();
+
       if (listening || wsRef.current || ctxRef.current) return;
       try {
         tts.stop();
@@ -1045,11 +1089,11 @@ export default function AiWaiterHome() {
   const textWrapRef = useRef<HTMLDivElement | null>(null);
   const [textTop, setTextTop] = useState<number | null>(null);
 
-  // ✅ Show welcome text until AI says something
+  // ✅ Show welcome text until AI says something, but override with "Thinking..." while pending
   const visibleText =
-  uiMode === 'thinking'
-    ? 'Thinking...'
-    : (aiLive || aiFinal || WELCOME_TEXT) ?? '';
+    uiMode === 'thinking'
+      ? 'Thinking...'
+      : (aiLive || aiFinal || WELCOME_TEXT) ?? '';
 
   useEffect(() => {
     let rafId = 0;
@@ -1085,10 +1129,11 @@ export default function AiWaiterHome() {
     };
   }, [visibleText]);
 
-  // ✅ First-tap handler: unlock audio + speak welcome
+  // ✅ First-tap handler: unlock audio + speak welcome, only when overlay shows
   const handleFirstTap = () => {
     if (hasInteracted) return;
     setHasInteracted(true);
+    markWelcomeInteraction();
     try {
       tts.stop();
     } catch {}
