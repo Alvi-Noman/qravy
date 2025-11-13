@@ -19,6 +19,10 @@ import { applyVoiceCartOps } from '../utils/voice-cart';
 
 type UIMode = 'idle' | 'thinking' | 'talking';
 
+// ✅ Welcome text (Bangla)
+const WELCOME_TEXT =
+  'স্বাগতম! আমি পিক্সি আপনার এআই ওয়েটার। মেনু থেকে যেকোনো কিছু জানতে চাইলে কিংবা অর্ডার করতে আমাকে বলুন।';
+
 /* ------------ touch-swipe 4-line viewport ------------ */
 function SwipeViewport({ text, showCursor }: { text: string; showCursor: boolean }) {
   const measureRef = React.useRef<HTMLParagraphElement | null>(null);
@@ -135,6 +139,9 @@ export default function AiWaiterHome() {
   const setMeta = useConversationStore((s: any) => s.setMeta);
 
   const tts = useTTS();
+
+  // ✅ Unlock overlay (first tap) state
+  const [hasInteracted, setHasInteracted] = useState(false);
 
   // ===== word-sync (gapless) =====
   const MIN_STEP_MS = 80;
@@ -1038,7 +1045,8 @@ export default function AiWaiterHome() {
   const textWrapRef = useRef<HTMLDivElement | null>(null);
   const [textTop, setTextTop] = useState<number | null>(null);
 
-  const visibleText = (aiLive || aiFinal) ?? '';
+  // ✅ Show welcome text until AI says something
+  const visibleText = (aiLive || aiFinal || WELCOME_TEXT) ?? '';
 
   useEffect(() => {
     let rafId = 0;
@@ -1074,6 +1082,18 @@ export default function AiWaiterHome() {
     };
   }, [visibleText]);
 
+  // ✅ First-tap handler: unlock audio + speak welcome
+  const handleFirstTap = () => {
+    if (hasInteracted) return;
+    setHasInteracted(true);
+    try {
+      tts.stop();
+    } catch {}
+    try {
+      tts.speak(WELCOME_TEXT);
+    } catch {}
+  };
+
   return (
     <div
       className="min-h-screen relative overflow-hidden flex flex-col items-center justify-between px-6"
@@ -1094,7 +1114,7 @@ export default function AiWaiterHome() {
       {/* Text */}
       <div
         ref={textWrapRef}
-        className="absolute left-1/2 -translate-x-1/2 z-[999] w-full max-w-[900px] px-6 text-center pointer-events-auto"
+        className="absolute left-1/2 -translate-x-1/2 z-10 w-full max-w-[900px] px-6 text-center pointer-events-auto"
         style={{ top: textTop ?? '50vh' }}
       >
         <SwipeViewport text={visibleText} showCursor={!!aiLive} />
@@ -1293,6 +1313,29 @@ export default function AiWaiterHome() {
         trayOpen={showTray}
         onOpenTray={() => setShowTray(true)}
       />
+
+      {/* ✅ Glass overlay asking for tap to start (unlocks audio) */}
+      {!hasInteracted && (
+        <button
+          type="button"
+          onPointerDown={handleFirstTap}
+          className="fixed inset-0 z-[1500] flex flex-col items-center justify-center px-6"
+          style={{
+            background: 'rgba(255, 255, 255, 0.45)',
+            backdropFilter: 'blur(18px)',
+            WebkitBackdropFilter: 'blur(18px)',
+          }}
+        >
+          <div className="max-w-[420px] text-center">
+            <p className="text-[28px] md:text-[34px] font-semibold text-[#1F1F1F] mb-3">
+              শুরু করতে যে কোনো জায়গায় ট্যাপ করুন
+            </p>
+            <p className="text-[18px] md:text-[20px] text-[#5A5A5A] leading-relaxed">
+              পিক্সি আপনার সাথে কথা বলতে প্রস্তুত। শব্দ চালু করতে একবার ট্যাপ করলেই হবে।
+            </p>
+          </div>
+        </button>
+      )}
     </div>
   );
 }

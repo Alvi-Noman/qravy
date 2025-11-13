@@ -5,14 +5,6 @@ import MicInputBar from './MicInputBar';
 import type { AiReplyMeta, WaiterIntent } from '../../types/waiter-intents';
 import { normalizeIntent, localHeuristicIntent } from '../../utils/intent-routing';
 
-type Suggestion = {
-  id: string;
-  title: string;
-  blurb: string;
-  query?: string;
-  emoji?: string;
-};
-
 type MinimalMenuItem = {
   id?: string;
   name?: string;
@@ -25,13 +17,10 @@ type Props = {
   onClose: () => void;
   menuHrefOverride?: string;
   items?: MinimalMenuItem[];
-  /**
-   * Bubble AI result up so parent (DigitalMenu / AiWaiterHome) can:
-   * - apply voice cart ops
-   * - switch modals / navigate
-   */
   onIntent?: (intent?: WaiterIntent, meta?: AiReplyMeta, replyText?: string) => void;
 };
+
+/* ---------- Helpers ---------- */
 
 function useMenuHref(menuHrefOverride?: string) {
   const { subdomain, branchSlug, branch } = useParams<{
@@ -70,55 +59,74 @@ function useMenuHref(menuHrefOverride?: string) {
   return '/menu';
 }
 
-const DUMMY_SUGGESTIONS: Suggestion[] = [
-  {
-    id: 'best',
-    title: 'Best Sellers',
-    blurb: 'Customer favorites picked for you',
-    emoji: '⭐',
-  },
-  {
-    id: 'burger',
-    title: 'Juicy Burgers',
-    blurb: 'Cheesy, double-stack, or spicy',
-    emoji: '🍔',
-    query: 'burger',
-  },
-  {
-    id: 'pizza',
-    title: 'Fresh Pizzas',
-    blurb: 'Classic margherita to loaded',
-    emoji: '🍕',
-    query: 'pizza',
-  },
-  {
-    id: 'rice',
-    title: 'Rice Bowls',
-    blurb: 'Hearty & flavorful bowls',
-    emoji: '🍲',
-    query: 'rice',
-  },
-  {
-    id: 'drinks',
-    title: 'Chilled Drinks',
-    blurb: 'Cool down with something nice',
-    emoji: '🥤',
-    query: 'drinks',
-  },
-  {
-    id: 'sweet',
-    title: 'Desserts',
-    blurb: 'Finish with something sweet',
-    emoji: '🍰',
-    query: 'dessert',
-  },
-];
-
 function resolveIntent(meta?: AiReplyMeta, replyText?: string): WaiterIntent {
   if (meta?.intent) return normalizeIntent(meta.intent);
   if (Array.isArray(meta?.items) && meta.items.length) return 'order';
   return localHeuristicIntent(replyText || '');
 }
+
+const BDT = new Intl.NumberFormat('en-BD');
+function formatCurrency(n?: number) {
+  if (typeof n !== 'number') return undefined;
+  return `৳ ${BDT.format(n)}`;
+}
+
+/* ---------- Inline Product Card (minimal) ---------- */
+
+type ProductSuggestionCardProps = {
+  item: MinimalMenuItem;
+  className?: string;
+};
+
+function ProductSuggestionCardBase({ item, className }: ProductSuggestionCardProps): JSX.Element {
+  const name = item.name ?? 'Item';
+  const price = item.price;
+  const image = item.imageUrl;
+
+  return (
+    <article
+      aria-label={name}
+      className={
+        'group relative flex w-full flex-row-reverse items-start gap-4 rounded-[26px] bg-white p-4 sm:p-5 font-[Inter] ' +
+        'shadow-[0_1px_4px_rgba(0,0,0,0.05)] transition-all duration-200 hover:shadow-[0_6px_18px_rgba(0,0,0,0.1)] hover:-translate-y-[1px] cursor-pointer ' +
+        (className ?? '')
+      }
+    >
+      <div className="relative h-[90px] w-[90px] sm:h-[110px] sm:w-[110px] overflow-hidden rounded-[16px]">
+        {image ? (
+          <img
+            src={image}
+            alt={name}
+            loading="lazy"
+            className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.03]"
+          />
+        ) : (
+          <div className="h-full w-full rounded-[16px] bg-gray-100 grid place-items-center text-xl">🍽️</div>
+        )}
+      </div>
+
+      <div className="flex min-w-0 flex-1 flex-col">
+        <h3 className="truncate text-[16px] sm:text-[17px] font-semibold text-neutral-900">{name}</h3>
+        <span className="mt-1 text-[16px] font-semibold text-neutral-900">
+          {formatCurrency(price) ?? '—'}
+        </span>
+        <div className="mt-auto h-3" />
+      </div>
+    </article>
+  );
+}
+
+const ProductSuggestionCard = React.memo(
+  ProductSuggestionCardBase,
+  (prev, next) =>
+    prev.item.id === next.item.id &&
+    prev.item.name === next.item.name &&
+    prev.item.price === next.item.price &&
+    prev.item.imageUrl === next.item.imageUrl &&
+    prev.className === next.className
+);
+
+/* ---------- Modal Component ---------- */
 
 export default function SuggestionsModal({
   open,
@@ -130,25 +138,15 @@ export default function SuggestionsModal({
   const menuHref = useMenuHref(menuHrefOverride);
 
   const hasAiItems = Array.isArray(items) && items.length > 0;
-  const tenant =
-    (typeof window !== 'undefined'
-      ? (window as any).__STORE__?.subdomain
-      : undefined) ?? undefined;
-  const branch =
-    (typeof window !== 'undefined'
-      ? (window as any).__STORE__?.branch
-      : undefined) ?? undefined;
+  const heroItem = hasAiItems ? items.find((i) => i.imageUrl) ?? items[0] : undefined;
+  const heroImage = heroItem?.imageUrl;
+  const heroName = heroItem?.name;
 
-  if (typeof window !== 'undefined') {
-    console.log('[SUG_MODAL_PROPS]', { open, hasAiItems, items, tenant, branch });
-  }
+  const tenant = typeof window !== 'undefined' ? (window as any).__STORE__?.subdomain : undefined;
+  const branch = typeof window !== 'undefined' ? (window as any).__STORE__?.branch : undefined;
 
-
-  // Escape key closes
   React.useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
     if (open) document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
   }, [open, onClose]);
@@ -156,170 +154,73 @@ export default function SuggestionsModal({
   if (!open) return null;
 
   return (
-    <div
-      className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center"
-      aria-modal="true"
-      role="dialog"
-    >
-      {/* Backdrop */}
-      <div
-        className="absolute inset-0 bg-black/40 backdrop-blur-[1.5px]"
-        onClick={onClose}
-      />
+    <div className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center">
+      <div className="absolute inset-0 bg-black/40 backdrop-blur-[1.5px]" onClick={onClose} />
 
-      {/* Modal card */}
-      <div className="relative z-[101] w-full sm:max-w-2xl sm:rounded-2xl sm:shadow-2xl bg-white">
-        {/* Header */}
-        <div className="sticky top-0 flex items-center justify-between px-4 py-3 border-b border-gray-100">
-          <h2 className="text-lg font-semibold text-gray-900">
-            Suggestions for you
-          </h2>
-          <button
-            onClick={onClose}
-            className="h-9 w-9 grid place-items-center rounded-full hover:bg-gray-100 active:scale-95 transition"
-            aria-label="Close"
-          >
-            <svg
-              width="18"
-              height="18"
-              viewBox="0 0 24 24"
-              aria-hidden="true"
+      {/* 85vh container */}
+      <div className="relative z-[101] w-full sm:max-w-2xl rounded-t-[26px] sm:rounded-3xl bg-[#F8F8F8] h-[85vh] overflow-hidden sm:shadow-2xl">
+        
+        {/* HEADER (fixed) */}
+        <div className="sticky top-0 z-20 px-4 pt-3 pb-2 border-b border-gray-100 bg-[#F8F8F8] rounded-t-[26px]">
+          <div className="relative flex flex-col items-center">
+            <div className="mb-2 h-1 w-12 rounded-full bg-gray-300" />
+
+            {heroImage && (
+              <div className="mb-2 h-10 w-10 rounded-full overflow-hidden border border-white/70 shadow-sm">
+                <img src={heroImage} alt={heroName ?? 'Item'} className="h-full w-full object-cover" />
+              </div>
+            )}
+
+            <h2 className="text-[15px] font-semibold text-gray-900">AI Suggestions</h2>
+
+            <button
+              onClick={onClose}
+              className="absolute right-0 top-0 h-8 w-8 grid place-items-center rounded-full hover:bg-gray-100 active:scale-95"
             >
-              <path
-                fill="currentColor"
-                d="M18.3 5.71a1 1 0 0 0-1.41 0L12 10.59 7.11 5.7a1 1 0 0 0-1.41 1.41L10.59 12l-4.9 4.89a1 1 0 1 0 1.41 1.41L12 13.41l4.89 4.9a1 1 0 0 0 1.41-1.41L13.41 12l4.9-4.89a1 1 0 0 0-.01-1.4Z"
-              />
-            </svg>
-          </button>
+              <svg width="16" height="16" viewBox="0 0 24 24">
+                <path
+                  fill="currentColor"
+                  d="M18.3 5.71a1 1 0 0 0-1.41 0L12 10.59 7.11 5.7a1 1 0 0 0-1.41 1.41L10.59 12l-4.9 4.89a1 1 0 1 0 1.41 1.41L12 13.41l4.89 4.9a1 1 0 0 0 1.41-1.41L13.41 12l4.9-4.89a1 1 0 0 0-.01-1.4Z"
+                />
+              </svg>
+            </button>
+          </div>
         </div>
 
-        {/* Body */}
-        <div className="px-4 pt-3 pb-4">
-          <p className="text-sm text-gray-600 mb-3">
-            Based on what you said, here are a few quick paths. Tap any card to
-            jump into the menu.
-          </p>
-
-          {/* AI-driven suggestions */}
-          {hasAiItems && (
-            <div className="mb-5">
-              <h3 className="text-[15px] font-semibold text-gray-900 mb-2">
-                Recommended for you
-              </h3>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                {items.map((it, idx) => {
-                  const title = String(it?.name ?? 'Item');
-                  const price =
-                    typeof it?.price === 'number' ? it.price : undefined;
-                  return (
-                    <div
-                      key={String(it?.id ?? idx)}
-                      className="group rounded-2xl border border-gray-100 bg-white p-4 hover:shadow-md transition-shadow"
-                    >
-                      <div className="flex items-start gap-3">
-                        <div className="h-10 w-10 rounded-xl grid place-items-center bg-gray-50 text-lg overflow-hidden">
-                          {it?.imageUrl ? (
-                            <img
-                              src={it.imageUrl}
-                              alt={title}
-                              className="h-10 w-10 object-cover rounded-xl"
-                            />
-                          ) : (
-                            <span role="img" aria-label="food">
-                              🍽️
-                            </span>
-                          )}
-                        </div>
-                        <div className="min-w-0">
-                          <h4 className="text-[15px] font-semibold text-gray-900">
-                            {title}
-                          </h4>
-                          {price !== undefined && (
-                            <p className="text-[13px] text-gray-600 mt-0.5">
-                              {price} ৳
-                            </p>
-                          )}
-                        </div>
-                      </div>
-
-                      <div className="mt-3 flex items-center justify-between">
-                        <span className="text-[12px] text-gray-500">
-                          #suggested
-                        </span>
-                        <Link
-                          to={menuHref}
-                          onClick={onClose}
-                          className="text-[12px] font-medium text-[#FA2851] group-hover:underline"
-                        >
-                          See options →
-                        </Link>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
+        {/* SCROLL AREA */}
+        <div className="px-4 pt-3 pb-24 overflow-y-auto h-full">
+          {hasAiItems ? (
+            <div className="grid grid-cols-1 gap-3">
+              {items.map((it, idx) => (
+                <Link
+                  key={String(it.id ?? idx)}
+                  to={menuHref}
+                  onClick={onClose}
+                  className="block"
+                >
+                  <ProductSuggestionCard item={it} />
+                </Link>
+              ))}
             </div>
+          ) : (
+            <div className="py-6 text-center text-sm text-gray-500">No suggestions available right now.</div>
           )}
+        </div>
 
-          {/* Default quick paths */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            {DUMMY_SUGGESTIONS.map((s) => (
-              <Link
-                key={s.id}
-                to={menuHref}
-                className="group rounded-2xl border border-gray-100 bg-white p-4 hover:shadow-md transition-shadow active:scale-[0.99]"
-                onClick={onClose}
-              >
-                <div className="flex items-start gap-3">
-                  <div className="h-10 w-10 rounded-xl grid place-items-center bg-gray-50 text-lg">
-                    {s.emoji ?? '🍽️'}
-                  </div>
-                  <div className="min-w-0">
-                    <h3 className="text-[15px] font-semibold text-gray-900">
-                      {s.title}
-                    </h3>
-                    <p className="text-[13px] text-gray-600 mt-0.5 line-clamp-2">
-                      {s.blurb}
-                    </p>
-                  </div>
-                </div>
+        {/* FIXED MIC INPUT BAR */}
+        <div className="absolute bottom-0 left-0 right-0 px-4 pb-1 bg-[#F8F8F8] border-t border-gray-200 z-30">
+          {/* Fade-out gradient above mic bar */}
+          <div className="absolute -top-4 left-0 right-0 h-6 bg-gradient-to-t from-[#F8F8F8] to-transparent pointer-events-none" />
 
-                <div className="mt-3 flex items-center justify-between">
-                  <span className="text-[12px] text-gray-500">
-                    {s.query ? `#${s.query}` : '#menu'}
-                  </span>
-                  <span className="text-[12px] font-medium text-[#FA2851] group-hover:underline">
-                    See options →
-                  </span>
-                </div>
-              </Link>
-            ))}
-          </div>
-
-          {/* Footer CTA */}
-          <div className="mt-4 flex items-center justify-end gap-3">
-            <Link
-              to={menuHref}
-              onClick={onClose}
-              className="px-4 py-2 rounded-full bg-[#FA2851] text-white text-sm font-medium shadow-[0_8px_24px_rgba(250,40,81,0.25)] active:scale-95 transition"
-            >
-              Open full menu
-            </Link>
-          </div>
-
-          {/* Mic input bar (bubbles intent + meta + replyText up) */}
-          <div className="mt-4">
-            <MicInputBar
-              tenant={tenant}
-              branch={branch}
-              channel="dine-in"
-              onAiReply={({ replyText, meta }) => {
-                const m = meta as AiReplyMeta | undefined;
-                const intent = resolveIntent(m, replyText);
-                onIntent?.(intent, m, replyText);
-              }}
-            />
-          </div>
+          <MicInputBar
+            tenant={tenant}
+            branch={branch}
+            channel="dine-in"
+            onAiReply={({ replyText, meta }) => {
+              const intent = resolveIntent(meta as AiReplyMeta | undefined, replyText);
+              onIntent?.(intent, meta as AiReplyMeta | undefined, replyText);
+            }}
+          />
         </div>
       </div>
     </div>

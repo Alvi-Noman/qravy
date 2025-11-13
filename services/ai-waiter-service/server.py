@@ -1216,7 +1216,9 @@ async def handle_conn(ws: WebSocketServerProtocol):
                 continue
             t = data.get("t")
 
-            if t == "hello":
+            if t in ("hello", "start"):
+                msg_type = t  # for logging
+
                 session_id = data.get("sessionId") or session_id
                 user_id = data.get("userId") or user_id
                 rate = int(data.get("rate", 16000))
@@ -1226,13 +1228,14 @@ async def handle_conn(ws: WebSocketServerProtocol):
                 lang_hint = data.get("lang")
                 if isinstance(lang_hint, str) and lang_hint:
                     v = lang_hint.strip().lower()
+                    # "auto" → None (means auto-detect), otherwise lock to bn/en
                     session_lang = None if v == "auto" else v
 
                 tenant_hint = data.get("tenant") or tenant_hint
                 branch_hint = data.get("branch") or branch_hint
                 channel_hint = data.get("channel") or channel_hint
 
-                # ⭐ NEW: user timezone & geo from frontend
+                # ⭐ user timezone & geo from frontend
                 tz = data.get("tz")
                 if isinstance(tz, str) and tz:
                     user_tz = tz
@@ -1244,7 +1247,7 @@ async def handle_conn(ws: WebSocketServerProtocol):
                     if isinstance(lat, (int, float)) and isinstance(lon, (int, float)):
                         user_geo = {"lat": float(lat), "lon": float(lon)}
 
-                # ⭐ NEW: localHour snapshot from frontend
+                # ⭐ localHour snapshot from frontend
                 lh = data.get("localHour")
                 if isinstance(lh, (int, float)):
                     lh = int(lh)
@@ -1252,7 +1255,7 @@ async def handle_conn(ws: WebSocketServerProtocol):
                         user_local_hour = lh
 
                 print(
-                    f"[ai-waiter-service] hello session={session_id} user={user_id} "
+                    f"[ai-waiter-service] {msg_type} session={session_id} user={user_id} "
                     f"rate={rate} ch={ch} lang={session_lang or 'auto'}"
                 )
                 print(
