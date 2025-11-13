@@ -714,7 +714,7 @@ export default function AiWaiterHome() {
                 userId: 'guest',
                 rate: 16000,
                 ch: 1,
-                lang: selectedLang,
+                lang: selectedLang === 'auto' ? 'bn' : selectedLang,
                 tenant: resolvedSub ?? 'demo',
                 branch: resolvedBranch ?? null,
                 channel: resolvedChannel ?? null,

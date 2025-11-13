@@ -297,14 +297,16 @@ export default function MicInputBar({
           : undefined;
 
       // 👇 IMPORTANT: send `start` immediately on open (no geolocation delay)
-      const langToSend = currentLang === "auto" ? undefined : currentLang;
+      const langToSend: Lang =
+      currentLang === "bn" || currentLang === "en" ? currentLang : "bn";
+
       const startMsg: any = {
         t: "start",
         sessionId: sid,
         userId: "guest",
         rate: 16000,
         ch: 1,
-        lang: langToSend,
+        lang: langToSend,              // <-- will always be "bn" or "en", never undefined
         tenant: tenant ?? undefined,
         branch: branch ?? undefined,
         channel: channel ?? undefined,

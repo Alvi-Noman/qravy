@@ -72,6 +72,7 @@ function useRuntimeRoute() {
 
 export default function DigitalMenu() {
   const { subdomain, branchSlug, channel } = useRuntimeRoute();
+  const effectiveLang = 'bn';
   const location = useLocation();
   const navigate = useNavigate();
   const { addItem, setQty, updateQty, removeItem, clear } = useCart();
@@ -902,6 +903,7 @@ export default function DigitalMenu() {
               tenant={tenantSlug}
               branch={branchHint}
               channel={channel}
+              lang={effectiveLang}
               onAiReply={({ replyText, meta }) => {
                 const m = meta as AiReplyMeta | undefined;
                 console.log('[AI PAGE]', { replyText, meta: m });
