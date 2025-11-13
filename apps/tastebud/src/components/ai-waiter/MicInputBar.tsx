@@ -164,32 +164,29 @@ export default function MicInputBar({
   const pointerActiveRef = useRef(false);
   const lastDownAtRef = useRef(0);
 
-  // language
-  const getGlobalLang = (): Lang => {
-    if (typeof window === "undefined") return lang;
-    const g = (window as any).__WAITER_LANG__;
-    return g === "bn" || g === "en" || g === "auto" ? g : lang;
-  };
+  // language: 🔒 force Bangla for this bar
+  const getGlobalLang = (): Lang => "bn";
+
   const [currentLang, setCurrentLang] = useState<Lang>(getGlobalLang());
   useEffect(() => {
-    setCurrentLang(getGlobalLang());
+    // Always stay in Bangla; ignore global toggles
+    setCurrentLang("bn");
     if (typeof window === "undefined") return;
-    const handler = (e: Event) => {
-      try {
-        const next = (e as CustomEvent).detail?.lang;
-        if (next === "bn" || next === "en" || next === "auto") {
-          setCurrentLang(next);
-          if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-            wsRef.current.send(JSON.stringify({ t: "set_lang", lang: next }));
-          }
-        }
-      } catch {}
+    const handler = (_e: Event) => {
+      setCurrentLang("bn");
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({ t: "set_lang", lang: "bn" }));
+      }
     };
     window.addEventListener("qravy:lang", handler as EventListener);
     return () => window.removeEventListener("qravy:lang", handler as EventListener);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-  useEffect(() => { setCurrentLang(getGlobalLang()); /* eslint-disable-next-line */ }, [lang]);
+  useEffect(() => {
+    // Prop `lang` is ignored; always Bangla
+    setCurrentLang("bn");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lang]);
 
   // WS & audio refs
   const wsRef = useRef<WebSocket | null>(null);
@@ -296,9 +293,8 @@ export default function MicInputBar({
           ? new Date().getHours()
           : undefined;
 
-      // 👇 IMPORTANT: send `start` immediately on open (no geolocation delay)
-      const langToSend: Lang =
-      currentLang === "bn" || currentLang === "en" ? currentLang : "bn";
+      // 👇 IMPORTANT: send `start` immediately on open, always Bangla
+      const langToSend: Lang = "bn";
 
       const startMsg: any = {
         t: "start",
@@ -306,7 +302,7 @@ export default function MicInputBar({
         userId: "guest",
         rate: 16000,
         ch: 1,
-        lang: langToSend,              // <-- will always be "bn" or "en", never undefined
+        lang: langToSend,              // <-- always "bn"
         tenant: tenant ?? undefined,
         branch: branch ?? undefined,
         channel: channel ?? undefined,
