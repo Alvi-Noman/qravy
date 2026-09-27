@@ -7,6 +7,7 @@ import {
   XMarkIcon,
 } from '@heroicons/react/24/outline';
 import { useScope } from '../../context/ScopeContext';
+import { useTenant } from '../../hooks/useTenant';
 
 const CHANNEL_TABS = ['All channels', 'Dine-In', 'Online'] as const;
 
@@ -33,6 +34,10 @@ export default function CategoriesToolbar({
 
   // Global channel scope
   const { channel, setChannel: setGlobalChannel } = useScope();
+  const { data: tenant } = useTenant();
+  const dineInActive = tenant?.restaurantInfo?.dineInEnabled !== false;
+  const onlineActive = tenant?.restaurantInfo?.onlineSalesEnabled !== false;
+  const showChannelSwitcher = dineInActive && onlineActive;
 
   // Keep local filter in sync with global channel
   useEffect(() => {
@@ -103,45 +108,47 @@ export default function CategoriesToolbar({
     <div className="flex w-full flex-col gap-3 md:flex-row md:items-center md:justify-between">
       <div className="flex flex-1 flex-wrap items-center gap-2">
         {/* Channels capsule */}
-        <div
-          ref={channelCapsuleRef}
-          role="tablist"
-          aria-label="Channels"
-          className={`relative flex items-center gap-1 rounded-md p-1 bg-slate-100 border ${
-            isAllChannels ? 'border-slate-200' : 'border-black'
-          }`}
-        >
-          <motion.span
-            initial={false}
-            className="absolute top-1 bottom-1 rounded-md bg-white shadow-sm ring-1 ring-slate-200"
-            animate={{ left: channelIndicator.left, width: channelIndicator.width }}
-            transition={{ type: 'spring', stiffness: 420, damping: 32 }}
-          />
-          {CHANNEL_TABS.map((t, i) => {
-            const selected = i === selectedChannelIdx;
-            const withDot =
-              (t === 'Dine-In' && channelAlerts?.dineIn) ||
-              (t === 'Online' && channelAlerts?.online);
-            return (
-              <button
-                key={t}
-                role="tab"
-                aria-selected={selected}
-                ref={(el) => (channelTabRefs.current[i] = el)}
-                type="button"
-                onClick={() => setChannelTab(t)}
-                className={`relative z-10 rounded-md px-3 py-1.5 text-[13px] font-medium transition-colors ${
-                  selected ? 'text-slate-900' : 'text-slate-600 hover:text-slate-800'
-                }`}
-              >
-                <span className="inline-flex items-center">
-                  {t}
-                  <Dot show={withDot} />
-                </span>
-              </button>
-            );
-          })}
-        </div>
+        {showChannelSwitcher && (
+          <div
+            ref={channelCapsuleRef}
+            role="tablist"
+            aria-label="Channels"
+            className={`relative flex items-center gap-1 rounded-md p-1 bg-slate-100 border ${
+              isAllChannels ? 'border-slate-200' : 'border-black'
+            }`}
+          >
+            <motion.span
+              initial={false}
+              className="absolute top-1 bottom-1 rounded-md bg-white shadow-sm ring-1 ring-slate-200"
+              animate={{ left: channelIndicator.left, width: channelIndicator.width }}
+              transition={{ type: 'spring', stiffness: 420, damping: 32 }}
+            />
+            {CHANNEL_TABS.map((t, i) => {
+              const selected = i === selectedChannelIdx;
+              const withDot =
+                (t === 'Dine-In' && channelAlerts?.dineIn) ||
+                (t === 'Online' && channelAlerts?.online);
+              return (
+                <button
+                  key={t}
+                  role="tab"
+                  aria-selected={selected}
+                  ref={(el) => (channelTabRefs.current[i] = el)}
+                  type="button"
+                  onClick={() => setChannelTab(t)}
+                  className={`relative z-10 rounded-md px-3 py-1.5 text-[13px] font-medium transition-colors ${
+                    selected ? 'text-slate-900' : 'text-slate-600 hover:text-slate-800'
+                  }`}
+                >
+                  <span className="inline-flex items-center">
+                    {t}
+                    <Dot show={withDot} />
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       {/* Right side: search and sort */}

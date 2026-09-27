@@ -471,71 +471,43 @@ function HowItWorksPanel() {
   ];
 
   const panelRef = useRef<HTMLDivElement>(null);
-  const contentRef = useRef<HTMLDivElement>(null);
   const [minHeight, setMinHeight] = useState<number>();
 
-  // Find the nearest scrollable ancestor
-  const getScrollParent = (el: HTMLElement | null): HTMLElement => {
-    let p: HTMLElement | null = el?.parentElement || null;
-    while (p) {
-      const style = getComputedStyle(p);
-      if (/(auto|scroll)/.test(style.overflowY)) return p;
-      p = p.parentElement;
-    }
-    return (document.scrollingElement as HTMLElement) || document.documentElement;
-  };
-
-  useLayoutEffect(() => {
+  useEffect(() => {
     const panel = panelRef.current;
     if (!panel) return;
 
+    const getScrollParent = (el: HTMLElement | null): HTMLElement => {
+      let p: HTMLElement | null = el?.parentElement || null;
+      while (p) {
+        const style = getComputedStyle(p);
+        if (/(auto|scroll)/.test(style.overflowY)) return p;
+        p = p.parentElement;
+      }
+      return (document.scrollingElement as HTMLElement) || document.documentElement;
+    };
+
     const scroller = getScrollParent(panel);
-
-    const update = () => {
+    const scrollerRect = scroller.getBoundingClientRect();
+    
+    const timer = setTimeout(() => {
       if (!panel) return;
+      const rect = panel.getBoundingClientRect();
+      const gridTopFromScrollerTop = rect.top - scrollerRect.top;
+      const available = scroller.clientHeight - gridTopFromScrollerTop - 64; // 64px bottom offset (accounts for padding + margin)
+      setMinHeight(Math.max(available, 400));
+    }, 100);
 
-      const scrollerRect = scroller.getBoundingClientRect();
-
-      const sectionGrid = panel.closest('[data-section-grid]') as HTMLElement | null;
-      const gridTopFromScrollerTop = sectionGrid
-        ? sectionGrid.getBoundingClientRect().top - scrollerRect.top
-        : panel.getBoundingClientRect().top - scrollerRect.top;
-
-      const pageWrapper = panel.closest('[data-page-wrapper]') as HTMLElement | null;
-      const bottomPad = pageWrapper ? parseFloat(getComputedStyle(pageWrapper).paddingBottom || '0') : 0;
-
-      const available = scroller.clientHeight - gridTopFromScrollerTop - bottomPad;
-
-      const natural = contentRef.current?.scrollHeight ?? 0;
-
-      const next = Math.max(available, natural);
-      setMinHeight(next);
-    };
-
-    update();
-
-    const ro = new ResizeObserver(update);
-    ro.observe(scroller);
-    if (contentRef.current) ro.observe(contentRef.current);
-    if (panel.parentElement) ro.observe(panel.parentElement);
-
-    window.addEventListener('resize', update);
-    scroller.addEventListener('scroll', update, { passive: true });
-
-    return () => {
-      ro.disconnect();
-      window.removeEventListener('resize', update);
-      scroller.removeEventListener('scroll', update as any);
-    };
+    return () => clearTimeout(timer);
   }, []);
 
   return (
-    <div
-      ref={panelRef}
+    <div 
+      ref={panelRef} 
       className="rounded-xl border border-[#ececec] bg-gradient-to-b from-fuchsia-50/70 via-slate-50 to-white p-4"
       style={minHeight ? { minHeight } : undefined}
     >
-      <div ref={contentRef}>
+      <div>
         <div className="text-[12px] font-medium text-slate-700">How it works</div>
         <ol className="relative mt-6 ml-6">
           <div className="absolute left-[-3px] top-0 bottom-0 w-0.5 bg-slate-200" />
@@ -588,7 +560,7 @@ function Modal({
 /* --- API helpers (placeholder endpoints; wire to your backend) --- */
 async function getLocations(): Promise<Location[]> {
   const res = await api.get('/api/v1/locations');
-  return res.data?.items || [];
+  return (res.data?.items || []).filter((l: any) => !l.disabled);
 }
 async function listDevices(): Promise<Device[]> {
   const res = await api.get('/api/v1/access/devices');

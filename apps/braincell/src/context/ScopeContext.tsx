@@ -1,5 +1,6 @@
 import { createContext, useContext, useMemo, useState, useEffect } from 'react';
 import { useAuthContext } from './AuthContext';
+import { useTenant } from '../hooks/useTenant';
 
 export type ChannelScope = 'all' | 'dine-in' | 'online';
 export type LocationScope =
@@ -33,6 +34,7 @@ const STORAGE_KEY = 'scope:activeLocationId';
 
 export function ScopeProvider({ children }: { children: React.ReactNode }) {
   const { token } = useAuthContext();
+  const { data: tenant } = useTenant();
 
   // Per-session/tenant-ish channel storage key (no TS errors)
   const CHANNEL_KEY = useMemo(
@@ -67,6 +69,23 @@ export function ScopeProvider({ children }: { children: React.ReactNode }) {
       setChannel('all');
     }
   }, [CHANNEL_KEY]);
+
+  // Override active channel if only one ordering channel is enabled in tenant preferences
+  useEffect(() => {
+    if (tenant?.restaurantInfo) {
+      const dineInActive = tenant.restaurantInfo.dineInEnabled !== false;
+      const onlineActive = tenant.restaurantInfo.onlineSalesEnabled !== false;
+      if (dineInActive && !onlineActive) {
+        if (channel !== 'dine-in') {
+          setChannel('dine-in');
+        }
+      } else if (!dineInActive && onlineActive) {
+        if (channel !== 'online') {
+          setChannel('online');
+        }
+      }
+    }
+  }, [tenant, channel]);
 
   const [searchQuery, setSearchQuery] = useState('');
   const [sort, setSort] = useState<SortOption>('az');

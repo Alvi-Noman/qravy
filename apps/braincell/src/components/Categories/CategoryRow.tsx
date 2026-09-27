@@ -168,7 +168,7 @@ export default function CategoryRow({
           </div>
           <div className="mt-0.5 flex flex-wrap items-center gap-2">
             <span className="text-xs text-[#9b9ba1]">
-              Added {new Date(category.createdAt).toLocaleDateString()}
+              Added {category.createdAt ? new Date(category.createdAt).toLocaleDateString() : 'N/A'}
             </span>
             {scopeBadges.map((b) => (
               <span

@@ -6,6 +6,7 @@ export interface Location {
   address?: string;
   zip?: string;
   country?: string;
+  disabled?: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -15,6 +16,7 @@ export interface LocationInput {
   address?: string;
   zip?: string;
   country?: string;
+  disabled?: boolean;
 }
 
 // Helper to unwrap your responseFormatter shapes
@@ -63,4 +65,17 @@ export async function setDefaultLocationId(locationId: string): Promise<string> 
     { withCredentials: true }
   );
   return res.data?.defaultLocationId as string;
+}
+
+export async function importMenuFromLocation(
+  targetLocationId: string,
+  sourceLocationId: string,
+  categoryIds?: string[]
+): Promise<{ success: boolean }> {
+  const res = await api.post(
+    `/api/v1/locations/${encodeURIComponent(targetLocationId)}/import-menu`,
+    { sourceLocationId, categoryIds },
+    { withCredentials: true }
+  );
+  return res.data;
 }

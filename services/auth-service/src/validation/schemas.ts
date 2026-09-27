@@ -38,6 +38,8 @@ export const tenantCreateSchema = z.object({
     .refine((s) => !s.startsWith('-') && !s.endsWith('-') && !s.includes('--'), {
       message: 'Invalid subdomain',
     }),
+  dineInEnabled: z.boolean().optional(),
+  onlineSalesEnabled: z.boolean().optional(),
 });
 
 export const menuItemSchema = z
@@ -323,6 +325,41 @@ export const restaurantOnboardingSchema = z.object({
   address: z.string().min(1, 'address is required'),
   locationMode: z.enum(['single', 'multiple']).optional(),
 });
+
+export const tenantUpdateSchema = z
+  .object({
+    name: z.string().min(1, 'Name is required').max(100).optional(),
+    restaurantInfo: z
+      .object({
+        restaurantType: z.string().min(1).optional(),
+        country: z.string().min(1).optional(),
+        address: z.string().min(1).optional(),
+        email: z.string().email('Invalid email address').optional().or(z.literal('')),
+        phone: z.string().optional(),
+        locationMode: z.enum(['single', 'multiple']).optional(),
+        dineInEnabled: z.boolean().optional(),
+        onlineSalesEnabled: z.boolean().optional(),
+      })
+      .optional(),
+    ownerInfo: z
+      .object({
+        fullName: z.string().min(1).optional(),
+        phone: z.string().min(1).optional(),
+      })
+      .optional(),
+  })
+  .superRefine((data, ctx) => {
+    if (data.restaurantInfo) {
+      const { dineInEnabled, onlineSalesEnabled } = data.restaurantInfo;
+      if (dineInEnabled === false && onlineSalesEnabled === false) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['restaurantInfo', 'dineInEnabled'],
+          message: 'At least one ordering channel (Dine-in or Online sales) must be enabled',
+        });
+      }
+    }
+  });
 
 export const orderCreateSchema = z.object({
   tenantId: z.string().min(1, 'tenantId is required'),

@@ -120,3 +120,26 @@ export async function subscribeAndSaveBilling(
   }
   return tenant;
 }
+
+/** Update tenant settings (name, locationMode, etc.) */
+export async function updateTenant(
+  payload: {
+    name?: string;
+    restaurantInfo?: {
+      restaurantType?: string;
+      country?: string;
+      address?: string;
+      locationMode?: 'single' | 'multiple';
+    };
+    ownerInfo?: {
+      fullName?: string;
+      phone?: string;
+    };
+  },
+  token: string
+): Promise<TenantDTO> {
+  const res = await api.put('/api/v1/auth/tenants/me', payload, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  return res.data.item as TenantDTO;
+}

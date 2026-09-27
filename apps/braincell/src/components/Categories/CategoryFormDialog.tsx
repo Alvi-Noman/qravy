@@ -460,7 +460,13 @@ export default function CategoryFormDialog({
                 disabled={busy}
                 className="rounded-md bg-[#2e2e30] px-4 py-2 text-sm text-white hover:opacity-90 disabled:opacity-50"
               >
-                {busy ? 'Saving…' : 'Save'}
+                {busy ? (
+                  'Saving…'
+                ) : !title.toLowerCase().includes('add') && !title.toLowerCase().includes('create') ? (
+                  'Save Changes'
+                ) : (
+                  'Save'
+                )}
               </button>
             </div>
           </motion.form>

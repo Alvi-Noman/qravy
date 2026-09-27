@@ -16,8 +16,12 @@ export interface TenantDoc {
     restaurantType: string;
     country: string;
     address: string;
+    email?: string;
+    phone?: string;
     locationMode?: 'single' | 'multiple';
     hasLocations?: boolean; // ADD
+    onlineSalesEnabled?: boolean;
+    dineInEnabled?: boolean;
   };
 
   // Access settings for central email/device enrollment

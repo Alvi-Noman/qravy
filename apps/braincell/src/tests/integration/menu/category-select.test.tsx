@@ -3,7 +3,7 @@ import { render, screen, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
 
-import CategorySelect from '../../../components/add-product-drawer/CategorySelect';
+import CategorySelect from '../../../components/menu-item-modal/CategorySelect';
 
 function Harness({
   initialValue = '',

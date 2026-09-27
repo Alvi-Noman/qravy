@@ -146,8 +146,12 @@ export interface RestaurantInfoDTO {
   restaurantType: string;
   country: string;
   address: string;
+  email?: string;
+  phone?: string;
   locationMode?: 'single' | 'multiple';
   hasLocations?: boolean;
+  onlineSalesEnabled?: boolean;
+  dineInEnabled?: boolean;
 }
 
 export interface TenantDTO {
@@ -178,6 +182,10 @@ export interface TenantDTO {
   billingProfile?: BillingProfileDTO;
   onboardingProgress?: TenantOnboardingProgressDTO;
   restaurantInfo?: RestaurantInfoDTO;
+  ownerInfo?: {
+    fullName: string;
+    phone: string;
+  };
 
   createdAt: string;
   updatedAt: string;

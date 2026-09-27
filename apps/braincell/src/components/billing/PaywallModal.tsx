@@ -119,7 +119,7 @@ export default function PaywallModal({
     id: 'unknown',
     name: 'Pro',
     interval: 'month',
-    priceCents: 7900,
+    priceCents: 9900,
     currency: 'usd',
   };
 

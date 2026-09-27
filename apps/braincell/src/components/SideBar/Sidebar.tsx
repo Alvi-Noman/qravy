@@ -22,6 +22,7 @@ import { useAuthContext } from '../../context/AuthContext';
 import { useScope } from '../../context/ScopeContext';
 import { useLocations } from '../locations/useLocations';
 import { usePermissions } from '../../context/PermissionsContext';
+import { useTenant } from '../../hooks/useTenant';
 
 type NavItem = { name: string; to: string; icon: ElementType; end?: boolean };
 type Section = { heading: string; items: NavItem[] };
@@ -32,6 +33,9 @@ export default function Sidebar(): JSX.Element {
   const { activeLocationId, setActiveLocationId } = useScope();
   const { locations, locationsQuery } = useLocations();
   const { has } = usePermissions();
+  const { data: tenant } = useTenant();
+
+  const isMultipleLocations = tenant?.restaurantInfo?.locationMode === 'multiple';
 
   // Map each nav item to the capability it requires
   const REQUIRES: Record<string, string> = {
@@ -84,13 +88,16 @@ export default function Sidebar(): JSX.Element {
       .map((section) => ({
         ...section,
         items: section.items.filter((item) => {
+          if (item.name === 'Locations' && !isMultipleLocations) {
+            return false;
+          }
           const cap = REQUIRES[item.name];
           // If not mapped, show it only to members (safety), but we mapped all above.
           return cap ? has(cap) : true;
         }),
       }))
       .filter((section) => section.items.length > 0);
-  }, [sectionsAll, has]);
+  }, [sectionsAll, has, isMultipleLocations]);
 
   const linkClass = (isActive: boolean): string =>
     `group flex items-center gap-3 rounded-md px-3 py-2.5 text-[14px] transition ${
@@ -147,27 +154,32 @@ export default function Sidebar(): JSX.Element {
   return (
     <aside className="flex h-full w-64 flex-col bg-[#f5f5f5] px-4 py-4">
       {/* Brand */}
-      <div className="mb-0 flex items-center">
+      <div className="mb-6 flex items-center">
         <span className="text-3xl font-semibold tracking-tight text-slate-900">Qravy.</span>
       </div>
 
-      {/* Location selector */}
-      <div className="mt-7 mb-6">
-        {loadingSelect ? (
-          <div className="h-11 w-full rounded-md border border-[#dbdbdb] bg-slate-100 animate-pulse" />
-        ) : (
-          <SidebarLocationSelect
-            locations={locations}
-            value={activeLocationId || ''} // '' represents "All"
-            onChange={(id) => {
-              if (isCentralSession) return; // lock for central sessions
-              setActiveLocationId(id || null);
-            }}
-            displayName={displayName}
-            isCentralSession={isCentralSession}
-          />
-        )}
-      </div>
+      {/* Location selector (only for multiple location mode) */}
+      {isMultipleLocations ? (
+        <div className="mb-6">
+          {loadingSelect ? (
+            <div className="h-11 w-full rounded-md border border-[#dbdbdb] bg-slate-100 animate-pulse" />
+          ) : (
+            <SidebarLocationSelect
+              locations={locations}
+              value={activeLocationId || ''} // '' represents "All"
+              onChange={(id) => {
+                if (isCentralSession) return; // lock for central sessions
+                setActiveLocationId(id || null);
+              }}
+              displayName={displayName}
+              isCentralSession={isCentralSession}
+            />
+          )}
+        </div>
+      ) : (
+        /* Modern separator for single location mode */
+        <div className="mb-6 border-b border-slate-200/60" />
+      )}
 
       <nav className="flex-1 overflow-y-auto">
         {sections.map((section) => (

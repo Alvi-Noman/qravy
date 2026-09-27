@@ -275,6 +275,8 @@ export default function StepRestaurantInfo({ value, onChange, onNext }: Props) {
         </div>
       </div>
 
+
+
       <div className="w-full mb-4">
         <label htmlFor="address" className="block text-base text-[#2e2e30] mb-1">Address</label>
         <input

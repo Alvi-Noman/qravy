@@ -1,19 +1,63 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+import { useTenant } from '../../hooks/useTenant';
+import { updateTenant } from '../../api/tenant';
+import { useAuthContext } from '../../context/AuthContext';
+import { useQueryClient } from '@tanstack/react-query';
 
 export default function SettingsBranding(): JSX.Element {
-  const [name, setName] = useState('Demo Restaurant');
+  const { token } = useAuthContext();
+  const queryClient = useQueryClient();
+  const { data: tenant, isLoading } = useTenant();
+
+  const [name, setName] = useState('');
+
+  // Preserve other mock fields
   const [legalName, setLegalName] = useState('Demo Restaurant LLC');
   const [color, setColor] = useState('#2e2e30');
   const [theme, setTheme] = useState<'system' | 'light' | 'dark'>('system');
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
 
-  const save = async () => {
-    setSaving(true);
-    await new Promise((r) => setTimeout(r, 600));
-    setSaving(false);
+  useEffect(() => {
+    if (tenant) {
+      setName(tenant.name || '');
+    }
+  }, [tenant]);
+
+  const handleDiscard = () => {
+    if (tenant) {
+      setName(tenant.name || '');
+    }
     setDirty(false);
   };
+
+  const save = async () => {
+    if (!token) return;
+    setSaving(true);
+    try {
+      await updateTenant(
+        {
+          name,
+        },
+        token
+      );
+      await queryClient.invalidateQueries({ queryKey: ['tenant', token] });
+      setDirty(false);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('Failed to save tenant branding settings:', err);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (isLoading) {
+    return (
+      <div className="flex h-64 items-center justify-center">
+        <div className="h-8 w-8 animate-spin rounded-full border-2 border-[#2e2e30] border-t-transparent" />
+      </div>
+    );
+  }
 
   return (
     <div className="grid gap-4">
@@ -76,7 +120,7 @@ export default function SettingsBranding(): JSX.Element {
           <div className="flex items-center justify-between">
             <div className="text-sm text-slate-800">{saving ? 'Saving…' : 'Unsaved changes'}</div>
             <div className="flex items-center gap-2">
-              <button className="rounded-md border border-[#e5e5e5] bg-white px-3 py-1.5 text-sm" onClick={() => setDirty(false)}>
+              <button className="rounded-md border border-[#e5e5e5] bg-white px-3 py-1.5 text-sm" onClick={handleDiscard}>
                 Discard
               </button>
               <button disabled={saving} onClick={save} className="rounded-md bg-[#2e2e30] px-4 py-1.5 text-sm text-white">

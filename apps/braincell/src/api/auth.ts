@@ -139,6 +139,18 @@ export async function verifyMagicLink<T = unknown>(token: string): Promise<T> {
 }
 
 /**
+ * Verify OTP passcode and receive access token + user object.
+ */
+export async function verifyOtp<T = unknown>(email: string, code: string): Promise<T> {
+  try {
+    const response = await api.post<T>('/api/v1/auth/otp/verify', { email, code });
+    return response.data;
+  } catch (error) {
+    throw new Error(extractErrorMessage(error));
+  }
+}
+
+/**
  * Get current user (optionally with an explicit token).
  * Provide a generic to type the response shape at call sites.
  */
@@ -186,7 +198,12 @@ export async function completeOnboarding<T = unknown>(token?: string): Promise<T
  * Uses Authorization from interceptor; token param not required.
  * Provide a generic to type the response shape at call sites.
  */
-export async function createTenant<T = unknown>(body: { name: string; subdomain: string }): Promise<T> {
+export async function createTenant<T = unknown>(body: {
+  name: string;
+  subdomain: string;
+  dineInEnabled?: boolean;
+  onlineSalesEnabled?: boolean;
+}): Promise<T> {
   try {
     const response = await api.post<T>('/api/v1/auth/tenants', body);
     return response.data;

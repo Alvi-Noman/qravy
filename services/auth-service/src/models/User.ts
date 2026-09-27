@@ -26,4 +26,6 @@ export interface UserDoc {
 
   magicLinkToken?: string;
   magicLinkTokenExpires?: Date;
+  otpCode?: string;
+  otpExpiresAt?: Date;
 }

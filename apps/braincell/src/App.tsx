@@ -45,6 +45,7 @@ const SettingsLabs = lazy(() => import('./pages/settings/Labs'));
 const SettingsPrivacy = lazy(() => import('./pages/settings/Privacy'));
 const SettingsAudit = lazy(() => import('./pages/settings/Audit'));
 const SettingsAccess = lazy(() => import('./pages/settings/RestaurantAccess')); // NEW
+const SettingsPreferences = lazy(() => import('./pages/settings/Preferences'));
 
 // Plan & Billing
 const SettingsPlan = lazy(() => import('./pages/settings/Plan'));
@@ -241,17 +242,14 @@ function App() {
                     </Suspense>
                   }
                 />
-              </Route>
 
-              {/* Settings routes OUTSIDE DashboardLayout to replace the main navbar with Settings navbar */}
-              <Route
-                path="/settings"
-                element={
-                  <RequireVerifiedAndOnboarded>
+                {/* Settings routes INSIDE DashboardLayout */}
+                <Route
+                  path="/settings"
+                  element={
                     <SettingsLayout />
-                  </RequireVerifiedAndOnboarded>
-                }
-              >
+                  }
+                >
                 <Route
                   index
                   element={
@@ -292,6 +290,14 @@ function App() {
                 />
 
                 {/* Existing settings */}
+                <Route
+                  path="operations"
+                  element={
+                    <Suspense fallback={null}>
+                      <SettingsPreferences />
+                    </Suspense>
+                  }
+                />
                 <Route
                   path="branding"
                   element={
@@ -402,6 +408,8 @@ function App() {
                 <Route path="Plan/select" element={<Navigate to="plan/select" replace />} />
                 <Route path="Plan/select/subscribe" element={<Navigate to="plan/select?step=subscribe" replace />} />
                 <Route path="Billing" element={<Navigate to="billing" replace />} />
+                <Route path="Preferences" element={<Navigate to="operations" replace />} />
+                <Route path="preferences" element={<Navigate to="operations" replace />} />
                 <Route path="Branding" element={<Navigate to="branding" replace />} />
                 <Route path="Domain" element={<Navigate to="domain" replace />} />
                 <Route path="Security" element={<Navigate to="security" replace />} />
@@ -416,6 +424,7 @@ function App() {
                 <Route path="Privacy" element={<Navigate to="privacy" replace />} />
                 <Route path="Audit" element={<Navigate to="audit" replace />} />
               </Route>
+            </Route>
 
               {/* Redirect legacy /dashboard/* paths */}
               <Route path="/dashboard/orders" element={<Navigate to="/orders" replace />} />

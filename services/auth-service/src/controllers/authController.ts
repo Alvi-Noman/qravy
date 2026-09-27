@@ -148,6 +148,8 @@ export const sendMagicLink = async (req: Request, res: Response, next: NextFunct
     // Create a new token every request (15 min TTL)
     const magicLinkToken = generateMagicLinkToken();
     const magicLinkTokenExpires = new Date(Date.now() + 15 * 60 * 1000);
+    const otpCode = Math.floor(10000 + Math.random() * 90000).toString();
+    const otpExpiresAt = magicLinkTokenExpires;
 
     if (!user) {
       const insertResult = await collection.insertOne({
@@ -156,13 +158,15 @@ export const sendMagicLink = async (req: Request, res: Response, next: NextFunct
         refreshTokens: [],
         magicLinkToken,
         magicLinkTokenExpires,
+        otpCode,
+        otpExpiresAt,
       });
       user = await collection.findOne({ _id: insertResult.insertedId });
       logger.info(`Created new user: ${email} from IP ${ip}`);
     } else {
       await collection.updateOne(
         { _id: user._id as ObjectId },
-        { $set: { magicLinkToken, magicLinkTokenExpires } }
+        { $set: { magicLinkToken, magicLinkTokenExpires, otpCode, otpExpiresAt } }
       );
       user = await collection.findOne({ _id: user._id as ObjectId });
       logger.info(`Updated magic link for user: ${email} from IP ${ip}`);
@@ -180,8 +184,8 @@ export const sendMagicLink = async (req: Request, res: Response, next: NextFunct
     );
 
     try {
-      await sendMagicLinkEmail(email, magicLink);
-      logger.info(`Magic link email sent to ${email}`);
+      await sendMagicLinkEmail(email, magicLink, otpCode);
+      logger.info(`Magic link email sent to ${email} with OTP ${otpCode}`);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       logger.error(`Error sending magic link email to ${email}: ${msg}`);
@@ -302,6 +306,110 @@ export const verifyMagicLink = async (req: Request, res: Response, next: NextFun
     next(error);
   }
 };
+
+export const verifyOtp = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+  try {
+    const { email: rawEmail, code } = req.body as { email: string; code: string };
+    const ip = req.ip || req.socket.remoteAddress || 'unknown';
+    const email = (rawEmail || '').toLowerCase().trim();
+
+    if (!email || !code || typeof code !== 'string') {
+      logger.warn(`Invalid OTP verification request from IP ${ip}`);
+      res.fail(400, 'Email and code are required.');
+      return;
+    }
+
+    const collection = await getUsersCollection();
+    const user = await collection.findOne({ email });
+
+    if (!user || !user.otpCode || user.otpCode !== code || !user.otpExpiresAt || user.otpExpiresAt < new Date()) {
+      logger.warn(`Attempt to use invalid or expired OTP from IP ${ip} for email ${email}`);
+      res.fail(400, 'Invalid or expired passcode.');
+      return;
+    }
+
+    // Clear OTP and magic link details
+    await collection.updateOne(
+      { _id: user._id as ObjectId },
+      { 
+        $set: { isVerified: true }, 
+        $unset: { otpCode: '', otpExpiresAt: '', magicLinkToken: '', magicLinkTokenExpires: '' } 
+      }
+    );
+
+    // ---- Resolve tenant + role, then compute capabilities
+    const { role, tenantIdStr, isOnboarded } = await resolveUserRoleAndTenantInfo(user);
+    const sessionType: 'member' | 'branch' = 'member';
+    const capabilities = computeCapabilities({ role, sessionType });
+
+    // ---- Sign access token
+    const accessToken = jwt.sign(
+      {
+        id: (user._id as ObjectId).toString(),
+        email: user.email,
+        tenantId: tenantIdStr ?? undefined,
+        role,
+        sessionType,
+      },
+      process.env.JWT_SECRET!,
+      { expiresIn: '15m' }
+    );
+
+    // Refresh token
+    const refreshTokenValue = generateRefreshToken({
+      id: (user._id as ObjectId).toString(),
+      email: user.email,
+      ...(tenantIdStr ? { tenantId: tenantIdStr } : {}),
+    });
+
+    const tokenId = crypto.randomUUID();
+    const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+    const tokenHash = hashToken(refreshTokenValue);
+
+    const cleanedTokens = cleanupTokens(user.refreshTokens);
+    const userAgent = (req.headers['user-agent'] as string | undefined) || 'unknown';
+
+    cleanedTokens.push({
+      tokenId,
+      tokenHash,
+      createdAt: new Date(),
+      expiresAt,
+      userAgent,
+      ip,
+    });
+
+    while (cleanedTokens.length > 5) cleanedTokens.shift();
+
+    await collection.updateOne(
+      { _id: user._id as ObjectId },
+      { $set: { refreshTokens: cleanedTokens } }
+    );
+
+    logger.info(`User verified OTP: ${userInfo(user)} from IP ${ip}`);
+
+    // Set refresh cookie
+    res.cookie(REFRESH_COOKIE_NAME, refreshTokenValue, REFRESH_COOKIE_OPTS);
+
+    res.ok({
+      token: accessToken,
+      user: {
+        id: (user._id as ObjectId).toString(),
+        email: user.email,
+        isVerified: true,
+        tenantId: tenantIdStr,
+        isOnboarded,
+        role,
+        sessionType,
+        capabilities,
+      },
+    });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    logger.error(`verifyOtp error: ${msg}`);
+    next(error);
+  }
+};
+
 
 export const completeOnboarding = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {

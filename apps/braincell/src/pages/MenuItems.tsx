@@ -23,7 +23,7 @@ import { useScope } from '../context/ScopeContext';
 const MenuTable = lazy(() => import('../components/menu-items/MenuTable'));
 const BulkChangeCategoryDialog = lazy(() => import('../components/menu-items/BulkChangeCategoryDialog'));
 const ConfirmDeleteItemsDialog = lazy(() => import('../components/menu-items/ConfirmDeleteItemsDialog'));
-const ProductDrawer = lazy(() => import('../components/add-product-drawer/ProductDrawer'));
+const MenuItemModal = lazy(() => import('../components/menu-item-modal/MenuItemModal'));
 
 type Status = 'active' | 'hidden';
 type Channel = 'dine-in' | 'online';
@@ -460,7 +460,7 @@ export default function MenuItemsPage(): JSX.Element {
               }}
               onClick={handleAddClick}
             >
-              Add Product
+              Add Menu Item
             </button>
           </Can>
         </div>
@@ -498,14 +498,14 @@ export default function MenuItemsPage(): JSX.Element {
                     <Squares2X2Icon className="h-12 w-12 text-slate-400 mb-3" />
                     <h2 className="text-xl font-semibold text-[#2e2e30]">No Menu Items Yet</h2>
                     <p className="text-sm text-[#6b6b70] mt-2 mb-6 max-w-md">
-                      Get started by adding your first product. Menu items will appear here once created.
+                      Get started by adding your first menu item. Menu items will appear here once created.
                     </p>
                     <Can capability="menuItems:create">
                       <button
                         onClick={handleAddClick}
                         className="rounded-md bg-[#2e2e30] text-white px-5 py-2 hover:opacity-90"
                       >
-                        Add Product
+                        Add Menu Item
                       </button>
                     </Can>
                   </div>
@@ -540,9 +540,9 @@ export default function MenuItemsPage(): JSX.Element {
               <Suspense fallback={null}>
                 <AnimatePresence mode="wait">
                   {openAdd && canCreate && (
-                    <ProductDrawer
+                    <MenuItemModal
                       key="add"
-                      title="Add Product"
+                      title="Add Menu Item"
                       categories={categoryNames}
                       initial={{
                         name: '',
@@ -595,9 +595,9 @@ export default function MenuItemsPage(): JSX.Element {
                   )}
 
                   {openEdit && canUpdate && (
-                    <ProductDrawer
+                    <MenuItemModal
                       key="edit"
-                      title="Edit Product"
+                      title="Edit Menu Item"
                       categories={categoryNames}
                       initial={{
                         name: openEdit.name,

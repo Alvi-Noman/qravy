@@ -10,6 +10,8 @@ export interface RestaurantInfo {
   country: string;
   address: string;
   locationMode?: 'single' | 'multiple';  
+  dineInEnabled?: boolean;
+  onlineSalesEnabled?: boolean;
 }
 
 export interface PlanInfo {

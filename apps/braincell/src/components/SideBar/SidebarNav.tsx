@@ -1,4 +1,6 @@
 import { NavLink } from 'react-router-dom';
+import { useMemo } from 'react';
+import { useTenant } from '../../hooks/useTenant';
 
 /** Compact, text-only sidebar navigation mirroring the main sidebar structure. */
 const sections: {
@@ -36,6 +38,21 @@ const sections: {
 
 /** Lightweight vertical nav for dashboard pages. */
 export default function SidebarNav(): JSX.Element {
+  const { data: tenant } = useTenant();
+  const isMultipleLocations = tenant?.restaurantInfo?.locationMode === 'multiple';
+
+  const filteredSections = useMemo(() => {
+    return sections.map((section) => ({
+      ...section,
+      items: section.items.filter((item) => {
+        if (item.name === 'Locations' && !isMultipleLocations) {
+          return false;
+        }
+        return true;
+      }),
+    }));
+  }, [isMultipleLocations]);
+
   /** Returns classes depending on whether the link is active. */
   const linkClass = (isActive: boolean): string =>
     `px-6 py-2 rounded text-[#2e2e30] font-medium transition ${
@@ -44,7 +61,7 @@ export default function SidebarNav(): JSX.Element {
 
   return (
     <nav className="mt-4 flex flex-col gap-4">
-      {sections.map((section) => (
+      {filteredSections.map((section) => (
         <div key={section.heading}>
           <div
             className="text-xs font-semibold uppercase tracking-wider mb-1"

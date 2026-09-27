@@ -2,6 +2,7 @@ import { Router, type Request, type Response } from 'express';
 import {
   sendMagicLink,
   verifyMagicLink,
+  verifyOtp,
   refreshToken,
   logout,
   logoutAll,
@@ -44,6 +45,7 @@ router.get('/health', (_req: Request, res: Response) => res.ok({ ok: true, servi
 router.post('/magic-link', validateRequest(magicLinkSchema), sendMagicLink);
 router.get('/magic-link/verify', verifyMagicLink);
 router.get('/verify-magic-link', verifyMagicLink);
+router.post('/otp/verify', verifyOtp);
 
 // Tokens/logout
 router.options('/refresh-token', (req, res) => {

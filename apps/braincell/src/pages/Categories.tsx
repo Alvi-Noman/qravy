@@ -236,7 +236,7 @@ export default function CategoriesPage() {
     if (sortBy === 'name-asc') list.sort((a, b) => a.name.localeCompare(b.name));
     if (sortBy === 'created-desc')
       list.sort(
-        (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+        (a, b) => new Date(b.createdAt || '').getTime() - new Date(a.createdAt || '').getTime()
       );
     if (sortBy === 'most-used')
       list.sort((a, b) => (usageMap.get(b.name) ?? 0) - (usageMap.get(a.name) ?? 0));

@@ -8,6 +8,7 @@ type Props = {
   onToggleDefault: (location: Location) => void;
   onEdit: (location: Location) => void;
   onDelete: (location: Location) => void;
+  onToggleStatus: (location: Location) => void;
 };
 
 export default function LocationList({
@@ -17,6 +18,7 @@ export default function LocationList({
   onToggleDefault,
   onEdit,
   onDelete,
+  onToggleStatus,
 }: Props) {
   return (
     <div className="rounded-lg border border-[#ececec] bg-white">
@@ -47,6 +49,7 @@ export default function LocationList({
                 onToggleDefault={onToggleDefault}
                 onEdit={onEdit}
                 onDelete={onDelete}
+                onToggleStatus={onToggleStatus}
               />
             ))}
             {locations.length === 0 && (

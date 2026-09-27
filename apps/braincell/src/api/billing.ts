@@ -181,7 +181,7 @@ export async function getUpcomingInvoiceEstimate(
   const basePerMonth =
     plan.tier === 'Free' ? 0 :
     plan.tier === 'Starter' ? 2900 :
-    plan.tier === 'Pro' ? 7900 :
+    plan.tier === 'Pro' ? 9900 :
     plan.tier === 'Business' ? 24900 : 0;
 
   const seatAllowance = 3; // included seats before charging extra
@@ -221,7 +221,7 @@ export type CatalogEntry = {
 // p1 = Starter, p2 = Pro (2 months free on yearly)
 export const PLAN_CATALOG: Record<string, CatalogEntry> = {
   p1: { id: 'p1', name: 'Starter', currency: 'usd', monthlyCents: 2900, yearlyCents: 29000 },
-  p2: { id: 'p2', name: 'Pro',     currency: 'usd', monthlyCents: 7900, yearlyCents: 79000 },
+  p2: { id: 'p2', name: 'Pro',     currency: 'usd', monthlyCents: 9900, yearlyCents: 99000 },
 };
 
 /**

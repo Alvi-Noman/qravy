@@ -7,6 +7,8 @@ import {
   TrashIcon,
   EllipsisHorizontalIcon,
   MapPinIcon as MapPinOutline,
+  EyeIcon,
+  EyeSlashIcon,
 } from '@heroicons/react/24/outline';
 import { MapPinIcon as MapPinSolid } from '@heroicons/react/24/solid';
 import type { Location } from '../../api/locations';
@@ -18,6 +20,7 @@ export default function LocationRow({
   onToggleDefault,
   onEdit,
   onDelete,
+  onToggleStatus,
 }: {
   location: Location;
   isNew?: boolean;
@@ -25,6 +28,7 @@ export default function LocationRow({
   onToggleDefault: (location: Location) => void;
   onEdit: (location: Location) => void;
   onDelete: (location: Location) => void;
+  onToggleStatus: (location: Location) => void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const anchorRef = useRef<HTMLButtonElement | null>(null);
@@ -108,8 +112,15 @@ export default function LocationRow({
           className="group block max-w-full"
           title={`Manage ${location.name}`}
         >
-          <div className="truncate font-medium text-[#111827] group-hover:underline">
-            {location.name}
+          <div className="flex items-center gap-2">
+            <div className={['truncate font-medium group-hover:underline', location.disabled ? 'text-slate-400' : 'text-[#111827]'].join(' ')}>
+              {location.name}
+            </div>
+            {location.disabled && (
+              <span className="inline-flex items-center rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-600">
+                Disabled
+              </span>
+            )}
           </div>
         </Link>
       </td>
@@ -117,7 +128,10 @@ export default function LocationRow({
       {/* Address */}
       <td className="px-3 py-3 align-middle">
         <div
-          className="max-w-[28ch] md:max-w-[40ch] overflow-hidden text-ellipsis whitespace-nowrap text-[#2e2e30]"
+          className={[
+            'max-w-[28ch] md:max-w-[40ch] overflow-hidden text-ellipsis whitespace-nowrap',
+            location.disabled ? 'text-slate-400' : 'text-[#2e2e30]'
+          ].join(' ')}
           title={location.address}
         >
           {location.address || '—'}
@@ -125,10 +139,10 @@ export default function LocationRow({
       </td>
 
       {/* ZIP/Postal */}
-      <td className="px-3 py-3 align-middle">{location.zip || '—'}</td>
+      <td className={['px-3 py-3 align-middle', location.disabled ? 'text-slate-400' : ''].join(' ')}>{location.zip || '—'}</td>
 
       {/* Country */}
-      <td className="px-3 py-3 align-middle">{location.country || '—'}</td>
+      <td className={['px-3 py-3 align-middle', location.disabled ? 'text-slate-400' : ''].join(' ')}>{location.country || '—'}</td>
 
       {/* Actions */}
       <td className="px-3 py-3 align-middle text-right">
@@ -170,6 +184,28 @@ export default function LocationRow({
                       >
                         <PencilSquareIcon className="h-4 w-4 text-[#6b7280]" />
                         Edit
+                      </button>
+                    </li>
+                    <li>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setMenuOpen(false);
+                          onToggleStatus(location);
+                        }}
+                        className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-[#f5f5f5] text-slate-700"
+                      >
+                        {location.disabled ? (
+                          <>
+                            <EyeIcon className="h-4 w-4 text-[#6b7280]" />
+                            Enable
+                          </>
+                        ) : (
+                          <>
+                            <EyeSlashIcon className="h-4 w-4 text-[#6b7280]" />
+                            Disable
+                          </>
+                        )}
                       </button>
                     </li>
                     <li>

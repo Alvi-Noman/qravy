@@ -9,6 +9,7 @@ export interface LocationDoc {
   address?: string;
   zip?: string;
   country?: string;
+  disabled?: boolean;
 
   createdAt: Date;
   updatedAt: Date;

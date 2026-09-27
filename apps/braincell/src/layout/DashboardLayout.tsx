@@ -77,6 +77,7 @@ export default function DashboardLayout(): JSX.Element {
   const [aiDismissed, setAiDismissed] = useState(false); // remember user closed the panel
   const { user, loading, token } = useAuthContext();
   const location = useLocation();
+  const isSettingsPage = location.pathname.startsWith('/settings');
   const queryClient = useQueryClient();
   const prevPathRef = useRef(location.pathname);
 
@@ -173,12 +174,14 @@ export default function DashboardLayout(): JSX.Element {
 
   return (
     <div className="flex h-screen bg-[#f5f5f5] overflow-hidden">
-      <Suspense fallback={<SidebarFallback />}>
-        <Sidebar />
-      </Suspense>
+      {!isSettingsPage && (
+        <Suspense fallback={<SidebarFallback />}>
+          <Sidebar />
+        </Suspense>
+      )}
 
       <main className="flex-1 min-w-0 min-h-0 flex items-start justify-center bg-[#f5f5f5]">
-        <div className="flex-1 mr-4 my-2 h-[calc(100vh-1rem)] min-h-0 min-w-0">
+        <div className={`flex-1 ${isSettingsPage ? 'mx-4 max-w-[1400px]' : 'mr-4'} my-2 h-[calc(100vh-1rem)] min-h-0 min-w-0`}>
           <div
             className="h-full min-h-0 min-w-0 rounded-xl border border-[#ececec] bg-[#fcfcfc] overflow-hidden grid"
             style={{
@@ -188,11 +191,11 @@ export default function DashboardLayout(): JSX.Element {
           >
             {/* Left */}
             <div
-              className="flex h-full min-h-0 flex-col overflow-y-auto overscroll-contain"
-              style={{ scrollbarGutter: 'stable' }}
+              className={`flex h-full min-h-0 flex-col ${isSettingsPage ? '' : 'overflow-y-auto overscroll-contain'}`}
+              style={isSettingsPage ? undefined : { scrollbarGutter: 'stable' }}
             >
               <TopBar onAIClick={() => { setAiDismissed(false); setAiOpen(true); }} />
-              <div className="flex-1 min-h-0 min-w-0">
+              <div className="flex-1 min-h-0 min-w-0 flex flex-col">
                 <Outlet />
               </div>
             </div>

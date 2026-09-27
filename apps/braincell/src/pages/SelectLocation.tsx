@@ -39,7 +39,7 @@ export default function SelectLocation() {
       setLoading(true);
       try {
         const res = await api.get('/api/v1/locations');
-        const items: Location[] = res.data?.items || [];
+        const items: Location[] = (res.data?.items || []).filter((l: any) => !l.disabled);
         if (!mounted) return;
         setLocations(items);
         if (items.length === 1) setSelected(items[0].id);

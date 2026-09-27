@@ -7,7 +7,7 @@ import {
   useRef,
   useState,
 } from 'react';
-import { Link, useSearchParams } from 'react-router-dom';
+import { Link, useSearchParams, Navigate } from 'react-router-dom';
 import type { Location } from '../api/locations';
 import { useLocations } from '../components/locations/useLocations';
 import LocationsToolbar, { type SortBy } from '../components/locations/LocationsToolbar';
@@ -19,6 +19,7 @@ import { getDefaultLocationId, setDefaultLocationId } from '../api/locations';
 import DefaultLocationDialog from '../components/locations/DefaultLocationDialog';
 import RemoveDefaultDialog from '../components/locations/RemoveDefaultDialog';
 import api from '../api/auth';
+import { useTenant } from '../hooks/useTenant';
 
 const LocationList = lazy(() => import('../components/locations/LocationList'));
 const DeleteLocationDialog = lazy(
@@ -79,6 +80,7 @@ function waitForScrollIdle(
 }
 
 export default function LocationsPage() {
+  const { data: tenant, isLoading: tenantLoading } = useTenant();
   const {
     locationsQuery,
     locations,
@@ -89,6 +91,12 @@ export default function LocationsPage() {
 
   const [searchParams, setSearchParams] = useSearchParams();
   const routeWantsNew = searchParams.get('new') === 'location';
+
+  const isMultipleLocations = tenant?.restaurantInfo?.locationMode === 'multiple';
+
+  if (!tenantLoading && !isMultipleLocations) {
+    return <Navigate to="/dashboard" replace />;
+  }
 
   // Cross-tab refresh
   useEffect(() => {
@@ -448,6 +456,16 @@ export default function LocationsPage() {
                         setDeleteTarget(l);
                         setOpenDelete(true);
                       }}
+                      onToggleStatus={async (l: Location) => {
+                        await updateMut.mutateAsync({
+                          id: l.id,
+                          name: l.name,
+                          address: l.address,
+                          zip: l.zip,
+                          country: l.country,
+                          disabled: !l.disabled,
+                        });
+                      }}
                     />
                   </Suspense>
                 )}
@@ -455,13 +473,17 @@ export default function LocationsPage() {
 
               {/* Form (not lazy, opens immediately) */}
               <LocationFormDialog
+                key={editing?.id || (tenant ? 'loaded' : 'loading')}
                 open={openForm}
                 title={editing ? 'Edit Location' : 'Add Location'}
+                tenant={tenant}
+                isAddingExtraLocation={!editing}
+                locations={locations}
                 initialValues={{
                   name: editing?.name || '',
                   address: editing?.address || '',
                   zip: editing?.zip || '',
-                  country: editing?.country || '',
+                  country: editing?.country || tenant?.restaurantInfo?.country || 'Bangladesh',
                 }}
                 existingNames={
                   editing
@@ -490,14 +512,11 @@ export default function LocationsPage() {
                     sp.delete('new');
                     setSearchParams(sp, { replace: true });
                     setQueuedHighlightId(updated.id);
+                    return updated;
                   } else {
                     const created = await createMut.mutateAsync(values);
-                    setOpenForm(false);
-                    const sp = new URLSearchParams(searchParams);
-                    sp.delete('new');
-                    setSearchParams(sp, { replace: true });
                     setPendingHighlightId(created.id);
-                    // Pins are optional; do not auto-pin the first location
+                    return created;
                   }
                 }}
               />

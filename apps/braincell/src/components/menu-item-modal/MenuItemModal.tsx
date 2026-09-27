@@ -53,7 +53,7 @@ const MIN_SAVE_MS = 1200;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const isPromise = (v: any): v is Promise<unknown> => v && typeof v.then === 'function';
 
-export default function ProductDrawer({
+export default function MenuItemModal({
   title,
   categories,
   initial,
@@ -454,6 +454,9 @@ export default function ProductDrawer({
   const hasMainPrice = Number.isFinite(priceNum) && priceNum > 0;
 
   const isSaveDisabled = createCatMut.isPending || saving;
+  const isAdd = title.toLowerCase().includes('add') || title.toLowerCase().includes('create');
+  const buttonText = isAdd ? 'Save' : 'Save Changes';
+  const savingText = 'Saving…';
 
   function saveSnapshot() {
     try {
@@ -603,7 +606,7 @@ export default function ProductDrawer({
       setCompareAtErr(null);
     } else {
       if (!values.price || !Number.isFinite(priceNum) || priceNum <= 0) {
-        setPriceErr('Enter a product price.');
+        setPriceErr('Enter a menu item price.');
         hasError = true;
       } else {
         setPriceErr(null);
@@ -614,7 +617,7 @@ export default function ProductDrawer({
           setCompareAtErr('Enter a valid number.');
           hasError = true;
         } else if ((compareAtNum as number) < priceNum) {
-          setCompareAtErr('Compare-at price must be ≥ product price.');
+          setCompareAtErr('Compare-at price must be ≥ menu item price.');
           hasError = true;
         } else {
           setCompareAtErr(null);
@@ -736,7 +739,7 @@ export default function ProductDrawer({
     } catch (err) {
       await minDelay;
       setSaving(false);
-      setLocalError(err instanceof Error ? err.message : 'Failed to save product.');
+      setLocalError(err instanceof Error ? err.message : 'Failed to save menu item.');
       scheduleScrollToError();
     }
   };
@@ -1160,7 +1163,7 @@ export default function ProductDrawer({
   }, [initial, activeLocationId, allLocations.length]);
 
   return (
-    <div className="fixed inset-0 z-50">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <motion.div
         className="absolute inset-0 bg-black/40"
         initial={{ opacity: 0 }}
@@ -1169,11 +1172,11 @@ export default function ProductDrawer({
         onClick={handleBackdropClick}
       />
       <motion.aside
-        className="absolute right-0 top-0 h-screen w-full sm:w-[460px] md:w-[520px] bg-[#f5f5f5] border-l border-[#dbdbdb] shadow-2xl flex flex-col overflow-x-hidden"
-        initial={{ x: '100%' }}
-        animate={{ x: 0 }}
-        exit={{ x: '100%' }}
-        transition={{ type: 'tween', duration: 0.25, ease: 'easeOut' }}
+        className="relative z-10 w-full max-w-2xl bg-[#f5f5f5] border border-[#dbdbdb] rounded-xl shadow-2xl flex flex-col overflow-hidden max-h-[85vh] md:max-h-[90vh]"
+        initial={{ scale: 0.95, opacity: 0 }}
+        animate={{ scale: 1, opacity: 1 }}
+        exit={{ scale: 0.95, opacity: 0 }}
+        transition={{ duration: 0.18, ease: 'easeOut' }}
         aria-modal="true"
         role="dialog"
         aria-busy={saving || undefined}
@@ -1224,7 +1227,7 @@ export default function ProductDrawer({
         </div>
 
         <form
-          id="product-form"
+          id="menu-item-form"
           onSubmit={handleSubmit}
           className="flex-1 overflow-y-auto p-5 bg-[#fcfcfc]"
           ref={scrollRef as any}
@@ -1276,7 +1279,7 @@ export default function ProductDrawer({
                 <Field>
                   <LabelRow
                     text="Compare-at Price"
-                    help="Enter a value higher than your product price to show a markdown."
+                    help="Enter a value higher than your menu item price to show a sale badge."
                     placement="left"
                   />
                   <CurrencyInput
@@ -1462,7 +1465,7 @@ export default function ProductDrawer({
                     </div>
                   ) : (
                     <div className="text-xs text-[#6b6b70]">
-                      This product will be created only in the current location.
+                      This menu item will be created only in the current location.
                     </div>
                   )}
                 </div>
@@ -1494,13 +1497,13 @@ export default function ProductDrawer({
           </button>
           <button
             type="submit"
-            form="product-form"
-            className={`px-4 py-2 rounded-md text-sm text-white ${
-              saving ? 'bg-[#111827] cursor-wait' : 'bg-[#111827] hover:opacity-90'
+            form="menu-item-form"
+            className={`px-4 py-2 rounded-md text-sm text-white transition-opacity ${
+              saving ? 'bg-[#2e2e30] cursor-wait' : 'bg-[#2e2e30] hover:opacity-90'
             }`}
             disabled={isSaveDisabled}
           >
-            {saving ? 'Saving…' : 'Save Changes'}
+            {saving ? savingText : buttonText}
           </button>
         </div>
       </motion.aside>

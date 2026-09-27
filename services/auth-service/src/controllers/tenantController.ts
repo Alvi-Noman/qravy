@@ -9,7 +9,7 @@ import type { MembershipDoc } from '../models/Membership.js';
 import { auditLog } from '../utils/audit.js';
 import { toTenantDTO } from '../utils/mapper.js';
 import type { v1 } from '@qravy/shared';
-import { restaurantOnboardingSchema } from '../validation/schemas.js';
+import { restaurantOnboardingSchema, tenantUpdateSchema } from '../validation/schemas.js';
 
 /* --------------------------------- Collections --------------------------------- */
 function tenantsCol() {
@@ -111,7 +111,12 @@ export async function createTenant(req: Request, res: Response, next: NextFuncti
       return res.fail(400, 'User already has a tenant. Only one restaurant allowed.');
     }
 
-    const { name, subdomain } = req.body as { name: string; subdomain: string };
+    const { name, subdomain, dineInEnabled, onlineSalesEnabled } = req.body as {
+      name: string;
+      subdomain: string;
+      dineInEnabled?: boolean;
+      onlineSalesEnabled?: boolean;
+    };
     const cleanName = String(name || '').trim();
     const cleanSub = String(subdomain || '').trim().toLowerCase();
 
@@ -132,6 +137,14 @@ export async function createTenant(req: Request, res: Response, next: NextFuncti
       trialStartedAt: now,
       trialEndsAt: addDays(now, DEFAULT_TRIAL_DAYS),
       subscriptionStatus: 'none',
+      restaurantInfo: {
+        restaurantType: '',
+        country: '',
+        address: '',
+        locationMode: 'single',
+        dineInEnabled: dineInEnabled !== false,
+        onlineSalesEnabled: onlineSalesEnabled === true,
+      },
       createdAt: now,
       updatedAt: now,
     };
@@ -261,11 +274,14 @@ export async function saveOnboardingStep(req: Request, res: Response, next: Next
     if (step === 'restaurant') {
       // Validate (no count here, only mode)
       const parsed = restaurantOnboardingSchema.parse(data);
+      const existing = await tenantsCol().findOne({ _id: new ObjectId(tenantId) });
       update.restaurantInfo = {
         restaurantType: parsed.restaurantType,
         country: parsed.country,
         address: parsed.address,
         locationMode: parsed.locationMode, // 'single' | 'multiple' | undefined
+        dineInEnabled: existing?.restaurantInfo?.dineInEnabled !== false,
+        onlineSalesEnabled: existing?.restaurantInfo?.onlineSalesEnabled !== false,
       };
     }
 
@@ -654,3 +670,60 @@ export async function saveBillingProfile(req: Request, res: Response, next: Next
     next(err);
   }
 }
+
+export async function updateMyTenant(req: Request, res: Response, next: NextFunction) {
+  try {
+    const tenantId = req.user?.tenantId;
+    const userId = req.user?.id;
+    if (!tenantId) return res.fail(400, 'No tenant found');
+    if (!userId) return res.fail(401, 'Unauthorized');
+
+    const parsed = tenantUpdateSchema.parse(req.body);
+
+    const tenant = await tenantsCol().findOne({ _id: new ObjectId(tenantId) });
+    if (!tenant) return res.fail(404, 'Tenant not found');
+
+    const update: Partial<TenantDoc> = {};
+    if (typeof parsed.name === 'string' && parsed.name.trim()) {
+      update.name = parsed.name.trim();
+    }
+
+    if (parsed.restaurantInfo) {
+      update.restaurantInfo = {
+        ...(tenant.restaurantInfo || { restaurantType: '', country: '', address: '' }),
+        ...parsed.restaurantInfo,
+      };
+    }
+
+    if (parsed.ownerInfo) {
+      update.ownerInfo = {
+        ...(tenant.ownerInfo || { fullName: '', phone: '' }),
+        ...parsed.ownerInfo,
+      };
+    }
+
+    if (Object.keys(update).length > 0) {
+      update.updatedAt = new Date();
+      await tenantsCol().updateOne(
+        { _id: new ObjectId(tenantId) },
+        { $set: update }
+      );
+      Object.assign(tenant, update);
+    }
+
+    await auditLog({
+      userId,
+      action: 'TENANT_UPDATE',
+      after: toTenantDTO(tenant),
+      ip: req.ip || 'unknown',
+      userAgent: req.headers['user-agent'] || 'unknown',
+    });
+
+    return res.ok({ item: toTenantDTO(tenant) });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.error(`updateMyTenant error: ${msg}`);
+    next(err);
+  }
+}
+

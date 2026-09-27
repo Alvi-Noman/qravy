@@ -136,14 +136,24 @@ export function toTenantDTO(doc: TenantDoc): v1.TenantDTO {
         }
       : undefined,
 
-    // Restaurant info
     restaurantInfo: doc.restaurantInfo
       ? {
           restaurantType: doc.restaurantInfo.restaurantType,
           country: doc.restaurantInfo.country,
           address: doc.restaurantInfo.address,
+          email: doc.restaurantInfo.email || '',
+          phone: doc.restaurantInfo.phone || '',
           locationMode: doc.restaurantInfo.locationMode,
           hasLocations: !!doc.restaurantInfo.hasLocations,
+          onlineSalesEnabled: doc.restaurantInfo.onlineSalesEnabled !== false,
+          dineInEnabled: doc.restaurantInfo.dineInEnabled !== false,
+        }
+      : undefined,
+
+    ownerInfo: doc.ownerInfo
+      ? {
+          fullName: doc.ownerInfo.fullName,
+          phone: doc.ownerInfo.phone,
         }
       : undefined,
 

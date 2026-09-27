@@ -12,7 +12,7 @@ import {
 import { useTenant } from '../hooks/useTenant';
 import { useQueryClient } from '@tanstack/react-query';
 import { useAuthContext } from '../context/AuthContext';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 
 type Step = {
   id: string;
@@ -35,10 +35,24 @@ export default function AIAssistantPanel({
   width?: number;
 }) {
   const ref = useRef<HTMLDivElement>(null);
+  const navigate = useNavigate();
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files[0]) {
+      const file = e.target.files[0];
+      if (window.location.pathname !== '/dashboard') {
+        navigate('/dashboard');
+      }
+      setTimeout(() => {
+        window.dispatchEvent(new CustomEvent('menu-file-selected', { detail: { file } }));
+      }, 150);
+    }
+  };
 
   const ALWAYS_DONE_ID = 'created-account';
   // Treat locations as server-driven (cannot be manually toggled)
-  const SERVER_DRIVEN_IDS = new Set(['add-category', 'add-menu-item', 'add-locations']);
+  const SERVER_DRIVEN_IDS = new Set(['add-category', 'add-menu-item', 'add-locations', 'upload-menu']);
 
   // RBAC: branch accounts (session.type === 'central') are read-only here
   const { session } = useAuthContext();
@@ -52,6 +66,7 @@ export default function AIAssistantPanel({
 
   // Whether to show "Add Locations" step (only when multiple locations selected in onboarding)
   const showLocationsStep = tenant?.restaurantInfo?.locationMode === 'multiple';
+  const hasDineIn = !!tenant?.restaurantInfo?.dineInEnabled;
 
   // Query client + token (used to read caches)
   const queryClient = useQueryClient();
@@ -72,6 +87,21 @@ export default function AIAssistantPanel({
   const [hasMenuItem, setHasMenuItem] = useState<boolean>(serverHasMenuItemRaw);
   // Initialize locations from server OR cache so it renders as done immediately after creation
   const [hasLocations, setHasLocations] = useState<boolean>(serverHasLocationsRaw || hasLocationsFromCache);
+
+  // Toggle between manual and upload flows based on user preference stored in localStorage
+  const [setupMode, setSetupMode] = useState<'upload' | 'manual'>(() => {
+    const saved = localStorage.getItem('menu-setup-mode');
+    return (saved as 'upload' | 'manual') || 'upload';
+  });
+
+  useEffect(() => {
+    const handleModeChange = () => {
+      const saved = localStorage.getItem('menu-setup-mode');
+      setSetupMode((saved as 'upload' | 'manual') || 'upload');
+    };
+    window.addEventListener('menu-setup-mode-changed', handleModeChange);
+    return () => window.removeEventListener('menu-setup-mode-changed', handleModeChange);
+  }, []);
 
   useEffect(() => {
     // Always allow upgrades to true; only downgrade when server explicitly says false and cache has none
@@ -129,77 +159,160 @@ export default function AIAssistantPanel({
     };
   }, [queryClient, token]);
 
-  // Build steps (conditionally include "Add Locations" above "Add Category")
-  const FULL_STEPS: Step[] = [
-    {
-      id: 'created-account',
-      label: 'Created Restaurant Account',
-      description: 'Your Qravy account is set up. Next steps will help you publish your menu.',
-      cta: 'Review Account',
-      href: '/dashboard',
-      done: true,
-    },
-    ...(showLocationsStep
-      ? ([
-          {
-            id: 'add-locations',
-            label: 'Add your locations',
-            description: 'Add each location so you can assign menus and staff per location.',
-            cta: 'Add Locations',
-            href: '/locations',
-            done: false,
-          },
-        ] as Step[])
-      : []),
-    {
-      id: 'add-category',
-      label: 'Add your first category',
-      description: 'Create sections like Starters, Mains, and Desserts to organize your items.',
-      cta: 'Add Category',
-      href: '/categories',
-      done: false,
-    },
-    {
-      id: 'add-menu-item',
-      label: 'Add your first product',
-      description: 'Add a product with price, images, and optional variations and tags.',
-      cta: 'Add Product',
-      href: '/menu-items',
-      done: false,
-    },
-    {
-      id: 'design-menu',
-      label: 'Design your Digital Menu',
-      description: 'Customize colors, typography, and layout to match your brand identity.',
-      cta: 'Open Designer',
-      href: '/digital-menu',
-      done: false,
-    },
-    {
-      id: 'unlock-menu',
-      label: 'Unlock your Digital Menu',
-      description: 'Take your digital menu live so customers can browse it online.',
-      cta: 'Go Live Settings',
-      href: '/digital-menu',
-      done: false,
-    },
-    {
-      id: 'setup-access',
-      label: 'Set Up Restaurant Access',
-      description: 'Give your team access so they can manage your menu and orders from each location.',
-      cta: 'Set Up Access',
-      href: '/settings/Access',
-      done: false,
-    },
-    {
-      id: 'custom-domain',
-      label: 'Customize your Domain',
-      description: 'Connect a custom subdomain (e.g., menu.yourbrand.com) for your menu.',
-      cta: 'Set Domain',
-      href: '/digital-menu',
-      done: false,
-    },
-  ];
+  // Build steps (conditionally define flow A or B depending on setupMode)
+  const FULL_STEPS: Step[] = setupMode === 'upload'
+    ? [
+        {
+          id: 'created-account',
+          label: 'Created Restaurant Account',
+          description: 'Your Qravy account is set up. Next steps will help you publish your menu.',
+          cta: 'Review Account',
+          href: '/dashboard',
+          done: true,
+        },
+        {
+          id: 'upload-menu',
+          label: 'Upload Menu Photo or PDF',
+          description: 'Upload a picture or PDF of your menu for our AI scanner to process.',
+          cta: 'Upload Menu',
+          href: '/dashboard',
+          done: false,
+        },
+        {
+          id: 'design-menu',
+          label: 'Design your Digital Menu',
+          description: 'Customize colors, typography, and layout to match your brand identity.',
+          cta: 'Open Designer',
+          href: '/digital-menu',
+          done: false,
+        },
+        {
+          id: 'unlock-menu',
+          label: 'Unlock your Digital Menu',
+          description: 'Take your digital menu live so customers can browse it online.',
+          cta: 'Go Live Settings',
+          href: '/digital-menu',
+          done: false,
+        },
+        ...(showLocationsStep
+          ? ([
+              {
+                id: 'setup-access',
+                label: 'Set Up Restaurant Access',
+                description: 'Give your team access so they can manage your menu and orders from each location.',
+                cta: 'Set Up Access',
+                href: '/settings/Access',
+                done: false,
+              },
+            ] as Step[])
+          : []),
+        {
+          id: 'custom-domain',
+          label: 'Customize your Domain',
+          description: 'Connect a custom subdomain (e.g., menu.yourbrand.com) for your menu.',
+          cta: 'Set Domain',
+          href: '/digital-menu',
+          done: false,
+        },
+        ...(hasDineIn
+          ? ([
+              {
+                id: 'order-stands',
+                label: 'Order Qravy Stands',
+                description: 'Order premium acrylic QR stands for your tables so customers can scan and order.',
+                cta: 'Order Stands',
+                href: '/qravy-store',
+                done: false,
+              },
+            ] as Step[])
+          : []),
+      ]
+    : [
+        {
+          id: 'created-account',
+          label: 'Created Restaurant Account',
+          description: 'Your Qravy account is set up. Next steps will help you publish your menu.',
+          cta: 'Review Account',
+          href: '/dashboard',
+          done: true,
+        },
+        ...(showLocationsStep
+          ? ([
+              {
+                id: 'add-locations',
+                label: 'Add your locations',
+                description: 'Add each location so you can assign menus and staff per location.',
+                cta: 'Add Locations',
+                href: '/locations',
+                done: false,
+              },
+            ] as Step[])
+          : []),
+        {
+          id: 'add-category',
+          label: 'Add your first category',
+          description: 'Create sections like Starters, Mains, and Desserts to organize your items.',
+          cta: 'Add Category',
+          href: '/categories',
+          done: false,
+        },
+        {
+          id: 'add-menu-item',
+          label: 'Add your first product',
+          description: 'Add a product with price, images, and optional variations and tags.',
+          cta: 'Add Product',
+          href: '/menu-items',
+          done: false,
+        },
+        {
+          id: 'design-menu',
+          label: 'Design your Digital Menu',
+          description: 'Customize colors, typography, and layout to match your brand identity.',
+          cta: 'Open Designer',
+          href: '/digital-menu',
+          done: false,
+        },
+        {
+          id: 'unlock-menu',
+          label: 'Unlock your Digital Menu',
+          description: 'Take your digital menu live so customers can browse it online.',
+          cta: 'Go Live Settings',
+          href: '/digital-menu',
+          done: false,
+        },
+        ...(showLocationsStep
+          ? ([
+              {
+                id: 'setup-access',
+                label: 'Set Up Restaurant Access',
+                description: 'Give your team access so they can manage your menu and orders from each location.',
+                cta: 'Set Up Access',
+                href: '/settings/Access',
+                done: false,
+              },
+            ] as Step[])
+          : []),
+        {
+          id: 'custom-domain',
+          label: 'Customize your Domain',
+          description: 'Connect a custom subdomain (e.g., menu.yourbrand.com) for your menu.',
+          cta: 'Set Domain',
+          href: '/digital-menu',
+          done: false,
+        },
+        ...(hasDineIn
+          ? ([
+              {
+                id: 'order-stands',
+                label: 'Order Qravy Stands',
+                description: 'Order premium acrylic QR stands for your tables so customers can scan and order.',
+                cta: 'Order Stands',
+                href: '/qravy-store',
+                done: false,
+              },
+            ] as Step[])
+          : []),
+      ];
 
   // Load locally-tracked steps, then merge server-driven flags
   const [steps, setSteps] = useState<Step[]>(() => {
@@ -218,16 +331,21 @@ export default function AIAssistantPanel({
             else if (s.id === 'add-category') done = hasCategory;
             else if (s.id === 'add-menu-item') done = hasMenuItem;
             else if (s.id === 'add-locations') done = hasLocations;
+            else if (s.id === 'upload-menu') done = hasCategory || hasMenuItem;
             else done = doneMap.has(s.id) ? !!doneMap.get(s.id) : s.done;
             return { ...s, done };
           });
         }
       }
     } catch {}
-    return FULL_STEPS.map((s) => (s.id === ALWAYS_DONE_ID ? { ...s, done: true } : s));
+    return FULL_STEPS.map((s) => {
+      if (s.id === ALWAYS_DONE_ID) return { ...s, done: true };
+      if (s.id === 'upload-menu') return { ...s, done: hasCategory || hasMenuItem };
+      return s;
+    });
   });
 
-  // Re-sync steps whenever server flags or visibility of locations step changes
+  // Re-sync steps whenever server flags or visibility of locations step changes or setupMode changes
   useEffect(() => {
     setSteps(() => {
       // Read local completion for non-server-driven steps
@@ -248,10 +366,11 @@ export default function AIAssistantPanel({
         if (s.id === 'add-category') return { ...s, done: hasCategory };
         if (s.id === 'add-menu-item') return { ...s, done: hasMenuItem };
         if (s.id === 'add-locations') return { ...s, done: hasLocations };
+        if (s.id === 'upload-menu') return { ...s, done: hasCategory || hasMenuItem };
         return { ...s, done: doneMap.has(s.id) ? !!doneMap.get(s.id) : s.done };
       });
     });
-  }, [showLocationsStep, hasCategory, hasMenuItem, hasLocations]);
+  }, [showLocationsStep, hasCategory, hasMenuItem, hasLocations, setupMode, hasDineIn]);
 
   // Expanded management
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -316,6 +435,8 @@ export default function AIAssistantPanel({
           ? hasMenuItem
           : s.id === 'add-locations'
           ? hasLocations
+          : s.id === 'upload-menu'
+          ? (hasCategory || hasMenuItem)
           : s.done,
     }));
     localStorage.setItem('ai-setup-steps', JSON.stringify(compact));
@@ -462,9 +583,20 @@ export default function AIAssistantPanel({
                             <p className="text-[12px] text-slate-600">{step.description}</p>
                             <div className="mt-3">
                               {href ? (
-                                step.id === 'add-category' ||
-                                step.id === 'add-menu-item' ||
-                                step.id === 'add-locations' ? (
+                                step.id === 'upload-menu' ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => fileInputRef.current?.click()}
+                                    className={`inline-flex items-center gap-1 rounded-md border border-[#e5e5e5] bg-white px-3 py-1.5 text-[12px] font-medium ${
+                                      isDone ? 'text-slate-400 cursor-default' : 'text-slate-700 hover:bg-slate-50'
+                                    }`}
+                                  >
+                                    {step.cta}
+                                  </button>
+                                ) : step.id === 'add-category' ||
+                                  step.id === 'add-menu-item' ||
+                                  step.id === 'add-locations' ||
+                                  step.id === 'order-stands' ? (
                                   <Link
                                     to={href}
                                     className={`inline-flex items-center gap-1 rounded-md border border-[#e5e5e5] bg-white px-3 py-1.5 text-[12px] font-medium ${
@@ -538,6 +670,14 @@ export default function AIAssistantPanel({
               </div>
             </div>
           )}
+          {/* Hidden unified file picker input */}
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="application/pdf,image/*"
+            onChange={handleFileChange}
+            className="hidden"
+          />
         </motion.aside>
       )}
     </AnimatePresence>

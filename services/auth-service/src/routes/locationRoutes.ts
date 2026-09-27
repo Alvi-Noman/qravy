@@ -8,6 +8,7 @@ import {
   getDefaultLocation,
   setDefaultLocation,
   clearDefaultLocation,
+  importMenuFromLocation,
 } from '../controllers/locationsController.js';
 
 const asyncHandler =
@@ -31,5 +32,6 @@ router.post('/', asyncHandler(createLocation));
 // Constrain :id to ObjectId to avoid matching "default"
 router.patch('/:id([0-9a-fA-F]{24})', asyncHandler(updateLocation));
 router.delete('/:id([0-9a-fA-F]{24})', asyncHandler(deleteLocation));
+router.post('/:id([0-9a-fA-F]{24})/import-menu', asyncHandler(importMenuFromLocation));
 
 export default router;
