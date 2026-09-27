@@ -4,7 +4,7 @@ import { useLocation, useParams, useSearchParams, Link, useNavigate } from 'reac
 import { getWsURL } from '../utils/ws';
 import MicHalo from '../components/ai-waiter/MicHalo';
 import SuggestionsModal from '../components/ai-waiter/SuggestionsModal';
-import TrayModal from '../components/ai-waiter/TrayModal';
+import TrayModal from '../components/ai-waiter/CartModal';
 import DidYouMeanModal, { DidYouMeanOption as DymOption } from '../components/ai-waiter/DidYouMeanModal'; // uses modal's type
 import type { WaiterIntent, AiReplyMeta } from '../types/waiter-intents';
 
