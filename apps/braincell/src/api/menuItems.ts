@@ -49,7 +49,7 @@ export type NewMenuItem = {
   tags?: string[];
   /** Star-marked signature dish */
   signature?: boolean;
-  /** Kitchen minutes for one portion (wait-time estimation); null clears → restaurant default */
+  /** Kitchen minutes for one portion (wait-time estimation); null = let the AI estimate it */
   prepMinutes?: number | null;
   restaurantId?: string;
   hidden?: boolean;
@@ -71,6 +71,39 @@ export type NewMenuItem = {
 };
 
 export type MenuItem = v1.MenuItemDTO;
+
+/* ------------------------------------------------------------------ prep times (AI) */
+
+export type PrepTimeStatus = { total: number; owner: number; menu: number; ai: number; guess: number; missing: number };
+
+/** How many dishes have a prep time, and where it came from. */
+export async function getPrepTimeStatus(token: string): Promise<{ status: PrepTimeStatus; ai: boolean }> {
+  const res = await api.get('/api/v1/auth/menu-items/prep-times', { headers: { Authorization: `Bearer ${token}` } });
+  return res.data as { status: PrepTimeStatus; ai: boolean };
+}
+
+/** AI prep time for every dish without its own (redoAi: refresh earlier AI estimates too). */
+export async function estimatePrepTimes(
+  token: string,
+  body: { ids?: string[]; redoAi?: boolean } = {}
+): Promise<{ updated: number; source: 'ai' | 'guess'; status: PrepTimeStatus }> {
+  const res = await api.post('/api/v1/auth/menu-items/prep-times/estimate', body, {
+    headers: { Authorization: `Bearer ${token}` },
+    timeout: 180_000,
+  });
+  return res.data;
+}
+
+/** "Ask AI" for one dish (not saved yet). */
+export async function suggestPrepTime(
+  token: string,
+  body: { name: string; category?: string; description?: string; sizes?: string[] }
+): Promise<{ minutes: number; sizes: Record<string, number>; source: 'ai' | 'guess' }> {
+  const res = await api.post('/api/v1/auth/menu-items/prep-times/suggest', body, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  return res.data;
+}
 
 export async function getMenuItems(
   token: string,

@@ -391,6 +391,7 @@ export default function MicInputBar({
         if (data.t === "ai_reply_pending") {
           setThinking(true);
           setAi("Thinking…");
+          tts.warm(); // voice connected while the waiter thinks
           return;
         }
 

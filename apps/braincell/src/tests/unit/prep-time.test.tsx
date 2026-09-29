@@ -10,10 +10,10 @@ import type { MenuItem } from '../../api/menuItems';
 import type { DraftCategory, DraftItem } from '../../api/menuImports';
 
 describe('prep time field', () => {
-  it('shows the restaurant default as the placeholder and picks common times', () => {
+  it('empty means "AI works it out", and picks common times', () => {
     const onChange = vi.fn();
     render(<PrepTime value="" onChange={onChange} defaultMinutes={12} />);
-    expect(screen.getByLabelText('Prep time')).toHaveAttribute('placeholder', '12');
+    expect(screen.getByLabelText('Prep time')).toHaveAttribute('placeholder', 'Auto');
     fireEvent.click(screen.getByRole('button', { name: '20 min' }));
     expect(onChange).toHaveBeenLastCalledWith('20');
   });
@@ -33,6 +33,14 @@ describe('prep time field', () => {
     expect(parsePrepMinutes(' 18 ')).toBe(18);
     expect(parsePrepMinutes('0')).toBe('invalid');
     expect(parsePrepMinutes('241')).toBe('invalid');
+  });
+
+  it('labels an AI estimate and asks the AI on request', () => {
+    const onSuggest = vi.fn();
+    render(<PrepTime value="11" onChange={vi.fn()} defaultMinutes={15} source="ai" onSuggest={onSuggest} />);
+    expect(screen.getByText('AI estimate')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /Ask AI/ }));
+    expect(onSuggest).toHaveBeenCalled();
   });
 });
 
@@ -94,6 +102,11 @@ describe('prep time travels with the item', () => {
     expect(copy.variations?.[0].prepMinutes).toBe(22);
   });
 
+  it('duplicate re-estimates an AI time instead of copying it as the owner\u2019s', () => {
+    const item = { id: 'i2', name: 'Soup', prepMinutes: 10, prepSource: 'ai', variations: [], tags: [], media: [], createdAt: '', updatedAt: '' } as unknown as MenuItem;
+    expect(buildDuplicatePayload(item).prepMinutes).toBeUndefined();
+  });
+
   it('import review: the modal round-trips prep time and marks an AI estimate as reviewed', () => {
     const draft: DraftItem = {
       tempId: 't1',
@@ -115,5 +128,9 @@ describe('prep time travels with the item', () => {
     const next = applyModalValues(draft, { name: 'Kacchi', price: 420, prepMinutes: 12 });
     expect(next.prepMinutes).toBe(12);
     expect(next.prepEstimated).toBeUndefined();
+    // prep time untouched in the modal → the import's estimate (and its flag) stays
+    const kept = applyModalValues(draft, { name: 'Kacchi', price: 420 });
+    expect(kept.prepMinutes).toBe(10);
+    expect(kept.prepEstimated).toBe(true);
   });
 });

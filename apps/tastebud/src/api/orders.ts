@@ -1,5 +1,5 @@
 // apps/tastebud/src/api/orders.ts
-// Guest ordering: place a dine-in order (pay at the counter) and follow its status live.
+// Guest ordering: place a dine-in (table) or online (pickup / delivery) order and follow its status live.
 import type { CartItem } from '../context/CartContext';
 
 const API_BASE: string =
@@ -10,6 +10,10 @@ const API_BASE: string =
 export type OrderStatus = 'placed' | 'accepted' | 'preparing' | 'ready' | 'completed' | 'cancelled';
 
 export type OrderEta = {
+  /** Not accepted yet: the clock hasn't started — show estimateMinutes, don't count down to readyAt */
+  startsOnAccept?: boolean;
+  /** How long it takes once accepted (queue + prep + staff delay) */
+  estimateMinutes?: number;
   prepMinutes: number;
   queueMinutes: number;
   /** What the guest was told when ordering */
@@ -42,7 +46,12 @@ export type PublicOrder = {
   orderNumber: number;
   status: OrderStatus;
   statusHistory: { status: OrderStatus; at: string }[];
-  table: string;
+  channel?: 'dine-in' | 'online';
+  /** Dine-in only */
+  table: string | null;
+  /** Online only */
+  fulfillment?: 'pickup' | 'delivery';
+  customer?: { name: string; phone: string; address?: string };
   items: {
     itemId: string;
     name: string;
@@ -58,7 +67,7 @@ export type PublicOrder = {
   subtotal: number;
   total: number;
   currency: string;
-  payment: { method: 'counter'; status: 'unpaid' | 'paid' };
+  payment: { method: 'counter' | 'cod'; status: 'unpaid' | 'paid' };
   notes?: string;
   /** Wait-time estimate — the countdown (older orders have none) */
   eta?: OrderEta;
@@ -97,22 +106,38 @@ export function cartIdempotencyKey(sessionId: string, items: CartItem[]): string
   return `web:${sessionId}:${(h >>> 0).toString(36)}:${items.length}`.slice(0, 100);
 }
 
-export async function placeOrder(body: {
-  subdomain: string;
-  branch?: string | null;
-  table: string;
-  items: CartItem[];
-  notes?: string;
-  sessionId?: string;
-  idempotencyKey?: string;
-}): Promise<{ order: PublicOrder; created: boolean }> {
+export async function placeOrder(
+  body: {
+    subdomain: string;
+    branch?: string | null;
+    items: CartItem[];
+    notes?: string;
+    sessionId?: string;
+    idempotencyKey?: string;
+  } & (
+    | { channel?: 'dine-in'; table: string }
+    | { channel: 'online'; fulfillment: 'pickup' | 'delivery'; customer: { name: string; phone: string; address?: string } }
+  ),
+): Promise<{ order: PublicOrder; created: boolean }> {
+  const where =
+    body.channel === 'online'
+      ? {
+          channel: 'online',
+          fulfillment: body.fulfillment,
+          customer: {
+            name: body.customer.name.trim(),
+            phone: body.customer.phone.trim(),
+            ...(body.fulfillment === 'delivery' ? { address: (body.customer.address ?? '').trim() } : {}),
+          },
+        }
+      : { channel: 'dine-in', table: body.table };
   const res = await fetch(`${API_BASE}/public/orders`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
     body: JSON.stringify({
       subdomain: body.subdomain,
       ...(body.branch ? { branch: body.branch } : {}),
-      table: body.table,
+      ...where,
       items: toOrderLines(body.items),
       ...(body.notes?.trim() ? { notes: body.notes.trim().slice(0, 300) } : {}),
       ...(body.sessionId ? { sessionId: body.sessionId } : {}),
@@ -225,11 +250,11 @@ export function rememberOrder(sub: string | null | undefined, o: { token: string
   }
 }
 
-/** Orders from the last 12 hours, newest first. */
-export function recentOrders(sub?: string | null): RecentOrder[] {
+/** Orders placed within `maxAgeMs` (default the last 12 hours), newest first. */
+export function recentOrders(sub?: string | null, maxAgeMs = 12 * 60 * 60 * 1000): RecentOrder[] {
   try {
     const list = JSON.parse(localStorage.getItem(recentKey(sub)) || '[]') as RecentOrder[];
-    return list.filter((r) => r?.token && Date.now() - r.at < 12 * 60 * 60 * 1000);
+    return list.filter((r) => r?.token && Date.now() - r.at < maxAgeMs);
   } catch {
     return [];
   }

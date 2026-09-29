@@ -3,11 +3,21 @@ import React from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { OrderApiError, cartIdempotencyKey, placeOrder, rememberOrder } from '../../api/orders';
 import { normalizeTable, useTable } from '../../utils/table';
+import {
+  missingContactField,
+  useFulfillment,
+  useGuestContact,
+  useOrderChannel,
+  type GuestContact,
+} from '../../utils/order-mode';
+import OnlineOrderDetails, { CONTACT_MESSAGES } from '../OnlineOrderDetails';
+import type { Channel } from '../../api/storefront';
 import { orderPath } from '../../utils/checkout-flow';
 import { getStableSessionId } from '../../utils/ws';
 import { tr, uiLang } from '../../utils/ui-lang';
 import { useCart, cartLineKey, type CartItem, type CartWarning } from '../../context/CartContext';
 import WaitEstimateLine from '../WaitEstimateLine';
+import SheetScrollArea, { SHEET_HEIGHT, useBodyScrollLock } from '../SheetScroll';
 import { useCartWait } from '../../utils/wait-time';
 import { usePublicMenu } from '../../hooks/usePublicMenu';
 import { isAvailableAt } from '../../utils/availability';
@@ -27,6 +37,8 @@ type Props = {
   picks?: TrayPick[];
   /** the waiter asked "which table?" — focus the table field */
   askTable?: boolean;
+  /** dine-in (table) or online (pickup/delivery); worked out from the table/restaurant when omitted */
+  channel?: Channel;
   /** picks the waiter pointed at when the guest asked about them */
   highlightIds?: string[];
   onIntent?: (intent?: WaiterIntent, meta?: AiReplyMeta, replyText?: string) => void;
@@ -50,13 +62,19 @@ export default function TrayModal({
   picks = [],
   highlightIds = [],
   askTable = false,
+  channel: channelProp,
   onIntent,
 }: Props) {
   const { items, subtotal, removeLine, addItem, setLineQty, replaceLine, lastChange, warnings, clear } = useCart();
 
   const storeTenant = typeof window !== 'undefined' ? (window as any).__STORE__?.subdomain : undefined;
   const storeBranch = typeof window !== 'undefined' ? (window as any).__STORE__?.branch : undefined;
-  const { items: menuItems } = usePublicMenu(storeTenant ?? undefined, storeBranch ?? undefined, 'dine-in');
+  const params = useParams<{ subdomain?: string; branchSlug?: string; branch?: string }>();
+  const placeSub: string | null = params.subdomain ?? storeTenant ?? null;
+  const placeBranch: string | null = params.branchSlug ?? params.branch ?? storeBranch ?? null;
+  const autoChannel = useOrderChannel(placeSub);
+  const channel: Channel = channelProp ?? autoChannel;
+  const { items: menuItems } = usePublicMenu(storeTenant ?? undefined, storeBranch ?? undefined, channel);
   const menuById = React.useMemo(() => {
     const m = new Map<string, any>();
     for (const it of (menuItems as any[]) || []) m.set(String(it.id), it);
@@ -76,13 +94,13 @@ export default function TrayModal({
     return () => window.clearTimeout(t);
   }, [lastChange]);
 
-  // ---- the tray is the checkout: table, note, place the order right here
+  // ---- the tray is the checkout: table (dine-in) or pickup/delivery details (online), note, place the order here
   const lang = uiLang();
   const navigate = useNavigate();
-  const params = useParams<{ subdomain?: string; branchSlug?: string; branch?: string }>();
-  const placeSub: string | null = params.subdomain ?? storeTenant ?? null;
-  const placeBranch: string | null = params.branchSlug ?? params.branch ?? storeBranch ?? null;
   const [table, saveTable] = useTable(placeSub);
+  const [fulfillment, setFulfillment] = useFulfillment(placeSub);
+  const [contact, setContact] = useGuestContact(placeSub);
+  const [contactFocus, setContactFocus] = React.useState<keyof GuestContact | null>(null);
   const [tableDraft, setTableDraft] = React.useState(table ?? '');
   const [editingTable, setEditingTable] = React.useState(!table);
   const tableInputRef = React.useRef<HTMLInputElement | null>(null);
@@ -97,36 +115,53 @@ export default function TrayModal({
     }
   }, [table]);
   React.useEffect(() => {
-    // the waiter asked "which table?" → put the cursor there
-    if (open && askTable) {
-      setEditingTable(true);
-      window.setTimeout(() => tableInputRef.current?.focus(), 150);
+    // the waiter asked "which table?" (or, online, for contact details) → put the cursor there
+    if (!open || !askTable) return;
+    if (channel === 'online') {
+      setContactFocus(missingContactField(fulfillment, contact));
+      return;
     }
-  }, [open, askTable]);
+    setEditingTable(true);
+    window.setTimeout(() => tableInputRef.current?.focus(), 150);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, askTable, channel]);
 
   const placeNow = async () => {
     setPlaceError(null);
+    setContactFocus(null);
+    const online = channel === 'online';
     const t = editingTable ? normalizeTable(tableDraft) : table;
-    if (!t) {
+    if (online) {
+      const missing = missingContactField(fulfillment, contact);
+      if (missing) {
+        setContactFocus(missing);
+        setPlaceError(CONTACT_MESSAGES[missing]);
+        return;
+      }
+    } else if (!t) {
       setEditingTable(true);
       window.setTimeout(() => tableInputRef.current?.focus(), 50);
       setPlaceError(tr(lang, 'আপনার টেবিল নম্বরটা লিখুন।', 'Please enter your table number.'));
       return;
     }
     if (!placeSub || !items.length) return;
-    saveTable(t);
+    if (!online && t) saveTable(t);
     setPlacing(true);
     try {
       const sid = getStableSessionId();
-      const { order } = await placeOrder({
+      const common = {
         subdomain: placeSub,
         branch: placeBranch,
-        table: t,
         items,
         notes: orderNote,
         sessionId: sid,
         idempotencyKey: cartIdempotencyKey(sid, items),
-      });
+      };
+      const { order } = await placeOrder(
+        online
+          ? { ...common, channel: 'online', fulfillment, customer: contact }
+          : { ...common, channel: 'dine-in', table: t as string },
+      );
       clear({ silent: true });
       rememberOrder(placeSub, order);
       onClose();
@@ -134,6 +169,7 @@ export default function TrayModal({
     } catch (e) {
       const err = e as OrderApiError;
       if (err?.needs === 'table') setEditingTable(true);
+      if (err?.needs === 'name' || err?.needs === 'phone' || err?.needs === 'address') setContactFocus(err.needs);
       setPlaceError(err?.message || tr(lang, 'অর্ডার দেওয়া যায়নি। আবার চেষ্টা করুন।', "Couldn't place the order. Please try again."));
     } finally {
       setPlacing(false);
@@ -266,6 +302,7 @@ export default function TrayModal({
   React.useEffect(() => {
     if (open && !hasItems) onClose?.();
   }, [open, hasItems, onClose]);
+  useBodyScrollLock(effectiveOpen);
 
   React.useEffect(() => {
     if (!effectiveOpen) return;
@@ -276,15 +313,10 @@ export default function TrayModal({
 
   if (!effectiveOpen) return null;
 
-  const tenant =
-    typeof window !== 'undefined'
-      ? (window as any).__STORE__?.subdomain
-      : undefined;
-
-  const branch =
-    typeof window !== 'undefined'
-      ? (window as any).__STORE__?.branch
-      : undefined;
+  // the restaurant from the link (/t/<subdomain>/…) like the home screen — the global store value is empty on
+  // path links, and a mic without a restaurant sent orders with no restaurant ("Validation failed")
+  const tenant = placeSub ?? undefined;
+  const branch = placeBranch ?? undefined;
 
   return (
     <div className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center">
@@ -295,15 +327,17 @@ export default function TrayModal({
 
       <div
         className={
-          "relative z-[101] w-full sm:max-w-md rounded-t-[26px] sm:rounded-3xl bg-[#F8F8F8] h-[85vh] overflow-hidden sm:shadow-2xl " +
+          `relative z-[101] flex w-full flex-col sm:max-w-md rounded-t-[26px] sm:rounded-3xl bg-[#F8F8F8] ${SHEET_HEIGHT} overflow-hidden sm:shadow-2xl ` +
           "transform transition-all duration-300 ease-out " +
           (open ? "translate-y-0 opacity-100" : "translate-y-full opacity-0")
         }
       >
-        <div className="sticky top-0 z-20 px-4 pt-3 pb-2 border-b border-gray-100 bg-[#F8F8F8] rounded-t-[26px]">
+        <div className="shrink-0 z-20 px-4 pt-3 pb-2 border-b border-gray-100 bg-[#F8F8F8] rounded-t-[26px]">
           <div className="relative flex flex-col items-center">
             <div className="mb-2 h-1 w-12 rounded-full bg-gray-300" />
-            <h2 className="text-[15px] font-semibold text-gray-900">Your Tray</h2>
+            <h2 className="text-[15px] font-semibold text-gray-900">
+              Your Tray <span className="font-normal text-gray-500">· {items.reduce((n, i) => n + i.qty, 0)}</span>
+            </h2>
 
             <button
               onClick={onClose}
@@ -319,7 +353,8 @@ export default function TrayModal({
           </div>
         </div>
 
-        <div ref={scrollRef} className="px-4 pt-3 pb-52 overflow-y-auto h-full">
+        {/* the list scrolls on its own; the footer below is part of the column, so nothing hides behind it */}
+        <SheetScrollArea ref={scrollRef} className="px-4 pt-3 pb-4" moreHint={items.length > 3 ? tr(lang, 'আরও আছে', 'More below') : undefined}>
           <div className="space-y-3">
             {items.map((it) => {
               const key = cartLineKey(it);
@@ -402,8 +437,18 @@ export default function TrayModal({
             })}
           </div>
 
-          {/* table + note — the tray is the checkout (pay at the counter); always English */}
+          {/* table or pickup/delivery details + note — the tray is the checkout; always English */}
           <div className="mt-4 rounded-2xl bg-white px-4 py-3 ring-1 ring-gray-100">
+            {channel === 'online' ? (
+              <OnlineOrderDetails
+                compact
+                fulfillment={fulfillment}
+                onFulfillment={setFulfillment}
+                contact={contact}
+                onContact={setContact}
+                focusField={contactFocus}
+              />
+            ) : (
             <div className="flex items-center justify-between gap-3">
               <span className="text-[13px] text-gray-600">Table</span>
               {!editingTable && table ? (
@@ -430,6 +475,7 @@ export default function TrayModal({
                 />
               )}
             </div>
+            )}
             {noteOpen ? (
               <input
                 autoFocus
@@ -444,7 +490,7 @@ export default function TrayModal({
                 + Note for the kitchen
               </button>
             )}
-            <p className="mt-2 text-[11px] text-gray-400">You pay at the counter</p>
+            {channel !== 'online' && <p className="mt-2 text-[11px] text-gray-400">You pay at the counter</p>}
           </div>
 
           <TrayPicks
@@ -453,10 +499,10 @@ export default function TrayModal({
             registerRef={(id, el) => (pickEls.current[id] = el)}
             highlightIds={highlightIds}
           />
-        </div>
+        </SheetScrollArea>
 
-        {/* FIXED BOTTOM BAR: place the order (always visible, above the mic) + the mic */}
-        <div className="absolute bottom-0 left-0 right-0 z-40 border-t border-gray-200 bg-[#F8F8F8] px-4 pt-3 pb-[max(1.25rem,env(safe-area-inset-bottom))] space-y-3">
+        {/* BOTTOM BAR: place the order + the mic — always visible, never over the list */}
+        <div className="relative z-40 shrink-0 border-t border-gray-200 bg-[#F8F8F8] px-4 pt-3 pb-[max(1.25rem,env(safe-area-inset-bottom))] space-y-3">
           {placeError && (
             <div role="alert" className="rounded-xl bg-red-50 px-3 py-2 text-[12px] text-red-700">
               {placeError}
@@ -475,7 +521,7 @@ export default function TrayModal({
           <MicInputBar
             tenant={tenant}
             branch={branch}
-            channel="dine-in"
+            channel={channel}
             floorGradient={false}
             panelLift={64}
             shownIds={shownPicks.map((p) => p.id)}

@@ -12,7 +12,7 @@ const C = 2 * Math.PI * R;
 
 const STAGE: Record<string, [string, string, string, string]> = {
   // [bn title, en title, bn detail, en detail]
-  placed: ['কিচেনে পাঠানো হয়েছে', 'Sent to the kitchen', 'রেস্টুরেন্ট এখনই আপনার অর্ডার দেখবে।', 'The restaurant is looking at your order.'],
+  placed: ['অর্ডার পাঠানো হয়েছে', 'Order sent', 'রেস্টুরেন্ট গ্রহণ করলেই সময় গোনা শুরু হবে।', 'The timer starts as soon as the restaurant accepts it.'],
   accepted: ['অর্ডার গ্রহণ করা হয়েছে', 'Order accepted', 'কিচেনে রান্নার লাইনে আছে।', "It's in line for the stove."],
   preparing: ['রান্না হচ্ছে', 'Being cooked', 'আপনার খাবার এখন তৈরি হচ্ছে।', 'Your food is on the stove right now.'],
 };
@@ -29,7 +29,9 @@ function mmss(secs: number) {
 
 export default function OrderCountdown({ order, lang }: { order: PublicOrder; lang: UiLang }) {
   const eta = order.eta;
-  const cd = useCountdown(eta?.readyAt, eta?.serverNow);
+  // nothing to count down until the restaurant has taken the order
+  const waiting = order.status === 'placed';
+  const cd = useCountdown(waiting ? undefined : eta?.readyAt, eta?.serverNow);
   const [notice, setNotice] = useState<string | null>(null);
   const prevReady = useRef<{ at: string; status: string } | null>(null);
 
@@ -56,6 +58,17 @@ export default function OrderCountdown({ order, lang }: { order: PublicOrder; la
   // --- done states
   if (order.status === 'ready' || order.status === 'completed') {
     const ready = order.status === 'ready';
+    const kind = order.channel === 'online' ? (order.fulfillment === 'delivery' ? 'delivery' : 'pickup') : 'dine-in';
+    const doneTitle = {
+      'dine-in': tr(lang, 'খাবার পরিবেশন করা হয়েছে', 'Served — enjoy your meal'),
+      pickup: tr(lang, 'অর্ডার নেওয়া হয়েছে', 'Picked up — enjoy your meal'),
+      delivery: tr(lang, 'ডেলিভারি হয়েছে', 'Delivered — enjoy your meal'),
+    }[kind];
+    const readyText = {
+      'dine-in': tr(lang, 'এখনই আপনার টেবিলে চলে আসবে।', "It's on its way to your table."),
+      pickup: tr(lang, 'কাউন্টার থেকে নিয়ে নিন — অর্ডার নম্বরটা বলবেন।', 'Collect it at the counter — just quote your order number.'),
+      delivery: tr(lang, 'শিগগিরই আপনার কাছে রওনা হবে।', "It'll be on its way to you shortly."),
+    }[kind];
     return (
       <section className="rounded-3xl bg-white p-6 text-center shadow-sm" aria-live="polite">
         <div className={`mx-auto flex h-24 w-24 items-center justify-center rounded-full ${ready ? 'bg-emerald-50' : 'bg-gray-50'}`}>
@@ -64,18 +77,37 @@ export default function OrderCountdown({ order, lang }: { order: PublicOrder; la
           </svg>
         </div>
         <p className={`mt-4 text-xl font-semibold ${ready ? 'text-emerald-700' : 'text-gray-900'}`}>
-          {ready ? tr(lang, 'আপনার খাবার তৈরি!', 'Your food is ready!') : tr(lang, 'খাবার পরিবেশন করা হয়েছে', 'Served — enjoy your meal')}
+          {ready ? tr(lang, 'আপনার খাবার তৈরি!', 'Your food is ready!') : doneTitle}
         </p>
         <p className="mt-1 text-sm text-gray-600">
-          {ready
-            ? tr(lang, 'এখনই আপনার টেবিলে চলে আসবে।', "It's on its way to your table.")
-            : tr(lang, 'ধন্যবাদ! আবার আসবেন।', 'Thank you for dining with us.')}
+          {ready ? readyText : kind === 'dine-in' ? tr(lang, 'ধন্যবাদ! আবার আসবেন।', 'Thank you for dining with us.') : tr(lang, 'ধন্যবাদ! আবার অর্ডার করবেন।', 'Thanks for ordering!')}
         </p>
       </section>
     );
   }
 
   const stage = STAGE[order.status] ?? STAGE.placed;
+
+  // --- sent, not accepted yet: no clock, just how long it usually takes once they do
+  if (waiting) {
+    return (
+      <section className="rounded-3xl bg-white p-6 text-center shadow-sm" aria-live="polite">
+        <div className="mx-auto flex h-24 w-24 items-center justify-center rounded-full bg-rose-50">
+          <span className="relative flex h-5 w-5" aria-hidden="true">
+            <span className="absolute inline-flex h-full w-full animate-ping rounded-full opacity-60" style={{ background: BRAND }} />
+            <span className="relative inline-flex h-5 w-5 rounded-full" style={{ background: BRAND }} />
+          </span>
+        </div>
+        <p className="mt-4 text-lg font-semibold text-gray-900">
+          {tr(lang, 'রেস্টুরেন্টের গ্রহণের অপেক্ষায়', 'Waiting for the restaurant to accept')}
+        </p>
+        {/* no time until they accept — the clock starts then */}
+        <p className="mt-1 text-sm text-gray-600">
+          {tr(lang, 'অনুগ্রহ করে অপেক্ষা করুন — রেস্টুরেন্ট আপনার অর্ডারটি গ্রহণ করলেই আনুমানিক সময় দেখতে পাবেন।', "Please wait for the restaurant to accept your order. You'll see the estimated time as soon as they do.")}
+        </p>
+      </section>
+    );
+  }
 
   // --- no estimate (orders from before wait times existed)
   if (!eta || !cd) {
@@ -87,9 +119,10 @@ export default function OrderCountdown({ order, lang }: { order: PublicOrder; la
     );
   }
 
-  // the countdown runs from when the current clock started (cooking resets it)
+  // the countdown runs from when the current clock started: accepting starts it, cooking restarts it
   const startedAt =
-    (order.status === 'preparing' ? order.statusHistory.find((h) => h.status === 'preparing')?.at : null) ?? order.createdAt;
+    order.statusHistory.find((h) => h.status === order.status && (h.status === 'preparing' || h.status === 'accepted'))?.at ??
+    order.createdAt;
   const total = Math.max(60_000, new Date(eta.readyAt).getTime() - new Date(startedAt).getTime());
   const progress = cd.overdue ? 1 : Math.min(1, Math.max(0.02, 1 - cd.msLeft / total));
   const late = cd.overdue;

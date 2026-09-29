@@ -111,7 +111,8 @@ export function buildDuplicatePayload(it: TMenuItem): NewMenuItem {
         }
       : {}),
     ...(it.tags?.length ? { tags: [...it.tags] } : {}),
-    ...(typeof it.prepMinutes === 'number' ? { prepMinutes: it.prepMinutes } : {}),
+    // a time the owner set travels with the copy; an estimate is made afresh for it
+    ...(typeof it.prepMinutes === 'number' && (it.prepSource ?? 'owner') === 'owner' ? { prepMinutes: it.prepMinutes } : {}),
     ...(it.availability?.length ? { availability: it.availability.map((w) => ({ ...w, days: [...w.days] })) } : {}),
   };
 }

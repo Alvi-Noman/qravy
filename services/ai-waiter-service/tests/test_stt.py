@@ -68,6 +68,49 @@ def test_hint_never_contains_action_words():
         assert bad not in p, bad
 
 
+def test_a_transcript_in_the_wrong_script_is_not_used():
+    assert srv.wrong_script("ਕੀ ਕੀ ਅੱਛਾ ਪਾ")        # Punjabi for a Bangla "কী কী আছে"
+    assert srv.wrong_script("क्या है")             # Hindi
+    assert not srv.wrong_script("কী কী আছে আপনার রেস্টুরেন্টে?")
+    assert not srv.wrong_script("Can I get the Onion Ring? ২টা দিন")
+    assert not srv.wrong_script("")
+    # the Bangla full stop is Bangla punctuation (it sits in the Devanagari block) — this was rejected by mistake
+    assert not srv.wrong_script("গ্রিন শ্যাওল দেখিকি আছে।")
+    assert not srv.wrong_script("আমার খাবার কখন আসবে॥")
+
+
+def test_hallucinations_and_wrong_language_backup_text_are_never_answered():
+    for made_up in ("We will see you in our next video.", "Thanks for watching!", "Please subscribe to the channel",
+                    "ভিডিওটি দেখার জন্য ধন্যবাদ"):
+        assert srv.is_hallucination(made_up), made_up
+    for real in ("কী কী আছে আপনাদের?", "Can I get the Onion Ring?", "see you later, thanks"):
+        assert not srv.is_hallucination(real), real
+    assert not srv.fits_language("We will see you soon.", "bn")   # Bangla selected, no Bangla at all
+    assert srv.fits_language("২টা Onion Ring দিন", "bn")
+    assert srv.fits_language("Two onion rings please", "en")
+
+
+def test_bangla_words_snap_to_this_menu_and_everyday_words_are_left_alone():
+    from normalizer import normalize_text
+
+    snap = {"items": [{"name": "Onion Ring"}, {"name": "Special Fried Prawn"}, {"name": "Hot & Sour Soup"}]}
+    vocab = [i["name"] for i in snap["items"]] + srv.bangla_menu_words(snap)
+    assert "প্রন" in vocab and "অনিয়ন" in vocab
+    out, changes = normalize_text("স্পেশাল ফ্রাইড প্রাউন আর অনিয়ন রিংস দিন?", vocab=vocab)
+    assert "প্রন" in out and "রিং" in out, out
+    assert out.endswith("দিন?")  # everyday words and punctuation untouched
+    out, _ = normalize_text("আমার খাবার কখন আসবে?", vocab=vocab)
+    assert out == "আমার খাবার কখন আসবে?"
+
+
+def test_no_auto_detection_anywhere():
+    import inspect
+
+    src = inspect.getsource(srv)
+    assert "last_detected_lang)" not in src.split("def handle_conn")[1].split("lang_pref =")[1][:80]
+    assert 'lang_pref = session_lang or "bn"' in src
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_") and callable(fn):

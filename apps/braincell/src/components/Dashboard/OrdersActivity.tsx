@@ -4,7 +4,7 @@ import { Link } from 'react-router-dom';
 import { toastError, toastSuccess } from '../Toaster';
 import { useOrdersLiveOptional } from '../../context/OrdersLiveContext';
 import { usePermissions } from '../../context/PermissionsContext';
-import type { AdminOrder, OrderStatus } from '../../api/orders';
+import { orderWhere, type AdminOrder, type OrderStatus } from '../../api/orders';
 
 const NEXT: Partial<Record<OrderStatus, { to: OrderStatus; label: string }>> = {
   placed: { to: 'accepted', label: 'Accept' },
@@ -82,7 +82,7 @@ export default function OrdersActivity({ interactive = false }: { interactive?: 
                 </div>
                 <div>
                   <div className="font-medium text-[#2e2e30]">
-                    #{order.orderNumber} · Table {order.table}
+                    #{order.orderNumber} · {orderWhere(order)}
                   </div>
                   <div className="text-xs text-[#6b6b70]">
                     {order.items.reduce((n, l) => n + l.qty, 0)} items — ৳{order.total}

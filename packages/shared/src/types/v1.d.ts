@@ -66,6 +66,7 @@ export interface MenuItemDTO {
     /** Star-marked by the owner: highlighted on the menu and recommended first by the virtual waiter */
     signature?: boolean;
     prepMinutes?: number;
+    prepSource?: 'owner' | 'menu' | 'ai' | 'guess';
     restaurantId?: string;
     locationId?: string | null;
     visibility?: {
@@ -107,6 +108,7 @@ export interface KitchenSettingsDTO {
     defaultPrepMinutes: number;
     parallelOrders: number;
 }
+export type WaiterLanguage = 'bn' | 'en';
 export interface CategoryDTO {
     id: string;
     name: string;
@@ -202,6 +204,8 @@ export interface TenantDTO {
     menuNotes?: string[];
     /** House facts the virtual waiter may tell guests (Wi-Fi, payment methods, parking…) */
     waiterKnowledge?: string[];
+    /** Language the virtual waiter speaks by default; guests can switch it on the storefront */
+    waiterLanguage?: WaiterLanguage;
     /** IANA time zone for all hours (e.g. "Asia/Dhaka") */
     timezone?: string;
     /** Restaurant opening hours; empty = always open */
@@ -211,6 +215,7 @@ export interface TenantDTO {
     /** Named service periods (defaults: Breakfast, Lunch, Afternoon, Dinner, Late night) */
     servicePeriods?: ServicePeriodDTO[];
     kitchen?: KitchenSettingsDTO;
+    tables?: string[];
     trialStartedAt?: string | null;
     trialEndsAt?: string | null;
     subscriptionStatus?: SubscriptionStatus;

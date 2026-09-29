@@ -50,6 +50,10 @@ def test_kitchen_queue():
     assert wt.queue_minutes(ahead, 1, NOW) == 35
     assert wt.queue_minutes([{"status": "ready", "prepMinutes": 30},
                              {"status": "preparing", "prepMinutes": 20, "readyAt": at(-5)}], 1, NOW) == 0
+    # served but never marked done (30+ min past due) → not kitchen load; just late → still counts
+    assert wt.queue_minutes([{"status": "placed", "prepMinutes": 19, "createdAt": at(-60)},
+                             {"status": "accepted", "prepMinutes": 15, "readyAt": at(-35)}], 1, NOW) == 0
+    assert wt.queue_minutes([{"status": "placed", "prepMinutes": 19, "createdAt": at(-40)}], 1, NOW) == 19
     e = wt.estimate([({"prepMinutes": 18}, None, 2), ({}, None, 1)],
                     [{"status": "preparing", "prepMinutes": 10, "readyAt": at(6)}],
                     {"defaultPrepMinutes": 15, "parallelOrders": 1}, NOW)
@@ -93,17 +97,29 @@ def test_placed_order_replies():
     k["myOrders"][0].update(status="ready")
     assert "ready" in wait_talk.placed_order_reply(k, "en")
     assert wait_talk.placed_order_reply(KITCHEN_QUIET, "en") is None
+    # not accepted yet: no clock and no time at all — ask them to wait for the restaurant to accept
     k2 = {**KITCHEN_QUIET, "myOrders": [{"orderNumber": 8, "status": "placed", "minutesLeft": 22, "late": False,
-                                         "hasEta": True, "items": []}]}
-    assert "২" not in wait_talk.placed_order_reply(k2, "bn") and "25 মিনিটের মতো" in wait_talk.placed_order_reply(k2, "bn")
+                                         "hasEta": True, "estimateMinutes": 22, "items": []}]}
+    bn = wait_talk.placed_order_reply(k2, "bn")
+    assert "গ্রহণ" in bn and "অপেক্ষা" in bn and "মিনিট" not in bn.replace("আনুমানিক", "")
+    en = wait_talk.placed_order_reply(k2, "en")
+    assert en.startswith("The restaurant hasn't accepted your order yet") and "please wait" in en and "minutes" not in en
+    k2["myOrders"][0].update(late=True, minutesLeft=0)  # "late" means nothing before the clock starts
+    assert "longer than expected" not in wait_talk.placed_order_reply(k2, "en")
 
 
 def test_read_back_and_confirmation_carry_the_eta():
     rows = [{"itemId": "kb", "name": "Kacchi Biryani", "quantity": 1, "price": 420}]
+    # the read-back is short now (no prices, no ETA) — the ETA is said once the order is placed
     text = checkout.readback_text(rows, "12", "en", "", wait_talk.eta_hint({"totalMinutes": 18}, "en"))
-    assert text.endswith("It'll be ready in about 20 minutes. Shall I place it?")
+    assert text == "1 × Kacchi Biryani — shall I place the order?"
     placed = checkout.placed_text({}, "en", wait_talk.placed_hint({"eta": {"minutesLeft": 18}}, "en"))
     assert placed.startswith("Your order is confirmed.") and "about 20 minutes" in placed
+    # a new order the restaurant hasn't accepted: "sent", please wait — the time appears once they accept
+    new = {"status": "placed", "eta": {"startsOnAccept": True, "estimateMinutes": 18, "minutesLeft": 18}}
+    sent = checkout.placed_text(new, "en", wait_talk.placed_hint(new, "en"))
+    assert sent.startswith("Your order has been sent to the restaurant.") and "confirmed" not in sent
+    assert "Please wait for the restaurant to accept it" in sent and "minutes" not in sent
     # no ETA (older auth-service) → the old sentence
     assert checkout.placed_text({}, "en", wait_talk.placed_hint({}, "en")).startswith("Your order is confirmed. Please sit back")
 
@@ -146,7 +162,7 @@ def test_how_long_does_a_dish_take():
     out, calls = run("How long does the Kacchi Biryani take?")
     assert not calls, "answered from the numbers, no model"
     assert out["replyText"].startswith("The Kacchi Biryani takes 10–15 minutes to make, depending on the size.")
-    assert out["replyText"].endswith("Shall I add it?") and out["meta"]["topic"] == "wait_time"
+    assert out["replyText"].endswith("Would you like to order?") and out["meta"]["topic"] == "wait_time"
     # busy kitchen → how long if ordered now
     out, _ = run("how long for the whole fish sizzling?", kitchen=KITCHEN_BUSY)
     assert "if you order now it'd be ready in about 40 minutes" in out["replyText"]
@@ -193,7 +209,7 @@ def test_wheres_my_food_after_ordering():
 def test_lagbe_means_takes_in_a_time_question_but_need_in_an_order():
     # "কতক্ষণ লাগবে?" = how long will it take → answered from the numbers
     out, calls = run("Kacchi Biryani হতে কতক্ষণ লাগবে?", locale="bn")
-    assert not calls and "Kacchi Biryani তৈরি হতে" in out["replyText"] and out["replyText"].endswith("দেব?")
+    assert not calls and "Kacchi Biryani তৈরি হতে" in out["replyText"] and out["replyText"].endswith("অর্ডার করতে চান?")
     out, calls = run("koto khon lagbe?", cart=[{"itemId": "sr", "quantity": 1, "price": 230}], locale="bn")
     assert not calls and out["meta"]["notes"] == "wait_cart"
     # "২টা কাচ্চি লাগবে, কতক্ষণ?" = I need 2 kacchi (an order) + a time question → the model does both

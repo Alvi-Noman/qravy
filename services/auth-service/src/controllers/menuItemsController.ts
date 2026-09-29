@@ -18,6 +18,9 @@ import {
   normalizeDate,
 } from '../utils/availability.js';
 import { clampPrep } from '../services/orders/waitTime.js';
+import { guessPrep } from '../services/prepTime/estimator.js';
+import { fillPrepTimes, prepStatus, refineInBackground, suggestPrep } from '../services/prepTime/fill.js';
+import { aiAvailable } from '../services/prepTime/estimator.js';
 
 /** Service period ids from the client: trimmed, unique, max 12. */
 function cleanPeriodIds(v: unknown): string[] {
@@ -737,6 +740,8 @@ export type CreateMenuItemBody = {
   tags?: string[];
   signature?: boolean;
   prepMinutes?: number | string | null;
+  /** Import only: 'menu' = printed, 'ai' = estimated */
+  prepSource?: 'menu' | 'ai';
   restaurantId?: string;
   hidden?: boolean;
   status?: 'active' | 'hidden';
@@ -915,7 +920,14 @@ export async function createMenuItemCore(ctx: WriteCtx, body: CreateMenuItemBody
   if (tags.length) doc.tags = tags;
   if (body.signature === true) doc.signature = true;
   const prep = clampPrep(body.prepMinutes);
-  if (prep !== undefined) doc.prepMinutes = prep;
+  if (prep !== undefined) {
+    doc.prepMinutes = prep;
+    doc.prepSource = body.prepSource ?? 'owner';
+  } else {
+    // every dish gets its own time: an instant guess from the dish type now, the AI refines it right after
+    doc.prepMinutes = guessPrep({ name: doc.name, category: doc.category, description: doc.description });
+    doc.prepSource = 'guess';
+  }
 
   // --- Category-first scope & channel (patched previously) ---
   let allowedChannels: Array<'dine-in' | 'online'> = ['dine-in', 'online'];
@@ -1004,6 +1016,7 @@ export async function createMenuItemCore(ctx: WriteCtx, body: CreateMenuItemBody
   // Insert
   const result = await col().insertOne(doc);
   const created: MenuItemDoc = { ...doc, _id: result.insertedId };
+  if (created.prepSource === 'guess') refineInBackground(tenantOid, [result.insertedId]);
 
   // Purge any lingering available:true overlays for channels baseline-off,
   // even when that baseline came from category channelScope (no excludeChannel in payload).
@@ -1393,11 +1406,28 @@ export async function updateMenuItem(req: Request, res: Response, next: NextFunc
       if (v) setOps[k] = v;
       else unsetDates[k] = '';
     }
-    // Prep time: minutes set it, null clears it (back to the restaurant default)
+    // Prep time: minutes = the owner's own time; null = "work it out for me" (guess now, AI right after)
+    let refinePrep = false;
     if (body.prepMinutes !== undefined) {
       const prep = clampPrep(body.prepMinutes);
-      if (prep !== undefined) setOps.prepMinutes = prep;
-      else unsetDates.prepMinutes = '';
+      if (prep !== undefined) {
+        setOps.prepMinutes = prep;
+        setOps.prepSource = 'owner';
+      } else {
+        setOps.prepMinutes = guessPrep({
+          name: body.name ?? before.name,
+          category: before.category,
+          description: body.description ?? before.description,
+        });
+        setOps.prepSource = 'guess';
+        refinePrep = true;
+      }
+    } else if (
+      (body.name !== undefined && body.name !== before.name) ||
+      (body.description !== undefined && body.description !== before.description)
+    ) {
+      // renamed/redescribed dish with an estimated time → estimate it again
+      refinePrep = before.prepSource === 'ai' || before.prepSource === 'guess' || typeof before.prepMinutes !== 'number';
     }
     if (Object.keys(unsetDates).length) {
       await col().updateOne(filter, { $unset: unsetDates });
@@ -1720,6 +1750,7 @@ export async function updateMenuItem(req: Request, res: Response, next: NextFunc
       ip: req.ip || 'unknown',
       userAgent: req.headers['user-agent'] || 'unknown',
     });
+    if (refinePrep) refineInBackground(tenantOid, [after._id!], true);
 
     return res.ok({ item: toMenuItemDTO(after) });
   } catch (err: any) {
@@ -2677,6 +2708,49 @@ function getTargetLocationIdForList(req: Request): ObjectId | null {
 }
 
 /** POST /menu-items/bulk/hours  { ids, availability } — e.g. mark several items as breakfast-only. */
+/* ---------------------------------------------------------------- prep times (AI) */
+
+/** GET /menu-items/prep-times — how many dishes have a time, and where it came from */
+export async function getPrepTimeStatus(req: Request, res: Response, next: NextFunction) {
+  try {
+    const tenantId = req.user?.tenantId;
+    if (!tenantId) return res.fail(409, 'Tenant not set');
+    return res.ok({ status: await prepStatus(new ObjectId(tenantId)), ai: aiAvailable() });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/** POST /menu-items/prep-times/estimate { ids?, redoAi? } — AI prep time for every dish without its own */
+export async function estimatePrepTimes(req: Request, res: Response, next: NextFunction) {
+  try {
+    if (isBranch(req)) return res.fail(403, 'Not allowed for branch session');
+    const tenantId = req.user?.tenantId;
+    if (!tenantId) return res.fail(409, 'Tenant not set');
+    if (!canWrite(req.user?.role)) return res.fail(403, 'Forbidden');
+    const b = req.body as { ids?: string[]; redoAi?: boolean };
+    const tenantOid = new ObjectId(tenantId);
+    const result = await fillPrepTimes(tenantOid, {
+      ids: b.ids?.map((i) => new ObjectId(i)),
+      redoAi: !!b.redoAi,
+    });
+    return res.ok({ ...result, status: await prepStatus(tenantOid) });
+  } catch (err) {
+    logger.error(`estimatePrepTimes error: ${(err as Error).message}`);
+    next(err);
+  }
+}
+
+/** POST /menu-items/prep-times/suggest { name, category?, description?, sizes? } — for the item modal */
+export async function suggestPrepTime(req: Request, res: Response, next: NextFunction) {
+  try {
+    const b = req.body as { name: string; category?: string; description?: string; sizes?: string[] };
+    return res.ok(await suggestPrep(b));
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function bulkSetItemHours(req: Request, res: Response, next: NextFunction) {
   try {
     if (isBranch(req)) return res.fail(403, 'Not allowed for branch session');

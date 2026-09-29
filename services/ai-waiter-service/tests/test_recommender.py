@@ -475,11 +475,11 @@ def test_bugs_found_by_simulated_guests():
         finally:
             brain._call_openai = orig
 
-    # 1) explicit confirm after "that's all" → the order is read back for the final yes
+    # 1) an explicit "confirm my order" places it (or asks the table first) — the model's "Confirmed!" is never spoken
     out = run("No, that's all. Please confirm my order.", {**TURN, "topic": "confirm_order", "intent": "order",
                                                             "confirmOrder": True, "replyText": "Confirmed!"})
-    assert out["meta"]["decision"].get("showCheckout") is True and out["meta"]["checkout"]["stage"] == "readback"
-    assert "Confirmed!" not in out["replyText"] and "Shall I place it?" in out["replyText"]
+    assert out["meta"]["decision"].get("placeOrder") or out["meta"]["decision"].get("askTable")
+    assert "Confirmed!" not in out["replyText"]
     # 2) the model SAYS confirmed without a real confirmation → replaced with a question
     out = run("Is the Beef with Red Curry spicy?", {**TURN, "topic": "item_question", "intent": "menu",
                                                      "replyText": "It's mild. Your order is confirmed."})
@@ -525,8 +525,9 @@ def test_add_and_confirm_in_one_breath():
     # added AND read back in one reply — the order waits for the guest's yes
     assert out["meta"]["decision"].get("showCheckout") is True and not out["meta"]["decision"].get("placeOrder")
     assert out["meta"]["cartOps"][0]["quantity"] == 2
-    assert out["replyText"].startswith("Added 2 × Mongolian Chicken") and "table 4" in out["replyText"]
-    assert "Shall I place it?" in out["replyText"] and "confirmed" not in out["replyText"]
+    # (a tray changed by voice in the same breath gets the quick check — a mishearing never goes to the kitchen)
+    assert out["replyText"].startswith("Added 2 × Mongolian Chicken") and "৳" not in out["replyText"].split("—")[-1]
+    assert "shall I place the order?" in out["replyText"] and "confirmed" not in out["replyText"]
 
 
 def test_allergy_guide_is_short_and_grouped():

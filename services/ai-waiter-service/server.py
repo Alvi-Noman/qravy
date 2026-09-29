@@ -298,6 +298,35 @@ _JUNK = re.compile(
 )
 
 
+# Guests speak Bangla or English. Anything in another script ("ਕੀ ਕੀ ਅੱਛਾ ਪਾ" — Punjabi for "কী কী আছে") is the
+# speech model guessing the wrong language on a short phrase, not what was said.
+# (the Bangla full stop "।" and "॥" are code points in the Devanagari block — they are Bangla punctuation, not Hindi)
+_FOREIGN_SCRIPT = re.compile(r"[\u0600-\u06FF\u0900-\u0963\u0966-\u097F\u0A00-\u0D7F\u0E00-\u0FFF\u3040-\u9FFF\uAC00-\uD7AF]")
+
+# Whisper's well-known inventions on silence / background noise (YouTube sign-offs) — never something a guest said
+_HALLUCINATION = re.compile(
+    r"(see you|meet you) (again )?in (the|our|my) next (video|one)|\bnext video\b|thanks? (you )?(so much )?for watching"
+    r"|(like and |please |don'?t forget to )?subscribe\b|\bsubtitles? (by|from)\b|\bamara\.org\b"
+    r"|ভিডিওটি দেখার জন্য ধন্যবাদ|ভিডিও(টি)? দেখার জন্য|সাবস্ক্রাইব|পরবর্তী ভিডিও",
+    re.I,
+)
+
+
+def is_hallucination(text: Optional[str]) -> bool:
+    return bool(text) and bool(_HALLUCINATION.search(text or ""))
+
+
+def fits_language(text: Optional[str], lang: Optional[str]) -> bool:
+    """Backup-model text must be in the script of the language the guest selected (Bangla → some Bangla letters)."""
+    if not text or lang not in ("bn", "en"):
+        return True
+    return bool(_BENGALI.search(text)) if lang == "bn" else bool(_LATIN.search(text))
+
+
+def wrong_script(text: Optional[str]) -> bool:
+    return bool(text) and bool(_FOREIGN_SCRIPT.search(text or ""))
+
+
 def is_junk_transcript(text: str) -> bool:
     """Classic transcriber filler on near-silence ("Thanks for watching!") — never a real order."""
     s = (text or "").strip()
@@ -376,7 +405,8 @@ async def groq_transcribe(pcm_bytes: bytes, lang: Optional[str], rate: int = 160
 
 OPENAI_STT_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
 OPENAI_STT_BASE = os.environ.get("OPENAI_BASE", "https://api.openai.com").rstrip("/")
-OPENAI_STT_MODEL = os.environ.get("OPENAI_STT_MODEL", "gpt-4o-mini-transcribe").strip()
+# the full model: clearly better at Bangla than gpt-4o-mini-transcribe, ~$0.006 vs ~$0.003 per minute of speech
+OPENAI_STT_MODEL = os.environ.get("OPENAI_STT_MODEL", "gpt-4o-transcribe").strip()
 # STT_ENGINE=openai (default when an OpenAI key is set) | groq
 STT_ENGINE = os.environ.get("STT_ENGINE", "openai" if OPENAI_STT_KEY else "groq").strip().lower()
 OPENAI_STT_ON = STT_ENGINE == "openai" and bool(OPENAI_STT_KEY)
@@ -385,7 +415,7 @@ OPENAI_STT_TIMEOUT_S = float(os.environ.get("OPENAI_STT_TIMEOUT_MS", "8000")) / 
 _STT_PROMPTS: Dict[Tuple[str, str], Tuple[float, str]] = {}
 _STT_PROMPT_TTL_S = 600
 
-def stt_prompt(tenant: Optional[str], lang: Optional[str], max_chars: int = 1400) -> str:
+def stt_prompt(tenant: Optional[str], lang: Optional[str], max_chars: int = 420) -> str:
     """This restaurant's dish names (Bangla script for Bangla speech), so the transcriber expects
     "স্পেশাল ফ্রাইড প্রন" instead of inventing "স্পেশল ফ্রাইট প্রাউন". Cached per tenant for 10 minutes.
 
@@ -409,22 +439,20 @@ def stt_prompt(tenant: Optional[str], lang: Optional[str], max_chars: int = 1400
     end = "।" if bn else "."
     head = "রেস্টুরেন্টে খাবারের অর্ডার নিয়ে কথা। " if bn else "A guest ordering food at a restaurant. "
     tail = ""
-    # compact: short dish names as said ("স্পেশাল ফ্রাইড প্রন"), then every other menu word once, so the whole
-    # menu's vocabulary fits (long names like "Choice of 4 Curry with Fried Rice & Vegetable" waste the budget)
+    # short on purpose: a 1,400-character wall of dish names pulled ordinary speech towards menu-ish words
+    # ("আপনাদের" → "আত্মাদের"). One natural sentence + the menu's words, most frequent first (চিকেন, বিফ, প্রন,
+    # রাইস, স্যুপ…) — they carry almost every dish name — until the budget is used.
     clean = [re.sub(r"\s+", " ", re.sub(r"\s*\(.*?\)\s*", " ", n).replace("&", " ")).strip() for n in names]
-    short = [n for n in dict.fromkeys(clean) if n and len(n.split()) <= 4]
-    words = [w for n in clean for w in re.findall(r"[^\s,/\-\d]+", n) if len(w) > 1]
-    body = "মেনু: " if bn else "Menu: "
-    used: set = set()
-    for n in short:
-        if len(head) + len(body) + len(n) + len(tail) + 40 > max_chars:
-            break
-        body += n + ", "
-        used.update(n.split())
+    counts: Dict[str, int] = {}
+    for n in clean:
+        for w in re.findall(r"[^\s,/\-\d]+", n):
+            if len(w) > 1:
+                counts[w] = counts.get(w, 0) + 1
+    words = sorted(counts, key=lambda w: (-counts[w], w))
     # how guests name kinds of things ("ঠান্ডা" = a cold drink) — nouns only, safe to hint
-    kinds = ["ঠান্ডা", "কোল্ড ড্রিংকস", "পানীয়", "ডেজার্ট", "হাফ", "ফুল"] if bn else ["cold drinks", "dessert", "half", "full"]
-    extra = [w for w in dict.fromkeys(kinds + words) if w not in used]
-    for w in extra:
+    kinds = ["ঠান্ডা", "কোল্ড ড্রিংকস", "ডেজার্ট", "হাফ", "ফুল"] if bn else ["cold drinks", "dessert", "half", "full"]
+    body = "মেনুর কিছু শব্দ: " if bn else "Words on the menu: "
+    for w in dict.fromkeys(words + kinds):
         if len(head) + len(body) + len(w) + len(tail) + 2 > max_chars:
             break
         body += w + ", "
@@ -518,7 +546,7 @@ async def cloud_transcribe(
     pcm_bytes: bytes, lang: Optional[str], rate: int = 16000, tenant: Optional[str] = None,
     session: Optional[str] = None,
 ) -> Tuple[Optional[str], str]:
-    """(text, engine) — OpenAI gpt-4o-mini-transcribe with the menu as a hint; Groq Whisper if that fails.
+    """(text, engine) — OpenAI (OPENAI_STT_MODEL, gpt-4o-transcribe) with the menu as a hint; Groq Whisper if that fails.
     In A/B mode both run on the same audio and both results (+ the clip) are saved to qravy.stt_ab."""
     if not has_speech(pcm_bytes, rate):
         print("[ai-waiter-service] 🔇 no speech in the clip — not transcribing (avoids invented text)")
@@ -604,11 +632,27 @@ def _time_of_day_for_tz(tz: Optional[str], local_hour: Optional[int] = None) -> 
     return "late"
 
 
+_WEATHER_CACHE: Dict[Tuple[float, float], Tuple[float, str]] = {}
+WEATHER_TTL_S = 15 * 60
+
+
 async def fetch_weather_bucket(lat: float, lon: float) -> Optional[str]:
     """
     Tiny helper: classify current temp into a climate bucket.
     Uses Open-Meteo-style API; safe no-op on failure.
+    Cached per ~1 km cell — weather barely moves in minutes, so a turn shouldn't wait on the API.
     """
+    key = (round(lat, 2), round(lon, 2))
+    hit = _WEATHER_CACHE.get(key)
+    if hit and time.monotonic() - hit[0] < WEATHER_TTL_S:
+        return hit[1]
+    bucket = await _fetch_weather_bucket(lat, lon)
+    if bucket is not None:
+        _WEATHER_CACHE[key] = (time.monotonic(), bucket)
+    return bucket
+
+
+async def _fetch_weather_bucket(lat: float, lon: float) -> Optional[str]:
     try:
         params = {
             "latitude": lat,
@@ -650,6 +694,10 @@ def _to_object_id_maybe(x: Optional[str]) -> Optional[ObjectId]:
         return None
 
 
+_TENANT_ID_CACHE: Dict[str, Tuple[float, ObjectId]] = {}
+TENANT_ID_TTL_S = 10 * 60
+
+
 def resolve_tenant_id(tenant_hint: Optional[str]) -> Optional[ObjectId]:
     """
     Resolve a UI-provided tenant hint (slug/subdomain/code/name or _id string)
@@ -664,6 +712,17 @@ def resolve_tenant_id(tenant_hint: Optional[str]) -> Optional[ObjectId]:
     except Exception:
         pass
 
+    # slug → _id doesn't change, and one turn resolves it several times (menu, kitchen, stats…)
+    hit = _TENANT_ID_CACHE.get(tenant_hint)
+    if hit and time.monotonic() - hit[0] < TENANT_ID_TTL_S:
+        return hit[1]
+    oid = _lookup_tenant_id(tenant_hint)
+    if oid is not None:
+        _TENANT_ID_CACHE[tenant_hint] = (time.monotonic(), oid)
+    return oid
+
+
+def _lookup_tenant_id(tenant_hint: str) -> Optional[ObjectId]:
     # 2) look in transcripts DB tenants
     try:
         t = DB.tenants.find_one(
@@ -849,6 +908,21 @@ def fetch_menu_snapshot(
             "categories": [],
             "items": [],
         }
+
+
+def bangla_menu_words(snapshot: Dict[str, Any]) -> List[str]:
+    """Every word of the menu's dish names as a Bangla speaker says it ("Onion Ring" → অনিয়ন, রিং)."""
+    from bn_translit import word_to_bn
+
+    out: List[str] = []
+    seen: set = set()
+    for it in snapshot.get("items", []):
+        for w in re.findall(r"[A-Za-z]{3,}", str(it.get("name") or "")):
+            bn = word_to_bn(w)
+            if bn and len(bn) >= 3 and bn not in seen:
+                seen.add(bn)
+                out.append(bn)
+    return out
 
 
 def build_vocab_from_snapshot(snapshot: Dict[str, Any]) -> List[str]:
@@ -1068,7 +1142,7 @@ def fetch_restaurant_profile(tenant: Optional[str], branch: Optional[str] = None
             menu_db = _CLIENT[MENU_DB_NAME]
             t = menu_db["tenants"].find_one(
                 {"_id": tenant_oid},
-                {"name": 1, "restaurantInfo": 1, "menuNotes": 1, "waiterKnowledge": 1, "timezone": 1, "openingHours": 1, "servicePeriods": 1, "kitchen": 1},
+                {"name": 1, "restaurantInfo": 1, "menuNotes": 1, "waiterKnowledge": 1, "timezone": 1, "openingHours": 1, "servicePeriods": 1, "kitchen": 1, "waiterLanguage": 1},
             ) or {}
             info = t.get("restaurantInfo") or {}
             opening = t.get("openingHours") or []
@@ -1085,6 +1159,7 @@ def fetch_restaurant_profile(tenant: Optional[str], branch: Optional[str] = None
                     "tz": t.get("timezone") or DEFAULT_TZ,
                     "periods": t.get("servicePeriods") if isinstance(t.get("servicePeriods"), list) else DEFAULT_PERIODS,
                     "kitchen": wait_time.kitchen_settings(t),
+                    "language": t.get("waiterLanguage") if t.get("waiterLanguage") in ("bn", "en") else "bn",
                 }
             )
             loc_id = resolve_location_id(menu_db, tenant_oid, branch)
@@ -1173,7 +1248,7 @@ def kitchen_now(
             q["locationId"] = loc_id
         docs = list(
             menu_db["orders"]
-            .find(q, {"status": 1, "eta": 1, "items": 1, "sessionId": 1, "orderNumber": 1})
+            .find(q, {"status": 1, "eta": 1, "items": 1, "sessionId": 1, "orderNumber": 1, "createdAt": 1})
             .sort("createdAt", 1)
             .limit(200)
         )
@@ -1185,25 +1260,53 @@ def kitchen_now(
             prep = eta.get("prepMinutes") or wait_time.order_prep_minutes(
                 (l.get("prepMinutes") or settings["defaultPrepMinutes"], int(l.get("qty") or 1)) for l in o.get("items") or []
             )
-            ahead.append({"status": o.get("status"), "prepMinutes": prep, "readyAt": eta.get("readyAt")})
+            ahead.append({"status": o.get("status"), "prepMinutes": prep, "readyAt": eta.get("readyAt"), "createdAt": o.get("createdAt")})
         queue = wait_time.queue_minutes(ahead, settings["parallelOrders"], now)
-        out.update({"queueMinutes": queue, "ordersInKitchen": len(ahead), "busy": wait_time.busy_level(queue)})
+        active = [o for o in ahead if not wait_time.is_forgotten(o, now)]
+        out.update({"queueMinutes": queue, "ordersInKitchen": len(active), "busy": wait_time.busy_level(queue)})
         for o in docs if session_id else []:
             if o.get("sessionId") != session_id:
                 continue
-            ready_at = (o.get("eta") or {}).get("readyAt")
+            o_eta = o.get("eta") or {}
+            ready_at = o_eta.get("readyAt")
             ready = o.get("status") == "ready"
+            placed = o.get("status") == "placed"  # not accepted yet: no clock running
             out["myOrders"].append({
                 "orderNumber": o.get("orderNumber"),
                 "status": o.get("status"),
                 "minutesLeft": 0 if ready else wait_time.minutes_left(ready_at, now),
-                "late": (not ready) and isinstance(ready_at, datetime) and ready_at < now,
+                "late": (not ready) and (not placed) and isinstance(ready_at, datetime) and ready_at < now,
+                "estimateMinutes": int((o_eta.get("queueMinutes") or 0) + (o_eta.get("prepMinutes") or 0)
+                                       + max(0, o_eta.get("adjustedMinutes") or 0)),
                 "hasEta": isinstance(ready_at, datetime),
                 "items": [str(l.get("name") or "") for l in o.get("items") or []][:8],
             })
     except Exception as e:
         print("[ai-waiter-service] ⚠️ kitchen status failed:", e)
     return out
+
+
+_SESSION_TENANT: Dict[str, str] = {}
+
+
+def session_tenant(session_id: str) -> Optional[str]:
+    """The restaurant this conversation belongs to: remembered in memory, else from its saved turns."""
+    t = _SESSION_TENANT.get(session_id)
+    if t:
+        return t
+    try:
+        doc = COLL.find_one(
+            {"session": session_id, "ai.meta.tenant": {"$nin": [None, ""]}},
+            {"ai.meta.tenant": 1},
+            sort=[("_id", -1)],
+        )
+        t = ((doc or {}).get("ai") or {}).get("meta", {}).get("tenant")
+    except Exception as e:
+        print("[ai-waiter-service] ⚠️ session tenant lookup failed:", e)
+        t = None
+    if t:
+        _SESSION_TENANT[session_id] = t
+    return t
 
 
 def record_service_request(
@@ -1262,6 +1365,9 @@ async def place_order_via_api(
 ) -> Dict[str, Any]:
     """POST /api/v1/public/orders → {"ok": True, "order": {...}} or {"ok": False, "message": str}.
     Idempotent per (session, cart signature): a repeated "yes" never creates a second order."""
+    if not tenant_subdomain(tenant):
+        # without a restaurant the order can't go anywhere — say so kindly, never "Validation failed"
+        return {"ok": False, "message": ""}
     body: Dict[str, Any] = {
         "subdomain": tenant_subdomain(tenant),
         "table": draft.get("table"),
@@ -1308,17 +1414,23 @@ async def run_text_turn(
     table: Optional[str] = None,
     place_order=None,
     shown: Optional[List[str]] = None,
+    lock_language: bool = False,
 ) -> Dict[str, Any]:
     """
     `now` (UTC) overrides the clock — used by the eval to simulate breakfast/dinner/closed hours.
     `table` comes from the storefront (?table=12). `place_order` overrides the order placer (evals never
-    create real orders).
+    create real orders). `lock_language`: always reply in `locale` (the language chosen on the storefront —
+    the restaurant's default or the guest's switch) instead of mirroring what the guest spoke.
     Snapshot the live menu, normalise the transcript, build context and ask the brain.
     Used by the voice socket and by evals/run_eval.py. Returns {replyText, meta, textNorm, normChanges, snapshotSize}.
     """
-    lang = reply_language(text, locale)
+    t_start = time.monotonic()
+    lang = locale if lock_language and locale in ("bn", "en") else reply_language(text, locale)
     snapshot = fetch_menu_snapshot(tenant, limit=MENU_SNAPSHOT_MAX, branch=branch, channel=channel, lang=lang, now=now)
     vocab = build_vocab_from_snapshot(snapshot)
+    if lang == "bn":
+        # a misheard Bangla word is snapped to the nearest word of THIS menu, in Bangla script ("প্রাউন" → "প্রন")
+        vocab = vocab + bangla_menu_words(snapshot)
     norm_text, changes = normalize_text(text, vocab=vocab, fuzzy_threshold=FUZZY_THRESHOLD)
 
     # history before this utterance (the brain gets the utterance itself separately)
@@ -1379,6 +1491,7 @@ async def run_text_turn(
     ctx["kitchen"] = kitchen_now(tenant, branch, session_id, profile.get("kitchen") or wait_time.kitchen_settings(None), now)
     upsell_candidates = build_upsell_candidates(snapshot, ctx, {"items": ctx["cartItems"]}, limit=16)
 
+    t_brain = time.monotonic()
     reply = await generate_reply(
         transcript=norm_text,
         tenant=tenant,
@@ -1393,7 +1506,9 @@ async def run_text_turn(
         context=ctx,
         upsell_candidates=upsell_candidates,
         restaurant=profile,
+        lock_language=lock_language,
     )
+    t_post = time.monotonic()
     reply_text = reply.get("replyText") or ""
     meta = reply.get("meta") or {}
     meta["normalizer"] = {"changed": [{"from": a, "to": b, "score": s} for (a, b, s) in changes]}
@@ -1451,6 +1566,12 @@ async def run_text_turn(
         "textNorm": norm_text,
         "normChanges": changes,
         "snapshotSize": len(snapshot.get("items", [])),
+        # where the turn's time went (menu/db prep → model → order placing & post-processing)
+        "timingMs": {
+            "prep": int((t_brain - t_start) * 1000),
+            "brain": int((t_post - t_brain) * 1000),
+            "post": int((time.monotonic() - t_post) * 1000),
+        },
     }
 
 
@@ -1632,6 +1753,24 @@ async def handle_conn(ws: WebSocketServerProtocol):
                     session_lang = None if v == "auto" else v
 
                 tenant_hint = data.get("tenant") or tenant_hint
+                # a mic that didn't say which restaurant (a pop-up on a path link) → this conversation's restaurant;
+                # never run a turn unscoped (it would read every restaurant's menu and place orders with no restaurant)
+                sid_now = data.get("sessionId") or session_id
+                if tenant_hint:
+                    if sid_now:
+                        _SESSION_TENANT[sid_now] = tenant_hint
+                elif sid_now:
+                    tenant_hint = session_tenant(sid_now)
+                    if tenant_hint:
+                        print(f"[ai-waiter-service] no tenant from the app → this conversation's: {tenant_hint}")
+                # no auto-detection: the app's switch, else the restaurant's default language, else Bangla —
+                # the speech model is always told which language to expect
+                if session_lang not in ("bn", "en"):
+                    try:
+                        session_lang = fetch_restaurant_profile(tenant_hint).get("language") or "bn"
+                    except Exception:
+                        session_lang = "bn"
+                    print(f"[ai-waiter-service] language (no auto-detect) → {session_lang}")
                 branch_hint = data.get("branch") or branch_hint
                 channel_hint = data.get("channel") or channel_hint
                 # the guest's table (?table=12) and the cart exactly as the guest sees it (sizes, add-ons)
@@ -1673,6 +1812,14 @@ async def handle_conn(ws: WebSocketServerProtocol):
                 )
                 continue
 
+            # the guest flipped the language switch while this socket is open
+            if t == "set_lang":
+                v = str(data.get("lang") or "").strip().lower()
+                if v in ("bn", "en"):
+                    session_lang = v
+                    print(f"[ai-waiter-service] language switched → {v}")
+                continue
+
             if t == "end":
                 closing = True
                 print(
@@ -1682,6 +1829,7 @@ async def handle_conn(ws: WebSocketServerProtocol):
 
         # Small drain: let worker finish in-flight chunk (~300ms)
         t0 = time.monotonic()
+        t_turn = t0  # guest finished speaking → timing starts here
         while not work_q.empty() and (time.monotonic() - t0) < 0.3:
             await asyncio.sleep(0.01)
 
@@ -1702,12 +1850,7 @@ async def handle_conn(ws: WebSocketServerProtocol):
             selected_segs: List[Tuple[float, float]] = []
 
             # Preference: explicit lang → detected → script
-            lang_pref = session_lang or last_detected_lang
-            if not lang_pref and last_partial_text:
-                if _BENGALI.search(last_partial_text):
-                    lang_pref = "bn"
-                elif _LATIN.search(last_partial_text):
-                    lang_pref = "en"
+            lang_pref = session_lang or "bn"  # never auto-detected: the selected language (default Bangla)
 
             groq_used = False
             stt_engine = "groq"
@@ -1724,11 +1867,22 @@ async def handle_conn(ws: WebSocketServerProtocol):
                         final_bytes, lang_pref, rate=rate, tenant=tenant_hint, session=session_id
                     )
 
+                    # wrong language entirely (Punjabi / Hindi script for a Bangla phrase) → the same audio again,
+                    # this time told the language; still foreign → treated as not understood, never answered
+                    if wrong_script(groq_text):
+                        retry_lang = "en" if lang_pref == "en" else "bn"
+                        print(f"[ai-waiter-service] foreign script ({groq_text[:40]}) → retry {retry_lang}")
+                        fixed, stt_engine = await cloud_transcribe(
+                            final_bytes, retry_lang, rate=rate, tenant=tenant_hint, session=session_id
+                        )
+                        groq_text = fixed if fixed and not wrong_script(fixed) else None
+
                     # single-retry on opposite language if obviously wrong
                     # Groq-only: Whisper sometimes answers in the wrong language → one retry.
                     # OpenAI writes mixed Bangla/English ordering ("choice of two curry … দিবেন") faithfully — keep it.
                     if (
                         stt_engine == "groq"
+                        and not session_lang  # a selected language is never switched
                         and groq_text
                         and lang_pref == "bn"
                         and _LATIN.search(groq_text)
@@ -1744,6 +1898,7 @@ async def handle_conn(ws: WebSocketServerProtocol):
                             groq_text = en_text
                     elif (
                         stt_engine == "groq"
+                        and not session_lang  # a selected language is never switched
                         and groq_text
                         and lang_pref == "en"
                         and _BENGALI.search(groq_text)
@@ -1810,6 +1965,16 @@ async def handle_conn(ws: WebSocketServerProtocol):
                             e,
                         )
 
+            # never answer a hallucination, or backup-model text in another language than the one selected
+            # (the main engine is told the language; the tiny local model invents English on noise)
+            if selected_text and (
+                is_hallucination(selected_text)
+                or (not groq_used and not fits_language(selected_text, session_lang or "bn"))
+            ):
+                print(f"[ai-waiter-service] 🚫 not using '{selected_text[:60]}' (hallucination / wrong language) → ask again")
+                selected_text = None
+                stt_engine = "unclear"
+
             # the guest released the mic but (almost) no audio arrived — a quick tap, or the mic started late.
             # Answer anyway: a silent server left the guest staring at "Thinking…".
             if not selected_text and closing and len(final_bytes) < 16000 and stt_engine not in ("no-speech", "unclear"):
@@ -1817,7 +1982,7 @@ async def handle_conn(ws: WebSocketServerProtocol):
 
             # nothing clear was said → a polite "please say it again" (no guessing, no model call)
             if not selected_text and stt_engine in ("no-speech", "unclear", "no-audio") and not ws.closed:
-                sorry_lang = "en" if (session_lang or last_detected_lang) == "en" else "bn"
+                sorry_lang = "en" if session_lang == "en" else "bn"
                 sorry = SORRY_REPEAT[sorry_lang]
                 try:
                     await ws.send(json.dumps({"t": "ai_reply", "replyText": sorry, "meta": {
@@ -1830,6 +1995,7 @@ async def handle_conn(ws: WebSocketServerProtocol):
                     pass
 
             if selected_text and not ws.closed:
+                t_stt = time.monotonic()
                 try:
                     await ws.send(json.dumps({"t": "ai_reply_pending"}))
                 except Exception:
@@ -1838,6 +2004,7 @@ async def handle_conn(ws: WebSocketServerProtocol):
                 climate_bucket = None
                 if user_geo:
                     climate_bucket = await fetch_weather_bucket(user_geo["lat"], user_geo["lon"])
+                t_weather = time.monotonic()
 
                 turn: Dict[str, Any] = {"replyText": "", "meta": {}, "textNorm": selected_text, "normChanges": []}
                 try:
@@ -1848,13 +2015,15 @@ async def handle_conn(ws: WebSocketServerProtocol):
                         channel=channel_hint,
                         session_id=session_id,
                         user_id=user_id,
-                        locale=(session_lang or last_detected_lang),
+                        locale=(session_lang or "bn"),
                         user_tz=user_tz,
                         user_local_hour=user_local_hour,
                         climate_bucket=climate_bucket,
                         cart_items=cart_hint,
                         table=table_hint,
                         shown=shown_hint,
+                        # the storefront's language (restaurant default or the guest's switch) decides the reply
+                        lock_language=session_lang in ("bn", "en"),
                     )
                     meta = turn.get("meta") or {}
                     print(
@@ -1866,6 +2035,12 @@ async def handle_conn(ws: WebSocketServerProtocol):
                             json.dumps({"t": "ai_reply", "replyText": turn["replyText"], "meta": meta}, default=str)
                         )
                         print("[ai-waiter-service] ✅ ai_reply sent")
+                    tm = turn.get("timingMs") or {}
+                    print(
+                        f"[timing] stt={int((t_stt - t_turn) * 1000)}ms ({stt_engine}) "
+                        f"weather={int((t_weather - t_stt) * 1000)}ms prep={tm.get('prep')}ms brain={tm.get('brain')}ms "
+                        f"post={tm.get('post')}ms total={int((time.monotonic() - t_turn) * 1000)}ms"
+                    )
                 except Exception as e:
                     print("[ai-waiter-service] ❌ waiter turn failed:", e)
                     import traceback

@@ -25,7 +25,7 @@ TURN = {
 CART = [{"itemId": "a1", "quantity": 2, "price": 230}]
 
 
-def _run(text, *, cart=CART, table="12", state=None, history=None, model=None, locale=None):
+def _run(text, *, cart=CART, table="12", state=None, history=None, model=None, locale=None, channel=None):
     calls = []
 
     async def fake(messages):
@@ -39,7 +39,7 @@ def _run(text, *, cart=CART, table="12", state=None, history=None, model=None, l
         if table:
             ctx["table"] = table
         out = asyncio.run(brain.generate_reply(text, menu_snapshot={"items": ITEMS}, context=ctx, history=history,
-                                               dialog_state=state, locale=locale))
+                                               dialog_state=state, locale=locale, channel=channel))
     finally:
         brain._call_openai = orig
     return out, calls
@@ -99,7 +99,8 @@ def test_stage_machine():
     assert co.decide(text="wait", stage="readback", **base)[0] == "hold"
     assert co.decide(text="yes", stage="readback", **{**base, "signature_now": "other"})[0] == "readback"
     assert co.decide(text="yes", stage="readback", **{**base, "table": None})[0] == "ask_table"
-    assert co.decide(text="place my order", stage="none", **base)[0] == "readback"
+    assert co.decide(text="place my order", stage="none", **base)[0] == "place"      # explicit: no read-back
+    assert co.decide(text="place my order", stage="none", **{**base, "cart_changed_this_turn": True})[0] == "readback"
     assert co.decide(text="place my order", stage="none", **{**base, "table": None})[0] == "ask_table"
     assert co.decide(text="place my order", stage="none", **{**base, "cart_nonempty": False})[0] == "empty"
     assert co.decide(text="yes", stage="none", **{**base, "asked_to_confirm": True})[0] == "readback"
@@ -107,6 +108,10 @@ def test_stage_machine():
     assert co.decide(text="that's all", stage="none", **base)[0] == "readback"
     assert co.decide(text="that's all", stage="none", defer_done=True, **base)[0] == "stay"  # drink offer first
     assert co.decide(text="12", stage="table", **base)[0] == "readback"
+    assert co.decide(text="12", stage="table", direct_pending=True, **base)[0] == "place"  # they already said "send it"
+    # "এগুলো দেন" is the tray — unless a list of dishes is on screen (then it means "add those")
+    assert co.decide(text="এগুলো দেন", stage="none", **base)[0] == "place"
+    assert co.decide(text="এগুলো দেন", stage="none", list_on_screen=True, **base)[0] == "stay"
     assert co.decide(text="what's the wifi", stage="table", **{**base, "table": None})[0] == "stay"
     # the model's reading counts, but never for a question
     assert co.decide(text="let's do it", stage="none", **{**base, "llm_checkout": "start"})[0] == "readback"
@@ -118,12 +123,28 @@ def test_stage_machine():
 # ------------------------------------------------------------------ the brain's contract
 
 
+def test_send_it_places_straight_away_without_reading_prices():
+    for said, locale in (("place my order", None), ("send it to the kitchen", None), ("অর্ডারটা কনফার্ম করেন", "bn"),
+                         ("এগুলো দেন", "bn"), ("খাবারগুলো পাঠায় দেন", "bn"), ("খাবার সার্ভ করেন", "bn"),
+                         ("order ta confirm koren", None), ("khabar gulo pathay den", None)):
+        out, calls = _run(said, locale=locale)
+        assert not calls, said  # deterministic, no model call
+        assert out["meta"]["decision"].get("placeOrder") is True, said
+        assert "৳" not in out["replyText"], said
+        assert out["meta"]["orderDraft"]["table"] == "12", said
+    # a question or a "not yet" never places
+    for said in ("can you send it to the kitchen?", "don't place my order yet", "অর্ডার এখন না"):
+        out, _ = _run(said)
+        assert not out["meta"]["decision"].get("placeOrder"), said
+
+
 def test_full_flow_readback_then_yes_places():
-    out, calls = _run("place my order")
+    # a softer signal — "yes" to "anything else, or shall I confirm?" — gets a short check: dishes, no prices
+    out, calls = _run("yes", history=[{"role": "assistant", "content": "Added 2 × Spring Roll. Anything else, or shall I confirm your order?"}])
     assert not calls  # deterministic, no model call
     d = out["meta"]["decision"]
     assert d.get("showCheckout") and not d.get("placeOrder")
-    assert "2 × Spring Roll" in out["replyText"] and "৳460" in out["replyText"] and "counter" in out["replyText"]
+    assert out["replyText"] == "2 × Spring Roll — shall I place the order?"
     state = {"checkout": out["meta"]["checkout"]}
     out2, _ = _run("yes", state=state, history=[{"role": "assistant", "content": out["replyText"]}])
     assert out2["meta"]["decision"].get("placeOrder") is True
@@ -131,9 +152,9 @@ def test_full_flow_readback_then_yes_places():
                                           "signature": co.cart_signature(CART), "expectedTotal": 460}
 
 
-def test_nothing_is_placed_without_the_readback():
-    # an explicit "confirm" in a fresh conversation only reads back
-    out, _ = _run("confirm my order")
+def test_nothing_is_placed_without_the_guests_own_clear_words():
+    # an empty tray never places
+    out, _ = _run("confirm my order", cart=[])
     assert not out["meta"]["decision"].get("placeOrder")
     # the model claiming "confirm" out of nowhere never places
     out, _ = _run("great, sounds good", model={**TURN, "checkout": "confirm", "replyText": "Your order is placed!"})
@@ -141,7 +162,8 @@ def test_nothing_is_placed_without_the_readback():
 
 
 def test_cart_changed_during_readback_reads_back_again():
-    out, _ = _run("place my order")
+    out, _ = _run("yes", history=[{"role": "assistant", "content": "Anything else, or shall I confirm your order?"}])
+    assert out["meta"]["checkout"]["stage"] == "readback"
     state = {"checkout": out["meta"]["checkout"]}
     # the guest added a drink in the UI before saying yes
     out2, _ = _run("yes", cart=CART + [{"itemId": "bh", "quantity": 1, "price": 90}], state=state,
@@ -154,11 +176,11 @@ def test_cart_changed_during_readback_reads_back_again():
                         "choices": [], "variant": ""}]}
     out3, _ = _run("add one Borhani too", state=state, model=add)
     assert out3["meta"]["decision"].get("showCheckout") and not out3["meta"]["decision"].get("placeOrder")
-    assert out3["replyText"].startswith("Added 1 × Borhani") and "Shall I place it?" in out3["replyText"]
+    assert out3["replyText"].startswith("Added 1 × Borhani") and "shall I place the order?" in out3["replyText"]
 
 
 def test_no_wait_keeps_the_cart():
-    out, _ = _run("place my order")
+    out, _ = _run("yes", history=[{"role": "assistant", "content": "Anything else, or shall I confirm your order?"}])
     out2, _ = _run("wait", state={"checkout": out["meta"]["checkout"]})
     assert out2["meta"]["checkout"]["stage"] == "none" and out2["meta"]["cartOps"] == []
     assert not out2["meta"]["clearCart"] and "won't place" in out2["replyText"]
@@ -167,15 +189,55 @@ def test_no_wait_keeps_the_cart():
 def test_asks_for_table_then_continues():
     out, _ = _run("place my order", table=None)
     assert out["meta"]["decision"].get("askTable") and "table" in out["replyText"].lower()
+    # they already said "place my order" — the table was all that was missing
     out2, _ = _run("12", table=None, state={"checkout": out["meta"]["checkout"]})
-    assert out2["meta"]["decision"].get("showCheckout") and "table 12" in out2["replyText"]
-    out3, _ = _run("yes", table=None, state={"checkout": out2["meta"]["checkout"]})
-    assert out3["meta"]["orderDraft"]["table"] == "12"
+    assert out2["meta"]["decision"].get("placeOrder") is True
+    assert out2["meta"]["orderDraft"]["table"] == "12"
+
+
+def test_a_misheard_table_is_asked_again_never_guessed():
+    # the real turns: "অর্ডার কনফার্ম করেন" → which table? → "মারুক" (a mishearing of "বারো") → "বারো নম্বর টেবিল"
+    out, _ = _run("অর্ডার কনফার্ম করেন", table=None, locale="bn")
+    assert out["meta"]["decision"].get("askTable")
+    out2, calls = _run("মারুক", table=None, locale="bn", state={"checkout": out["meta"]["checkout"]},
+                       model={**TURN, "replyText": "আপনার অর্ডারটি টেবিল মারুক এর জন্য প্রস্তুত রাখা হবে।"})
+    assert not calls and "মারুক" not in out2["replyText"] and "টেবিল নম্বরটা" in out2["replyText"]
+    assert out2["meta"]["checkout"]["stage"] == "table"
+    out3, _ = _run("বারো নম্বর টেবিল", table=None, locale="bn", state={"checkout": out2["meta"]["checkout"]})
+    assert out3["meta"]["decision"].get("placeOrder") is True and out3["meta"]["orderDraft"]["table"] == "12"
+
+
+def test_a_failed_order_never_reads_out_a_technical_error():
+    for msg in ("Validation failed.", "HTTP 500.", ""):
+        assert "Validation" not in co.failed_text(msg, "bn") and "স্টাফ" in co.failed_text(msg, "bn")
+    # a guest-friendly reason from the restaurant is still said
+    assert "Kacchi Biryani isn't served for dine-in." in co.failed_text("Kacchi Biryani isn't served for dine-in.", "en")
+
+
+def test_online_never_asks_for_a_table_or_places_by_voice():
+    # pickup / delivery guests finish on the form (name, phone, address) — no table, nothing placed by voice
+    out, calls = _run("place my order", table=None, channel="online")
+    assert not calls
+    d = out["meta"]["decision"]
+    assert d.get("showCheckout") and d.get("askDetails") and not d.get("askTable") and not d.get("placeOrder")
+    assert "table" not in out["replyText"].lower() and "counter" not in out["replyText"].lower()
+    assert "2 × Spring Roll" in out["replyText"] and "name and phone" in out["replyText"]
+    assert out["meta"]["checkout"]["stage"] == "none"
+    # "yes" afterwards still doesn't place — the Place order button on the form does
+    out2, _ = _run("yes", table=None, channel="online", state={"checkout": out["meta"]["checkout"]},
+                   history=[{"role": "assistant", "content": "Shall I confirm it?"}])
+    assert not out2["meta"]["decision"].get("placeOrder") and not out2["meta"]["decision"].get("askTable")
+    # Bangla
+    out3, _ = _run("অর্ডারটা দিয়ে দিন", table=None, channel="online", locale="bn")
+    assert out3["meta"]["decision"].get("askDetails") and "টেবিল" not in out3["replyText"]
 
 
 def test_bangla_checkout():
     out, _ = _run("অর্ডারটা দিয়ে দিন", locale="bn")
-    assert out["meta"]["decision"].get("showCheckout") and "অর্ডারটা দিয়ে দেব?" in out["replyText"]
+    assert out["meta"]["decision"].get("placeOrder") is True
+    # "হ্যাঁ" to "আর কিছু লাগবে, নাকি অর্ডার কনফার্ম করব?" → a short check, then "হ্যাঁ" places
+    out, _ = _run("হ্যাঁ", locale="bn", history=[{"role": "assistant", "content": "যোগ করলাম। আর কিছু লাগবে, নাকি অর্ডার কনফার্ম করব?"}])
+    assert out["replyText"] == "2 × Spring Roll — অর্ডারটা দিয়ে দেব?"
     out2, _ = _run("হ্যাঁ", locale="bn", state={"checkout": out["meta"]["checkout"]})
     assert out2["meta"]["decision"].get("placeOrder") is True
 
@@ -183,9 +245,11 @@ def test_bangla_checkout():
 def test_sizes_and_addons_travel_with_the_order():
     cart = [{"itemId": "kb", "quantity": 1, "price": 830, "variation": "Full",
              "modifiers": [{"groupId": "g1", "optionId": "o9", "name": "Extra Egg", "price": 50}], "notes": "less oil"}]
-    out, _ = _run("checkout", cart=cart)
+    # the short check names the size, add-ons and note…
+    out, _ = _run("yes", cart=cart, history=[{"role": "assistant", "content": "Anything else, or shall I confirm your order?"}])
     assert "Kacchi Biryani (Full, Extra Egg)" in out["replyText"] and "less oil" in out["replyText"]
-    out2, _ = _run("yes", cart=cart, state={"checkout": out["meta"]["checkout"]})
+    # …and "checkout" sends them all to the kitchen
+    out2, _ = _run("checkout", cart=cart)
     assert out2["meta"]["orderDraft"]["items"] == [
         {"itemId": "kb", "qty": 1, "variation": "Full", "modifiers": [{"groupId": "g1", "optionId": "o9"}], "notes": "less oil"}
     ]

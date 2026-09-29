@@ -20,7 +20,8 @@ import {
 import { QuestionMarkCircleIcon } from '@heroicons/react/24/outline';
 import { StarIcon as StarSolidIcon } from '@heroicons/react/24/solid';
 import Variations from './Variations';
-import PrepTime from './PrepTime';
+import PrepTime, { type PrepSource } from './PrepTime';
+import { suggestPrepTime } from '../../api/menuItems';
 import { parsePrepMinutes, useKitchenSettings } from '../../hooks/useKitchenSettings';
 import ImageUploadZone from './ImageUploadZone';
 import Tags from './Tags';
@@ -97,6 +98,7 @@ export default function MenuItemModal({
     description?: string;
     category?: string;
     prepMinutes?: number;
+    prepSource?: PrepSource;
     imagePreviews?: (string | null)[];
     tags?: string[];
     signature?: boolean;
@@ -136,7 +138,7 @@ export default function MenuItemModal({
     availableUntil?: string | null;
     tags?: string[];
     signature?: boolean;
-    /** Kitchen minutes for one portion; null clears (restaurant default) */
+    /** Only when the owner changed it: minutes, or null = "let the AI estimate it" */
     prepMinutes?: number | null;
     // Advanced selections (optional)
     channel?: 'dine-in' | 'online';
@@ -355,6 +357,10 @@ export default function MenuItemModal({
   const [nameErr, setNameErr] = useState<string | null>(null);
   const [priceErr, setPriceErr] = useState<string | null>(null);
   const [prepErr, setPrepErr] = useState<string | null>(null);
+  // the owner changed the prep time (untouched → the saved AI estimate stays an AI estimate)
+  const [prepTouched, setPrepTouched] = useState(false);
+  const [prepSource, setPrepSource] = useState<PrepSource | undefined>(initial.prepSource);
+  const [suggesting, setSuggesting] = useState(false);
   const kitchen = useKitchenSettings();
   const [compareAtErr, setCompareAtErr] = useState<string | null>(null);
 
@@ -784,7 +790,7 @@ export default function MenuItemModal({
       availableUntil: avail.availableUntil || null,
       tags: tags.length ? tags : undefined,
       signature,
-      prepMinutes: prep === 'invalid' ? null : prep,
+      ...(prepTouched ? { prepMinutes: prep === 'invalid' ? null : prep } : {}),
     };
 
     if (!hasAnyVariants && hasMainPrice) {
@@ -1367,10 +1373,47 @@ export default function MenuItemModal({
                 value={values.prepMinutes}
                 onChange={(v) => {
                   setValues((prev) => ({ ...prev, prepMinutes: v }));
+                  setPrepTouched(true);
+                  setPrepSource('owner');
                   if (prepErr) setPrepErr(null);
                 }}
                 defaultMinutes={kitchen.defaultPrepMinutes}
                 error={prepErr}
+                source={prepSource}
+                suggesting={suggesting}
+                onSuggest={
+                  values.name.trim() && token
+                    ? async () => {
+                        setSuggesting(true);
+                        try {
+                          const s = await suggestPrepTime(token, {
+                            name: values.name.trim(),
+                            ...(values.category ? { category: values.category } : {}),
+                            ...(values.description?.trim() ? { description: values.description.trim() } : {}),
+                            ...(typedVariants.length ? { sizes: typedVariants.map((v) => v.label.trim()) } : {}),
+                          });
+                          setValues((prev) => ({ ...prev, prepMinutes: String(s.minutes) }));
+                          setPrepTouched(true);
+                          setPrepSource(s.source === 'ai' ? 'ai' : 'guess');
+                          setPrepErr(null);
+                          // sizes the AI says take longer/shorter get their own time (only where none is set)
+                          if (Object.keys(s.sizes).length) {
+                            setUiVariations((list) =>
+                              list.map((v) => {
+                                const m = s.sizes[v.label.trim().toLowerCase()];
+                                return m && !v.prepMinutes ? { ...v, prepMinutes: String(m) } : v;
+                              })
+                            );
+                            setVariationsSyncKey((k) => k + 1);
+                          }
+                        } catch {
+                          setPrepErr('Could not reach the AI — type the minutes, or leave it empty to estimate on save.');
+                        } finally {
+                          setSuggesting(false);
+                        }
+                      }
+                    : undefined
+                }
               />
             </Field>
 

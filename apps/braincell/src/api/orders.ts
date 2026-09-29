@@ -11,6 +11,9 @@ export type OrderStatus = 'placed' | 'accepted' | 'preparing' | 'ready' | 'compl
 export const OPEN_STATUSES: OrderStatus[] = ['placed', 'accepted', 'preparing', 'ready'];
 
 export type OrderEta = {
+  /** Not accepted yet: no clock running — estimateMinutes is how long it takes once accepted */
+  startsOnAccept?: boolean;
+  estimateMinutes?: number;
   prepMinutes: number;
   queueMinutes: number;
   /** What the guest was told when ordering */
@@ -24,12 +27,23 @@ export type OrderEta = {
   serverNow: string;
 };
 
+/** "Table 12" · "Pickup" · "Delivery" — how the order reaches the guest */
+export function orderWhere(o: Pick<AdminOrder, 'channel' | 'table' | 'fulfillment'>): string {
+  if (o.channel === 'online') return o.fulfillment === 'delivery' ? 'Delivery' : 'Pickup';
+  return `Table ${o.table ?? '?'}`;
+}
+
 export type AdminOrder = {
   id: string;
   orderNumber: number;
   status: OrderStatus;
   statusHistory: { status: OrderStatus; at: string; by?: string }[];
-  table: string;
+  channel?: 'dine-in' | 'online';
+  /** Dine-in only */
+  table: string | null;
+  /** Online only */
+  fulfillment?: 'pickup' | 'delivery';
+  customer?: { name: string; phone: string; address?: string };
   items: {
     itemId: string;
     name: string;
@@ -45,7 +59,7 @@ export type AdminOrder = {
   subtotal: number;
   total: number;
   currency: string;
-  payment: { method: 'counter'; status: 'unpaid' | 'paid' };
+  payment: { method: 'counter' | 'cod'; status: 'unpaid' | 'paid' };
   notes?: string;
   source: 'ai-waiter' | 'menu' | 'staff';
   locationId?: string | null;

@@ -2,6 +2,7 @@
 import React from 'react';
 import { Link, useLocation, useParams, useSearchParams } from 'react-router-dom';
 import MicInputBar from './MicInputBar';
+import SheetScrollArea, { SHEET_HEIGHT, ScrollLock } from '../SheetScroll';
 import type { AiReplyMeta, WaiterIntent } from '../../types/waiter-intents';
 import { normalizeIntent, localHeuristicIntent } from '../../utils/intent-routing';
 
@@ -151,8 +152,12 @@ export default function SuggestionsModal({
   const heroImage = heroItem?.imageUrl;
   const heroName = heroItem?.name;
 
-  const tenant = typeof window !== 'undefined' ? (window as any).__STORE__?.subdomain : undefined;
-  const branch = typeof window !== 'undefined' ? (window as any).__STORE__?.branch : undefined;
+  // the restaurant from the link (/t/<subdomain>/…) like the home screen, then the global store value
+  const params = useParams<{ subdomain?: string; branchSlug?: string; branch?: string }>();
+  const [searchQ] = useSearchParams();
+  const store = typeof window !== 'undefined' ? (window as any).__STORE__ : undefined;
+  const tenant: string | undefined = params.subdomain ?? searchQ.get('subdomain') ?? store?.subdomain ?? undefined;
+  const branch: string | undefined = params.branchSlug ?? params.branch ?? store?.branch ?? undefined;
 
   React.useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
@@ -164,19 +169,20 @@ export default function SuggestionsModal({
 
   return (
     <div className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center">
+      <ScrollLock />
       <div className="absolute inset-0 bg-black/40 backdrop-blur-[1.5px]" onClick={onClose} />
 
-      {/* 85vh SLIDE-UP ANIMATED CONTAINER */}
+      {/* SLIDE-UP SHEET: header · scrolling cards · mic, as a column */}
       <div
         className={
-          "relative z-[101] w-full sm:max-w-2xl rounded-t-[26px] sm:rounded-3xl bg-[#F8F8F8] h-[85vh] overflow-hidden sm:shadow-2xl " +
+          `relative z-[101] flex w-full flex-col sm:max-w-2xl rounded-t-[26px] sm:rounded-3xl bg-[#F8F8F8] ${SHEET_HEIGHT} overflow-hidden sm:shadow-2xl ` +
           "transform transition-all duration-300 ease-out " +
           (open ? "translate-y-0 opacity-100" : "translate-y-full opacity-0")
         }
       >
         
         {/* HEADER */}
-        <div className="sticky top-0 z-20 px-4 pt-3 pb-2 border-b border-gray-100 bg-[#F8F8F8] rounded-t-[26px]">
+        <div className="shrink-0 z-20 px-4 pt-3 pb-2 border-b border-gray-100 bg-[#F8F8F8] rounded-t-[26px]">
           <div className="relative flex flex-col items-center">
             <div className="mb-2 h-1 w-12 rounded-full bg-gray-300" />
 
@@ -203,7 +209,7 @@ export default function SuggestionsModal({
         </div>
 
         {/* SCROLL AREA */}
-        <div className="px-4 pt-3 pb-24 overflow-y-auto h-full">
+        <SheetScrollArea className="px-4 pt-3 pb-4" moreHint={items.length > 2 ? 'More below' : undefined}>
           {hasAiItems ? (
             <div className="grid grid-cols-1 gap-3">
               {items.map((it, idx) => {
@@ -229,13 +235,10 @@ export default function SuggestionsModal({
           ) : (
             <div className="py-6 text-center text-sm text-gray-500">No suggestions available right now.</div>
           )}
-        </div>
+        </SheetScrollArea>
 
-        {/* GRADIENT */}
-        <div className="pointer-events-none absolute bottom-[92px] left-0 right-0 h-10 bg-gradient-to-t from-[#F8F8F8] to-transparent z-30" />
-
-        {/* MIC BAR — flush with the bottom edge, like the tray's */}
-        <div className="absolute bottom-0 left-0 right-0 px-4 pt-3 pb-[max(1.25rem,env(safe-area-inset-bottom))] bg-[#F8F8F8] border-t border-gray-200 z-40">
+        {/* MIC BAR — part of the column, never over the cards */}
+        <div className="relative z-40 shrink-0 px-4 pt-3 pb-[max(1.25rem,env(safe-area-inset-bottom))] bg-[#F8F8F8] border-t border-gray-200">
           <MicInputBar
             tenant={tenant}
             branch={branch}

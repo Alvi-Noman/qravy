@@ -8,14 +8,19 @@ type Props = {
   open: boolean;
   onClose: () => void;
   orderNumber: number;
-  table: string;
+  /** "Table 12" / "Pickup" / "Delivery" */
+  where: string;
+  /** Not accepted yet — the minutes are an estimate from acceptance, and nothing is "confirmed" */
+  waiting?: boolean;
+  /** How the guest pays (counter / on pickup / cash on delivery) */
+  payNote: string;
   total: number;
   /** Wait-time estimate when the order was placed */
   minutesLeft?: number;
   lang: UiLang;
 };
 
-export default function OrderConfirmedModal({ open, onClose, orderNumber, table, total, minutesLeft, lang }: Props) {
+export default function OrderConfirmedModal({ open, onClose, orderNumber, where, total, minutesLeft, waiting, payNote, lang }: Props) {
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
@@ -39,20 +44,26 @@ export default function OrderConfirmedModal({ open, onClose, orderNumber, table,
           </svg>
         </div>
         <h2 id="order-confirmed-title" className="text-lg font-semibold text-gray-900">
-          {tr(lang, 'অর্ডার কনফার্ম করা হয়েছে', 'Order confirmed')}
+          {waiting ? tr(lang, 'অর্ডার পাঠানো হয়েছে', 'Order sent') : tr(lang, 'অর্ডার কনফার্ম করা হয়েছে', 'Order confirmed')}
         </h2>
         <div className="mt-3 text-5xl font-bold tracking-tight text-gray-900">#{orderNumber}</div>
         <p className="mt-3 text-sm text-gray-600">
-          {tr(lang, `টেবিল ${table} · মোট ${money(total)}`, `Table ${table} · Total ${money(total)}`)}
+          {tr(lang, `${where} · মোট ${money(total)}`, `${where} · Total ${money(total)}`)}
         </p>
-        {typeof minutesLeft === 'number' && minutesLeft > 0 && (
-          <p className="mt-3 inline-flex items-center gap-1.5 rounded-full bg-rose-50 px-3 py-1 text-sm font-medium text-[#FA2851]">
-            {tr(lang, `প্রায় ${roundForGuest(minutesLeft)} মিনিটে তৈরি হবে`, `Ready in about ${roundForGuest(minutesLeft)} min`)}
+        {waiting ? (
+          // not accepted yet: no time — it appears once the restaurant accepts
+          <p className="mt-3 rounded-2xl bg-amber-50 px-3 py-2 text-sm font-medium text-amber-800">
+            {tr(lang, 'অনুগ্রহ করে অপেক্ষা করুন — রেস্টুরেন্ট আপনার অর্ডারটি গ্রহণ করছে।', 'Please wait for the restaurant to accept your order.')}
           </p>
+        ) : (
+          typeof minutesLeft === 'number' &&
+          minutesLeft > 0 && (
+            <p className="mt-3 inline-flex items-center gap-1.5 rounded-full bg-rose-50 px-3 py-1 text-sm font-medium text-[#FA2851]">
+              {tr(lang, `প্রায় ${roundForGuest(minutesLeft)} মিনিটে তৈরি হবে`, `Ready in about ${roundForGuest(minutesLeft)} min`)}
+            </p>
+          )
         )}
-        <p className="mt-2 text-sm text-gray-600">
-          {tr(lang, 'বিল কাউন্টারে দেবেন — এই নম্বরটা বলবেন।', 'Pay at the counter — just quote this number.')}
-        </p>
+        <p className="mt-2 text-sm text-gray-600">{payNote}</p>
         <button type="button" onClick={onClose} className="mt-6 w-full rounded-2xl bg-[#FA2851] py-3 font-semibold text-white">
           {tr(lang, 'ঠিক আছে', 'OK')}
         </button>

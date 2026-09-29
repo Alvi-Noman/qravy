@@ -143,6 +143,8 @@ function menuItemJsonSchema() {
               price: { bsonType: ['double', 'int', 'long', 'decimal'] },
               imageUrl: { bsonType: ['string', 'null'] },
               optionValues: { bsonType: ['array', 'null'], items: { bsonType: 'string' } },
+              /** Kitchen minutes for this size (wait-time estimation) */
+              prepMinutes: { bsonType: ['int', 'long', 'double', 'null'] },
             },
           },
         },

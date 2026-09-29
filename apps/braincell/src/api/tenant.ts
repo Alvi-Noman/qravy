@@ -139,6 +139,8 @@ export async function updateTenant(
     menuNotes?: string[];
     /** House facts for the virtual waiter */
     waiterKnowledge?: string[];
+    /** Language the virtual waiter speaks by default */
+    waiterLanguage?: 'bn' | 'en';
     /** IANA time zone for all hours */
     timezone?: string;
     /** Restaurant opening hours; [] = always open */
@@ -149,6 +151,8 @@ export async function updateTenant(
     servicePeriods?: Array<{ id?: string; name: string; days: number[]; start: string; end: string }>;
     /** Wait-time estimation: default minutes per dish, orders cooked at once */
     kitchen?: { defaultPrepMinutes: number; parallelOrders: number };
+    /** Dine-in table labels for table QR codes */
+    tables?: string[];
   },
   token: string
 ): Promise<TenantDTO> {

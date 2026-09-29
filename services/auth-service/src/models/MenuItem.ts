@@ -87,6 +87,8 @@ export interface MenuItemDoc {
   signature?: boolean;
   /** Minutes the kitchen needs for one portion (wait-time estimation); missing = restaurant default */
   prepMinutes?: number;
+  /** Where prepMinutes came from: owner/menu are never overwritten; ai/guess are estimates */
+  prepSource?: 'owner' | 'menu' | 'ai' | 'guess';
 
   // Legacy/global flags. Derived per-view; kept for backward-compat.
   hidden?: boolean;

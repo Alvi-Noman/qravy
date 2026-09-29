@@ -16,7 +16,10 @@ import ProductCard from '../components/ProductCard';
 import CategoryList from '../components/CategoryList';
 import SearchBar from '../components/SearchBar';
 import RestaurantSkeleton from '../components/RestaurantSkeleton';
-import ChannelSwitch from '../components/ChannelSwitch';
+import { FulfillmentToggle } from '../components/OnlineOrderDetails';
+import { useFulfillment, useStoreChannels } from '../utils/order-mode';
+import { useWaiterLang } from '../utils/waiter-lang';
+import LangSwitch from '../components/LangSwitch';
 import MicInputBar from '../components/ai-waiter/MicInputBar';
 import SuggestionsModal from '../components/ai-waiter/SuggestionsModal';
 import TrayModal from '../components/ai-waiter/CartModal';
@@ -71,10 +74,6 @@ function SectionHeader({
   );
 }
 
-const SWITCH_FLAG_KEY = 'qravy:just-switched';
-const SWITCH_DELAY_MS = 1000;
-const SWITCH_VALID_MS = 1200;
-
 function resolveChannelFromPath(pathname: string): Channel {
   const p = pathname.toLowerCase();
   return p.startsWith('/dine-in') || p.includes('/dine-in') ? 'dine-in' : 'online';
@@ -115,8 +114,13 @@ function useRuntimeRoute() {
 /* ========================================================================== */
 
 export default function DigitalMenu() {
-  const { subdomain, branchSlug, channel } = useRuntimeRoute();
-  const effectiveLang = 'bn';
+  const { subdomain, branchSlug, channel: routeChannel } = useRuntimeRoute();
+  // /menu is the online shop; fall back to dine-in when the restaurant doesn't sell online
+  const storeChannels = useStoreChannels(subdomain);
+  const channel: Channel = routeChannel === 'online' && !storeChannels.online ? 'dine-in' : routeChannel;
+  const [fulfillment, setFulfillment] = useFulfillment(subdomain);
+  // the virtual waiter's language: the guest's switch → the restaurant's default → Bangla
+  const [effectiveLang, setWaiterLang] = useWaiterLang(subdomain);
   const location = useLocation();
   const navigate = useNavigate();
   const { addItem, setQty, updateQty, removeItem, setNotes, clear } = useCart();
@@ -397,7 +401,6 @@ export default function DigitalMenu() {
     return m;
   }, [sections]);
 
-  // Route targets for the segmented switch
   const isDevPath = location.pathname.startsWith('/t/');
   const backHref = isDevPath
     ? normalizedBranch
@@ -407,40 +410,12 @@ export default function DigitalMenu() {
     ? `/${normalizedBranch}`
     : `/`;
 
-  const onlineHref =
-    normalizedBranch ? `/t/${subdomain}/${normalizedBranch}/menu` : `/t/${subdomain}/menu`;
-  const dineInHref =
-    normalizedBranch
-      ? `/t/${subdomain}/${normalizedBranch}/menu/dine-in`
-      : `/t/${subdomain}/menu/dine-in`;
-
   const confirmationHref =
     normalizedBranch
       ? `/t/${subdomain}/${normalizedBranch}/confirmation`
       : `/t/${subdomain}/confirmation`;
 
-  /** Switch-only skeleton */
-  const [isSwitchSkeleton, setIsSwitchSkeleton] = React.useState(false);
-  React.useEffect(() => {
-    try {
-      const raw = sessionStorage.getItem(SWITCH_FLAG_KEY);
-      if (raw) {
-        const parsed = JSON.parse(raw) as { ts: number; path: string } | null;
-        sessionStorage.removeItem(SWITCH_FLAG_KEY);
-        if (
-          parsed &&
-          parsed.path === location.pathname &&
-          Date.now() - parsed.ts <= SWITCH_VALID_MS
-        ) {
-          setIsSwitchSkeleton(true);
-          const t = window.setTimeout(() => setIsSwitchSkeleton(false), SWITCH_DELAY_MS);
-          return () => window.clearTimeout(t);
-        }
-      }
-    } catch {}
-  }, [location.pathname]);
-
-  const showSkeleton = isSwitchSkeleton || isMenuLoading || isCatLoading;
+  const showSkeleton = isMenuLoading || isCatLoading;
 
   /* ======================= Infinite scroll (client) ======================== */
   const initialPageSize = React.useMemo(() => {
@@ -784,7 +759,7 @@ export default function DigitalMenu() {
       {/* Top Bar: Back + Title */}
       <div className="sticky top-0 z-30 bg-[#F6F5F8]">
         <div className="mx-auto max-w-6xl px-4 pt-4">
-          <div className="flex items-center justify-between">
+          <div className="relative flex items-center justify-between">
             <Link
               to={backHref}
               aria-label="Back"
@@ -806,10 +781,10 @@ export default function DigitalMenu() {
                 />
               </svg>
             </Link>
-            <h1 className="text-[22px] sm:text-[24px] font-semibold text-gray-900">
+            <h1 className="pointer-events-none absolute left-1/2 -translate-x-1/2 text-[22px] sm:text-[24px] font-semibold text-gray-900">
               Menu
             </h1>
-            <span className="h-9 w-9" />
+            <LangSwitch value={effectiveLang} onChange={setWaiterLang} />
           </div>
         </div>
       </div>
@@ -841,20 +816,8 @@ export default function DigitalMenu() {
         <div className="mt-6 mb-6 flex items-center justify-between sm:mt-8 sm:mb-8">
           <h2 className="text-[20px] font-semibold text-gray-900">Category</h2>
 
-          <ChannelSwitch
-            channel={channel}
-            dineInHref={dineInHref}
-            onlineHref={onlineHref}
-            showSkeleton={showSkeleton}
-            onSwitch={(targetPath) => {
-              try {
-                sessionStorage.setItem(
-                  SWITCH_FLAG_KEY,
-                  JSON.stringify({ ts: Date.now(), path: targetPath }),
-                );
-              } catch {}
-            }}
-          />
+          {/* online shop: pickup or delivery · dine-in guests already have a table, so no switch */}
+          {channel === 'online' && <FulfillmentToggle value={fulfillment} onChange={setFulfillment} />}
         </div>
 
         {/* Content */}
@@ -1045,6 +1008,7 @@ export default function DigitalMenu() {
       />
       <TrayModal
         open={showTray}
+        channel={channel}
         onClose={() => setShowTray(false)}
         upsellItems={upsellItems}
         onIntent={(intent, meta, replyText) => {

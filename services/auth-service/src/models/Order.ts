@@ -4,6 +4,15 @@ import { ObjectId } from 'mongodb';
 export const ORDER_STATUSES = ['placed', 'accepted', 'preparing', 'ready', 'completed', 'cancelled'] as const;
 export type OrderStatus = (typeof ORDER_STATUSES)[number];
 
+export type OrderChannel = 'dine-in' | 'online';
+export type Fulfillment = 'pickup' | 'delivery';
+export interface OrderCustomer {
+  name: string;
+  phone: string;
+  /** Delivery only */
+  address?: string;
+}
+
 /** One priced line — everything is a server-side snapshot taken when the order was placed. */
 export interface OrderLine {
   itemId: ObjectId;
@@ -41,19 +50,23 @@ export interface OrderDoc {
   locationId?: ObjectId | null;
   /** Branch label as the guest's link had it (display only) */
   branch?: string | null;
-  channel: 'dine-in';
+  channel: OrderChannel;
   /** Short, human number that resets daily per restaurant (restaurant time zone) */
   orderNumber: number;
   /** yyyy-mm-dd in the restaurant's time zone */
   businessDay: string;
   status: OrderStatus;
   statusHistory: Array<{ status: OrderStatus; at: Date; by?: string }>;
-  dineIn: { tableNumber: string };
+  /** Set for dine-in orders */
+  dineIn?: { tableNumber: string } | null;
+  /** Set for online orders: collected at the counter, or brought to the guest */
+  online?: { fulfillment: Fulfillment; customer: OrderCustomer } | null;
   items: OrderLine[];
   subtotal: number;
   total: number;
   currency: 'BDT';
-  payment: { method: 'counter'; status: 'unpaid' | 'paid' };
+  /** counter = pay at the table/counter or on pickup; cod = cash on delivery */
+  payment: { method: 'counter' | 'cod'; status: 'unpaid' | 'paid' };
   notes?: string;
   source: 'ai-waiter' | 'menu' | 'staff';
   /** Unguessable, lets the guest follow their order without an account */

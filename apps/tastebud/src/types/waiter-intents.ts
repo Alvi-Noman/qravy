@@ -120,11 +120,13 @@ export type AiDecision = {
   showCheckout?: boolean;
   /** Checkout: the waiter needs the table number */
   askTable?: boolean;
+  /** online checkout: point at the name / phone / address fields */
+  askDetails?: boolean;
   /** The order was really placed (meta.order has token + orderNumber) */
   orderPlaced?: boolean;
   /** Placing failed (the reply says why) */
   orderFailed?: boolean;
-  checkoutStage?: 'none' | 'table' | 'readback' | 'placing';
+  checkoutStage?: 'none' | 'table' | 'readback' | 'placing' | 'details';
 };
 
 /* -------------------------------------------------------------------------- */

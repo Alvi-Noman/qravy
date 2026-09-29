@@ -703,11 +703,15 @@ export async function updateMyTenant(req: Request, res: Response, next: NextFunc
     if (parsed.waiterKnowledge) {
       update.waiterKnowledge = parsed.waiterKnowledge.map((n) => n.trim()).filter(Boolean);
     }
+    if (parsed.waiterLanguage) update.waiterLanguage = parsed.waiterLanguage;
     if (parsed.timezone) update.timezone = parsed.timezone;
     if (parsed.openingHours) update.openingHours = normalizeAvailability(parsed.openingHours);
     if (parsed.dailyResetTime) update.dailyResetTime = parsed.dailyResetTime;
     if (parsed.servicePeriods) update.servicePeriods = normalizeServicePeriods(parsed.servicePeriods);
     if (parsed.kitchen) update.kitchen = kitchenSettings({ kitchen: parsed.kitchen });
+    if (parsed.tables) {
+      update.tables = [...new Set(parsed.tables.map((t) => t.trim().replace(/^#/, '').toUpperCase()))];
+    }
 
     if (parsed.ownerInfo) {
       update.ownerInfo = {

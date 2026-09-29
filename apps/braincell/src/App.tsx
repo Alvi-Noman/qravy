@@ -32,6 +32,7 @@ const CreateRestaurant = lazy(() => import('./pages/CreateRestaurant'));
 const Onboarding = lazy(() => import('./pages/Onboarding'));
 const ManageCategories = lazy(() => import('./pages/ManageCategories'));
 const SelectLocation = lazy(() => import('./pages/SelectLocation')); // ADD
+const QrCodesPage = lazy(() => import('./pages/QrCodes'));
 
 // Settings pages
 const SettingsOverview = lazy(() => import('./pages/settings/index'));
@@ -251,6 +252,15 @@ function App() {
                   element={
                     <Suspense fallback={null}>
                       <LocationsPage />
+                    </Suspense>
+                  }
+                />
+
+                <Route
+                  path="/qr-codes"
+                  element={
+                    <Suspense fallback={null}>
+                      <QrCodesPage />
                     </Suspense>
                   }
                 />

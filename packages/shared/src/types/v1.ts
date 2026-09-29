@@ -78,6 +78,8 @@ export interface MenuItemDTO {
   signature?: boolean;
   /** Kitchen minutes for one portion; omitted = the restaurant default (wait-time estimation) */
   prepMinutes?: number;
+  /** owner = set by the restaurant, menu = printed on the menu, ai / guess = estimated */
+  prepSource?: 'owner' | 'menu' | 'ai' | 'guess';
   restaurantId?: string;
 
   // Branch scope
@@ -130,6 +132,8 @@ export interface KitchenSettingsDTO {
   /** How many orders the kitchen cooks side by side */
   parallelOrders: number;
 }
+/** Virtual waiter language: Bangla or English */
+export type WaiterLanguage = 'bn' | 'en';
 export interface CategoryDTO {
   id: string;
   name: string;
@@ -252,6 +256,8 @@ export interface TenantDTO {
   menuNotes?: string[];
   /** House facts the virtual waiter may tell guests (Wi-Fi, payment methods, parking…) */
   waiterKnowledge?: string[];
+  /** Language the virtual waiter speaks by default; guests can switch it on the storefront */
+  waiterLanguage?: WaiterLanguage;
   /** IANA time zone for all hours (e.g. "Asia/Dhaka") */
   timezone?: string;
   /** Restaurant opening hours; empty = always open */
@@ -262,6 +268,8 @@ export interface TenantDTO {
   servicePeriods?: ServicePeriodDTO[];
   /** Wait-time estimation: default minutes per dish and orders the kitchen cooks at once */
   kitchen?: KitchenSettingsDTO;
+  /** Dine-in table labels; each gets a QR code (menu URL with ?table=) */
+  tables?: string[];
 
   // Trial info (ISO strings)
   trialStartedAt?: string | null;

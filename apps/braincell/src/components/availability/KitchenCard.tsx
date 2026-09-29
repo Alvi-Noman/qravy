@@ -10,6 +10,7 @@ import { useAuthContext } from '../../context/AuthContext';
 import { updateTenant } from '../../api/tenant';
 import { DEFAULT_KITCHEN, useKitchenSettings } from '../../hooks/useKitchenSettings';
 import { toastError, toastSuccess } from '../Toaster';
+import PrepTimesPanel from './PrepTimesPanel';
 
 function Stepper({
   id,
@@ -101,11 +102,11 @@ export default function KitchenCard() {
       <div className="mt-4 grid gap-5 sm:grid-cols-2">
         <div className="grid gap-1.5">
           <label className="text-[12px] font-medium text-slate-700" htmlFor="kitchen-prep">
-            Default prep time
+            Fallback prep time
           </label>
           <Stepper id="kitchen-prep" value={prep} onChange={setPrep} min={1} max={240} suffix="min" />
           <span className="text-[12px] text-slate-500">
-            For dishes without their own prep time (set it on each menu item for better estimates).
+            Only used if a dish somehow has no time of its own (AI estimates one for every dish).
           </span>
         </div>
         <div className="grid gap-1.5">
@@ -118,6 +119,8 @@ export default function KitchenCard() {
           </span>
         </div>
       </div>
+
+      <PrepTimesPanel />
 
       <div className="mt-4 flex items-center justify-between gap-3">
         {dirty ? (

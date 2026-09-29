@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import WaiterLanguageCard from '../../components/settings/WaiterLanguageCard';
 
 export default function SettingsLocalization(): JSX.Element {
   const [timezone, setTimezone] = useState('Asia/Kolkata');
@@ -20,6 +21,8 @@ export default function SettingsLocalization(): JSX.Element {
 
   return (
     <div className="grid gap-4">
+      <WaiterLanguageCard />
+
       <div className="rounded-xl border border-[#ececec] bg-white p-4 shadow-sm">
         <div className="text-[14px] font-semibold text-slate-900">Regional settings</div>
         <div className="mt-3 grid gap-3 sm:grid-cols-3">

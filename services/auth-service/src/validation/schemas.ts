@@ -125,6 +125,8 @@ export const menuItemSchema = z
     tags: z.array(z.string().min(1).max(30)).max(100).optional(),
     signature: z.boolean().optional(),
     prepMinutes: prepMinutesField.optional(),
+    /** Import: printed on the menu vs estimated by the AI (manual saves are the owner's) */
+    prepSource: z.enum(['menu', 'ai']).optional(),
     restaurantId: objectId.optional(),
 
     // owner/admin can target a single branch (branch-scoped item)
@@ -438,6 +440,7 @@ export const tenantUpdateSchema = z
       .optional(),
     menuNotes: z.array(z.string().trim().min(1).max(300)).max(20).optional(),
     waiterKnowledge: z.array(z.string().trim().min(1).max(500)).max(40).optional(),
+    waiterLanguage: z.enum(['bn', 'en']).optional(),
     timezone: z
       .string()
       .max(64)
@@ -458,6 +461,11 @@ export const tenantUpdateSchema = z
         defaultPrepMinutes: prepMinutesField,
         parallelOrders: z.coerce.number().int().min(1).max(50),
       })
+      .optional(),
+    // Same shape the guest app accepts from ?table= (apps/tastebud/src/utils/table.ts)
+    tables: z
+      .array(z.string().trim().regex(/^#?[A-Za-z0-9-]{1,12}$/, 'Table names: letters, numbers and dashes (max 12)'))
+      .max(500)
       .optional(),
   })
   .superRefine((data, ctx) => {
@@ -500,11 +508,25 @@ export const orderCreateSchema = z.object({
   locationId: objectId.optional(),
 });
 
-/** Guest places a dine-in order from the table's QR link (pay at the counter) */
+/**
+ * Guest places an order: dine-in from the table's QR link (pay at the counter), or online for
+ * pickup / delivery with contact details. Missing table / name / phone / address are reported by
+ * createOrderCore with a `needs` hint so the client can focus that field.
+ */
 export const publicOrderCreateSchema = z.object({
   subdomain: z.string().trim().min(1),
   branch: z.string().trim().max(80).nullable().optional(),
-  table: z.string().trim().min(1, 'Which table are you at?').max(20),
+  channel: z.enum(['dine-in', 'online']).optional(),
+  table: z.string().trim().max(20).nullable().optional(),
+  fulfillment: z.enum(['pickup', 'delivery']).nullable().optional(),
+  customer: z
+    .object({
+      name: z.string().trim().max(80).optional(),
+      phone: z.string().trim().max(30).optional(),
+      address: z.string().trim().max(300).nullable().optional(),
+    })
+    .nullable()
+    .optional(),
   items: z.array(orderLineSchema).min(1, 'Your order is empty').max(50),
   notes: z.string().trim().max(500).nullable().optional(),
   sessionId: z.string().trim().max(100).nullable().optional(),
@@ -519,6 +541,20 @@ export const orderStatusUpdateSchema = z.object({
 /** Staff push the ready time back (+) or forward (−), e.g. "kitchen is slammed, +10 min" */
 export const orderEtaUpdateSchema = z.object({
   addMinutes: z.coerce.number().int().min(-60).max(120).refine((n) => n !== 0, 'Add or remove at least a minute'),
+});
+
+/** Settings → Kitchen: AI prep times for dishes without one (ids = only these; redoAi = refresh AI estimates too) */
+export const prepEstimateSchema = z.object({
+  ids: z.array(objectId).max(2000).optional(),
+  redoAi: z.boolean().optional(),
+});
+
+/** Item modal: "Ask AI" for a dish that isn't saved yet */
+export const prepSuggestSchema = z.object({
+  name: z.string().trim().min(1).max(100),
+  category: z.string().trim().max(100).optional(),
+  description: z.string().max(2000).optional(),
+  sizes: z.array(z.string().trim().min(1).max(80)).max(50).optional(),
 });
 
 /** Guest asks "how long would this take?" before ordering (cart / tray) */

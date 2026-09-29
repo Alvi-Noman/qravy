@@ -9,13 +9,14 @@ import { client } from '../../db.js';
 import { checkOrderable } from '../../utils/orderability.js';
 import { resolveModifierSelections, type ModifierSelection } from '../../utils/modifiers.js';
 import { DEFAULT_TIMEZONE } from '../../utils/availability.js';
-import type { OrderDoc, OrderLine, OrderStatus } from '../../models/Order.js';
+import type { Fulfillment, OrderChannel, OrderCustomer, OrderDoc, OrderLine, OrderStatus } from '../../models/Order.js';
 import type { OrderEta } from '../../models/Order.js';
 import { publishOrder, publishTenant } from './events.js';
 import {
   DEFAULT_PREP_MINUTES,
   STALE_ORDER_MS,
   busyLevel,
+  isForgotten,
   dishMinutes,
   estimate,
   kitchenSettings,
@@ -76,8 +77,10 @@ export async function priceLines(opts: {
   lines: RequestedLine[];
   /** Minutes for dishes without a time of their own */
   defaultPrepMinutes?: number;
+  channel?: OrderChannel;
 }): Promise<OrderLine[]> {
   const { tenantOid, locationId, lines } = opts;
+  const channel = opts.channel ?? 'dine-in';
   if (!lines.length) throw new OrderError(400, 'Your order is empty.');
   if (lines.length > MAX_LINES) throw new OrderError(400, 'That order has too many lines.');
 
@@ -97,7 +100,8 @@ export async function priceLines(opts: {
   for (const line of lines) {
     const d = byId.get(line.itemId);
     if (!d || d.status === 'hidden' || d.hidden) throw new OrderError(409, 'An item in your order is no longer on the menu.');
-    if (d.visibility?.dineIn === false) throw new OrderError(409, `${d.name} isn't served for dine-in.`);
+    if (channel === 'dine-in' && d.visibility?.dineIn === false) throw new OrderError(409, `${d.name} isn't served for dine-in.`);
+    if (channel === 'online' && d.visibility?.online === false) throw new OrderError(409, `${d.name} isn't available for online orders.`);
     if (d.locationId && locationId && String(d.locationId) !== String(locationId)) {
       throw new OrderError(409, `${d.name} isn't available at this branch.`);
     }
@@ -140,7 +144,7 @@ export async function priceLines(opts: {
   }
 
   // Hours, service periods, item hours, date ranges, sold-out — the server has the final word
-  const orderable = await checkOrderable({ tenantOid, itemIds: ids, locationId, channel: 'dine-in' });
+  const orderable = await checkOrderable({ tenantOid, itemIds: ids, locationId, channel });
   for (const [, r] of orderable) {
     if (!r.ok) throw new OrderError(409, r.message, { reason: r.reason });
   }
@@ -162,15 +166,38 @@ export async function createOrderCore(input: {
   tenantOid: ObjectId;
   locationId: ObjectId | null;
   branch?: string | null;
-  table: string;
+  /** Default dine-in */
+  channel?: OrderChannel;
+  /** Dine-in: required */
+  table?: string | null;
+  /** Online: required */
+  fulfillment?: Fulfillment | null;
+  customer?: Partial<OrderCustomer> | null;
   lines: RequestedLine[];
   notes?: string | null;
   source: OrderDoc['source'];
   sessionId?: string | null;
   idempotencyKey?: string | null;
 }): Promise<{ order: OrderDoc; created: boolean }> {
-  const table = String(input.table ?? '').trim().slice(0, 20);
-  if (!table) throw new OrderError(400, 'Which table are you at?', { needs: 'table' });
+  const channel: OrderChannel = input.channel === 'online' ? 'online' : 'dine-in';
+  let dineIn: OrderDoc['dineIn'] = null;
+  let online: OrderDoc['online'] = null;
+  if (channel === 'dine-in') {
+    const table = String(input.table ?? '').trim().slice(0, 20);
+    if (!table) throw new OrderError(400, 'Which table are you at?', { needs: 'table' });
+    dineIn = { tableNumber: table };
+  } else {
+    const fulfillment: Fulfillment = input.fulfillment === 'delivery' ? 'delivery' : 'pickup';
+    const name = String(input.customer?.name ?? '').trim().slice(0, 80);
+    const phone = String(input.customer?.phone ?? '').trim().slice(0, 30);
+    const address = String(input.customer?.address ?? '').trim().slice(0, 300);
+    if (!name) throw new OrderError(400, 'Please enter your name.', { needs: 'name' });
+    if (phone.replace(/\D/g, '').length < 6) throw new OrderError(400, 'Please enter a phone number we can call.', { needs: 'phone' });
+    if (fulfillment === 'delivery' && !address) {
+      throw new OrderError(400, 'Where should we deliver?', { needs: 'address' });
+    }
+    online = { fulfillment, customer: { name, phone, ...(fulfillment === 'delivery' ? { address } : {}) } };
+  }
 
   const idem = input.idempotencyKey ? String(input.idempotencyKey).slice(0, 100) : undefined;
   if (idem) {
@@ -188,6 +215,7 @@ export async function createOrderCore(input: {
     locationId: input.locationId,
     lines: input.lines,
     defaultPrepMinutes: kitchen.defaultPrepMinutes,
+    channel,
   });
   const subtotal = round2(lines.reduce((s, l) => s + l.lineTotal, 0));
 
@@ -199,17 +227,18 @@ export async function createOrderCore(input: {
     tenantId: input.tenantOid,
     locationId: input.locationId,
     branch: input.branch ?? null,
-    channel: 'dine-in',
+    channel,
     orderNumber: await nextOrderNumber(input.tenantOid, day),
     businessDay: day,
     status: 'placed',
     statusHistory: [{ status: 'placed', at: now, by: input.source }],
-    dineIn: { tableNumber: table },
+    ...(dineIn ? { dineIn } : {}),
+    ...(online ? { online } : {}),
     items: lines,
     subtotal,
     total: subtotal,
     currency: 'BDT',
-    payment: { method: 'counter', status: 'unpaid' },
+    payment: { method: online?.fulfillment === 'delivery' ? 'cod' : 'counter', status: 'unpaid' },
     ...(input.notes && String(input.notes).trim() ? { notes: String(input.notes).trim().slice(0, 500) } : {}),
     source: input.source,
     publicToken: randomBytes(24).toString('base64url'),
@@ -254,7 +283,7 @@ export async function kitchenQueue(
   };
   if (locationId) q.locationId = locationId;
   const docs = await ordersCol()
-    .find(q, { projection: { status: 1, eta: 1, items: 1 } })
+    .find(q, { projection: { status: 1, eta: 1, items: 1, createdAt: 1 } })
     .sort({ createdAt: 1 })
     .limit(200)
     .toArray();
@@ -264,7 +293,17 @@ export async function kitchenQueue(
       o.eta?.prepMinutes ??
       orderPrepMinutes((o.items ?? []).map((l) => ({ prepMinutes: l.prepMinutes ?? defaultPrepMinutes, qty: l.qty }))),
     readyAt: o.eta?.readyAt ?? null,
+    createdAt: o.createdAt ?? null,
   }));
+}
+
+/**
+ * What an order just accepted waits behind: only orders the kitchen has already taken on (accepted / cooking).
+ * Orders still waiting to be accepted haven't reached the kitchen — they don't hold up the one accepted now,
+ * whenever they were placed.
+ */
+export function inTheKitchen(ahead: QueuedOrder[]): QueuedOrder[] {
+  return ahead.filter((q) => q.status === 'accepted' || q.status === 'preparing');
 }
 
 export function orderEta(lines: OrderLine[], ahead: QueuedOrder[], kitchen: KitchenSettings, now: Date): OrderEta {
@@ -275,16 +314,30 @@ export function orderEta(lines: OrderLine[], ahead: QueuedOrder[], kitchen: Kitc
 }
 
 /**
- * New ready time after a status change:
- *   preparing → cooking starts now: now + prep (+ any delay staff added)
+ * New ready time after a status change. The clock only starts once the restaurant takes the order —
+ * a "placed" order has an estimate (how long it'll take) but no ready time the guest counts down to.
+ *   accepted  → now + wait for a free station (re-measured now) + prep (+ any delay staff added)
+ *   preparing → cooking starts now: now + prep (+ delay)
  *   ready     → it's ready: now
+ * Leaving "placed" is also when the guest is promised a time (promisedReadyAt).
  * Other moves keep the current estimate.
  */
-export function retime(eta: OrderEta | undefined, to: OrderStatus, now: Date): OrderEta | undefined {
+export function retime(
+  eta: OrderEta | undefined,
+  to: OrderStatus,
+  now: Date,
+  opts: { from?: OrderStatus; queueMinutes?: number } = {}
+): OrderEta | undefined {
   if (!eta) return eta;
+  const delay = Math.max(0, eta.adjustedMinutes ?? 0);
+  if (to === 'accepted') {
+    const queue = opts.queueMinutes ?? eta.queueMinutes;
+    const readyAt = new Date(now.getTime() + (queue + eta.prepMinutes + delay) * 60_000);
+    return { ...eta, queueMinutes: queue, readyAt, promisedReadyAt: readyAt };
+  }
   if (to === 'preparing') {
-    const delay = Math.max(0, eta.adjustedMinutes ?? 0);
-    return { ...eta, readyAt: new Date(now.getTime() + (eta.prepMinutes + delay) * 60_000) };
+    const readyAt = new Date(now.getTime() + (eta.prepMinutes + delay) * 60_000);
+    return { ...eta, readyAt, ...(opts.from === 'placed' ? { promisedReadyAt: readyAt } : {}) };
   }
   if (to === 'ready') return { ...eta, readyAt: now };
   return eta;
@@ -362,7 +415,7 @@ export async function estimateForGuest(opts: {
     readyAt: e.readyAt.toISOString(),
     estimated: e.estimated,
     busy: busyLevel(e.queueMinutes),
-    ordersInKitchen: ahead.length,
+    ordersInKitchen: ahead.filter((o) => !isForgotten(o, now)).length,
     defaultPrepMinutes: kitchen.defaultPrepMinutes,
     serverNow: now.toISOString(),
   };
@@ -371,14 +424,20 @@ export async function estimateForGuest(opts: {
 /** The ETA as guests and staff see it. `serverNow` lets the browser correct for its own clock. */
 function etaView(o: OrderDoc, now: Date = new Date()) {
   if (!o.eta) return undefined;
-  const open = OPEN_STATUSES.includes(o.status);
+  // not taken yet: no clock — minutesLeft is how long it'll take once the restaurant accepts
+  const waiting = o.status === 'placed';
+  const open = OPEN_STATUSES.includes(o.status) && !waiting;
   const readyAt = new Date(o.eta.readyAt);
+  const estimateMinutes = o.eta.queueMinutes + o.eta.prepMinutes + Math.max(0, o.eta.adjustedMinutes ?? 0);
   return {
+    /** true until the restaurant accepts: show estimateMinutes, don't count down */
+    startsOnAccept: waiting,
+    estimateMinutes,
     prepMinutes: o.eta.prepMinutes,
     queueMinutes: o.eta.queueMinutes,
     promisedReadyAt: new Date(o.eta.promisedReadyAt).toISOString(),
     readyAt: readyAt.toISOString(),
-    minutesLeft: open ? minutesLeft(readyAt, now) : 0,
+    minutesLeft: waiting ? estimateMinutes : open ? minutesLeft(readyAt, now) : 0,
     /** Still in the kitchen past the estimate */
     late: open && readyAt.getTime() < now.getTime(),
     adjustedMinutes: o.eta.adjustedMinutes ?? 0,
@@ -414,7 +473,18 @@ export async function updateStatusCore(opts: {
     throw new OrderError(409, `Can't move an order from ${current.status} to ${opts.to}`);
   }
   const now = new Date();
-  const eta = retime(current.eta, opts.to, now);
+  let queue: number | undefined;
+  if (opts.to === 'accepted' && current.eta) {
+    // the wait for a free station, as it is now — orders ahead may have finished since this one came in
+    const tenant = await client
+      .db('authDB')
+      .collection('tenants')
+      .findOne({ _id: opts.tenantOid }, { projection: { kitchen: 1 } });
+    const kitchen = kitchenSettings(tenant as { kitchen?: Partial<KitchenSettings> } | null);
+    const all = await kitchenQueue(opts.tenantOid, current.locationId ?? null, now, kitchen.defaultPrepMinutes);
+    queue = queueMinutes(inTheKitchen(all), kitchen.parallelOrders, now);
+  }
+  const eta = retime(current.eta, opts.to, now, { from: current.status, queueMinutes: queue });
   const updated = await ordersCol().findOneAndUpdate(
     { ...filter, status: current.status }, // optimistic: nobody changed it meanwhile
     {
@@ -454,7 +524,9 @@ export function toPublicOrder(o: OrderDoc) {
     orderNumber: o.orderNumber,
     status: o.status,
     statusHistory: o.statusHistory.map((h) => ({ status: h.status, at: h.at })),
-    table: o.dineIn?.tableNumber,
+    channel: o.channel ?? 'dine-in',
+    table: o.dineIn?.tableNumber ?? null,
+    ...(o.online ? { fulfillment: o.online.fulfillment, customer: o.online.customer } : {}),
     items: o.items.map(lineView),
     subtotal: o.subtotal,
     total: o.total,

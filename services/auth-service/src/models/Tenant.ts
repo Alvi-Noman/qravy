@@ -13,6 +13,9 @@ export interface TenantDoc {
   /** House facts the virtual waiter may tell guests (Wi-Fi, payment methods, parking, halal…) */
   waiterKnowledge?: string[];
 
+  /** Language the virtual waiter speaks by default (guests can switch on the storefront); missing = 'bn' */
+  waiterLanguage?: 'bn' | 'en';
+
   /** IANA time zone used for all hours (default Asia/Dhaka) */
   timezone?: string;
   /** Restaurant opening hours; empty/missing = always open */
@@ -23,6 +26,8 @@ export interface TenantDoc {
   servicePeriods?: Array<{ id: string; name: string; days: number[]; start: string; end: string }>;
   /** Wait-time estimation: minutes for a dish with no time set, and orders the kitchen cooks at once */
   kitchen?: { defaultPrepMinutes?: number; parallelOrders?: number };
+  /** Dine-in table labels ("1", "A4", "PATIO-2"); each gets a QR code that opens the menu with ?table= */
+  tables?: string[];
 
   ownerInfo?: {
     fullName: string;

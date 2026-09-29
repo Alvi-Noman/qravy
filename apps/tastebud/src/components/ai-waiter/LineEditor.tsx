@@ -9,6 +9,7 @@ import ModifierPicker, {
   type ModifierPicks,
 } from '../ModifierPicker';
 import { money, tr, uiLang } from '../../utils/ui-lang';
+import SheetScrollArea, { ScrollLock } from '../SheetScroll';
 
 type Props = {
   line: CartItem | null;
@@ -90,14 +91,16 @@ export default function LineEditor({ line, menuItem, onClose, onSave, onRemove }
   return (
     <div role="dialog" aria-modal="true" aria-label={line.name} className="fixed inset-0 z-[1200] flex items-end sm:items-center justify-center">
       <div className="absolute inset-0 bg-black/40" onClick={onClose} />
-      <div className="relative w-full sm:max-w-md max-h-[88vh] overflow-y-auto rounded-t-3xl sm:rounded-3xl bg-white p-5 shadow-2xl">
-        <div className="mb-4 flex items-start justify-between gap-3">
+      <ScrollLock />
+      <div className="relative flex w-full flex-col sm:max-w-md max-h-[88dvh] overflow-hidden rounded-t-3xl sm:rounded-3xl bg-white shadow-2xl">
+        <div className="shrink-0 flex items-start justify-between gap-3 px-5 pt-5 pb-3">
           <h3 className="text-lg font-semibold text-gray-900">{line.name}</h3>
           <button type="button" onClick={onClose} aria-label={tr(lang, 'বন্ধ করুন', 'Close')} className="h-8 w-8 rounded-full hover:bg-gray-100">
             ✕
           </button>
         </div>
 
+        <SheetScrollArea className="px-5 pb-4" fadeFrom="#ffffff">
         {/* quantity */}
         <div className="flex items-center justify-between rounded-2xl bg-gray-50 px-4 py-3">
           <span className="text-sm text-gray-700">{tr(lang, 'পরিমাণ', 'Quantity')}</span>
@@ -154,7 +157,10 @@ export default function LineEditor({ line, menuItem, onClose, onSave, onRemove }
           />
         </div>
 
-        <div className="mt-5 flex gap-3">
+        </SheetScrollArea>
+
+        {/* always visible — the choices scroll above it */}
+        <div className="shrink-0 flex gap-3 border-t border-gray-100 px-5 pt-3 pb-[max(1rem,env(safe-area-inset-bottom))]">
           <button type="button" onClick={onRemove} className="rounded-2xl border border-gray-200 px-4 py-3 text-sm text-gray-700">
             {tr(lang, 'বাদ দিন', 'Remove')}
           </button>

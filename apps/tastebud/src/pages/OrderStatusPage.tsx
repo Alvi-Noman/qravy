@@ -13,7 +13,7 @@ const STEPS: OrderStatus[] = ['placed', 'accepted', 'preparing', 'ready', 'compl
 
 const LABEL: Record<OrderStatus, [string, string]> = {
   placed: ['অর্ডার পাঠানো হয়েছে', 'Order sent'],
-  accepted: ['গ্রহণ করা হয়েছে', 'Accepted'],
+  accepted: ['রেস্টুরেন্ট গ্রহণ করেছে', 'Accepted by the restaurant'],
   preparing: ['তৈরি হচ্ছে', 'Preparing'],
   ready: ['প্রস্তুত', 'Ready'],
   completed: ['সম্পন্ন', 'Completed'],
@@ -92,6 +92,10 @@ export default function OrderStatusPage() {
   }
 
   const cancelled = order.status === 'cancelled';
+  const online = order.channel === 'online';
+  const delivery = online && order.fulfillment === 'delivery';
+  const whereLabel = !online ? tr(lang, 'টেবিল', 'Table') : delivery ? tr(lang, 'ডেলিভারি', 'Delivery') : tr(lang, 'পিকআপ', 'Pickup');
+  const whereShort = !online ? tr(lang, `টেবিল ${order.table}`, `Table ${order.table}`) : whereLabel;
   const currentIdx = STEPS.indexOf(order.status);
   const at = (s: OrderStatus) => order.statusHistory.find((h) => h.status === s)?.at;
   const time = (iso?: string) =>
@@ -106,10 +110,17 @@ export default function OrderStatusPage() {
             <div className="text-3xl font-bold tracking-tight text-gray-900">#{order.orderNumber}</div>
           </div>
           <div className="text-right">
-            <p className="text-xs text-gray-500">{tr(lang, 'টেবিল', 'Table')}</p>
-            <div className="text-xl font-semibold text-gray-900">{order.table}</div>
+            <p className="text-xs text-gray-500">{whereLabel}</p>
+            <div className="text-xl font-semibold text-gray-900">{online ? order.customer?.name : order.table}</div>
           </div>
         </section>
+
+        {online && order.customer && (
+          <section className="mt-3 rounded-3xl bg-white px-6 py-4 text-sm text-gray-700 shadow-sm">
+            <div>{order.customer.phone}</div>
+            {delivery && order.customer.address && <div className="mt-1 text-gray-600">{order.customer.address}</div>}
+          </section>
+        )}
 
         {cancelled ? (
           <section className="mt-3 rounded-3xl bg-white p-6 text-center shadow-sm">
@@ -143,7 +154,8 @@ export default function OrderStatusPage() {
                     <span className={`flex-1 text-sm ${done ? 'text-gray-900 font-medium' : 'text-gray-400'}`}>{t(LABEL[s])}</span>
                     <span className="text-xs text-gray-400">
                       {time(at(s)) ||
-                        (s === 'ready' && order.eta ? tr(lang, `আনুমানিক ${time(order.eta.readyAt)}`, `est. ${time(order.eta.readyAt)}`) : '')}
+                        (s === 'accepted' && order.status === 'placed' ? tr(lang, 'অপেক্ষায়…', 'waiting…') : '') ||
+                        (s === 'ready' && order.eta && order.status !== 'placed' ? tr(lang, `আনুমানিক ${time(order.eta.readyAt)}`, `est. ${time(order.eta.readyAt)}`) : '')}
                     </span>
                   </li>
                 );
@@ -176,6 +188,10 @@ export default function OrderStatusPage() {
           <div className="px-4 pb-4 text-sm text-gray-600">
             {order.payment.status === 'paid'
               ? tr(lang, 'পরিশোধিত ✓', 'Paid ✓')
+              : delivery
+              ? tr(lang, 'ক্যাশ অন ডেলিভারি।', 'Cash on delivery.')
+              : online
+              ? tr(lang, 'নেওয়ার সময় পরিশোধ করবেন।', 'Please pay when you pick it up.')
               : tr(lang, 'বিল কাউন্টারে পরিশোধ করবেন।', 'Please pay at the counter.')}
           </div>
         </section>
@@ -192,9 +208,17 @@ export default function OrderStatusPage() {
         open={showConfirmed}
         onClose={() => setShowConfirmed(false)}
         orderNumber={order.orderNumber}
-        table={order.table}
+        where={whereShort}
         total={order.total}
         minutesLeft={order.eta?.minutesLeft}
+        waiting={order.status === 'placed'}
+        payNote={
+          delivery
+            ? tr(lang, 'ক্যাশ অন ডেলিভারি।', 'Cash on delivery.')
+            : online
+            ? tr(lang, 'নেওয়ার সময় পরিশোধ করবেন — এই নম্বরটা বলবেন।', 'Pay when you pick it up — just quote this number.')
+            : tr(lang, 'বিল কাউন্টারে দেবেন — এই নম্বরটা বলবেন।', 'Pay at the counter — just quote this number.')
+        }
         lang={lang}
       />
     </div>

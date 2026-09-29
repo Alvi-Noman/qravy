@@ -12,6 +12,9 @@ import {
   bulkChangeCategory,
   reorderMenuItems,
   bulkSetItemHours,
+  getPrepTimeStatus,
+  estimatePrepTimes,
+  suggestPrepTime,
 } from '../controllers/menuItemsController.js';
 import { authenticateJWT } from '../middleware/auth.js';
 import { applyScope } from '../middleware/scope.js';
@@ -26,6 +29,8 @@ import {
   listMenuItemsQuerySchema,
   reorderSchema,
   bulkHoursSchema,
+  prepEstimateSchema,
+  prepSuggestSchema,
 } from '../validation/schemas.js';
 
 const router: express.Router = express.Router();
@@ -123,6 +128,25 @@ router.post(
   authorize('menuItems:update'),
   validateRequest(reorderSchema),
   reorderMenuItems
+);
+
+// Prep times: status, AI estimates for dishes without their own time, and a suggestion for the item modal
+router.get('/menu-items/prep-times', authenticateJWT, applyScope, authorize('menuItems:read'), getPrepTimeStatus);
+router.post(
+  '/menu-items/prep-times/estimate',
+  authenticateJWT,
+  applyScope,
+  authorize('menuItems:update'),
+  validateRequest(prepEstimateSchema),
+  estimatePrepTimes
+);
+router.post(
+  '/menu-items/prep-times/suggest',
+  authenticateJWT,
+  applyScope,
+  authorize('menuItems:update'),
+  validateRequest(prepSuggestSchema),
+  suggestPrepTime
 );
 
 export default router;

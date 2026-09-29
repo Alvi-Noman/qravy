@@ -17,6 +17,7 @@ import {
   ChevronDownIcon,
   MapPinIcon,
   Cog6ToothIcon,
+  QrCodeIcon,
 } from '@heroicons/react/24/outline';
 import { useAuthContext } from '../../context/AuthContext';
 import { useScope } from '../../context/ScopeContext';
@@ -48,6 +49,7 @@ export default function Sidebar(): JSX.Element {
     'Menu Items': 'menuItems:read',
     Categories: 'categories:read',
     'Digital Menu': 'digitalMenu:view', // not in branch caps → hidden there
+    'QR Codes': 'digitalMenu:view',
     Offers: 'offers:read',
     Customers: 'customers:read',
     Locations: 'locations:read',
@@ -71,6 +73,7 @@ export default function Sidebar(): JSX.Element {
         { name: 'Menu Items', to: '/menu-items', icon: Squares2X2Icon },
         { name: 'Categories', to: '/categories', icon: TagIcon },
         { name: 'Digital Menu', to: '/digital-menu', icon: DocumentTextIcon },
+        { name: 'QR Codes', to: '/qr-codes', icon: QrCodeIcon },
         { name: 'Offers', to: '/offers', icon: GiftIcon },
         { name: 'Customers', to: '/customers', icon: UserGroupIcon },
         { name: 'Locations', to: '/locations', icon: BuildingStorefrontIcon },

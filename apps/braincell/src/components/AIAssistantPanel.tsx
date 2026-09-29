@@ -8,11 +8,16 @@ import {
   PaperClipIcon,
   PaperAirplaneIcon,
   CheckIcon,
+  Cog6ToothIcon,
 } from '@heroicons/react/24/outline';
 import { useTenant } from '../hooks/useTenant';
 import { useQueryClient } from '@tanstack/react-query';
 import { useAuthContext } from '../context/AuthContext';
 import { Link, useNavigate } from 'react-router-dom';
+
+const AUTO_OPEN_OFF_KEY = 'setup-guide-auto-open-off';
+const SNOOZE_UNTIL_KEY = 'setup-guide-snooze-until';
+const SNOOZE_MS = 24 * 60 * 60 * 1000;
 
 type Step = {
   id: string;
@@ -400,13 +405,77 @@ export default function AIAssistantPanel({
     return () => clearTimeout(t);
   }, []);
 
+  // Auto-open preferences (gear menu): permanently off, or snoozed until a timestamp
+  const [autoOpenDisabled, setAutoOpenDisabled] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(AUTO_OPEN_OFF_KEY) === '1';
+    } catch {
+      return false;
+    }
+  });
+  const [snoozeUntil, setSnoozeUntil] = useState<number>(() => {
+    try {
+      return Number(localStorage.getItem(SNOOZE_UNTIL_KEY)) || 0;
+    } catch {
+      return 0;
+    }
+  });
+  const isSnoozed = snoozeUntil > Date.now();
+
   useEffect(() => {
     if (readOnly) return; // never auto-open from here for branch accounts
+    if (autoOpenDisabled || isSnoozed) return; // respect gear-menu preference
     const anyIncomplete = steps.some((s) => !s.done);
     if (autoOpenReady && !open && anyIncomplete) {
       onRequestOpen?.();
     }
-  }, [open, steps, onRequestOpen, autoOpenReady, readOnly]);
+  }, [open, steps, onRequestOpen, autoOpenReady, readOnly, autoOpenDisabled, isSnoozed]);
+
+  // Gear menu
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const settingsRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!settingsOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (settingsRef.current && !settingsRef.current.contains(e.target as Node)) setSettingsOpen(false);
+    };
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, [settingsOpen]);
+
+  useEffect(() => {
+    if (!open) setSettingsOpen(false);
+  }, [open]);
+
+  const remindLater = () => {
+    const until = Date.now() + SNOOZE_MS;
+    try {
+      localStorage.setItem(SNOOZE_UNTIL_KEY, String(until));
+    } catch {}
+    setSnoozeUntil(until);
+    setSettingsOpen(false);
+    onClose?.();
+  };
+
+  const dontShowAgain = () => {
+    try {
+      localStorage.setItem(AUTO_OPEN_OFF_KEY, '1');
+    } catch {}
+    setAutoOpenDisabled(true);
+    setSettingsOpen(false);
+    onClose?.();
+  };
+
+  const resumeAutoOpen = () => {
+    try {
+      localStorage.removeItem(AUTO_OPEN_OFF_KEY);
+      localStorage.removeItem(SNOOZE_UNTIL_KEY);
+    } catch {}
+    setAutoOpenDisabled(false);
+    setSnoozeUntil(0);
+    setSettingsOpen(false);
+  };
 
   // Auto-close when all steps become done while the panel is open
   const prevAllDoneRef = useRef<boolean>(allDone);
@@ -482,14 +551,79 @@ export default function AIAssistantPanel({
               {allDone ? 'New conversation' : 'Setup Guide'}
               <ChevronDownIcon className="h-4 w-4 text-slate-500" />
             </span>
-            <button
-              type="button"
-              title="Close"
-              onClick={onClose}
-              className="rounded-md p-1.5 hover:bg-[#f6f6f6]"
-            >
-              <XMarkIcon className="h-5 w-5 text-slate-700" />
-            </button>
+            <div className="flex items-center gap-1">
+              {!allDone && !readOnly && (
+                <div ref={settingsRef} className="relative">
+                  <button
+                    type="button"
+                    title="Setup guide settings"
+                    aria-haspopup="menu"
+                    aria-expanded={settingsOpen}
+                    onClick={() => setSettingsOpen((v) => !v)}
+                    className={`rounded-md p-1.5 hover:bg-[#f6f6f6] ${settingsOpen ? 'bg-[#f6f6f6]' : ''}`}
+                  >
+                    <Cog6ToothIcon className="h-5 w-5 text-slate-600" />
+                  </button>
+                  <AnimatePresence>
+                    {settingsOpen && (
+                      <motion.div
+                        role="menu"
+                        initial={{ opacity: 0, y: -4 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, y: -4 }}
+                        transition={{ duration: 0.12 }}
+                        className="absolute right-0 top-full z-20 mt-1 w-60 rounded-lg border border-[#ececec] bg-white p-1 shadow-lg"
+                      >
+                        {autoOpenDisabled || isSnoozed ? (
+                          <button
+                            type="button"
+                            role="menuitem"
+                            onClick={resumeAutoOpen}
+                            className="w-full rounded-md px-3 py-2 text-left hover:bg-slate-50"
+                          >
+                            <div className="text-[13px] font-medium text-slate-800">Show automatically again</div>
+                            <div className="text-[11px] text-slate-500">
+                              {autoOpenDisabled
+                                ? 'Currently hidden until you open it'
+                                : `Snoozed until ${new Date(snoozeUntil).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' })}`}
+                            </div>
+                          </button>
+                        ) : (
+                          <>
+                            <button
+                              type="button"
+                              role="menuitem"
+                              onClick={remindLater}
+                              className="w-full rounded-md px-3 py-2 text-left hover:bg-slate-50"
+                            >
+                              <div className="text-[13px] font-medium text-slate-800">Remind me tomorrow</div>
+                              <div className="text-[11px] text-slate-500">Hide for 24 hours</div>
+                            </button>
+                            <button
+                              type="button"
+                              role="menuitem"
+                              onClick={dontShowAgain}
+                              className="w-full rounded-md px-3 py-2 text-left hover:bg-slate-50"
+                            >
+                              <div className="text-[13px] font-medium text-slate-800">Don't show this again</div>
+                              <div className="text-[11px] text-slate-500">Stop opening it automatically</div>
+                            </button>
+                          </>
+                        )}
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </div>
+              )}
+              <button
+                type="button"
+                title="Close"
+                onClick={onClose}
+                className="rounded-md p-1.5 hover:bg-[#f6f6f6]"
+              >
+                <XMarkIcon className="h-5 w-5 text-slate-700" />
+              </button>
+            </div>
           </div>
 
           {/* Body */}

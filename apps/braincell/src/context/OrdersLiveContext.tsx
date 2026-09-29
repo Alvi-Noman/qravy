@@ -6,6 +6,8 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { useAuthContext } from './AuthContext';
 import { usePermissions } from './PermissionsContext';
 import { useScope } from './ScopeContext';
+import { useTenant } from '../hooks/useTenant';
+import { loadPrintSettings, printOrder } from '../utils/thermalPrint';
 import {
   listOrders,
   streamOrders,
@@ -77,6 +79,14 @@ export function OrdersLiveProvider({ children }: { children: React.ReactNode }) 
   });
   const soundRef = useRef(soundOn);
   soundRef.current = soundOn;
+  // auto-print needs these inside the stream callback
+  const { data: tenant } = useTenant();
+  const printCtx = useRef({ locationId: activeLocationId, restaurant: '', timezone: '' });
+  printCtx.current = {
+    locationId: activeLocationId,
+    restaurant: (tenant as { name?: string } | undefined)?.name ?? '',
+    timezone: (tenant as { timezone?: string } | undefined)?.timezone ?? '',
+  };
 
   const setSoundOn = useCallback((on: boolean) => {
     setSoundState(on);
@@ -122,6 +132,15 @@ export function OrdersLiveProvider({ children }: { children: React.ReactNode }) 
         upsert(ev.order);
         if (ev.type === 'order.created') {
           if (soundRef.current) chime();
+          // "Auto-print new orders" (this device): kitchen ticket, and a receipt if asked — for this branch only
+          const ps = loadPrintSettings();
+          const pc = printCtx.current;
+          const mine = !pc.locationId || !ev.order.locationId || ev.order.locationId === pc.locationId;
+          if (ps.autoPrint && mine) {
+            const opts = { paper: ps.paper, restaurant: pc.restaurant, timezone: pc.timezone || undefined };
+            void printOrder(ev.order, 'kitchen', opts);
+            if (ps.autoPrintReceipt) void printOrder(ev.order, 'receipt', opts);
+          }
           // title nudge for a background tab
           if (document.visibilityState !== 'visible') document.title = `(New order) ${document.title.replace(/^\(New order\) /, '')}`;
         }

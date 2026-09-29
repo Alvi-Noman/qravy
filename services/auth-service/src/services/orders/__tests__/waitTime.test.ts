@@ -10,7 +10,7 @@ import {
   orderPrepMinutes,
   queueMinutes,
 } from '../waitTime.js';
-import { adjustEta, retime } from '../core.js';
+import { adjustEta, inTheKitchen, retime } from '../core.js';
 
 const NOW = new Date('2026-09-29T12:00:00Z');
 const at = (min: number) => new Date(NOW.getTime() + min * 60_000);
@@ -75,6 +75,17 @@ describe('wait time: the kitchen queue', () => {
     expect(queueMinutes(ahead, 1, NOW)).toBe(0);
   });
 
+  it('forgets orders long past their due time (served, never marked done)', () => {
+    const forgotten = [
+      { status: 'placed', prepMinutes: 19, createdAt: at(-60) }, // due 41 min ago, no ETA
+      { status: 'accepted', prepMinutes: 15, readyAt: at(-35) },
+      { status: 'preparing', prepMinutes: 20, readyAt: at(-31) },
+    ];
+    expect(queueMinutes(forgotten, 1, NOW)).toBe(0);
+    // just late (within 30 min) still counts: the kitchen may really be behind
+    expect(queueMinutes([{ status: 'placed', prepMinutes: 19, createdAt: at(-40) }], 1, NOW)).toBe(19);
+  });
+
   it('estimates queue + prep and flags defaulted dishes', () => {
     const e = estimate({
       lines: [
@@ -107,6 +118,26 @@ describe('wait time: the kitchen queue', () => {
   });
 });
 
+describe('wait time: accepting an order', () => {
+  it("waits only behind orders the kitchen already took on — not ones nobody has accepted yet", () => {
+    // the real case (#12): #9 cooking with 10 min left, #10 and #11 still waiting to be accepted, 3 stations
+    const ahead = [
+      { status: 'accepted', prepMinutes: 19, readyAt: at(10) },
+      { status: 'placed', prepMinutes: 17 },
+      { status: 'placed', prepMinutes: 10 },
+    ];
+    expect(queueMinutes(ahead, 3, NOW)).toBe(10); // what happened: the two unaccepted orders counted
+    expect(queueMinutes(inTheKitchen(ahead), 3, NOW)).toBe(0); // now: a free station → 11 prep + 5 staff = 16
+    // a full kitchen still makes it wait
+    const busy = [
+      { status: 'preparing', prepMinutes: 20, readyAt: at(6) },
+      { status: 'accepted', prepMinutes: 15 },
+      { status: 'preparing', prepMinutes: 12, readyAt: at(9) },
+    ];
+    expect(queueMinutes(inTheKitchen(busy), 3, NOW)).toBe(6);
+  });
+});
+
 describe('wait time: an order over its life', () => {
   const eta = { prepMinutes: 18, queueMinutes: 6, promisedReadyAt: at(24), readyAt: at(24) };
 
@@ -114,8 +145,23 @@ describe('wait time: an order over its life', () => {
     const later = at(10);
     expect(retime(eta, 'preparing', later)?.readyAt.toISOString()).toBe(at(28).toISOString());
     expect(retime(eta, 'ready', later)?.readyAt.toISOString()).toBe(later.toISOString());
-    expect(retime(eta, 'accepted', later)).toBe(eta);
+    expect(retime(eta, 'completed', later)).toBe(eta);
     expect(retime(undefined, 'preparing', later)).toBeUndefined();
+  });
+
+  it('starts the clock when the restaurant accepts, not when the guest ordered', () => {
+    // accepted 10 min after ordering: queue (re-measured: 2) + prep 18 from then, and that's the promise
+    const accepted = retime(eta, 'accepted', at(10), { from: 'placed', queueMinutes: 2 });
+    expect(accepted?.readyAt.toISOString()).toBe(at(30).toISOString());
+    expect(accepted?.promisedReadyAt.toISOString()).toBe(at(30).toISOString());
+    expect(accepted?.queueMinutes).toBe(2);
+    // without a fresh queue it keeps the one measured when the order came in
+    expect(retime(eta, 'accepted', at(10))?.readyAt.toISOString()).toBe(at(34).toISOString());
+    // a busy kitchen skips "accepted": cooking starts straight away, and that's the promise
+    const straight = retime(eta, 'preparing', at(10), { from: 'placed' });
+    expect(straight?.promisedReadyAt.toISOString()).toBe(at(28).toISOString());
+    // after accepting, starting to cook doesn't change what the guest was promised
+    expect(retime(accepted, 'preparing', at(15), { from: 'accepted' })?.promisedReadyAt).toBe(accepted?.promisedReadyAt);
   });
 
   it('keeps a staff delay when cooking starts', () => {

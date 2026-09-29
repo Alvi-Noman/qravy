@@ -2,6 +2,7 @@
 import React, { useEffect, useRef, useCallback, useState, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { useCart } from '../context/CartContext';
+import { useBodyScrollLock } from './SheetScroll';
 import { minutesLabel, prepFor, prepRange } from '../utils/wait-time';
 import ModifierPicker, {
   picksToModifiers,
@@ -317,14 +318,8 @@ export default function Modal({
     return () => window.removeEventListener('keydown', onKey);
   }, [open, dismissible, close]);
 
-  useEffect(() => {
-    if (!open) return;
-    const prev = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
-    return () => {
-      document.body.style.overflow = prev;
-    };
-  }, [open]);
+  // shared lock: closing this sheet over the tray keeps the page behind locked
+  useBodyScrollLock(open);
 
   const onBackdropMouseDown = (e: React.MouseEvent) => {
     if (!dismissible) return;
@@ -359,10 +354,12 @@ export default function Modal({
   const sizeClass =
     size === 'sm' ? 'sm:max-w-sm' : size === 'lg' ? 'sm:max-w-2xl' : 'sm:max-w-xl';
 
+  // dvh = the screen you can actually see on a phone (vh runs under the browser bar)
   const mobileSheetHeight = hasVariations
-    ? 'h-[90vh] max-h-[90vh]'
-    : 'h-[80vh] max-h-[80vh]';
-  const mobileImageHeight = 'h-[300px]';
+    ? 'h-[90dvh] max-h-[calc(100dvh-12px)]'
+    : 'h-[80dvh] max-h-[calc(100dvh-12px)]';
+  // a big photo on a small phone left no room for the sizes and add-ons
+  const mobileImageHeight = 'h-[min(300px,32dvh)]';
   const desktopImageHeight = 'sm:h-[380px]';
 
   // -------- Price to display (variation-aware) --------
@@ -426,7 +423,7 @@ export default function Modal({
           'bg-[#F6F5F8] rounded-t-[24px] sm:rounded-[16px] shadow-xl w-full font-[Inter]',
           'transform transition-transform duration-300 ease-out will-change-transform',
           visible ? 'translate-y-0 sm:translate-y-0' : 'translate-y-full sm:translate-y-0',
-          `flex flex-col ${mobileSheetHeight} sm:h-auto sm:max-h-[90vh]`,
+          `flex flex-col ${mobileSheetHeight} sm:h-auto sm:max-h-[90dvh]`,
           sizeClass
         )}
         onTouchStart={onTouchStart}
@@ -517,7 +514,7 @@ export default function Modal({
         </div>
 
         {/* Body */}
-        <div ref={bodyRef} className="flex-1 overflow-y-auto px-4 pt-4 pb-8 sm:px-5 sm:pb-8">
+        <div ref={bodyRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 pt-4 pb-8 sm:px-5 sm:pb-8">
           <div className="flex items-start justify-between gap-3">
             <h4 className="min-w-0 truncate text-[17px] sm:text-[19px] font-semibold tracking-tight text-neutral-900">
               {title}
@@ -694,7 +691,7 @@ export default function Modal({
         </div>
 
         {canOrder && (
-          <div className="shrink-0 border-t border-gray-200 bg-white px-4 py-3 sm:rounded-b-[16px] sm:px-5">
+          <div className="shrink-0 border-t border-gray-200 bg-white px-4 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:rounded-b-[16px] sm:px-5">
             <div className="flex items-center gap-3">
               <div className="flex items-center rounded-full border border-neutral-300">
                 <button

@@ -824,15 +824,24 @@ _SERVICE = re.compile(
 )
 # "what do you have?" — a tour of the menu, shown as cards to pick from
 _OVERVIEW = re.compile(
-    r"(কি|কী) (কি|কী) (আছে|পাওয়া|পাওয়া|খাবার|পাব|পাবো)|মেনুতে (কি|কী)|আপনাদের (কি|কী) আছে|"
+    r"(কি|কী) (কি|কী) (আছে|পাওয়া|পাওয়া|খাবার|পাব|পাবো)|মেনুতে (কি|কী)|মেনু(তে)? (কি|কী) (কি|কী)|মেনুটা (কি|কী)|আপনাদের (কি|কী) আছে|"
+    r"খাবারের (তালিকা|লিস্ট|মেনু)|কী কী খাবার|কি কি খাবার|মেনুতে (আর )?(কি|কী) (আছে|পাওয়া)|"
+    # "কি আছে আপনাদের?", "কি আছো আপনাদের" (misheard), "আপনাদের এখানে কী পাওয়া যায়?"
+    r"(কি|কী) (আছে|আছো|আছেন) (আপনাদের|আপনার|এখানে|আজকে|আজ)|(আপনাদের|আপনার|এখানে)( এখানে)? (কি|কী) (কি |কী )?(আছে|আছো|পাওয়া যায়)|"
+    r"(কি|কী) (কি |কী )?পাওয়া যায়|\bwhat have you got\b|\bki ache (apnader|apnar)\b|"
     r"\bwhat (do|have) you (have|got|serve)\b|\bwhat'?s (on )?(the|your) menu\b|\bwhat (food|dishes) (do you have|are there)\b|"
     r"\bki ki (ache|ase|pawa|khabar)\b|\bmenu ?te ki\b",
     re.I,
 )
 
 
+_MINE = re.compile(r"আমার|ট্রে|কার্ট|\b(my|tray|cart)\b", re.I)
+
+
 def asks_overview(text: str) -> bool:
-    return bool(_OVERVIEW.search(text or ""))
+    """"What do you have?" — about the restaurant, not "what's in MY tray"."""
+    t = text or ""
+    return bool(_OVERVIEW.search(t)) and not _MINE.search(t)
 
 
 _GREET = re.compile(r"^(hi|hello|hey|salam|assalam|as-salamu|good (morning|afternoon|evening)|আসসালামু|হ্যালো|নমস্কার)\b", re.I)

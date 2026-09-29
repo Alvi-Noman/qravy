@@ -11,6 +11,8 @@ export type TtsEvents = {
 
 export type TTSPublicAPI = {
   speak: (text: string) => Promise<void>;
+  /** Get a connected speech pipeline ready in the background (call while the waiter is thinking). */
+  warm: () => void;
   stop: () => void;
   pause: () => void;
   resume: () => void;
@@ -28,7 +30,7 @@ export type TTSPublicAPI = {
 };
 
 const TOKEN_URL = import.meta.env.VITE_SPEECH_TOKEN_URL || "/azure/speech-token";
-const DEFAULT_VOICE = import.meta.env.VITE_AZURE_SPEECH_VOICE || "bn-IN-BashkarNeural";
+const DEFAULT_VOICE = import.meta.env.VITE_AZURE_SPEECH_VOICE || "bn-BD-PradeepNeural";
 
 const LS_MUTED = "tts.muted";
 const LS_VOLUME = "tts.volume"; // 0..1
@@ -36,6 +38,36 @@ const LS_VOICE = "tts.voice";
 
 const TOKEN_REFRESH_MS = 9 * 60 * 1000; // refresh a bit before 10m
 const MIN_AUDIBLE = 0.05;               // never let live output go below 5% if not muted
+const SPARE_MAX_AGE_MS = 4 * 60 * 1000; // a pre-connected pipeline older than this is rebuilt
+
+type Pipeline = {
+  speechConfig: sdk.SpeechConfig;
+  speaker: sdk.SpeakerAudioDestination;
+  audioConfig: sdk.AudioConfig;
+  synthesizer: sdk.SpeechSynthesizer;
+  voice: string;
+  builtAt: number;
+};
+
+/* ---------- Bangla pronunciation fixes ---------- */
+// The Bangla voice guesses the unwritten "o" (inherent vowel) wrong on some words: "স্বাগতম" → "shagtom",
+// "ঝাল" → "jhalo". It is fed a respelling that forces the right sound (explicit ো / hasant ্); the word
+// events are mapped back so the screen still shows the normal spelling. Whole words only.
+const BN_SAY: Array<[written: string, said: string]> = [
+  ["স্বাগতম", "স্বাগোতম"], // shagotom, not shagtom
+  ["ঝাল", "ঝাল্"], // jhal, not jhalo
+];
+const BN_LETTER = "ঀ-৿";
+const wholeWord = (w: string) => new RegExp(`(?<![${BN_LETTER}])${w}(?![${BN_LETTER}])`, "g");
+const BN_SAY_RE = BN_SAY.map(([written, said]) => ({ to: wholeWord(written), said, back: wholeWord(said), written }));
+
+function forSpeech(text: string): string {
+  return BN_SAY_RE.reduce((t, r) => t.replace(r.to, r.said), text);
+}
+
+function fromSpeech(word: string): string {
+  return BN_SAY_RE.reduce((t, r) => t.replace(r.back, r.written), word);
+}
 
 /* ---------- SSML helpers ---------- */
 function isLikelySsml(s: string) {
@@ -146,6 +178,9 @@ class TTSManager implements TTSPublicAPI {
   private audioConfig: sdk.AudioConfig | null = null;
   private synthesizer: sdk.SpeechSynthesizer | null = null;
 
+  // Built + connected ahead of time, so the next reply doesn't wait on setup (stop() tears the live one down)
+  private spare: Pipeline | null = null;
+
   private queue: QueueItem[] = [];
   private playing = false;
   private paused = false;
@@ -207,6 +242,10 @@ class TTSManager implements TTSPublicAPI {
       this._pump();
     });
   }
+
+  warm = () => {
+    this._warm().catch((e) => console.debug("[TTS] warm-up skipped", e));
+  };
 
   stop() {
     // Cancel current + future items
@@ -284,13 +323,13 @@ class TTSManager implements TTSPublicAPI {
       .replace(/&gt;/g, '>')
       .replace(/&quot;/g, '"')
       .replace(/&apos;/g, "'");
-    this.listeners.forEach(h => { h.onWord?.(shown, offsetMs); });
+    this.listeners.forEach(h => { h.onWord?.(fromSpeech(shown), offsetMs); });
   }
   private _emitEnd() {
     this.listeners.forEach(h => { h.onEnd?.(); });
   }
 
-  private async _ensureReady() {
+  private async _ensureToken() {
     // Token valid?
     if (!this.authToken || (Date.now() - this.tokenFetchedAt) > TOKEN_REFRESH_MS) {
       const { token, region } = await this._fetchToken();
@@ -298,33 +337,76 @@ class TTSManager implements TTSPublicAPI {
       this.region = region;
       this.tokenFetchedAt = Date.now();
     }
+  }
+
+  private _spareUsable(): boolean {
+    const p = this.spare;
+    return !!p && p.voice === this.voice && Date.now() - p.builtAt < SPARE_MAX_AGE_MS;
+  }
+
+  private _dropSpare() {
+    const p = this.spare;
+    this.spare = null;
+    if (!p) return;
+    try { p.synthesizer.close(); } catch {}
+    try { p.speaker.close(); } catch {}
+  }
+
+  private async _warm() {
+    await this._ensureToken();
+    if (this._spareUsable()) return;
+    this._dropSpare();
+    const p = this._buildPipeline();
+    this.spare = p;
+    // open the service connection now instead of on the first word
+    try { sdk.Connection.fromSynthesizer(p.synthesizer).openConnection(); } catch {}
+  }
+
+  private async _ensureReady() {
+    await this._ensureToken();
 
     // Already initialized?
     if (this.synthesizer) return;
 
-    this.speechConfig = sdk.SpeechConfig.fromAuthorizationToken(this.authToken, this.region);
+    let p: Pipeline;
+    if (this._spareUsable()) {
+      p = this.spare!;
+      this.spare = null;
+      p.speechConfig.authorizationToken = this.authToken;
+    } else {
+      this._dropSpare();
+      p = this._buildPipeline();
+    }
+    this.speechConfig = p.speechConfig;
+    this.speaker = p.speaker;
+    this.audioConfig = p.audioConfig;
+    this.synthesizer = p.synthesizer;
+    this._applySpeakerVolume();
+  }
+
+  private _buildPipeline(): Pipeline {
+    const speechConfig = sdk.SpeechConfig.fromAuthorizationToken(this.authToken, this.region);
 
     // Voice + explicit language to match the voice locale (prevents multi-language SSML)
-    this.speechConfig.speechSynthesisVoiceName = this.voice;
-    this.speechConfig.speechSynthesisLanguage = localeFromVoice(this.voice);
+    speechConfig.speechSynthesisVoiceName = this.voice;
+    speechConfig.speechSynthesisLanguage = localeFromVoice(this.voice);
 
     // ✅ Request word-boundary events with a boolean string
     try {
-      this.speechConfig.setProperty(sdk.PropertyId.SpeechServiceResponse_RequestWordBoundary, "true");
+      speechConfig.setProperty(sdk.PropertyId.SpeechServiceResponse_RequestWordBoundary, "true");
     } catch {}
 
     // ✅ Choose a browser-friendly output format to avoid device quirks
     try {
-      this.speechConfig.speechSynthesisOutputFormat =
+      speechConfig.speechSynthesisOutputFormat =
         sdk.SpeechSynthesisOutputFormat.Audio16Khz32KBitRateMonoMp3;
     } catch {}
 
-    // Speaker we can volume-control
-    this.speaker = new sdk.SpeakerAudioDestination();
-    this.audioConfig = sdk.AudioConfig.fromSpeakerOutput(this.speaker);
-    this._applySpeakerVolume();
+    // Speaker we can volume-control (volume is applied when the pipeline goes live)
+    const speaker = new sdk.SpeakerAudioDestination();
+    const audioConfig = sdk.AudioConfig.fromSpeakerOutput(speaker);
 
-    this.synthesizer = new sdk.SpeechSynthesizer(this.speechConfig, this.audioConfig);
+    const synthesizer = new sdk.SpeechSynthesizer(speechConfig, audioConfig);
 
     // ✅ Attach both PascalCase and camelCase handlers for SDK compatibility
     try {
@@ -358,17 +440,19 @@ class TTSManager implements TTSPublicAPI {
       };
 
       // Newer typings / event fields
-      (this.synthesizer as any).SynthesisStarted = onStart;
-      (this.synthesizer as any).SynthesisCompleted = onComplete;
-      (this.synthesizer as any).SynthesisCanceled = onCancel;
-      (this.synthesizer as any).WordBoundary = onWord;
+      (synthesizer as any).SynthesisStarted = onStart;
+      (synthesizer as any).SynthesisCompleted = onComplete;
+      (synthesizer as any).SynthesisCanceled = onCancel;
+      (synthesizer as any).WordBoundary = onWord;
 
       // Older/camelCase variants (no-op if SDK ignores them)
-      (this.synthesizer as any).synthesisStarted = onStart;
-      (this.synthesizer as any).synthesisCompleted = onComplete;
-      (this.synthesizer as any).synthesisCanceled = onCancel;
-      (this.synthesizer as any).wordBoundary = onWord;
+      (synthesizer as any).synthesisStarted = onStart;
+      (synthesizer as any).synthesisCompleted = onComplete;
+      (synthesizer as any).synthesisCanceled = onCancel;
+      (synthesizer as any).wordBoundary = onWord;
     } catch {}
+
+    return { speechConfig, speaker, audioConfig, synthesizer, voice: this.voice, builtAt: Date.now() };
   }
 
   private _applySpeakerVolume() {
@@ -406,10 +490,49 @@ class TTSManager implements TTSPublicAPI {
     const run = async () => {
       try {
         await this._refreshAuthIfNeeded();
+        try {
+          await this._speakOnce(next.text);
+        } catch (first) {
+          // a pre-connected (warm) pipeline can go stale, or stop() may have torn it down mid-way:
+          // rebuild from scratch and try once more before giving up
+          console.warn("[TTS] retrying on a fresh pipeline", first);
+          this._resetPipeline();
+          await this._ensureReady();
+          await this._speakOnce(next.text);
+        }
+        next.resolve();
+      } catch (e) {
+        console.error("[TTS] could not speak this reply", e);
+        // never leave the screen "speaking" forever: the reveal finishes and the text shows in full
+        this._emitEnd();
+        next.reject(e);
+      } finally {
+        this.playing = false;
+        if (!this.paused) this._pump();
+      }
+    };
 
+    run();
+  }
+
+  /** Throw away the live and the warm pipeline (the next speak builds a fresh one). */
+  private _resetPipeline() {
+    try { this.speaker?.pause(); } catch {}
+    try { this.synthesizer?.close(); } catch {}
+    this.synthesizer = null;
+    this.audioConfig = null;
+    this.speaker = null;
+    this.speechConfig = null;
+    this._dropSpare();
+  }
+
+  /** One synthesis of `input` on the live pipeline; rejects on any failure (never leaves a dangling start). */
+  private async _speakOnce(input: string): Promise<void> {
+    if (!this.synthesizer) await this._ensureReady();
+    {
+      {
         await new Promise<void>((resolve, reject) => {
-          const input = next.text;
-          const voice = this.voice || DEFAULT_VOICE;
+          if (!this.synthesizer) return reject(new Error("TTS pipeline not ready"));
 
           // Track text for SynthesisStarted callback
           this.currentUtteranceText = input;
@@ -451,20 +574,11 @@ class TTSManager implements TTSPublicAPI {
             this.synthesizer!.speakSsmlAsync(singleLang, onSuccess, onError);
           } else {
             // 🔁 Plain text path to avoid SSML language-validation errors
-            this.synthesizer!.speakTextAsync(input, onSuccess, onError);
+            this.synthesizer!.speakTextAsync(forSpeech(input), onSuccess, onError);
           }
         });
-
-        next.resolve();
-      } catch (e) {
-        next.reject(e);
-      } finally {
-        this.playing = false;
-        if (!this.paused) this._pump();
       }
-    };
-
-    run();
+    }
   }
 }
 

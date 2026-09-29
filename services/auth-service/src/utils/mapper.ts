@@ -65,7 +65,9 @@ export function toMenuItemDTO(
       : {}),
     tags: doc.tags ?? [],
     ...(doc.signature ? { signature: true } : {}),
-    ...(typeof doc.prepMinutes === 'number' ? { prepMinutes: doc.prepMinutes } : {}),
+    ...(typeof doc.prepMinutes === 'number'
+      ? { prepMinutes: doc.prepMinutes, prepSource: doc.prepSource ?? 'owner' }
+      : {}),
     ...(typeof doc.sortOrder === 'number' ? { sortOrder: doc.sortOrder } : {}),
     ...(doc.availability?.length ? { availability: doc.availability } : {}),
     ...(doc.offline ? { offline: true } : {}),
@@ -153,10 +155,12 @@ export function toTenantDTO(doc: TenantDoc): v1.TenantDTO {
     onboardingCompleted: !!doc.onboardingCompleted,
     menuNotes: doc.menuNotes ?? [],
     waiterKnowledge: doc.waiterKnowledge ?? [],
+    waiterLanguage: doc.waiterLanguage === 'en' ? 'en' : 'bn',
     timezone: doc.timezone ?? DEFAULT_TIMEZONE,
     openingHours: doc.openingHours ?? [],
     dailyResetTime: doc.dailyResetTime ?? DEFAULT_RESET_TIME,
     kitchen: kitchenSettings(doc),
+    tables: doc.tables ?? [],
     servicePeriods: tenantServicePeriods(doc),
 
     // trial info

@@ -265,7 +265,7 @@ def meal_kinds(period_names: Iterable[str], hour: Optional[int]) -> List[str]:
         n = str(n).lower()
         for kind, pat in (
             ("breakfast", r"breakfast|brunch|morning"),
-            ("lunch", r"lunch|noon"),
+            ("lunch", r"lunch|(?<!after)noon"),  # "Afternoon" is not lunch
             ("afternoon", r"afternoon|tea|snack"),
             ("dinner", r"dinner|supper|evening"),
             ("late", r"late|night|midnight"),

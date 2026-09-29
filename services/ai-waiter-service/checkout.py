@@ -7,8 +7,12 @@ Stages (kept per session):
   table     guest wants to order but we don't know their table yet → ask
   readback  we read the order back (items, add-ons, total, table, pay at counter) and wait for YES
 
-Placing requires ALL of: stage == readback, the cart unchanged since that read-back (signature),
-a table number, and an explicit yes / confirm in the guest's own words. Nothing else places an order.
+Placing needs a table number and the guest's own clear words, either:
+  - an explicit "send it" command with a filled tray ("এগুলো দেন", "অর্ডারটা কনফার্ম করেন", "খাবারগুলো পাঠায় দেন",
+    "খাবার সার্ভ করেন", "send it to the kitchen") → placed straight away, no read-back, no prices read out; or
+  - a yes to the short read-back ("2 × X, 1 × Y — shall I place it?") that softer signals get ("that's all",
+    the model's reading), with the cart unchanged since (signature).
+A question, a negation, or the model's reading alone never places an order.
 
 Intent is decided from several signals, not one keyword list:
   - the LLM's reading of the utterance (`checkout`: start | confirm | cancel | none)
@@ -43,6 +47,39 @@ _WANTS_CHECKOUT = re.compile(
     r"|\border\s+(diye den|diye dao|kore den|kore dao|dibo|debo|place|confirm|pathiye den)\b",
     re.I,
 )
+# "send it now" — an explicit command to place what's in the tray: placed at once, no read-back
+_SEND_NOW = re.compile(
+    # English
+    r"\b(place|send|submit|confirm|finali[sz]e|put in)\s+(my |the |our |this |that )?order\b"
+    r"|\bsend (it|them|everything|it all|the food|the order)( to the kitchen| in| now)?\b|\bserve (it|them|the food|everything)\b"
+    r"|\bbring (it|them|the food|everything)( out)?\b|\bgo ahead and (order|place)\b|\bcheck\s*-?\s*out\b"
+    # Bangla
+    r"|অর্ডার\s*(টা|টি|গুলো)?\s*(কনফার্ম|প্লেস|দিয়ে দিন|দিয়ে দেন|দিয়ে দাও|করে দিন|করে দেন|করেন|করুন|পাঠিয়ে দিন|পাঠিয়ে দেন|পাঠায় দেন|পাঠাই দেন|ফাইনাল)"
+    r"|খাবার\s*(গুলো|গুলা|গুলি|টা|টুকু)?\s*(পাঠায় দেন|পাঠাই দেন|পাঠিয়ে দিন|পাঠিয়ে দেন|পাঠিয়ে দাও|পাঠান|পাঠাও|সার্ভ কর|দিয়ে যান|দিয়ে দিন|দিয়ে দেন|নিয়ে আসেন|নিয়ে আসুন|নিয়ে আসো|আনেন|আনুন)"
+    r"|সার্ভ (করেন|করুন|করে দিন|করে দেন|কর)|কিচেনে (পাঠান|পাঠিয়ে দিন|পাঠিয়ে দেন|দিয়ে দিন|দিয়ে দেন)"
+    # Banglish
+    r"|\border ?(ta|ti)? (confirm|place|diye den|diye din|kore den|koren|korun|pathiye den|pathay den|pathai den)\b"
+    r"|\bkhabar ?(gulo|gula|ta)? (pathay den|pathai den|pathiye den|pathan|serve koren|serve korun|diye jan|niye ashen|anen)\b"
+    r"|\bserve (koren|korun|kore den)\b",
+    re.I,
+)
+# "এগুলো দেন" — the tray, unless a list of dishes is on the screen (then it means "add those")
+_THESE_PLEASE = re.compile(
+    r"(এগুলো|এগুলা|এগুলি|এইগুলো|এইগুলা|এই গুলো|সবগুলো|সব গুলো)\s*ই?\s*(দেন|দিন|দাও|দিয়ে দেন|দিয়ে দিন|পাঠান|পাঠিয়ে দিন|পাঠায় দেন)"
+    r"|\b(ei ?gula|egula|egulo|ei ?gulo|shob ?gula)i? (den|din|dao|diye den|pathay den|pathan)\b"
+    r"|\b(send|order) (these|all of these|all this|all of it)\b",
+    re.I,
+)
+
+
+def wants_send_now(text: str, list_on_screen: bool = False) -> bool:
+    """An explicit, unhedged command to place the tray now — never a question, never negated."""
+    t = (text or "").strip()
+    if not t or "?" in t or _CHECKOUT_NEGATED.search(t) or wants_to_hold(t):
+        return False
+    return bool(_SEND_NOW.search(t)) or (bool(_THESE_PLEASE.search(t)) and not list_on_screen)
+
+
 # "that's all / nothing else" — the guest is done choosing; it answers "anything else?" (checkout follows,
 # but a last-call drink offer may come first)
 _DONE = re.compile(
@@ -180,14 +217,31 @@ def _line_label(r: Dict[str, Any]) -> str:
 
 
 def readback_text(rows: List[Dict[str, Any]], table: str, lang: str, vat_hint: str = "", eta_hint: str = "") -> str:
-    """Items, add-ons, total, table, pay at the counter, how long it'll take — then the question."""
+    """A short check for softer signals ("that's all"): what's being ordered, then the question. No prices, total or
+    payment talk — the tray on screen shows them. (vat_hint / eta_hint are kept for callers; the ETA is said once
+    the order is placed.)"""
+    lines = ", ".join(_line_label(r) for r in rows)
+    if lang == "bn":
+        return f"{lines} — অর্ডারটা দিয়ে দেব?"
+    return f"{lines} — shall I place the order?"
+
+
+def online_checkout_text(rows: List[Dict[str, Any]], lang: str, vat_hint: str = "", eta_hint: str = "") -> str:
+    """Online (pickup / delivery): no table and no voice placing — read the order back and point at the form,
+    where the guest picks pickup or delivery and types name, phone and address."""
     lines = "; ".join(f"{_line_label(r)} — {_money(float(r['price'] or 0) * r['quantity'])}" for r in rows)
     total = sum(float(r["price"] or 0) * r["quantity"] for r in rows)
     if lang == "bn":
-        return (f"টেবিল {table}-এর অর্ডার: {lines}। মোট {_money(total)}{vat_hint}, বিল কাউন্টারে দেবেন।{eta_hint} "
-                "অর্ডারটা দিয়ে দেব?")
-    return (f"Here's your order for table {table}: {lines}. Total {_money(total)}{vat_hint}, "
-            f"you pay at the counter.{eta_hint} Shall I place it?")
+        return (f"আপনার অর্ডার: {lines}। মোট {_money(total)}{vat_hint}।{eta_hint} "
+                "পিকআপ না ডেলিভারি বেছে নিন, নাম আর ফোন নম্বর দিয়ে 'অর্ডার দিন' চাপুন।")
+    return (f"Here's your order: {lines}. Total {_money(total)}{vat_hint}.{eta_hint} "
+            "Choose pickup or delivery, add your name and phone, then tap Place order.")
+
+
+def table_again_text(lang: str) -> str:
+    """We asked for the table and heard something that isn't a number ("মারুক" for "বারো") — ask again, never guess."""
+    return ("দুঃখিত, টেবিল নম্বরটা ঠিক বুঝতে পারিনি। আবার বলবেন? যেমন: বারো নম্বর টেবিল।" if lang == "bn"
+            else "Sorry, I didn't catch the table number. Could you say it again? For example: table twelve.")
 
 
 def ask_table_text(lang: str) -> str:
@@ -207,6 +261,8 @@ def empty_cart_text(lang: str) -> str:
 
 def placed_text(order: Dict[str, Any], lang: str, eta_hint: str = "") -> str:
     # short and simple — the number, table and total are on the screen (reading "#1" aloud sounded odd)
+    if order.get("status") == "placed":  # sent — the restaurant hasn't accepted it yet, so don't call it confirmed
+        return ("আপনার অর্ডার রেস্টুরেন্টে পাঠানো হয়েছে।" if lang == "bn" else "Your order has been sent to the restaurant.") + eta_hint
     if eta_hint:  # the real ETA auth-service gave this order
         return ("আপনার অর্ডার কনফার্ম করা হয়েছে।" if lang == "bn" else "Your order is confirmed.") + eta_hint
     if lang == "bn":
@@ -214,7 +270,14 @@ def placed_text(order: Dict[str, Any], lang: str, eta_hint: str = "") -> str:
     return "Your order is confirmed. Please sit back — it'll be served to you very soon."
 
 
+# server/validation wording a guest should never hear ("Validation failed", "HTTP 500", field names…)
+_TECHNICAL = re.compile(r"validation|http \d|failed|error|invalid|expected|received|undefined|null|subdomain|\bitems?\b\.", re.I)
+
+
 def failed_text(message: str, lang: str) -> str:
+    if not message or _TECHNICAL.search(message):
+        return ("দুঃখিত, এই মুহূর্তে অর্ডারটা পাঠানো গেল না। একটু পরে আবার বলবেন, অথবা একজন স্টাফকে ডাকুন।" if lang == "bn"
+                else "Sorry, I couldn't send your order just now. Please try again in a moment, or ask a staff member.")
     if lang == "bn":
         return f"দুঃখিত, অর্ডারটা দেওয়া গেল না: {message} একটু বদলে নেবেন?"
     return f"Sorry, I couldn't place the order: {message} Would you like to change something?"
@@ -236,6 +299,8 @@ def decide(
     cart_changed_this_turn: bool,
     cleared: bool,
     defer_done: bool = False,
+    list_on_screen: bool = False,
+    direct_pending: bool = False,
 ) -> Tuple[str, str]:
     """(action, reason). Actions:
       place      → place the order now
@@ -256,7 +321,9 @@ def decide(
             return ("readback", "order changed during read-back") if cart_nonempty else ("reset", "cart emptied")
         if wants_to_hold(text) or (llm == "cancel" and not says_yes(text)):
             return "hold", "guest said no / wait"
-        if says_yes(text) or (llm == "confirm" and not question and not wants_to_hold(text) and len(text) <= 60):
+        if says_yes(text) or wants_send_now(text, list_on_screen) or (
+            llm == "confirm" and not question and not wants_to_hold(text) and len(text) <= 60
+        ):
             if not table:
                 return "ask_table", "confirmed but no table"
             return "place", "explicit yes to the read-back"
@@ -264,10 +331,21 @@ def decide(
 
     if stage == "table":
         if table:
-            return ("readback", "got the table") if cart_nonempty else ("empty", "table given, nothing to order")
+            if not cart_nonempty:
+                return "empty", "table given, nothing to order"
+            # they already said "send it" — the table was the only thing missing
+            return ("place", "got the table after send now") if direct_pending else ("readback", "got the table")
         if wants_to_hold(text) or llm == "cancel":
             return "hold", "guest backed out"
         return "stay", "still waiting for the table number"
+
+    # stage none: "send it" with a filled tray → place now (a tray just changed by voice gets a quick check first)
+    if wants_send_now(text, list_on_screen) and not cart_changed_this_turn:
+        if not cart_nonempty:
+            return "empty", "send now, but the cart is empty"
+        if not table:
+            return "ask_table", "send now, table unknown"
+        return "place", "send now — explicit command"
 
     # stage none: does the guest want to order / check out now?
     done = is_done(text)

@@ -183,6 +183,9 @@ services:
       - MENU_SNAPSHOT_MAX=120
       - NORMALIZER_INCLUDE_ALIASES=1
 
+      # === Speech-to-text: the full model is much better at Bangla (~$0.006 / min of speech) ===
+      - OPENAI_STT_MODEL=gpt-4o-transcribe
+
       # === OpenAI brain (GPT-4.1-mini) ===
       - OPENAI_API_KEY=${OPENAI_API_KEY:?Set OPENAI_API_KEY in your .env}
       - OPENAI_BASE=https://api.openai.com

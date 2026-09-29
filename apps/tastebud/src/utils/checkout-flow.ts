@@ -1,6 +1,7 @@
 // apps/tastebud/src/utils/checkout-flow.ts
 // What the storefront does with the waiter's checkout decisions (shared by every mic on the site):
 //   showCheckout / askTable  → open the checkout page (read-back + Confirm button + mic for "yes")
+//   askDetails               → online (pickup / delivery): open checkout at the name / phone / address fields
 //   orderPlaced              → clear the cart, remember the order, open its live status page
 import { useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
@@ -45,10 +46,10 @@ export function useCheckoutFlow(
         navigate(orderPath(order.token, sub, branch), { state: { justPlaced: true } });
         return true;
       }
-      if (d.showCheckout || d.askTable) {
-        // the tray is the checkout: open it (and point at the table field when the waiter asked for it)
+      if (d.showCheckout || d.askTable || d.askDetails) {
+        // the tray is the checkout: open it (and point at the table / contact field when the waiter asked for it)
         if (opts?.openTray) {
-          opts.openTray(!!d.askTable);
+          opts.openTray(!!(d.askTable || d.askDetails));
           return true;
         }
         const target = checkoutPath(sub, branch);

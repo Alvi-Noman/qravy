@@ -20,6 +20,8 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 DEFAULT_PREP_MINUTES = 15
 DEFAULT_PARALLEL_ORDERS = 3
 MAX_PREP = 240
+# an order this long past its due time was served but never marked done — not kitchen load (mirrors waitTime.ts)
+FORGOTTEN_AFTER_MIN = 30
 
 
 def clamp_prep(v: Any) -> Optional[int]:
@@ -91,12 +93,22 @@ def _ts(v: Any) -> Optional[float]:
     return None
 
 
+def is_forgotten(o: Dict[str, Any], now: datetime) -> bool:
+    """Served but never marked done: 30+ min past its due time (mirrors isForgotten in waitTime.ts)."""
+    due = _ts(o.get("readyAt"))
+    if due is None and _ts(o.get("createdAt")) is not None:
+        due = _ts(o.get("createdAt")) + float(o.get("prepMinutes") or 0) * 60
+    return due is not None and ((_ts(now) or 0.0) - due) / 60.0 > FORGOTTEN_AFTER_MIN
+
+
 def queue_minutes(ahead: List[Dict[str, Any]], parallel: int, now: datetime) -> int:
     """ahead: [{status, prepMinutes, readyAt}] oldest first. Naive datetimes are UTC (pymongo)."""
     stations = [0.0] * max(1, int(parallel or 1))
     now_ts = _ts(now) or 0.0
     for o in ahead:
         st = o.get("status")
+        if is_forgotten(o, now):
+            continue
         if st == "preparing":
             ready = _ts(o.get("readyAt"))
             work = max(0.0, (ready - now_ts) / 60.0) if ready is not None else float(o.get("prepMinutes") or 0)

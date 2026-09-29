@@ -46,7 +46,7 @@ type DrawerSubmitValues = {
   availableUntil?: string | null;
   tags?: string[];
   signature?: boolean;
-  /** null = no time of its own (restaurant default) */
+  /** Only when changed: minutes, or null = let the AI estimate it */
   prepMinutes?: number | null;
   // Advanced from drawer
   channel?: Channel;                // if single channel selected
@@ -730,6 +730,7 @@ export default function MenuItemsPage(): JSX.Element {
                         tags: (openEdit as any).tags || [],
                         signature: !!openEdit.signature,
                         prepMinutes: (openEdit as any).prepMinutes,
+                        prepSource: (openEdit as any).prepSource,
                         variations:
                           ((openEdit as any).variations || []).map((v: any) => ({
                             label: v.name,
@@ -783,7 +784,7 @@ export default function MenuItemsPage(): JSX.Element {
                           availableUntil: values.availableUntil,
                           tags: values.tags,
                           signature: values.signature,
-                          prepMinutes: values.prepMinutes ?? null,
+                          ...(values.prepMinutes !== undefined ? { prepMinutes: values.prepMinutes } : {}),
                         };
                         if (typeof values.price === 'number') payload.price = values.price;
 

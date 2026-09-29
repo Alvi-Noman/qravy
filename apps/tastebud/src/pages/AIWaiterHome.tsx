@@ -19,14 +19,21 @@ import { applyVoiceCartOps } from '../utils/voice-cart';
 import { claimReveal, ownsReveal } from '../state/reveal-owner';
 import { useCheckoutFlow, orderPath } from '../utils/checkout-flow';
 import { useTable } from '../utils/table';
+import { useOrderChannel } from '../utils/order-mode';
 import { getOrder, recentOrders } from '../api/orders';
 import { uiLang } from '../utils/ui-lang';
+import { useWaiterLang } from '../utils/waiter-lang';
+import LangSwitch from '../components/LangSwitch';
 
 type UIMode = 'idle' | 'thinking' | 'talking';
 
-// ✅ Welcome text (Bangla)
-const WELCOME_TEXT =
+// ✅ Welcome text, in the waiter's language
+const WELCOME_BN =
   'স্বাগতম! আমি পিক্সি - আপনার ভার্চুয়াল ওয়েটার। মেনু থেকে যেকোনো কিছু জানতে চাইলে কিংবা অর্ডার করতে আমাকে বলুন।';
+const WELCOME_TEXTS = {
+  bn: WELCOME_BN,
+  en: "Welcome! I'm Pixie, your virtual waiter. Ask me anything about the menu, or tell me what you'd like to order.",
+} as const;
 
 // 🔒 Welcome overlay persistence
 const WELCOME_INTERACT_KEY = 'qravy:aiwaiter:lastInteractionAt';
@@ -343,12 +350,14 @@ export default function AiWaiterHome() {
     (typeof window !== 'undefined' ? (window as any).__STORE__?.branch : null) ??
     undefined;
 
-  const resolvedChannel =
-    (typeof window !== 'undefined' ? (window as any).__STORE__?.channel : null) ?? null;
+  // table from the QR → dine-in; otherwise the online shop (pickup / delivery) when the restaurant sells online
+  const resolvedChannel = useOrderChannel(resolvedSub);
+  const channelRef = useRef(resolvedChannel);
+  channelRef.current = resolvedChannel;
 
-  const seeMenuHref = resolvedBranch
-    ? `/t/${resolvedSub}/${resolvedBranch}/menu`
-    : `/t/${resolvedSub}/menu`;
+  const seeMenuHref =
+    (resolvedBranch ? `/t/${resolvedSub}/${resolvedBranch}/menu` : `/t/${resolvedSub}/menu`) +
+    (resolvedChannel === 'dine-in' ? '/dine-in' : '');
 
   // checkout steps from the waiter (read-back → checkout page, placed → live order page)
   const [trayAskTable, setTrayAskTable] = useState(false);
@@ -366,7 +375,8 @@ export default function AiWaiterHome() {
   const handleCheckout = useCheckoutFlow(resolvedSub, resolvedBranch ?? null, openTrayForCheckout);
   // remember ?table=12 from the table QR for this restaurant
   const [tableNo] = useTable(resolvedSub);
-  const lastOrder = recentOrders(resolvedSub)[0];
+  // after 6 hours the order has long been served — no "Order #12 · track" pill or "your order is in" greeting
+  const lastOrder = recentOrders(resolvedSub, 6 * 60 * 60 * 1000)[0];
 
   // ws/audio
   const wsRef = useRef<WebSocket | null>(null);
@@ -384,38 +394,11 @@ export default function AiWaiterHome() {
   const [listening, setListening] = useState(false);
   const [uiMode, setUiMode] = useState<UIMode>('idle');
 
-  const [selectedLang, setSelectedLang] = useState<'auto' | 'bn' | 'en'>(() => {
-    const fromUrl = (search.get('lang') as 'auto' | 'bn' | 'en' | null) || null;
-    const fromLs =
-      typeof window !== 'undefined'
-        ? ((localStorage.getItem('qravy:lang') as 'auto' | 'bn' | 'en' | null) || null)
-        : null;
-    return (fromUrl || fromLs || 'bn') as 'auto' | 'bn' | 'en';
-  });
-
-  const broadcastLang = (lang: 'auto' | 'bn' | 'en') => {
-    if (typeof window !== 'undefined') {
-      (window as any).__WAITER_LANG__ = lang;
-      try {
-        window.dispatchEvent(new CustomEvent('qravy:lang', { detail: { lang } }));
-      } catch {}
-      try {
-        document.documentElement.setAttribute('lang', lang === 'bn' ? 'bn' : 'en');
-      } catch {}
-    }
-  };
+  // the guest's choice (top-right switch) → else the restaurant's default (admin) → else Bangla
+  const [selectedLang, setSelectedLang] = useWaiterLang(resolvedSub);
+  const WELCOME_TEXT = WELCOME_TEXTS[selectedLang];
 
   useEffect(() => {
-    broadcastLang(selectedLang);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      try {
-        localStorage.setItem('qravy:lang', selectedLang);
-      } catch {}
-    }
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({ t: 'set_lang', lang: selectedLang }));
     }
@@ -515,7 +498,7 @@ export default function AiWaiterHome() {
   cartItemsRef.current = cartItems;
   const tableRef = useRef(tableNo);
   tableRef.current = tableNo;
-  const { items: storeItems } = usePublicMenu(resolvedSub, resolvedBranch, 'dine-in');
+  const { items: storeItems } = usePublicMenu(resolvedSub, resolvedBranch, resolvedChannel);
   const [menuIndex, setMenuIndex] = useState<ReturnType<typeof buildMenuIndex> | null>(null);
 
   useEffect(() => {
@@ -896,10 +879,10 @@ export default function AiWaiterHome() {
                 userId: 'guest',
                 rate: 16000,
                 ch: 1,
-                lang: selectedLang === 'auto' ? 'bn' : selectedLang,
+                lang: selectedLang,
                 tenant: resolvedSub ?? 'demo',
                 branch: resolvedBranch ?? null,
-                channel: resolvedChannel ?? null,
+                channel: channelRef.current,
                 tz,
                 localHour,
                 table: tableRef.current ?? undefined,
@@ -948,6 +931,8 @@ export default function AiWaiterHome() {
           if (msg.t === 'ai_reply_pending') {
             awaitingReplyRef.current = true;
             setUiMode('thinking');
+            // get the voice connected while the waiter thinks, so the reply starts speaking right away
+            tts.warm();
             return;
           }
 
@@ -1314,6 +1299,15 @@ export default function AiWaiterHome() {
         background: bg,
       }}
     >
+      {/* Waiter language (default from the restaurant; the guest can switch) — above the tap-to-start overlay,
+          so the guest can pick a language before the welcome is spoken */}
+      <div
+        className="fixed right-4 z-[1600]"
+        style={{ top: 'calc(env(safe-area-inset-top, 0px) + 16px)' }}
+      >
+        <LangSwitch value={selectedLang} onChange={setSelectedLang} />
+      </div>
+
       {/* ORB */}
       <div
         ref={orbRef}
@@ -1501,6 +1495,7 @@ export default function AiWaiterHome() {
       />
       <TrayModal
         open={showTray}
+        channel={resolvedChannel}
         onClose={() => {
           setShowTray(false);
           setTrayPicks([]);
@@ -1578,7 +1573,7 @@ export default function AiWaiterHome() {
         >
           <div className="max-w-[420px] text-center">
             <p className="text-[28px] md:text-[34px] font-semibold text-[#1F1F1F] mb-3">
-              শুরু করতে যে কোনো জায়গায় ট্যাপ করুন
+              {selectedLang === 'en' ? 'Tap anywhere to start' : 'শুরু করতে যে কোনো জায়গায় ট্যাপ করুন'}
             </p>
           </div>
         </button>

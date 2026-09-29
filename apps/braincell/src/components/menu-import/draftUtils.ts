@@ -178,8 +178,10 @@ export function applyModalValues(item: DraftItem, v: ModalValues): DraftItem {
     tags: v.tags || [],
     modifierGroups: v.modifierGroups || [],
     availability: v.availability?.length ? v.availability : undefined,
-    prepMinutes: typeof v.prepMinutes === 'number' ? v.prepMinutes : undefined,
-    prepEstimated: undefined, // reviewed by the owner
+    // untouched in the modal → keep the import's time (and its "est." flag); changed → the owner's
+    ...(v.prepMinutes === undefined
+      ? {}
+      : { prepMinutes: typeof v.prepMinutes === 'number' ? v.prepMinutes : undefined, prepEstimated: undefined }),
     confidence: 'high',
     issues: [],
   };

@@ -28,37 +28,59 @@ function sendOrderError(res: Response, e: unknown, next: NextFunction) {
 
 /* ------------------------------------------------------------------ guest (public) */
 
-/** POST /api/v1/public/orders — place a dine-in order (pay at the counter). */
+/**
+ * POST /api/v1/public/orders — dine-in (table, pay at the counter) or online
+ * (pickup: pay on collection · delivery: cash on delivery, with name/phone/address).
+ */
 export async function placePublicOrder(req: Request, res: Response, next: NextFunction) {
   try {
     const b = req.body as {
       subdomain: string;
       branch?: string | null;
-      table: string;
+      channel?: 'dine-in' | 'online';
+      table?: string | null;
+      fulfillment?: 'pickup' | 'delivery' | null;
+      customer?: { name?: string; phone?: string; address?: string | null } | null;
       items: Array<{ itemId: string; qty: number; variation?: string | null; modifiers?: any[]; notes?: string | null }>;
       notes?: string | null;
       sessionId?: string | null;
       idempotencyKey?: string | null;
       source?: 'ai-waiter' | 'menu';
     };
-    const tenant = await client.db('authDB').collection('tenants').findOne({ subdomain: b.subdomain }, { projection: { _id: 1 } });
+    const tenant = await client
+      .db('authDB')
+      .collection('tenants')
+      .findOne({ subdomain: b.subdomain }, { projection: { _id: 1, restaurantInfo: 1 } });
     if (!tenant) return res.fail(404, 'Restaurant not found');
     const tenantOid = tenant._id as ObjectId;
     const locationId = b.branch ? await resolveBranchLocationId(tenantOid, b.branch) : null;
     if (b.branch && !locationId) return res.fail(404, 'Branch not found');
+    const info = (tenant.restaurantInfo ?? {}) as { dineInEnabled?: boolean; onlineSalesEnabled?: boolean };
+    if (b.channel === 'online' && info.onlineSalesEnabled === false) {
+      return res.fail(409, "This restaurant isn't taking online orders.");
+    }
+    if (b.channel !== 'online' && info.dineInEnabled === false) {
+      return res.fail(409, "This restaurant isn't taking dine-in orders.");
+    }
 
     const { order, created } = await createOrderCore({
       tenantOid,
       locationId,
       branch: b.branch ?? null,
+      channel: b.channel,
       table: b.table,
+      fulfillment: b.fulfillment,
+      customer: b.customer ? { ...b.customer, address: b.customer.address ?? undefined } : null,
       lines: b.items,
       notes: b.notes,
       source: b.source === 'ai-waiter' ? 'ai-waiter' : 'menu',
       sessionId: b.sessionId,
       idempotencyKey: b.idempotencyKey,
     });
-    if (created) logger.info(`ORDER placed #${order.orderNumber} tenant=${tenantOid} table=${order.dineIn.tableNumber} total=${order.total}`);
+    if (created) {
+      const where = order.online ? order.online.fulfillment : `table=${order.dineIn?.tableNumber}`;
+      logger.info(`ORDER placed #${order.orderNumber} tenant=${tenantOid} ${where} total=${order.total}`);
+    }
     return res.ok({ order: toPublicOrder(order), created }, created ? 201 : 200);
   } catch (e) {
     return sendOrderError(res, e, next);

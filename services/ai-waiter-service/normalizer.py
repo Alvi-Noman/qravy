@@ -71,6 +71,16 @@ def phonetic_key(token: str) -> str:
     return key
 
 # ---------- main normalize ----------
+_BN = re.compile(r"[\u0980-\u09FF]")
+# Bangla snapping: close but not too loose (প্রাউন → প্রন, রিংস → রিং), and never everyday words
+_BN_THRESHOLD = 0.78
+_BN_COMMON = {
+    "আমার", "আমাদের", "আপনার", "আপনাদের", "একটা", "দুইটা", "তিনটা", "খাবার", "অর্ডার", "কতক্ষণ", "লাগবে", "দিবেন",
+    "দেবেন", "করবেন", "করেন", "করুন", "হবে", "আছে", "আছেন", "চাই", "দিন", "দেন", "এগুলো", "সবগুলো", "ভালো", "কোনটা",
+    "কনফার্ম", "টেবিল", "বিল", "পানি", "ঝাল", "মিষ্টি", "ঠান্ডা", "গরম", "হালকা", "বড়", "ছোট", "হাফ", "ফুল", "আরেকটা",
+}
+
+
 def normalize_text(
     text: str,
     vocab: Optional[List[str]] = None,
@@ -105,9 +115,28 @@ def normalize_text(
         bucket.setdefault(phonetic_key(v), []).append(v)
 
     out_tokens = []
-    for tok in tokens:
-        if tok in vocab_set:
-            out_tokens.append(tok)
+    for raw_tok in tokens:
+        # keep punctuation around a word ("রিংস?") and match the word itself
+        m_p = re.match(r"^(\W*)(.*?)(\W*)$", raw_tok)
+        lead, tok, trail = (m_p.group(1), m_p.group(2), m_p.group(3)) if m_p else ("", raw_tok, "")
+        if not tok or tok in vocab_set:
+            out_tokens.append(raw_tok)
+            continue
+        bangla = bool(_BN.search(tok))
+        if bangla:
+            # Bangla: only real content words get snapped to a menu word — never short everyday words (কি, দিন,
+            # আছে…), and only to a Bangla-script menu word
+            cands = [v for v in vocab_set if _BN.search(v)]
+            best = None
+            if len(tok) >= 4 and tok not in _BN_COMMON and cands:
+                m = process.extractOne(tok, cands, scorer=fuzz.ratio, score_cutoff=_BN_THRESHOLD * 100)
+                if m and m[0] != tok:
+                    best, sc = m[0], m[1] / 100.0
+            if best:
+                out_tokens.append(lead + best + trail)
+                changed.append((tok, best, sc))
+            else:
+                out_tokens.append(raw_tok)
             continue
 
         # phonetic: same-sound candidates
@@ -133,9 +162,9 @@ def normalize_text(
                 best, best_score = cand_word, sc/100.0
 
         if best and best_score >= fuzzy_threshold:
-            out_tokens.append(best)
+            out_tokens.append(lead + best + trail)
             changed.append((tok, best, best_score))
         else:
-            out_tokens.append(tok)
+            out_tokens.append(raw_tok)
 
     return " ".join(out_tokens), changed

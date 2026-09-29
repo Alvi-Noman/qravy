@@ -96,6 +96,28 @@ def test_garbled_speech_gets_a_polite_repeat_request():
     assert out["meta"]["cartOps"] == [] and not out["meta"]["suggestions"] and "not_understood" in out["meta"]["guards"]
 
 
+def test_chosen_language_is_locked_on_the_storefront():
+    # the restaurant (or the guest's switch) chose Bangla: English speech still gets a Bangla reply;
+    # without the lock the waiter mirrors the guest (evals, older clients)
+    seen = []
+
+    async def fake(messages):
+        seen.append(messages[-1]["content"])
+        return json.dumps({**EMPTY_TURN, "language": "bn", "replyText": "Spring Roll এর দাম ৳230।"})
+
+    orig = brain._call_openai
+    brain._call_openai = fake
+    try:
+        locked = asyncio.run(brain.generate_reply("How much is the spring roll?", menu_snapshot={"items": ITEMS},
+                                                  locale="bn", lock_language=True))
+        mirrored = asyncio.run(brain.generate_reply("How much is the spring roll?", menu_snapshot={"items": ITEMS},
+                                                    locale="bn"))
+    finally:
+        brain._call_openai = orig
+    assert locked["meta"]["language"] == "bn"
+    assert mirrored["meta"]["language"] == "en"
+
+
 def test_thanda_means_drinks():
     from waiter_knowledge import kind_items, missing_kinds
 
@@ -309,7 +331,7 @@ def test_signature_ranks_first_but_never_overrides_time_or_availability():
 def test_reco_fallback_uses_pool_or_explains_closure():
     pool = [ITEMS[3], ITEMS[0]]
     assert brain._reco_fallback(pool, "en", {"mealPeriod": "Lunch (12pm–3pm)"}) == (
-        "Right now for lunch, I'd suggest Chicken Corn Soup or Spring Roll. Would you like one of these?"  # prices are on the cards
+        "Right now for lunch, I'd suggest Chicken Corn Soup or Spring Roll. Would you like to order?"  # prices are on the cards
     )
     closed = {"unavailableNow": [{"name": "x", "reason": "We're closed right now — we open at 11am."}]}
     assert brain._reco_fallback([], "en", closed) == "We're closed right now — we open at 11am."
@@ -362,10 +384,10 @@ def test_budget_detection():
 def test_confirm_fast_path_without_model():
     history = [{"role": "assistant", "content": "Your order: 1 × Spring Roll — ৳230. Anything else, or shall I confirm your order?"}]
     ctx = {"cartItems": [{"itemId": "a1", "quantity": 1}], "table": "12"}
-    # yes → the formal read-back (nothing placed yet)
+    # yes to "anything else, or shall I confirm?" → a short check, no prices (nothing placed yet)
     out = asyncio.run(brain.generate_reply("yes please", menu_snapshot={"items": ITEMS}, history=history, context=dict(ctx)))
     assert out["meta"]["decision"].get("showCheckout") is True and not out["meta"]["decision"].get("placeOrder")
-    assert "Spring Roll" in out["replyText"] and "table 12" in out["replyText"] and "Shall I place it?" in out["replyText"]
+    assert out["replyText"] == "1 × Spring Roll — shall I place the order?"
     assert out["meta"]["checkout"]["stage"] == "readback"
     # yes to the read-back → place (the server does the actual placing)
     history2 = history + [{"role": "user", "content": "yes please"}, {"role": "assistant", "content": out["replyText"]}]

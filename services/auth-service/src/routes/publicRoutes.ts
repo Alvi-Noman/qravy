@@ -67,6 +67,13 @@ function toPublicTenantItem(tenant: TenantDoc, fallbackSub: string) {
       (tenant as any).brandColor ??
       null,
     menuNotes: Array.isArray(tenant.menuNotes) ? tenant.menuNotes : [],
+    // The virtual waiter's default language (the guest can switch it)
+    waiterLanguage: tenant.waiterLanguage === 'en' ? 'en' : 'bn',
+    // Which ways guests can order (missing = on)
+    channels: {
+      dineIn: tenant.restaurantInfo?.dineInEnabled !== false,
+      online: tenant.restaurantInfo?.onlineSalesEnabled !== false,
+    },
   };
 }
 

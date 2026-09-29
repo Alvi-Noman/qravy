@@ -12,8 +12,9 @@ end < start means the window runs past midnight.
 from __future__ import annotations
 
 import re
+import time
 from datetime import datetime, timezone as dt_timezone
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 DEFAULT_TZ = "Asia/Dhaka"
@@ -151,10 +152,25 @@ def next_opening(windows: Optional[Iterable[Dict[str, Any]]], tz: Optional[str],
 
 # ------------------------------------------------------------------ rules
 
+_LOCATION_ID_CACHE: Dict[Tuple[str, str], Tuple[float, Any]] = {}
+LOCATION_ID_TTL_S = 10 * 60
+
+
 def resolve_location_id(db, tenant_oid, branch_hint: Optional[str]):
-    """Branch slug/name → location _id (same matching as the Node public menu)."""
+    """Branch slug/name → location _id (same matching as the Node public menu). Cached — it's asked several times a turn."""
     if not branch_hint or tenant_oid is None:
         return None
+    key = (str(tenant_oid), str(branch_hint))
+    hit = _LOCATION_ID_CACHE.get(key)
+    if hit and time.monotonic() - hit[0] < LOCATION_ID_TTL_S:
+        return hit[1]
+    loc_id = _lookup_location_id(db, tenant_oid, branch_hint)
+    if loc_id is not None:
+        _LOCATION_ID_CACHE[key] = (time.monotonic(), loc_id)
+    return loc_id
+
+
+def _lookup_location_id(db, tenant_oid, branch_hint: str):
     b = str(branch_hint).strip()
     norm = re.sub(r"^-|-$", "", re.sub(r"--+", "-", re.sub(r"[^a-z0-9-]", "", re.sub(r"\s+", "-", b.lower()))))
     try:

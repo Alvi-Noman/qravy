@@ -1,5 +1,6 @@
 // apps/tastebud/src/pages/CheckoutPage.tsx
-// Dine-in checkout: read the order back, confirm the table, place it (pay at the counter).
+// Checkout: read the order back, then either confirm the table (dine-in, pay at the counter) or choose
+// pickup / delivery and give name, phone and address (online), and place it.
 // The guest can tap "Place order" or just say "yes" / "হ্যাঁ" to the waiter on the mic bar below.
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
@@ -7,6 +8,14 @@ import { useCart, cartLineKey } from '../context/CartContext';
 import MicInputBar from '../components/ai-waiter/MicInputBar';
 import { OrderApiError, cartIdempotencyKey, placeOrder, rememberOrder } from '../api/orders';
 import { normalizeTable, useTable } from '../utils/table';
+import {
+  missingContactField,
+  useFulfillment,
+  useGuestContact,
+  useOrderChannel,
+  type GuestContact,
+} from '../utils/order-mode';
+import OnlineOrderDetails, { CONTACT_MESSAGES } from '../components/OnlineOrderDetails';
 import { orderPath, storeBasePath, useCheckoutFlow } from '../utils/checkout-flow';
 import { getStableSessionId } from '../utils/ws';
 import { money, tr, uiLang } from '../utils/ui-lang';
@@ -31,9 +40,14 @@ export default function CheckoutPage() {
     addItem, setQty, updateQty, removeItem, setNotes, clear,
     items, setLineQty, removeLine, setLineNotes, replaceLine, setWarnings,
   };
-  const { items: storeItems } = usePublicMenu(sub ?? undefined, branch ?? undefined, 'dine-in');
+  const channel = useOrderChannel(sub);
+  const online = channel === 'online';
+  const { items: storeItems } = usePublicMenu(sub ?? undefined, branch ?? undefined, channel);
   const wait = useCartWait({ subdomain: sub, branch, items });
   const [table, saveTable] = useTable(sub);
+  const [fulfillment, setFulfillment] = useFulfillment(sub);
+  const [contact, setContact] = useGuestContact(sub);
+  const [contactFocus, setContactFocus] = useState<keyof GuestContact | null>(null);
   const [tableDraft, setTableDraft] = useState(table ?? '');
   const [editingTable, setEditingTable] = useState(!table);
   const [orderNotes, setOrderNotes] = useState('');
@@ -63,31 +77,43 @@ export default function CheckoutPage() {
 
   async function submit() {
     setError(null);
+    setContactFocus(null);
     if (!sub) return setError(tr(lang, 'রেস্টুরেন্ট খুঁজে পাওয়া যায়নি।', 'Restaurant not found.'));
-    if (!effectiveTable) {
+    if (online) {
+      const missing = missingContactField(fulfillment, contact);
+      if (missing) {
+        setContactFocus(missing);
+        return setError(CONTACT_MESSAGES[missing]);
+      }
+    } else if (!effectiveTable) {
       setEditingTable(true);
       return setError(tr(lang, 'আপনার টেবিল নম্বরটা লিখুন।', 'Please enter your table number.'));
     }
     if (!items.length) return;
-    saveTable(effectiveTable);
+    if (!online && effectiveTable) saveTable(effectiveTable);
     setPlacing(true);
     try {
       const sid = getStableSessionId();
-      const { order } = await placeOrder({
+      const common = {
         subdomain: sub,
         branch,
-        table: effectiveTable,
         items,
         notes: orderNotes,
         sessionId: sid,
         idempotencyKey: cartIdempotencyKey(sid, items),
-      });
+      };
+      const { order } = await placeOrder(
+        online
+          ? { ...common, channel: 'online', fulfillment, customer: contact }
+          : { ...common, channel: 'dine-in', table: effectiveTable as string },
+      );
       clear({ silent: true });
       rememberOrder(sub, order);
       navigate(orderPath(order.token, sub, branch), { replace: true, state: { justPlaced: true } });
     } catch (e) {
       const err = e as OrderApiError;
       if (err?.needs === 'table') setEditingTable(true);
+      if (err?.needs === 'name' || err?.needs === 'phone' || err?.needs === 'address') setContactFocus(err.needs);
       setError(err?.message || tr(lang, 'অর্ডার দেওয়া যায়নি। আবার চেষ্টা করুন।', "Couldn't place the order. Please try again."));
     } finally {
       setPlacing(false);
@@ -105,7 +131,11 @@ export default function CheckoutPage() {
         <div>
           <h1 className="text-xl font-semibold text-gray-900">{tr(lang, 'আপনার অর্ডার', 'Your order')}</h1>
           <p className="text-xs text-gray-500">
-            {tr(lang, 'ডাইন-ইন · বিল কাউন্টারে পরিশোধ', 'Dine-in · pay at the counter')}
+            {!online
+              ? tr(lang, 'ডাইন-ইন · বিল কাউন্টারে পরিশোধ', 'Dine-in · pay at the counter')
+              : fulfillment === 'delivery'
+              ? tr(lang, 'ডেলিভারি · ক্যাশ অন ডেলিভারি', 'Delivery · cash on delivery')
+              : tr(lang, 'পিকআপ · নেওয়ার সময় পরিশোধ', 'Pickup · pay when you collect')}
           </p>
         </div>
       </header>
@@ -120,8 +150,17 @@ export default function CheckoutPage() {
           </div>
         ) : (
           <>
-            {/* Table */}
+            {/* Table (dine-in) or pickup/delivery details (online) */}
             <section className="mt-3 rounded-2xl bg-white p-4 shadow-sm">
+              {online ? (
+                <OnlineOrderDetails
+                  fulfillment={fulfillment}
+                  onFulfillment={setFulfillment}
+                  contact={contact}
+                  onContact={setContact}
+                  focusField={contactFocus}
+                />
+              ) : (
               <div className="flex items-center justify-between gap-3">
                 <div className="text-sm text-gray-600">{tr(lang, 'টেবিল', 'Table')}</div>
                 {!editingTable && table ? (
@@ -144,6 +183,7 @@ export default function CheckoutPage() {
                   />
                 )}
               </div>
+              )}
             </section>
 
             {/* Lines */}
@@ -210,11 +250,13 @@ export default function CheckoutPage() {
               </div>
               <WaitEstimateLine estimate={wait} lang={lang} className="mt-3" />
               <p className="mt-2 text-xs text-gray-500">
-                {tr(
-                  lang,
-                  'চূড়ান্ত দাম রেস্টুরেন্ট যাচাই করবে। বিল কাউন্টারে পরিশোধ করবেন।',
-                  'The restaurant confirms final prices. You pay at the counter.',
-                )}
+                {online
+                  ? tr(lang, 'চূড়ান্ত দাম রেস্টুরেন্ট যাচাই করবে।', 'The restaurant confirms final prices.')
+                  : tr(
+                      lang,
+                      'চূড়ান্ত দাম রেস্টুরেন্ট যাচাই করবে। বিল কাউন্টারে পরিশোধ করবেন।',
+                      'The restaurant confirms final prices. You pay at the counter.',
+                    )}
               </p>
             </section>
 
@@ -243,7 +285,7 @@ export default function CheckoutPage() {
             <MicInputBar
               tenant={sub}
               branch={branch}
-              channel="dine-in"
+              channel={channel}
               floorGradient={false}
               panelLift={64}
               onAiReply={({ meta }) => {

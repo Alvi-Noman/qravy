@@ -59,7 +59,9 @@ function toItemPayload(item: DraftItem, categoryId: string, locationId: string |
     ...(hasVariantPrice ? { variations: item.variations, options: item.options } : {}),
     ...(item.modifierGroups?.length ? { modifierGroups: item.modifierGroups } : {}),
     ...(item.availability?.length ? { availability: item.availability } : {}),
-    ...(typeof item.prepMinutes === 'number' ? { prepMinutes: item.prepMinutes } : {}),
+    ...(typeof item.prepMinutes === 'number'
+      ? { prepMinutes: item.prepMinutes, prepSource: item.prepEstimated ? ('ai' as const) : ('menu' as const) }
+      : {}),
     ...(item.tags.length ? { tags: item.tags } : {}),
     ...(locationId ? { locationId } : {}),
   };
@@ -104,7 +106,10 @@ async function updateExistingItem(
   }
   if (payload.tags?.length) $set.tags = payload.tags;
   // keep a time the owner already set; only fill it in when the item has none
-  if (typeof payload.prepMinutes === 'number' && typeof before.prepMinutes !== 'number') $set.prepMinutes = payload.prepMinutes;
+  if (typeof payload.prepMinutes === 'number' && (typeof before.prepMinutes !== 'number' || before.prepSource === 'guess' || before.prepSource === 'ai')) {
+    $set.prepMinutes = payload.prepMinutes;
+    $set.prepSource = payload.prepSource ?? 'menu';
+  }
   if (payload.modifierGroups?.length) $set.modifierGroups = normalizeModifierGroups(payload.modifierGroups);
 
   await menuItemsCol().updateOne(
