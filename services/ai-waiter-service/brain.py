@@ -274,7 +274,8 @@ PLAYBOOK = """You are the virtual waiter of the restaurant described below. Gues
 - Cheapest / budget questions: use the PRICE GUIDE (and the MEAL PLAN when given). For a budget, propose one concrete combination for the whole party (respecting any diets mentioned) and ALWAYS say its total in ৳, and say it fits (e.g. "2 × Set Menu A-02 is ৳700, within your ৳800 before VAT"). "Main dish" = the chicken, beef, prawn, fish, vegetable, sizzling, rice & noodles or set-menu sections — not starters, soups, salads or drinks.
 - Asked about a choice that matches a NOT ORDERABLE NOW dish: mention it may be unavailable today.
 - Greetings / thanks: short and warm; offer help. Don't recite the menu.
-- You are a virtual waiter: never claim a life of your own — you don't eat, taste, drink, have a favourite you "had today", a family or a day off. Personal small talk ("কী খেয়েছেন?", "how are you?") → one light, honest line ("আমি তো ভার্চুয়াল ওয়েটার, খাই না!"), then help with the menu. Voice transcripts can be misheard, so a personal question at a restaurant table may really be about the menu — after the light line, briefly say what the restaurant has (as for "what do you have?") and ask what they'd like.
+- Small talk is chitchat (topic "greeting" / intent "chitchat"): answer it the way a friendly waiter would, then offer help in a few words — "কেমন আছেন?" / "কি খবর?" / "how are you?" → "ভালো আছি, ধন্যবাদ! আপনি কেমন আছেন? কী খেতে চান, বলুন।"; "ধন্যবাদ" → "আপনাকেও ধন্যবাদ!"; "আসসালামু আলাইকুম" → "ওয়ালাইকুম আসসালাম!". No dish pitch in a greeting.
+- You are a virtual waiter: never claim a life of your own — you don't eat, taste, drink, have a favourite you "had today", a family or a day off. ONLY when asked something like that ("কী খেয়েছেন?", "what's your favourite food?") → one light, honest line ("আমি তো ভার্চুয়াল ওয়েটার, খাই না!"), then help with the menu. Never use that line for "how are you?". Voice transcripts can be misheard, so an odd personal question at a restaurant table may really be about the menu — after the light line, briefly say what the restaurant has and ask what they'd like.
 
 # Orders (the cart)
 - Ambiguous order ("the soup", "the chicken", "that" when you just named several dishes): ask which one, naming 2–3 options, and change NOTHING this turn. Never ask a question and add something in the same turn.
@@ -613,11 +614,13 @@ def _turn_block(
     if recent:
         lines.append("RECENTLY DISCUSSED: " + ", ".join(f"{index.ref(it)} {it.get('name')}" for it in recent))
     if missing:
+        close = _closest_to(list(missing), index, {})
         lines.append(
-            f"NOT ON THIS MENU: {', '.join(missing)} — say so plainly and kindly. Offer an alternative ONLY if it is "
-            "genuinely the same kind of thing (for something sweet: a sweet dish or a drink from the MENU); never offer "
-            "savoury food as a dessert or a soup as something to finish with. If there's no real equivalent, just ask "
-            "what else you can get them."
+            f"NOT ON THIS MENU: {', '.join(missing)} — say so plainly and kindly. "
+            + (f"The closest things this MENU has: {', '.join(str(c.get('name')) for c in close)} — you may offer one or "
+               "two of those, saying they're the closest we have. " if close else
+               "Nothing on this MENU is close to it — don't offer a substitute; just ask what else they'd like. ")
+            + "Never offer something unrelated (a drink for a burger, savoury food for a dessert, a soup to finish with)."
         )
     for g in allergy_guides or []:
         if g.get("groups"):
@@ -792,7 +795,28 @@ _SCREEN_TALK = re.compile(
     re.I,
 )
 # "which is good / best / what do you recommend" — a request for picks, not for the menu
-_WANTS_A_PICK = re.compile(r"ভালো|সেরা|বেস্ট|রেকমেন্ড|সাজেস্ট|recommend|suggest|\bbest\b|\bgood\b|\b(valo|bhalo)\b", re.I)
+_WANTS_A_PICK = re.compile(
+    r"ভালো|সেরা|বেস্ট|রেকমেন্ড|সাজেস্ট|টপ|জনপ্রিয়|পপুলার|খাওয়া\s*(যেতে\s*পারে|যায়)|খেতে\s*পারি|"
+    r"recommend|suggest|\bbest\b|\bgood\b|\btop\b|\bpopular\b|\b(valo|bhalo)\b",
+    re.I,
+)
+# "টপ থ্রি", "top 5", "তিনটা আইটেম" — how many dishes the guest asked for
+_HOW_MANY = re.compile(
+    r"(?:টপ|top)\s*(থ্রি|ফাইভ|টু|ফোর|three|five|two|four|\d|[০-৯])|"
+    r"(\d|[০-৯]|দুই|তিন|চার|পাঁচ|দুটো|দুইটা|তিনটা|চারটা|পাঁচটা)\s*(টা|টি)?\s*(আইটেম|খাবার|ডিশ|item|dish)",
+    re.I,
+)
+_COUNT_WORDS = {"থ্রি": 3, "three": 3, "ফাইভ": 5, "five": 5, "টু": 2, "two": 2, "ফোর": 4, "four": 4, "দুই": 2, "দুটো": 2,
+                "দুইটা": 2, "তিন": 3, "তিনটা": 3, "চার": 4, "চারটা": 4, "পাঁচ": 5, "পাঁচটা": 5}
+
+
+def _asked_count(transcript: str) -> Optional[int]:
+    m = _HOW_MANY.search(transcript or "")
+    if not m:
+        return None
+    w = (m.group(1) or m.group(2) or "").lower().translate(_BN_DIGITS)
+    n = int(w) if w.isdigit() else _COUNT_WORDS.get(w)
+    return n if n and 1 <= n <= 8 else None
 _SEE_MENU = re.compile(
     r"\b(show|see|open|view|look at|check)\b.{0,15}\bmenu\b|\bfull menu\b|\bmenu (please|card)\b"
     r"|মেনু(টা|টি)?\s*(একটু\s*)?(দেখান|দেখাও|দেখাবেন|দেখতে চাই|দেখি|খুলুন|দিন|দেন)|মেনু কার্ড"
@@ -985,6 +1009,43 @@ _GUARD_TAGS = [
     ("Too long to say out loud", "allergy_list_too_long"),
     ("you sent/told/informed the kitchen", "kitchen_claim"),
 ]
+
+
+# Asked for a kind of food the menu doesn't have → what on a menu is genuinely CLOSE to it (never a drink for a
+# burger). Kinds not listed have no close stand-in: just say so and ask what else they'd like.
+_CLOSEST: Dict[str, str] = {
+    "burgers": r"sandwich|wrap|sub\b|shawarma|fried chicken|chicken fry|wings|nugget|strips|french fr|fries",
+    "pizza": r"pasta|spaghetti|lasagn|garlic bread|sandwich|wrap",
+    "biryani": r"biry|kacchi|tehari|polao|pulao|fried rice|khichuri|set menu",
+    "kebabs": r"kebab|kabab|tikka|grill|bbq|shashlik|sizzl|fried chicken",
+    "breakfast items": r"paratha|porota|omelet|toast|sandwich|soup",
+    "desserts": r"dessert|ice ?cream|pudding|firni|kulfi|cake|brownie|shake|lassi|juice",
+    "coffee": r"coffee|tea|\bcha\b|latte|shake|juice|soft drink",
+    "tea": r"tea|\bcha\b|coffee",
+    "juice": r"juice|lassi|shake|lemonade|soft drink|coke|sprite|7 ?up",
+    "drinks": r"drink|soda|coke|sprite|7 ?up|lemonade|juice|water",
+    "alcohol": r"soft drink|coke|sprite|7 ?up|lemonade|mocktail|juice",
+}
+
+
+_KIND_BN = {"burgers": "বার্গার", "pizza": "পিজ্জা", "biryani": "বিরিয়ানি", "kebabs": "কাবাব", "desserts": "ডেজার্ট",
+            "coffee": "কফি", "tea": "চা", "juice": "জুস", "drinks": "পানীয়", "alcohol": "অ্যালকোহল",
+            "breakfast items": "নাস্তা"}
+
+
+def _closest_to(kinds: List[str], index: MenuIndex, orderable: Dict[str, bool], limit: int = 3) -> List[Dict[str, Any]]:
+    """The menu's dishes genuinely close to what the guest asked for and we don't have (burgers → the fried chicken,
+    the sandwich); [] when nothing is close."""
+    out: List[Dict[str, Any]] = []
+    for k in kinds:
+        pat = _CLOSEST.get(k)
+        if not pat:
+            continue
+        for it in index.items:
+            if (orderable.get(index.item_id(it), True) and it not in out
+                    and re.search(pat, f"{it.get('name') or ''} {it.get('category') or ''}", re.I)):
+                out.append(it)
+    return out[:limit]
 
 
 _CHEAPER = re.compile(r"cheaper|less expensive|lower price|more affordable|budget option|কম দাম|কমদামি|সস্তা|sasta|kom dam", re.I)
@@ -2092,6 +2153,130 @@ def _clean_order(transcript: str, index: MenuIndex, orderable: Dict[str, bool], 
     return ops
 
 
+# small talk the waiter answers itself (like a friendly person, never "I'm virtual, I don't eat" for "how are you")
+_HOW_ARE_YOU = re.compile(
+    r"কেমন আছ(েন|ো|িস|ে)?|কেমন চলছে|(কি|কী) খবর|কি অবস্থা|\bhow (are|r) (you|u)\b|\bhow'?s it going\b|"
+    r"\bwhat'?s up\b|\bkemon (acho|achen|asen)\b|\bki khobor\b",
+    re.I,
+)
+_SALAM = re.compile(r"আস[্]?সালাম[ুু]?|সালাম|\bas+alam|\bsalam\b|\bassalamu\b", re.I)
+_HELLO = re.compile(r"হ্যালো|হেলো|(?<![ঀ-৿])হাই(?![ঀ-৿])|\b(hello|hi|hey)\b", re.I)
+_SMALL_FILLER = re.compile(
+    r"আলাইকুম|আলায়কুম|ভাই|আপা|স্যার|আপনি|তুমি|আপনার|তোমার|আজ|আজকে|\b(alaikum|bhai|there|you|today|guys|brother|sir)\b|"
+    r"[?!.,।\s]+",
+    re.I,
+)
+
+
+# "I don't want anything" — the "না" can come LAST in Bangla ("আজকে কিছু খেতে চাই না"), so "খেতে চাই" alone
+# must never read as a request for dishes
+_NOT_WANT = re.compile(
+    # NOTHING at all — "কিছু (খেতে) চাই না", "কিছু লাগবে না", "খেতে চাই না", "খিদে নেই" (not "ঝাল কম লাগবে না",
+    # which is about a note, and not a plain "no thanks" to an offer — the model handles those)
+    r"কিছু(ই)?\s*(খেতে\s*|খাওয়ার\s*|নিতে\s*)?(চাই|চাচ্ছি|লাগবে|খাব|খাবো|নেব|নেবো|নিব|নিবো|দরকার)\s*না(?![ঀ-৿])|"
+    r"খেতে\s*(চাই|চাচ্ছি|ইচ্ছে\s*করছে|ইচ্ছা\s*করছে)\s*না(?![ঀ-৿])|(খিদে|ক্ষুধা|ক্ষিদে)\s*নেই|পেট\s*ভরা|"
+    r"\bnot hungry\b|\b(don'?t|do not|dont) want (anything|to eat)\b|\bnothing (for me|today|right now|now)\b",
+    re.I,
+)
+# …but "that's all" with a tray is the end of the order (the checkout reads it back) — not "nothing today"
+_THATS_ALL = re.compile(r"আর\s*কিছু|আর\s*লাগবে|এটুকুই|এতটুকুই|এই\s*হবে|\b(anything else|that'?s all|that'?s it)\b", re.I)
+
+
+def _not_wanting(transcript: str, index: MenuIndex, has_tray: bool) -> bool:
+    """"আমি আজকে কিছু খেতে চাই না" / "খিদে নেই" / "no thanks" — nothing wanted right now (no dish named, no tray
+    to finish)."""
+    t = transcript or ""
+    if not _NOT_WANT.search(t):
+        return False
+    if has_tray and _THATS_ALL.search(t):
+        return False  # "আর কিছু চাই না" = that's all → the order read-back
+    return not (_dishes_named(t, index) or find_mentions(t, index, limit=1) or _named_kind_ids(t, index))
+
+
+def _small_talk(transcript: str, lang: str) -> Optional[str]:
+    """"কি খবর, কেমন আছো?" / "আসসালামু আলাইকুম" / "হ্যালো" said on its own → the waiter's friendly answer. None when
+    anything else is in the sentence ("হ্যালো, একটা স্যুপ দেন" → the model)."""
+    t = transcript or ""
+    how, salam, hello = bool(_HOW_ARE_YOU.search(t)), bool(_SALAM.search(t)), bool(_HELLO.search(t))
+    if not (how or salam or hello):
+        return None
+    rest = _SMALL_FILLER.sub(" ", _HELLO.sub(" ", _SALAM.sub(" ", _HOW_ARE_YOU.sub(" ", t)))).strip()
+    if len(rest.split()) > 1:
+        return None  # more than a greeting — the model answers all of it
+    bn = lang == "bn"
+    lead = ("ওয়ালাইকুম আসসালাম! " if bn else "Wa alaikum assalam! ") if salam else ""
+    if how:
+        return lead + ("ভালো আছি, ধন্যবাদ! আপনি কেমন আছেন? কী খেতে চান, বলুন।" if bn
+                       else "I'm good, thanks! How are you? What would you like to eat?")
+    if salam:
+        return lead + ("কী খেতে চান, বলুন।" if bn else "What would you like to eat?")
+    return "হ্যালো! কী খেতে চান, বলুন।" if bn else "Hello! What would you like to eat?"
+
+
+# sizes as guests say them → the size word on the menu
+_SIZE_WORDS: List[Tuple[str, str]] = [
+    ("large", r"বড়টা|বড়োটা|বড়|বড়ো|লার্জ|\blarge\b|\bbig(ger)?\b"),
+    ("small", r"ছোটটা|ছোটোটা|ছোট|ছোটো|স্মল|\bsmall(er)?\b"),
+    ("full", r"ফুলটা|ফুল|\bfull\b"),
+    ("half", r"হাফটা|হাফ|\bhalf\b"),
+    ("medium", r"মিডিয়াম|মাঝারি|\bmedium\b"),
+    ("regular", r"রেগুলার|নরমাল|\bregular\b|\bnormal\b"),
+]
+_SIZE_OF_NAME = re.compile(r"\b(small|large|full|half|medium|regular|big)\b", re.I)
+_NEGATED_AFTER = re.compile(r"^\s*(টা|টি)?\s*(না|নয়|নয়)(?![ঀ-৿])")
+_MAKE_IT = re.compile(r"করে\s*(দিন|দাও|দেন|দিবেন|দেবেন)|\bmake (it|that)\b|\binstead\b|\bchange\b", re.I)
+_SWAP_NOT = re.compile(r"কমান|কমাও|কমিয়ে|বাদ\s*(দিন|দাও|দেন)|সরিয়ে|\b(remove|less|fewer|cancel)\b", re.I)
+
+
+def _size_swap(transcript: str, index: MenuIndex, orderable: Dict[str, bool],
+               rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """"স্মল না, বড়টা দাও" / "মিনারেল ওয়াটার ছোটটা না দিয়ে বড়টা দাও" → the tray's small line becomes the large one
+    (a sibling dish "Mineral Water (large)", or the dish's own size option "Full"), same quantity. [] when it isn't
+    exactly one clear line — then the model asks. (It once said "বড় সাইজে বদলে দিলাম" and changed nothing.)"""
+    t = transcript or ""
+    if not rows or _SWAP_NOT.search(t):
+        return []  # "হাফ কাচ্চি একটা কমান" — fewer / removed, not a size change
+    # the size they WANT: the last size word that isn't negated ("স্মল না, বড়টা" → large)
+    said: List[Tuple[int, str]] = []
+    rejected = False
+    for size, pat in _SIZE_WORDS:
+        for m in re.finditer(pat, t, re.I):
+            if _NEGATED_AFTER.search(t[m.end():]) or re.match(r"\s*না\s*দিয়ে", t[m.end():]):
+                rejected = True
+            else:
+                said.append((m.start(), size))
+    # a change has to be asked for: one size turned down ("স্মল না…") or a change phrase ("…করে দিন", "বদলে")
+    if not said or not (rejected or _SWAP_CUE.search(t) or _MAKE_IT.search(t)):
+        return []
+    want = max(said)[1]
+    # a dish named in the sentence narrows it to that dish ("মিনারেল ওয়াটার ছোটটা না…"); size words don't count
+    named_dish = _guest_tokens(t, _menu_rev(index)) - {"small", "large", "full", "half", "medium", "regular", "big"}
+    cands: List[List[Dict[str, Any]]] = []
+    for r in rows:
+        it = index.by_id.get(str(r.get("itemId"))) or {}
+        name = str(it.get("name") or "")
+        base_toks = _name_tokens(_SIZE_OF_NAME.sub(" ", re.sub(r"[()]", " ", name)))
+        if named_dish and not (named_dish & base_toks):
+            continue
+        # 1) the dish's own size options (Half / Full)
+        vars_ = [v for v in it.get("variations") or [] if v.get("name")]
+        hit = next((v for v in vars_ if re.search(rf"\b{want}\b", str(v["name"]), re.I)), None)
+        if hit and str(r.get("variation") or "").lower() != str(hit["name"]).lower():
+            cands.append([{"op": "edit", "item": index.ref(it), "line": r.get("line"), "variant": str(hit["name"])}])
+            continue
+        # 2) a sibling dish that differs only by its size word ("Mineral Water (small)" → "(large)")
+        m = _SIZE_OF_NAME.search(name)
+        if not m or m.group(1).lower() == want:
+            continue
+        target = re.sub(rf"\b{m.group(1)}\b", want, name, flags=re.I)
+        sib = next((o for o in index.items if str(o.get("name") or "").lower() == target.lower()), None)
+        if sib and orderable.get(index.item_id(sib), True):
+            q = int(r.get("quantity") or 1)
+            cands.append([{"op": "remove", "item": index.ref(it), "line": r.get("line")},
+                          {"op": "add", "item": index.ref(sib), "quantity": q}])
+    return cands[0] if len(cands) == 1 else []
+
+
 # a follow-up about what we just said: "আর কী আছে?", "অন্য কিছু?", "what else?", "ঝাল ছাড়া…"
 _FOLLOW_UP = re.compile(r"\b(else|other|another|instead)\b|আর (কী|কি)|অন্য|আরো|আরও|বাদে|ছাড়া|ছাড়া|বদলে", re.I)
 
@@ -2117,6 +2302,8 @@ def _fixed_reco(
         return None
     if _FOLLOW_UP.search(t):
         return None  # "আর কী আছে?" / "what else?" — other than what we just said → the model, with the conversation
+    if _NOT_WANT.search(t):
+        return None  # "…খেতে চাই না" — never answered with a list of dishes
     said = extract_prefs(t)
     if (said.avoid or said.party_size or said.budget or said.max_price or said.spice == "mild"
             or set(said.mood) - {"sharing"}):
@@ -2178,6 +2365,11 @@ def _fixed_reco(
                 return None
     if not top:
         return None
+    # "টপ থ্রি আইটেম দেখাও" → exactly that many (same order: star-marked first, fitting the time)
+    n = _asked_count(t)
+    if n:
+        both = (top + more)[:n]
+        top, more = both[:3], both[3:]
 
     def said_name(p: Pick) -> str:
         return re.sub(r"\s*\(.*?\)", "", str(p.item.get("name") or "")).strip()
@@ -2513,6 +2705,25 @@ async def generate_reply(
         print(f"[brain] open menu → {text}")
         return {"replyText": text, "meta": m}
 
+    # (e2) small talk on its own — "কি খবর, কেমন আছো?", "আসসালামু আলাইকুম", "হ্যালো" → a friendly answer (no model,
+    # no dish pitch). The model once answered "how are you?" with "I'm virtual, I don't eat" — never again.
+    small = _small_talk(transcript, lang) if stage == "none" and not tstate.get("pending") else None
+    # "আমি আজকে কিছু খেতে চাই না" → no problem, no dishes pushed (it once got a list of four "popular" dishes)
+    if not small and stage == "none" and not tstate.get("pending") and _not_wanting(transcript, index, bool(cart_rows)):
+        small = ("ঠিক আছে, কোনো সমস্যা নেই! কিছু লাগলে যেকোনো সময় বলবেন।" if bn
+                 else "No problem at all! Just tell me whenever you'd like something.")
+    if small:
+        m = _base_meta(language=lang, intent="chitchat", topic="greeting",
+                       decision={"showSuggestionsModal": False, "showUpsellTray": False}, notes="small_talk", **ids)
+        rstate.turn += 1
+        rstate.profile = profile.to_dict()
+        m["checkout"], m["tray"] = ck, tstate
+        m["reco"], m["recoMode"], m["guards"] = rstate.to_dict(), mode, ["small_talk"]
+        if bn:
+            m["voiceReplyText"] = small
+        print(f"[brain] small talk → {small}")
+        return {"replyText": small, "meta": m}
+
     # (f) "কি কি আছে আপনাদের?" / "what do you have?" — a general question about the menu gets a fixed answer (no
     # model): the kind of food + the kinds of dishes, then three to try, which are also the cards —
     # "আমাদের চাইনিজ আইটেম সব আছে — স্যুপ, ফ্রাইড রাইস, …। স্পেশাল কিছু খেতে চাইলে A, B অথবা C ট্রাই করতে পারেন।"
@@ -2705,15 +2916,24 @@ async def generate_reply(
 
     missing_now = missing_kinds(transcript, index)
 
+    closest_now = _closest_to(missing_now, index, orderable) if missing_now else []
+
     def odd_substitutes(o: Dict[str, Any]) -> List[str]:
-        """Asked for something we don't have (desserts) and the reply pushes unrelated food (a soup)."""
+        """Asked for something we don't have and the reply pushes something unrelated — a soup for dessert, a DRINK
+        for a burger. Only what's genuinely close (_CLOSEST) may be offered."""
         if not missing_now or o.get("cartOps"):
             return []
         text = str(o.get("replyText") or "")
-        return [
-            str(it.get("name")) for it in find_mentions(text, index, limit=6)
-            if not dish_facts(it)["drink"] and index.item_id(it) not in cart_qty
-        ]
+        ok = {index.item_id(c) for c in closest_now}
+        named = {index.item_id(it): it for it in find_mentions(text, index, limit=6) + _dishes_named(text, index, limit=6)}
+        odd = [str(it.get("name")) for iid, it in named.items() if iid not in ok and iid not in cart_qty]
+        # a missing FOOD answered with any drink ("…সফট ড্রিংকস বা মিনারেল ওয়াটার") — even when the drink's name
+        # was written in Bangla script and not recognised as a dish
+        drink_kinds = {"desserts", "coffee", "tea", "juice", "drinks", "alcohol"}
+        if (not odd and set(missing_now) - drink_kinds
+                and re.search(r"ড্রিংক|পানীয়|পানি|ওয়াটার|কোক|জুস|\b(drink|water|juice|coke|soda)", text, re.I)):
+            odd = ["a drink"]
+        return odd
 
     def reco_problems(o: Dict[str, Any]) -> List[str]:
         """Recommendation replies must name real dishes that are orderable and suit this time."""
@@ -2794,9 +3014,12 @@ async def generate_reply(
     # it just doesn't wait for (or pay for) a model call
     clean_ops = (_clean_order(transcript, index, orderable, dict(cart_qty))
                  if stage == "none" and not tstate.get("pending") and not about_shown else [])
+    # "স্মল না, বড়টা দাও" — a size swap on one tray line, done exactly (the model once claimed it and did nothing)
+    if not clean_ops and stage == "none" and not tstate.get("pending"):
+        clean_ops = _size_swap(transcript, index, orderable, cart_rows)
     try:
         if clean_ops:
-            print(f"[brain] clean order → no model: {[(o['item'], o['quantity']) for o in clean_ops]}")
+            print(f"[brain] clean order → no model: {[(o['op'], o['item'], o.get('quantity')) for o in clean_ops]}")
             guards.append("clean_order")
             raw = json.dumps({"topic": "order_change", "intent": "order", "language": lang, "replyText": "",
                               "cartOps": clean_ops, "clearCart": False, "confirmOrder": False, "checkout": "none",
@@ -2884,7 +3107,9 @@ async def generate_reply(
         if subs:
             issues.append(
                 f"The guest asked for {', '.join(missing_now)}, which this menu doesn't have — don't offer "
-                f"{', '.join(subs)} as a substitute. Say we don't have it; offer at most a drink, or ask what else they'd like."
+                f"{', '.join(subs)} as a substitute. Say we don't have it; "
+                + (f"offer only what's genuinely close ({', '.join(str(c.get('name')) for c in closest_now)}), "
+                   "or ask what else they'd like." if closest_now else "then just ask what else they'd like.")
             )
         # cart changes the guest didn't actually ask for (a question, a guessed size or choice) → ask instead
         pre_ops, pre_problems = _validate_ops(
@@ -2952,20 +3177,19 @@ async def generate_reply(
     elif odd_substitutes(obj):
         # still offering soup for dessert after the re-check → a plain, honest answer (+ at most a drink)
         guards.append("odd_substitute_replaced")
-        drinks = sorted(
-            (it for it in index.items if dish_facts(it)["drink"] and orderable.get(index.item_id(it), True)
-             and "water" not in str(it.get("name", "")).lower()),
-            key=lambda it: float(it.get("price") or 0),
-        )
-        kinds = ", ".join(missing_now)
+        # "we don't have it" + only what's genuinely close (burgers → the fried chicken / sandwich), else just ask
+        close = [re.sub(r"\s*\(.*?\)", "", str(c.get("name") or "")).strip() for c in closest_now[:2]]
+        kinds = (", ".join(_KIND_BN.get(k, k) for k in missing_now) if lang == "bn" else ", ".join(missing_now))
         if lang == "bn":
             reply = f"দুঃখিত, আমাদের মেনুতে {kinds} নেই।" + (
-                f" চাইলে একটা {drinks[0]['name']} ({_money(drinks[0].get('price'))}) নিতে পারেন, বা আর কিছু লাগবে?" if drinks else " আর কিছু লাগবে?")
+                f" কাছাকাছি হিসেবে {' অথবা '.join(close)} ট্রাই করতে পারেন — অর্ডার করবেন?" if close else " আর কী খেতে চান, বলুন?")
         else:
             reply = f"Sorry, we don't have {kinds}." + (
-                f" Would you like a {drinks[0]['name']} ({_money(drinks[0].get('price'))}) instead, or anything else?" if drinks else " Can I get you anything else?")
+                f" The closest we have is {' or '.join(close)} — would you like one?" if close else " What else would you like?")
         voice = reply if lang == "bn" else ""
-        obj["suggestions"], topic, intent = [], "availability", "menu"
+        # the close dishes (if any) as cards to tap
+        obj["suggestions"] = [{"item": index.ref(c), "reason": "closest we have"} for c in closest_now[:2]]
+        topic, intent = "availability", ("suggestions" if closest_now else "menu")
 
     ops, problems = _validate_ops(
         obj.get("cartOps"), index, dict(cart_qty), orderable, transcript, guest_words, context_ids=talked_about, rows=cart_rows,
@@ -3077,6 +3301,17 @@ async def generate_reply(
             voice = reply if lang == "bn" else ""
             topic, intent = ("order_change", "menu") if clar else ("recommendation", "suggestions")
             guards.append("false_added_claim_replaced")
+    # the reply says it added / changed something, but NOTHING changed in the tray (no op at all) — e.g.
+    # "মিনারেল ওয়াটার বড় সাইজে বদলে দিলাম" with no cart change. Never tell the guest it's done when it isn't.
+    # (a sentence ending in "?" is an offer — "…৳300 — added?" / "যোগ করব?" — not a claim)
+    claim_said = any((_CLAIMS_ADDED.search(s) or _CLAIMS_CHANGED.search(s)) and not s.rstrip().endswith("?")
+                     for s in re.findall(r"[^।.!?]+[।.!?]?", reply or ""))
+    if not ops and not clear and not problems and not sure_q and claim_said and cart_rows is not None:
+        reply = ("দুঃখিত, ঠিক কী বদলাবো বুঝতে পারিনি — আরেকবার বলবেন? যেমন: \"ছোটটা বাদ দিয়ে বড়টা দিন\"।" if lang == "bn"
+                 else "Sorry, I didn't catch what to change — could you say it again? For example: \"make it the large one\".")
+        voice = reply if lang == "bn" else ""
+        topic, intent = "order_change", "menu"
+        guards.append("false_change_claim_replaced")
 
     decision: Dict[str, Any] = {"showSuggestionsModal": False, "showUpsellTray": False}
 
@@ -3269,7 +3504,8 @@ async def generate_reply(
         inside = [s for s in suggestions if s.get("itemId") in kind_scope]
         scoped_out = not inside
         suggestions = inside
-    if (recommending and (suggestions or scoped_out) and len(suggestions) < 3 and not (ops or clear or checkout_spoke)
+    if (recommending and (suggestions or scoped_out) and len(suggestions) < 3
+            and "odd_substitute_replaced" not in guards  # "we don't have it — the closest is…": only what's close and not (ops or clear or checkout_spoke)
             and not (about_shown and shown_on_screen) and not _ASKED_FOR_ONE.search(transcript)):
         seen = {s["itemId"] for s in suggestions} | set(final_qty)
         cats = {(index.by_id.get(s["itemId"]) or {}).get("category") for s in suggestions}

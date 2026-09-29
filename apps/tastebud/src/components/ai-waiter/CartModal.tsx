@@ -44,6 +44,8 @@ type Props = {
   onIntent?: (intent?: WaiterIntent, meta?: AiReplyMeta, replyText?: string) => void;
   /** its own mic bar — off where a hands-free voice session runs the conversation (the waiter home) */
   voiceBar?: boolean;
+  /** the waiter's presence (AssistantHeader) at the top of the sheet, left-aligned */
+  assistant?: React.ReactNode;
 };
 
 
@@ -67,6 +69,7 @@ export default function TrayModal({
   channel: channelProp,
   onIntent,
   voiceBar = true,
+  assistant,
 }: Props) {
   const { items, subtotal, removeLine, addItem, setLineQty, replaceLine, lastChange, warnings, clear } = useCart();
 
@@ -338,9 +341,19 @@ export default function TrayModal({
         <div className="shrink-0 z-20 px-4 pt-3 pb-2 border-b border-gray-100 bg-[#F8F8F8] rounded-t-[26px]">
           <div className="relative flex flex-col items-center">
             <div className="mb-2 h-1 w-12 rounded-full bg-gray-300" />
+            {assistant ? (
+              // the waiter's presence (orb · AI Assistant · status) left-aligned; the tray's title under it
+              <div className="w-full pr-10">
+                {assistant}
+                <h2 className="mt-2 text-left text-[15px] font-semibold text-gray-900">
+                  Your Tray <span className="font-normal text-gray-500">· {items.reduce((n, i) => n + i.qty, 0)}</span>
+                </h2>
+              </div>
+            ) : (
             <h2 className="text-[15px] font-semibold text-gray-900">
               Your Tray <span className="font-normal text-gray-500">· {items.reduce((n, i) => n + i.qty, 0)}</span>
             </h2>
+            )}
 
             <button
               onClick={onClose}

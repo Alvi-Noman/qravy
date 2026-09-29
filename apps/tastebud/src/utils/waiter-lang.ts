@@ -55,7 +55,8 @@ function broadcast(lang: WaiterLang) {
 }
 
 /** Restaurant default from the public tenant info (shares the DigitalMenu / order-mode cache). */
-function useDefaultLang(sub?: string | null): WaiterLang | null {
+/** The restaurant's public info (name, default waiter language…) — one shared, cached query. */
+export function useTenantInfo(sub?: string | null): any | null {
   const { data } = useQuery({
     queryKey: ['tenantInfo', sub],
     enabled: Boolean(sub),
@@ -67,7 +68,11 @@ function useDefaultLang(sub?: string | null): WaiterLang | null {
     staleTime: 300_000,
     refetchOnWindowFocus: false,
   });
-  return asLang((data as any)?.waiterLanguage);
+  return data ?? null;
+}
+
+function useDefaultLang(sub?: string | null): WaiterLang | null {
+  return asLang(useTenantInfo(sub)?.waiterLanguage);
 }
 
 /** [effective language, set the guest's choice] */

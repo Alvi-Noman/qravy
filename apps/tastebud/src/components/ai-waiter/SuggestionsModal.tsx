@@ -23,6 +23,8 @@ type Props = {
   onIntent?: (intent?: WaiterIntent, meta?: AiReplyMeta, replyText?: string) => void;
   /** its own mic bar — off where a hands-free voice session runs the conversation (the waiter home) */
   voiceBar?: boolean;
+  /** the waiter's presence (AssistantHeader) at the top of the sheet, left-aligned */
+  assistant?: React.ReactNode;
 };
 
 /* ---------- Helpers ---------- */
@@ -141,6 +143,7 @@ export default function SuggestionsModal({
   highlightIds = [],
   onIntent,
   voiceBar = true,
+  assistant,
 }: Props) {
   const hl = new Set(highlightIds.map(String));
   const cardRefs = React.useRef<Record<string, HTMLElement | null>>({});
@@ -189,13 +192,22 @@ export default function SuggestionsModal({
           <div className="relative flex flex-col items-center">
             <div className="mb-2 h-1 w-12 rounded-full bg-gray-300" />
 
-            {heroImage && (
-              <div className="mb-2 h-10 w-10 rounded-full overflow-hidden border border-white/70 shadow-sm">
-                <img src={heroImage} alt={heroName ?? 'Item'} className="h-full w-full object-cover" />
+            {assistant ? (
+              // the waiter's presence (orb · AI Assistant · status) left-aligned; the list's title under it
+              <div className="w-full pr-10">
+                {assistant}
+                <h2 className="mt-2 text-left text-[15px] font-semibold text-gray-900">AI Suggestions</h2>
               </div>
+            ) : (
+              <>
+                {heroImage && (
+                  <div className="mb-2 h-10 w-10 rounded-full overflow-hidden border border-white/70 shadow-sm">
+                    <img src={heroImage} alt={heroName ?? 'Item'} className="h-full w-full object-cover" />
+                  </div>
+                )}
+                <h2 className="text-[15px] font-semibold text-gray-900">AI Suggestions</h2>
+              </>
             )}
-
-            <h2 className="text-[15px] font-semibold text-gray-900">AI Suggestions</h2>
 
             <button
               onClick={onClose}

@@ -10,12 +10,17 @@ export type TtsEvents = {
   /** The guest has finished HEARING it: played to the end, stopped, or failed. (Azure's "synthesis completed" comes
    *  seconds earlier, while the speaker is still playing — opening the mic then cut the waiter off.) */
   onPlaybackEnd?: () => void;
+  /** The sound really started coming out of the speaker. Word events (onWord) arrive while the audio is still being
+   *  generated — ahead of what the guest hears — so a word's time is this moment + its offset. */
+  onPlaybackStart?: () => void;
 };
 
 export type TTSPublicAPI = {
   speak: (text: string) => Promise<void>;
   /** Get a connected speech pipeline ready in the background (call while the waiter is thinking). */
   warm: () => void;
+  /** Fetch the speech token ahead of time (safe before any tap — no audio is set up). */
+  prefetch: () => void;
   stop: () => void;
   pause: () => void;
   resume: () => void;
@@ -246,6 +251,11 @@ class TTSManager implements TTSPublicAPI {
     });
   }
 
+  prefetch = () => {
+    // the token is the slow first step of the first reply — get it while the guest is still looking at the screen
+    this._ensureToken().catch((e) => console.debug("[TTS] token prefetch skipped", e));
+  };
+
   warm = () => {
     this._warm().catch((e) => console.debug("[TTS] warm-up skipped", e));
   };
@@ -422,6 +432,10 @@ class TTSManager implements TTSPublicAPI {
     // the moment the guest has HEARD it all (not when synthesis finished — that's seconds earlier)
     (speaker as any).onAudioEnd = () => {
       if (this.speaker === speaker) this._emitPlaybackEnd();
+    };
+    // …and the moment the guest STARTS hearing it (the words' clock: shown text follows the voice, not the synthesis)
+    (speaker as any).onAudioStart = () => {
+      if (this.speaker === speaker) this.listeners.forEach((h) => { h.onPlaybackStart?.(); });
     };
     const audioConfig = sdk.AudioConfig.fromSpeakerOutput(speaker);
 

@@ -104,6 +104,29 @@ def test_a_clean_order_needs_no_model_and_is_confirmed_short():
     assert calls
 
 
+def test_small_to_large_is_really_done():
+    # the real turns: "স্মল না, তুমি আমাকে বড়টা দাও।" / "মিনারেল ওয়াটার ছোটটা না দিয়ে আমাকে বড়টা দাও।" → the model
+    # said "মিনারেল ওয়াটার বড় সাইজে বদলে দিলাম" with NO cart change
+    tray = [{"itemId": "mws", "quantity": 2, "price": 15}, {"itemId": "crs", "quantity": 1, "price": 300}]
+    lie = {"cartOps": [], "replyText": "মিনারেল ওয়াটার বড় সাইজে বদলে দিলাম। আর কিছু লাগবে?"}
+    for said in ("স্মল না, তুমি আমাকে বড়টা দাও।", "মিনারেল ওয়াটার ছোটটা না দিয়ে আমাকে বড়টা দাও।"):
+        out, calls = run(said, lie, cart=tray)
+        assert not calls, "done exactly, no model"
+        ops = [(o["op"], o["itemId"], o.get("quantity")) for o in out["meta"]["cartOps"]]
+        assert ops == [("remove", "mws", None), ("add", "mwl", 2)], (said, ops)  # the same 2, now large
+        assert "Mineral Water (large)" in out["replyText"], out["replyText"]
+    # a real size option (Half → Full) on the dish itself
+    out, _ = run("হাফ না, ফুলটা দিন", {"replyText": "…"}, cart=[{"itemId": "kb", "quantity": 1, "price": 450, "variation": "Half"}])
+    assert [(o["op"], o.get("variant")) for o in out["meta"]["cartOps"]] == [("edit", "Full")], out["meta"]["cartOps"]
+
+
+def test_never_claims_a_change_that_didnt_happen():
+    tray = [{"itemId": "crs", "quantity": 1, "price": 300}]
+    out, _ = run("এটা একটু বদলে দাও", {"cartOps": [], "replyText": "বদলে দিলাম। আর কিছু লাগবে?"}, cart=tray)
+    assert "বদলে দিলাম" not in out["replyText"] and "বুঝতে পারিনি" in out["replyText"], out["replyText"]
+    assert "false_change_claim_replaced" in out["meta"]["guards"]
+
+
 def test_the_listening_hint_leads_with_the_dishes_just_named():
     import server
     server._STT_NAMES[("t1", "bn")] = [("Thai Thick Soup", "থাই থিক স্যুপ"), ("Crispy Rice Soup", "ক্রিস্পি রাইস স্যুপ"),

@@ -22,13 +22,23 @@ import { useTable } from '../utils/table';
 import { useOrderChannel } from '../utils/order-mode';
 import { getOrder, recentOrders } from '../api/orders';
 import { uiLang } from '../utils/ui-lang';
-import { useWaiterLang } from '../utils/waiter-lang';
+import { useTenantInfo, useWaiterLang } from '../utils/waiter-lang';
 import LangSwitch from '../components/LangSwitch';
 import {
   FOLLOW_UP_LISTEN_MS, PENDING_AUDIO_MAX, chooseOptionsOf, handsFreeOn, type ChooseOption,
 } from '../utils/handsfree';
-import VoiceSessionPill, { type VoiceState } from '../components/ai-waiter/VoiceSessionPill';
+import AssistantHeader from '../components/ai-waiter/AssistantHeader';
 import VoiceEdgeGlow from '../components/ai-waiter/VoiceEdgeGlow';
+
+type VoiceState = 'listening' | 'hearing' | 'thinking' | 'speaking' | 'waiting' | 'paused';
+const VOICE_STATUS: Record<VoiceState, [string, string]> = {
+  listening: ['শুনছি… বলুন', 'Listening… go ahead'],
+  hearing: ['শুনছি…', 'Listening…'],
+  thinking: ['ভাবছি…', 'Thinking…'],
+  speaking: ['বলছি…', 'Speaking…'],
+  waiting: ['এক মুহূর্ত…', 'One moment…'],
+  paused: ['থামানো — ট্যাপ করে বলুন', 'Paused — tap to talk'],
+};
 import { earcon } from '../utils/earcon';
 
 type UIMode = 'idle' | 'thinking' | 'talking';
@@ -36,10 +46,14 @@ type UIMode = 'idle' | 'thinking' | 'talking';
 // ✅ Welcome text, in the waiter's language
 const WELCOME_BN =
   'স্বাগতম! আমি পিক্সি - আপনার ভার্চুয়াল ওয়েটার। মেনু থেকে যেকোনো কিছু জানতে চাইলে কিংবা অর্ডার করতে আমাকে বলুন।';
-const WELCOME_TEXTS = {
-  bn: WELCOME_BN,
-  en: "Welcome! I'm Pixie, your virtual waiter. Ask me anything about the menu, or tell me what you'd like to order.",
-} as const;
+// "{Restaurant}-এ স্বাগতম, আমি পিক্সি…" — plain "স্বাগতম!" until the restaurant's name has loaded
+function welcomeText(lang: 'bn' | 'en', restaurant?: string | null): string {
+  const name = (restaurant || '').trim();
+  if (lang === 'en') {
+    return `${name ? `Welcome to ${name}!` : 'Welcome!'} I'm Pixie, your virtual waiter. Ask me anything about the menu, or tell me what you'd like to order.`;
+  }
+  return name ? WELCOME_BN.replace('স্বাগতম! আমি', `${name}-এ স্বাগতম, আমি`) : WELCOME_BN;
+}
 
 // 🔒 Welcome overlay persistence
 const WELCOME_INTERACT_KEY = 'qravy:aiwaiter:lastInteractionAt';
@@ -208,16 +222,11 @@ export default function AiWaiterHome() {
   // ===== word-sync (gapless) =====
   const MIN_STEP_MS = 80;
   const FALLBACK_STEP_MS = 120;
-  const START_PACK_COUNT = 3;
-  const anchorSetRef = useRef(false);
-  const baseStartRef = useRef(0);
   const lastDueRef = useRef(0);
   const startedTextRef = useRef<string>('');
-  const packedCountRef = useRef(0);
   const speakGenRef = useRef(0);
   const activeGenRef = useRef(0);
   const inSpeechRef = useRef(false);
-  const firstTokenRef = useRef(false);
 
   const norm = (s: string) => String(s ?? '').replace(/\s+/g, ' ').trim();
   function scheduleAt(due: number, token: string) {
@@ -236,6 +245,19 @@ export default function AiWaiterHome() {
 
   const [speaking, setSpeaking] = useState(false);
   const ttsStartedAtRef = useRef(0); // when the waiter's voice last started (the voice session waits for it)
+  // the welcome is being spoken → its text is revealed with the voice (see visibleText); never longer than 8 s
+  const [welcomePending, setWelcomePending] = useState(false);
+  useEffect(() => {
+    if (!welcomePending) return;
+    const t = window.setTimeout(() => setWelcomePending(false), 8000); // no voice → the text shows anyway
+    return () => window.clearTimeout(t);
+  }, [welcomePending]);
+  // the speech token is fetched while the guest is still looking at "tap to start" — the welcome starts sooner
+  useEffect(() => {
+    try {
+      tts.prefetch();
+    } catch {}
+  }, [tts]);
 
   // one writer for the live text at a time (a mic bar in a pop-up takes over while it is open)
   const revealIdRef = useRef(Symbol('waiter-home'));
@@ -254,88 +276,108 @@ export default function AiWaiterHome() {
           speakGenRef.current += 1;
           activeGenRef.current = speakGenRef.current;
           inSpeechRef.current = true;
-          anchorSetRef.current = false;
-          baseStartRef.current = 0;
           lastDueRef.current = 0;
-          packedCountRef.current = 0;
           startedTextRef.current = text || '';
-          firstTokenRef.current = false;
+          // a new utterance: its words wait for the sound to start (see onPlaybackStart)
+          playAnchorRef.current = null;
+          queuedWordsRef.current = [];
+          finishPendingRef.current = false;
+          if (anchorFallbackRef.current) window.clearTimeout(anchorFallbackRef.current);
+          anchorFallbackRef.current = null;
           try {
             startTtsReveal('');
           } catch {}
         }
       },
+      // REAL-TIME WORDS: Azure reports each word (with its time in the audio) while it is still GENERATING the
+      // audio — ahead of what the guest hears. So words are held until the sound actually starts, then each one
+      // appears at that moment + its own offset: the text follows the voice, word by word.
       onWord: (w, off) => {
         if (!owns()) return;
         if (activeGenRef.current !== speakGenRef.current) return;
-        if (!anchorSetRef.current) {
-          anchorSetRef.current = true;
-          if (!firstTokenRef.current) {
-            try {
-              setAi('');
-            } catch {}
-            try {
-              appendTtsReveal(w);
-            } catch {}
-            firstTokenRef.current = true;
+        if (playAnchorRef.current === null) {
+          queuedWordsRef.current.push({ w, off });
+          // a phone/SDK that never reports "playback started" → fall back to the first word's arrival
+          if (!anchorFallbackRef.current) {
+            anchorFallbackRef.current = window.setTimeout(() => anchorRevealRef.current(), 1500);
           }
-          baseStartRef.current = performance.now();
-          lastDueRef.current = baseStartRef.current;
-          packedCountRef.current = 1;
           return;
         }
-        if (packedCountRef.current > 0 && packedCountRef.current < START_PACK_COUNT) {
-          const due =
-            lastDueRef.current > 0
-              ? lastDueRef.current + MIN_STEP_MS
-              : baseStartRef.current + packedCountRef.current * MIN_STEP_MS;
-          scheduleAt(due, w);
-          packedCountRef.current += 1;
-          return;
-        }
-        const hasOff = typeof off === 'number' && isFinite(off) && off >= 0;
-        if (hasOff) {
-          scheduleAt(baseStartRef.current + (off ?? 0), w);
-        } else {
-          scheduleAt(
-            Math.max(performance.now(), lastDueRef.current + FALLBACK_STEP_MS),
-            w,
-          );
-        }
+        placeWordRef.current(w, off);
+      },
+      onPlaybackStart: () => {
+        if (!owns()) return;
+        anchorRevealRef.current();
       },
       // the guest has HEARD the whole reply → now the mic may reopen (the voice session). Not on onEnd: that is
       // "synthesis done", seconds before the speaker stops — opening the mic then cut the waiter off mid-sentence.
       onPlaybackEnd: () => {
         setSpeaking(false);
+        setWelcomePending(false); // (the whole welcome has been heard — its full text stays)
         followUpTriggerRef.current?.();
       },
       onEnd: () => {
         if (!inSpeechRef.current || !owns()) {
           return;
         }
-        const myGen = speakGenRef.current;
-        const wait = Math.max(0, lastDueRef.current - performance.now() + 80);
-        setTimeout(() => {
-          if (activeGenRef.current !== myGen) return;
-          try {
-            finishTtsReveal();
-          } catch {}
-          try {
-            const st = (useConversationStore as any).getState?.() || {};
-            const finalText =
-              (st.aiTextLive && String(st.aiTextLive).trim())
-                ? String(st.aiTextLive)
-                : String(startedTextRef.current || '');
-            setAi(finalText);
-          } catch {}
-          inSpeechRef.current = false;
-          speakGenRef.current += 1;
-          // (still "speaking" until the audio has really finished — see onPlaybackEnd)
-        }, wait);
+        // synthesis is done — but if the sound hasn't started yet, finish only after its words have been placed
+        if (playAnchorRef.current === null) {
+          finishPendingRef.current = true;
+          return;
+        }
+        finishRevealRef.current();
       },
     });
     return () => un();
   }, [tts, appendTtsReveal, finishTtsReveal, setAi, startTtsReveal]);
+
+  // the reveal's clock: the moment the sound started (words already reported are placed on it)
+  const playAnchorRef = useRef<number | null>(null);
+  const queuedWordsRef = useRef<{ w: string; off?: number }[]>([]);
+  const finishPendingRef = useRef(false);
+  const anchorFallbackRef = useRef<number | null>(null);
+  const placeWordRef = useRef<(w: string, off?: number) => void>(() => {});
+  placeWordRef.current = (w, off) => {
+    const base = playAnchorRef.current ?? performance.now();
+    const hasOff = typeof off === 'number' && isFinite(off) && off >= 0;
+    scheduleAt(hasOff ? base + (off as number) : Math.max(performance.now(), lastDueRef.current + FALLBACK_STEP_MS), w);
+  };
+  const finishRevealRef = useRef<() => void>(() => {});
+  finishRevealRef.current = () => {
+    const myGen = speakGenRef.current;
+    const wait = Math.max(0, lastDueRef.current - performance.now() + 80);
+    setTimeout(() => {
+      if (activeGenRef.current !== myGen) return;
+      try {
+        finishTtsReveal();
+      } catch {}
+      try {
+        const st = (useConversationStore as any).getState?.() || {};
+        const finalText =
+          st.aiTextLive && String(st.aiTextLive).trim() ? String(st.aiTextLive) : String(startedTextRef.current || '');
+        setAi(finalText);
+      } catch {}
+      inSpeechRef.current = false;
+      speakGenRef.current += 1;
+      // (still "speaking" until the audio has really finished — see onPlaybackEnd)
+    }, wait);
+  };
+  const anchorRevealRef = useRef<() => void>(() => {});
+  anchorRevealRef.current = () => {
+    if (playAnchorRef.current !== null || !inSpeechRef.current) return;
+    if (anchorFallbackRef.current) window.clearTimeout(anchorFallbackRef.current);
+    anchorFallbackRef.current = null;
+    playAnchorRef.current = performance.now();
+    lastDueRef.current = 0;
+    try {
+      setAi(''); // the previous reply's text goes as this one starts being heard
+    } catch {}
+    for (const { w, off } of queuedWordsRef.current.splice(0)) placeWordRef.current(w, off);
+    if (finishPendingRef.current) {
+      finishPendingRef.current = false;
+      finishRevealRef.current();
+    }
+  };
 
   // fonts
   useEffect(() => {
@@ -416,6 +458,7 @@ export default function AiWaiterHome() {
   const sessionRef = useRef<'off' | 'on' | 'paused'>('off');
   sessionRef.current = session;
   const emptyWindowsRef = useRef(0); // listen windows in a row with no answer from the guest
+  const pressSessionRef = useRef<'off' | 'on' | 'paused'>('off'); // the session when the mic button went down
   const speakingRef = useRef(false);
   speakingRef.current = speaking;
   const followUpRef = useRef(false); // a reply came in → listen when the waiter finishes speaking
@@ -431,7 +474,8 @@ export default function AiWaiterHome() {
 
   // the guest's choice (top-right switch) → else the restaurant's default (admin) → else Bangla
   const [selectedLang, setSelectedLang] = useWaiterLang(resolvedSub);
-  const WELCOME_TEXT = WELCOME_TEXTS[selectedLang];
+  const tenantInfo = useTenantInfo(resolvedSub);
+  const WELCOME_TEXT = welcomeText(selectedLang === 'en' ? 'en' : 'bn', tenantInfo?.name);
 
   useEffect(() => {
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
@@ -500,19 +544,23 @@ export default function AiWaiterHome() {
       show(trayLine || idleLine);
       return;
     }
-    show(en ? 'Your order is in. Anything else — water, dessert…?' : 'অর্ডার হয়ে গেছে 🙂 আর কিছু লাগলে বলুন — পানি, ডেজার্ট…');
+    // there's an order: say what's TRUE about it — its real status, checked first (never a guess like
+    // "অর্ডার হয়ে গেছে" for an order that's already being cooked). Until the answer: a neutral line.
+    show(en ? 'Tell me if you need anything else.' : 'আর কিছু লাগলে বলুন।');
     const shownAt = store.getState?.().aiAt || 0;
     let alive = true;
     getOrder(lastOrder.token)
       .then((o) => {
         // only refine our own return line — not something the waiter said since
         if (!alive || !o || (store.getState?.().aiAt || 0) !== shownAt) return;
-        const justPlaced = o.status === 'placed' && Date.now() - lastOrder.at < 3 * 60_000;
         let line: string;
         if (o.status === 'cancelled') line = idleLine;
         else if (o.status === 'ready' || o.status === 'completed') line = en ? 'Enjoy your meal! Need anything else?' : 'খাবার উপভোগ করুন! আর কিছু লাগবে?';
-        else if (justPlaced) return; // "অর্ডার হয়ে গেছে" already fits
-        else line = en ? "Your order is being prepared. Tell me if you need anything else." : 'আপনার অর্ডার তৈরি হচ্ছে। আর কিছু লাগলে বলুন।';
+        else if (o.status === 'placed')
+          line = en
+            ? 'Your order has been sent — waiting for the restaurant to accept it. Need anything else?'
+            : 'আপনার অর্ডার পাঠানো হয়েছে — রেস্টুরেন্ট গ্রহণ করার অপেক্ষায়। আর কিছু লাগবে?';
+        else line = en ? 'Your order is being prepared. Tell me if you need anything else.' : 'আপনার অর্ডার তৈরি হচ্ছে। আর কিছু লাগলে বলুন।';
         setAi(line);
       })
       .catch(() => {});
@@ -1483,12 +1531,6 @@ export default function AiWaiterHome() {
     } catch {}
     if (!wsRef.current && !ctxRef.current) void startListening({ listenMs: FOLLOW_UP_LISTEN_MS });
   }
-  function endSession() {
-    followUpRef.current = false;
-    setSession('off');
-    sessionRef.current = 'off';
-    if (wsRef.current || ctxRef.current) void stopListening({ quiet: true });
-  }
 
   // what the pill shows
   const voiceState: VoiceState =
@@ -1540,15 +1582,32 @@ export default function AiWaiterHome() {
 
   const ORB_SIZE = 480;
 
+  // the waiter's presence at the top of the sheets: live orb · "AI Assistant" · what it's doing (tap = pause/resume)
+  const assistantHeader = hasInteracted ? (
+    <AssistantHeader
+      mode={session === 'on' ? orbMode : 'idle'}
+      level={listening ? micLevel : 0}
+      paused={session !== 'on'}
+      lang={selectedLang === 'en' ? 'en' : 'bn'}
+      status={VOICE_STATUS[session === 'on' ? voiceState : 'paused'][1] /* status words stay English */}
+      onToggle={session === 'on' ? muteSession : session === 'paused' ? resumeSession : () => void startListening()}
+      choices={choices}
+      onChoose={(say) => void startListening({ typed: say })}
+    />
+  ) : undefined;
+
   const orbRef = useRef<HTMLDivElement | null>(null);
   const micBtnRef = useRef<HTMLButtonElement | null>(null);
   const textWrapRef = useRef<HTMLDivElement | null>(null);
   const [textTop, setTextTop] = useState<number | null>(null);
 
-  // ✅ Show welcome text until AI says something, but override with "Thinking..." while pending
+  // ✅ Show welcome text until AI says something, but override with "Thinking..." while pending. While the welcome
+  // is being spoken, only the words already said show (revealed with the voice).
   const visibleText =
     uiMode === 'thinking'
       ? 'Thinking...'
+      : welcomePending
+      ? aiLive || ''
       : (aiLive || aiFinal || WELCOME_TEXT) ?? '';
 
   useEffect(() => {
@@ -1590,6 +1649,8 @@ export default function AiWaiterHome() {
     if (hasInteracted) return;
     setHasInteracted(true);
     markWelcomeInteraction();
+    // the welcome's words appear AS they're spoken (not all at once, then the voice a second later)
+    setWelcomePending(true);
     try {
       tts.stop();
     } catch {}
@@ -1691,6 +1752,14 @@ export default function AiWaiterHome() {
           <button
             ref={micBtnRef}
             onClick={(e) => {
+              // in a conversation the button is PAUSE (the orb shows listening / thinking / speaking). Judged by the
+              // state when the finger went DOWN — a tap that just started the conversation must not pause it.
+              if (pressSessionRef.current === 'on') {
+                e.preventDefault();
+                (window as any).__qravyPTTHandled = false;
+                muteSession();
+                return;
+              }
               if ((window as any).__qravyPTTHandled) {
                 (window as any).__qravyPTTHandled = false;
                 e.preventDefault();
@@ -1703,6 +1772,8 @@ export default function AiWaiterHome() {
               }
             }}
             onPointerDown={() => {
+              pressSessionRef.current = sessionRef.current;
+              if (sessionRef.current === 'on') return; // (the click pauses)
               (window as any).__qravyPTTActive = true;
               (window as any).__qravyPTTHandled = true;
               if (!listening) startListening();
@@ -1710,7 +1781,7 @@ export default function AiWaiterHome() {
             onPointerUp={() => {
               if ((window as any).__qravyPTTActive) {
                 (window as any).__qravyPTTActive = false;
-                if (listening) stopListening();
+                if (listening) stopListening(); // held to talk, released → send (a quick tap isn't listening yet)
               }
             }}
             onPointerLeave={() => {
@@ -1734,10 +1805,16 @@ export default function AiWaiterHome() {
                 ? '0 16px 48px rgba(250, 40, 81, 0.4), 0 8px 16px rgba(250, 40, 81, 0.25), inset 0 -2px 8px rgba(0, 0, 0, 0.15)'
                 : '0 12px 40px rgba(250, 40, 81, 0.35), 0 6px 12px rgba(250, 40, 81, 0.2), inset 0 -2px 8px rgba(0, 0, 0, 0.1)',
             }}
-            aria-label={listening ? 'Stop voice' : 'Start voice'}
-            title={listening ? 'Release to stop' : 'Hold to talk • Tap to start'}
+            aria-label={session === 'on' ? 'Pause the conversation' : listening ? 'Stop voice' : 'Start voice'}
+            title={session === 'on' ? 'Pause' : listening ? 'Release to stop' : 'Hold to talk • Tap to start'}
           >
-            {!listening ? (
+            {session === 'on' ? (
+              // a conversation is running: this button pauses it (the orb above shows what's happening)
+              <svg width="30" height="30" viewBox="0 0 24 24" fill="#fff" className="relative z-10 drop-shadow-md" aria-hidden="true">
+                <rect x="6.5" y="5" width="4" height="14" rx="1.5" />
+                <rect x="13.5" y="5" width="4" height="14" rx="1.5" />
+              </svg>
+            ) : !listening ? (
               <svg
                 width="36"
                 height="36"
@@ -1802,7 +1879,8 @@ export default function AiWaiterHome() {
         }}
         items={suggestedItems}
         highlightIds={highlightIds}
-        voiceBar={false /* the voice session (pill at the top) talks here */}
+        voiceBar={false /* the voice session talks here — its presence is the header */}
+        assistant={assistantHeader}
         onIntent={handleSuggestionsReply}
       />
       <TrayModal
@@ -1822,26 +1900,20 @@ export default function AiWaiterHome() {
             ? mapUpsell(lastMeta.upsell as any[])
             : upsellItems
         }
-        voiceBar={false /* the voice session (pill at the top) talks here */}
+        voiceBar={false /* the voice session talks here — its presence is the header */}
+        assistant={assistantHeader}
         onIntent={handleTrayReply}
       />
 
-      {/* THE VOICE SESSION — on every screen: the pill (what's happening + mute / end) and, while the mic is open,
-          the glowing edge. Shown during a conversation, and whenever a sheet is open (sheets have no mic of their
-          own — "tap to talk" starts the conversation from there) */}
-      {hasInteracted && (session !== 'off' || showSuggestions || showTray) && (
-        <VoiceSessionPill
-          state={session === 'off' ? 'paused' : voiceState}
-          level={listening ? micLevel : 0}
-          lang={selectedLang === 'en' ? 'en' : 'bn'}
-          onMute={muteSession}
-          onResume={session === 'off' ? () => void startListening() : resumeSession}
-          onEnd={endSession}
-          choices={showSuggestions || showTray ? choices : undefined}
-          onChoose={(say) => void startListening({ typed: say })}
-        />
-      )}
+      {/* THE VOICE SESSION's presence. Home: the big orb IS the status (no panel). A sheet open: the orb shrinks onto
+          the sheet's top edge — still listening / thinking / speaking, tap it to pause or resume (sheets have no mic
+          of their own). While the mic is really open, the screen's edge glows. */}
       <VoiceEdgeGlow on={listening} level={micLevel} />
+      <span className="sr-only" role="status" aria-live="polite">
+        {session !== 'off' && !(showSuggestions || showTray)
+          ? VOICE_STATUS[voiceState][1]
+          : ''}
+      </span>
 
       {/* The guest's latest order — one tap to its live status */}
       {lastOrder && (

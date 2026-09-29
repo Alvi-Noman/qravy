@@ -103,7 +103,17 @@ export default function OrderStatusPage() {
 
   return (
     <div className="min-h-screen bg-[#F6F5F8]" style={{ fontFamily: "'Noto Sans Bengali', system-ui, sans-serif" }}>
-      <main className="max-w-2xl mx-auto px-4 pt-8 pb-16">
+      <main className="max-w-2xl mx-auto px-4 pt-4 pb-16">
+        {/* back to the waiter (order more, ask something) — the order keeps updating on its pill there */}
+        <Link
+          to={backHref}
+          className="mb-3 inline-flex items-center gap-1.5 rounded-full bg-white px-3.5 py-2 text-sm font-medium text-gray-800 shadow-sm active:scale-95"
+        >
+          <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} aria-hidden="true">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M15 18l-6-6 6-6" />
+          </svg>
+          {tr(lang, 'ওয়েটারের কাছে ফিরুন', 'Back to the waiter')}
+        </Link>
         <section className="flex items-center justify-between rounded-3xl bg-white px-6 py-4 shadow-sm">
           <div>
             <p className="text-xs text-gray-500">{tr(lang, 'অর্ডার', 'Order')}</p>

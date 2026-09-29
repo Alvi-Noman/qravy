@@ -238,7 +238,7 @@ def test_what_do_you_have_is_recommendation_cards_not_the_menu_page():
 def test_any_suggested_dish_opens_the_cards_but_a_dish_asked_about_does_not():
     # a greeting that pitches one dish, with nothing in suggestions → cards, topped up to 3
     real = {"topic": "greeting", "replyText": "হ্যালো! আজকে Beef with Red Curry খুব ভালো হবে। কী দেব?"}
-    out, _ = run("হ্যালো", real)
+    out, _ = run("শুভ সন্ধ্যা", real)  # (a bare "হ্যালো" has the fixed friendly answer — see the small-talk test)
     assert out["meta"]["decision"]["showSuggestionsModal"] is True and len(out["meta"]["suggestions"]) == 3
     # asking about one dish (in Bangla script) is an answer about THAT dish, not a pitch → no cards
     real = {"topic": "item_question", "replyText": "Beef with Red Curry সাধারণত একটু ঝাল হয়।"}
@@ -512,6 +512,75 @@ def test_recommendations_use_the_waiters_two_shapes():
     for said in ("কম ঝাল কিছু আছে?", "আমরা চারজন, ভালো কি আছে?", "বাচ্চাদের জন্য মিষ্টি কিছু আছে?", "আর কী আছে?",
                  "একটা ভালো স্যুপ সাজেস্ট করেন", "মিষ্টি কিছু আছে?", "৫০০ টাকার মধ্যে ভালো কী আছে?"):
         assert ask(said)[1], said
+
+
+def test_small_talk_is_answered_like_a_friendly_waiter():
+    # the real turn: "কি খবর, কেমন আছো?" → "আমি তো ভার্চুয়াল ওয়েটার, খাই না!" — wrong answer to "how are you"
+    for said, want in (("কি খবর, কেমন আছো?", "ভালো আছি, ধন্যবাদ! আপনি কেমন আছেন?"),
+                       ("কেমন আছেন ভাই?", "ভালো আছি, ধন্যবাদ!"),
+                       ("আসসালামু আলাইকুম", "ওয়ালাইকুম আসসালাম! কী খেতে চান, বলুন।"),
+                       ("হ্যালো", "হ্যালো! কী খেতে চান, বলুন।")):
+        out, calls = run(said, {"replyText": "MODEL"})
+        assert not calls and out["replyText"].startswith(want), (said, out["replyText"])
+        assert "খাই না" not in out["replyText"] and out["meta"]["intent"] == "chitchat"
+        assert out["meta"]["suggestions"] == [] and out["meta"]["topic"] == "greeting"
+    out, _ = run("how are you?", {"replyText": "MODEL"})
+    # (the test session speaks Bangla — the reply follows the session's language)
+    assert "ভালো আছি" in out["replyText"] or "I'm good" in out["replyText"], out["replyText"]
+    # more than a greeting → never swallowed by the greeting (the order / the question is answered)
+    for said in ("হ্যালো, একটা ক্রিস্পি রাইস স্যুপ দেন", "কেমন আছেন, ভালো কী আছে আজ?", "কী খেয়েছেন আপনি?"):
+        out, _ = run(said, {"topic": "other", "replyText": "…"})
+        assert out["meta"].get("notes") != "small_talk", said
+    import brain as b
+    playbook = b.PLAYBOOK
+    assert "Never use that line for \"how are you?\"" in playbook
+
+
+def test_a_missing_dish_gets_the_closest_real_thing_never_a_drink():
+    # the real turn: "চিজবার্গার আছে টমাটোস?" → "…চয়েস অফ সফট ড্রিংকস বা মিনারেল ওয়াটার নিতে পারেন" (a DRINK for a burger)
+    drinks_lie = {"topic": "availability", "replyText": "দুঃখিত, চিজবার্গার নেই। Crispy Rice Soup নিতে পারেন।"}
+    out, calls = run("চিজবার্গার আছে টমাটোস?", drinks_lie)
+    told = [m["content"] for m in calls[0] if "NOT ON THIS MENU" in m["content"]]
+    assert told and "French Fry" in told[0].split("NOT ON THIS MENU")[1].split("\n")[0], "the model is told what's close"
+    text = out["replyText"]
+    assert "বার্গার নেই" in text and "French Fry" in text and "Crispy Rice Soup" not in text, text  # fries: close
+    assert [s["itemId"] for s in out["meta"]["suggestions"]] == ["ff"], out["meta"]["suggestions"]
+    # the real reply, drinks written in Bangla script (not recognised as a dish) → still caught
+    real = {"topic": "availability", "replyText": "দুঃখিত, চিজবার্গার নেই। আপনি চয়েস অফ সফট ড্রিংকস বা মিনারেল ওয়াটার নিতে পারেন।"}
+    out, _ = run("চিজবার্গার আছে?", real)
+    assert "ড্রিংকস" not in out["replyText"] and "French Fry" in out["replyText"], out["replyText"]
+    import brain as b
+    assert [c["id"] for c in b._closest_to(["burgers"], IDX, {})] == ["ff"]
+    assert b._closest_to(["alcohol"], IDX, {}) == []  # nothing close → no offer, just ask
+
+
+def test_top_three_is_a_recommendation_of_exactly_three():
+    # the real turn: "তাহলে তুমি আমাকে টপ থ্রি আইটেম দেখাও, কি কি খাবার খাওয়া যেতে পারে?" → the menu overview
+    out, calls = run("তাহলে তুমি আমাকে টপ থ্রি আইটেম দেখাও, কি কি খাবার খাওয়া যেতে পারে?", {"replyText": "MODEL"})
+    assert not calls and out["meta"]["notes"] == "reco_general", out["meta"].get("notes")
+    assert len(out["meta"]["suggestions"]) == 3 and "এছাড়াও" not in out["replyText"], out["replyText"]
+    out, _ = run("top 2 dishes please, what's good?", {"replyText": "MODEL"})
+    assert len(out["meta"]["suggestions"]) == 2, out["meta"]["suggestions"]
+    import brain as b
+    assert b._asked_count("টপ ৫ আইটেম") == 5 and b._asked_count("তিনটা খাবার বলুন") == 3 and b._asked_count("কি আছে") is None
+
+
+def test_not_wanting_anything_is_never_answered_with_dishes():
+    # the real turn: "আমি আজকে কিছু খেতে চাই না।" → "স্পেশাল আইটেমের মধ্যে … খুবই জনপ্রিয়…" (four dishes pushed)
+    for said in ("আমি আজকে কিছু খেতে চাই না।", "কিছু লাগবে না", "খিদে নেই এখন", "I'm not hungry"):
+        out, calls = run(said, {"topic": "recommendation", "replyText": "MODEL"})
+        assert not calls and out["meta"]["suggestions"] == [], (said, out["replyText"])
+        assert ("সমস্যা নেই" in out["replyText"] or "No problem" in out["replyText"]), (said, out["replyText"])
+    # a dish named → about that dish (the model); "that's all" with a tray → the order read-back, not this
+    _, calls = run("স্যুপ চাই না", {"topic": "order_change", "replyText": "…"})
+    assert calls
+    out, _ = run("আর কিছু চাই না", {"topic": "other", "replyText": "…"}, cart=TRAY)
+    assert "সমস্যা নেই" not in out["replyText"], out["replyText"]
+    # and the fixed recommendation never fires on "…চাই না"
+    import brain as b
+    assert b._fixed_reco("ভালো কিছু খেতে চাই না", index=IDX, orderable={}, kinds=["dinner"],
+                         profile=b.GuestProfile(), stats=b.OrderStats(), rstate=b.RecoState(), kind_scope=set(),
+                         lang="bn", stage="none", mode="full", about_shown=False, cart_ids=[]) is None
 
 
 def test_asking_within_a_category_recommends_only_that_category():

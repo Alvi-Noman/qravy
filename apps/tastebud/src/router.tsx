@@ -10,6 +10,8 @@ const AIWaiter = lazy(() => import('./pages/AIWaiterHome'));
 const ConfirmationPage = lazy(() => import('./pages/ConfirmationPage'));
 const CheckoutPage = lazy(() => import('./pages/CheckoutPage'));
 const OrderStatusPage = lazy(() => import('./pages/OrderStatusPage'));
+// dev only: listen to the Bangla voices / respellings side by side (never in a production build)
+const VoiceTest = import.meta.env.DEV ? lazy(() => import('./pages/VoiceTest')) : null;
 
 const hasTenantFromRuntime =
   typeof window !== 'undefined' &&
@@ -32,6 +34,7 @@ export default function AppRouter() {
                 http://localhost:5174/t/<subdomain>/<branchSlug>/menu        -> Online Menu (branch)
                 http://localhost:5174/t/<subdomain>/<branchSlug>/menu/dine-in-> Dine-in Menu (branch)
             */}
+            {VoiceTest && <Route path="/voice-test" element={<VoiceTest />} />}
             <Route path="/t/:subdomain" element={<AIWaiter />} />
             <Route path="/t/:subdomain/menu" element={<Restaurant />} />
             <Route path="/t/:subdomain/menu/dine-in" element={<Restaurant />} />
