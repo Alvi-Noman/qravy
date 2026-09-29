@@ -189,6 +189,7 @@ export default function MicInputBar({
   const isHoldModeRef = useRef(false);
   const pointerActiveRef = useRef(false);
   const lastDownAtRef = useRef(0);
+  const startedByPressRef = useRef(false); // this press opened the mic (vs. a tap to stop an open one)
 
   // language: the guest's choice on the waiter screen (Bangla by default; "auto" → Bangla for the STT hint)
   const getGlobalLang = (): "bn" | "en" => waiterLang();
@@ -221,6 +222,13 @@ export default function MicInputBar({
   // WS & audio refs
   const wsRef = useRef<WebSocket | null>(null);
   const wsGenRef = useRef(0); // track WS generation to ignore stale handlers
+  // audio captured before the socket is open (the first syllable!) is kept and sent right after the hello —
+  // it used to be dropped, so "দুইটা দেন" arrived as "টা দেন"
+  const pendingAudioRef = useRef<ArrayBuffer[]>([]);
+  const PENDING_MAX = 250; // ≈5 s of 20 ms frames
+  // the waiter's "which one?" answers as buttons; a tap sends the answer as the guest's words
+  type Choice = { label: string; say: string; price?: number };
+  const [choices, setChoices] = useState<Choice[]>([]);
   const acRef = useRef<AudioContext | null>(null);
   const nodeRef = useRef<AudioWorkletNode | null>(null);
   const srcRef = useRef<MediaStreamAudioSourceNode | null>(null);
@@ -364,6 +372,12 @@ export default function MicInputBar({
         shown: shownRef.current ?? [],
       };
       try { ws.send(JSON.stringify(startMsg)); } catch {}
+      // …then the audio that was recorded while the socket was still connecting
+      const held = pendingAudioRef.current;
+      pendingAudioRef.current = [];
+      for (const buf of held) {
+        try { ws.send(buf); } catch {}
+      }
 
       // optional keepalive to avoid idle closures across proxies
       if (pingTimerRef.current) { window.clearInterval(pingTimerRef.current); }
@@ -410,6 +424,14 @@ export default function MicInputBar({
           if (watchdogRef.current) { window.clearTimeout(watchdogRef.current); watchdogRef.current = null; }
 
           console.log("[AI RAW][MicInputBar]", { replyText, voiceText, meta });
+
+          const opts = Array.isArray(meta?.decision?.chooseOptions) ? meta.decision.chooseOptions : [];
+          setChoices(
+            opts
+              .filter((o: any) => o && typeof o.say === "string" && o.say.trim() && typeof o.label === "string")
+              .slice(0, 8)
+              .map((o: any) => ({ label: String(o.label), say: String(o.say), price: typeof o.price === "number" ? o.price : undefined })),
+          );
 
           onAiReply?.({ replyText, meta });
 
@@ -513,6 +535,8 @@ export default function MicInputBar({
     try { setAi(""); } catch {}
     setThinking(false);
     setPartial("");
+    setChoices([]); // talking instead of tapping a choice — the question is answered by voice
+    pendingAudioRef.current = [];
 
     try { getTTS().duck(); } catch {}
 
@@ -572,13 +596,16 @@ export default function MicInputBar({
 
     node.port.onmessage = (e: MessageEvent) => {
       const msg = e.data || {};
+      const buf: ArrayBuffer | null =
+        (msg as any).type === "chunk" && (msg as any).samples instanceof Int16Array
+          ? (msg as any).samples.buffer
+          : msg instanceof ArrayBuffer ? msg : null;
+      if (!buf) return;
       const ws = wsRef.current;
-      if (!ws || ws.readyState !== WebSocket.OPEN) return;
-
-      if ((msg as any).type === "chunk" && (msg as any).samples instanceof Int16Array) {
-        ws.send((msg as any).samples.buffer);
-      } else if (msg instanceof ArrayBuffer) {
-        ws.send(msg);
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(buf);
+      } else if (ws && ws.readyState === WebSocket.CONNECTING && pendingAudioRef.current.length < PENDING_MAX) {
+        pendingAudioRef.current.push(buf); // sent right after the hello (see onopen)
       }
     };
 
@@ -627,6 +654,29 @@ export default function MicInputBar({
   }, [isRecording, setAi, startTtsReveal, finishTtsReveal, stopCaptureOnly, giveUpWaiting]);
   stopRef.current = stop;
 
+  // A tapped answer to "which one?": sent as the guest's words — no speech recognition, so nothing is misheard
+  const sendSay = useCallback((text: string) => {
+    if (disabled || recRef.current || !text.trim()) return;
+    setChoices([]);
+    try { startTtsReveal(""); finishTtsReveal(); } catch {}
+    setThinking(true);
+    setAi("Thinking…");
+    awaitingRef.current = true;
+    openWebSocket();
+    const ws = wsRef.current;
+    // (after the hello, which the socket's own onopen sends first)
+    ws?.addEventListener("open", () => {
+      try { ws.send(JSON.stringify({ t: "say", text })); } catch {}
+    }, { once: true });
+    if (watchdogRef.current) window.clearTimeout(watchdogRef.current);
+    watchdogRef.current = window.setTimeout(() => {
+      try {
+        if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) ws.close();
+      } catch {}
+      giveUpWaiting();
+    }, REPLY_TIMEOUT_MS);
+  }, [disabled, openWebSocket, giveUpWaiting, setAi, startTtsReveal, finishTtsReveal]);
+
   // Unmount → full reset
   useEffect(() => {
     return () => {
@@ -651,10 +701,13 @@ export default function MicInputBar({
       window.clearTimeout(holdTimerRef.current);
       holdTimerRef.current = null;
     }
-    holdTimerRef.current = window.setTimeout(async () => {
+    // the mic opens on TOUCH, not 250 ms later: people start talking as they press, and the first syllable
+    // ("দুইটা…") was lost. Holding past HOLD_MS = push-to-talk (stops on release); a quick tap keeps it on.
+    startedByPressRef.current = !recRef.current;
+    if (!recRef.current) void start();
+    holdTimerRef.current = window.setTimeout(() => {
       if (!pointerActiveRef.current) return;
       isHoldModeRef.current = true;
-      if (!recRef.current) await start();
     }, HOLD_MS);
   }, [disabled, isRecording, start, startTtsReveal, finishTtsReveal, setAi]);
 
@@ -674,10 +727,9 @@ export default function MicInputBar({
 
     const pressedFor = Date.now() - lastDownAtRef.current;
     if (pressedFor < HOLD_MS) {
-      if (recRef.current) {
+      // a quick tap: this press started the mic → it stays on (tap again to send); it was already on → send
+      if (!startedByPressRef.current && recRef.current) {
         await stop();
-      } else {
-        await start();
       }
     }
   }, [start, stop, isRecording]);
@@ -823,6 +875,25 @@ export default function MicInputBar({
             <div className="absolute -bottom-2 left-8 w-4 h-4 bg-gradient-to-br from-violet-50 to-white border-r border-b border-violet-200/60 transform rotate-45" />
           </div>
         </div>
+
+        {/* "WHICH ONE?" — the waiter's options as buttons; one tap answers (sent as the guest's words) */}
+        {choices.length > 0 && !isRecording && !thinking && (
+          <div className="relative z-[60] mb-2 flex flex-wrap justify-center gap-2" role="group" aria-label="Choose one">
+            {choices.map((c) => (
+              <button
+                key={c.say}
+                type="button"
+                onClick={() => sendSay(c.say)}
+                className="max-w-full truncate rounded-full border border-rose-200 bg-white px-3.5 py-2 text-sm font-semibold text-gray-800 shadow-sm transition active:scale-95 hover:border-rose-300"
+              >
+                {c.label}
+                {typeof c.price === "number" && (
+                  <span className="ml-1.5 font-normal text-gray-500">৳{c.price}</span>
+                )}
+              </button>
+            ))}
+          </div>
+        )}
 
         {/* MAIN CONTROL BAR */}
         <div

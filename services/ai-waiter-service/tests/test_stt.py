@@ -90,17 +90,16 @@ def test_hallucinations_and_wrong_language_backup_text_are_never_answered():
     assert srv.fits_language("Two onion rings please", "en")
 
 
-def test_bangla_words_snap_to_this_menu_and_everyday_words_are_left_alone():
+def test_bangla_words_are_passed_on_exactly_as_heard():
+    # the snapping garbled correct words ("সিজলিং" → "সিজলিংিং", "চিকেনটা" → "চিকেনা") — it is off
     from normalizer import normalize_text
 
-    snap = {"items": [{"name": "Onion Ring"}, {"name": "Special Fried Prawn"}, {"name": "Hot & Sour Soup"}]}
-    vocab = [i["name"] for i in snap["items"]] + srv.bangla_menu_words(snap)
-    assert "প্রন" in vocab and "অনিয়ন" in vocab
-    out, changes = normalize_text("স্পেশাল ফ্রাইড প্রাউন আর অনিয়ন রিংস দিন?", vocab=vocab)
-    assert "প্রন" in out and "রিং" in out, out
-    assert out.endswith("দিন?")  # everyday words and punctuation untouched
-    out, _ = normalize_text("আমার খাবার কখন আসবে?", vocab=vocab)
-    assert out == "আমার খাবার কখন আসবে?"
+    snap = {"items": [{"name": "Beef Sizzling"}, {"name": "Chicken Chili Onion"}, {"name": "Crispy Rice Soup"}]}
+    vocab = srv.build_vocab_from_snapshot(snap)
+    for heard in ("বিফ সিজলিং নাই আপনাদের?", "আমি ঝাল চিকেনটা চাচ্ছি।", "ক্রিস্পি রাইস স্যুপ দুইটা দিবেন?",
+                  "কোল্ড ড্রিংকসের মধ্যে কী কী আছে?"):
+        out, changes = normalize_text(heard, vocab=vocab)
+        assert out == heard and not changes, (heard, out)
 
 
 def test_no_auto_detection_anywhere():

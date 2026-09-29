@@ -536,14 +536,18 @@ def rank(
     recent: Optional[List[str]] = None,
     asked_for: Optional[set] = None,
     limit: int = 8,
+    only: Optional[set] = None,
 ) -> Tuple[List[Pick], Dict[str, List[str]]]:
-    """Filtered, scored, diversified picks + {itemId: reasons excluded} for every blocked dish."""
+    """Filtered, scored, diversified picks + {itemId: reasons excluded} for every blocked dish.
+    `only`: the guest named a kind ("soups") — pick from those dishes alone."""
     stats = stats or OrderStats()
     context_ids, recent, asked_for = context_ids or [], recent or [], asked_for or set()
     blocked: Dict[str, List[str]] = {}
     scored: List[Tuple[Pick, Dict[str, Any]]] = []
     for it in index.items:
         iid = index.item_id(it)
+        if only is not None and iid not in only:
+            continue
         if not orderable.get(iid, True):
             blocked[iid] = ["not orderable now"]
             continue

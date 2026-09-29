@@ -122,6 +122,8 @@ export type AiDecision = {
   askTable?: boolean;
   /** online checkout: point at the name / phone / address fields */
   askDetails?: boolean;
+  /** the answers to the waiter's "which one?" as buttons — a tap sends `say` as the guest's next words */
+  chooseOptions?: { label: string; say: string; itemId?: string; price?: number }[];
   /** The order was really placed (meta.order has token + orderNumber) */
   orderPlaced?: boolean;
   /** Placing failed (the reply says why) */

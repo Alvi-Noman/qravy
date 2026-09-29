@@ -314,7 +314,7 @@ def test_ordinals_group_question_and_single_drink_offer():
     _, calls = _run("I'll take the first one", [{**TURN, "replyText": "Beef Sizzling added."}], dialog_state=state)
     assert "YOU JUST SUGGESTED" in calls[0][-1]["content"] and "1. " + IDX.ref(by["bs"]) in calls[0][-1]["content"]
     # a group without a head-count → recommend, then ask how many
-    _, calls = _run("What should we order?", [{**TURN, "replyText": "Try the Beef Sizzling. How many of you are eating?"}])
+    _, calls = _run("What should we order for dinner, something filling?", [{**TURN, "replyText": "Try the Beef Sizzling. How many of you are eating?"}])
     assert "How many of you are eating?" in calls[0][-1]["content"]
     # a drink offered with the food → no second drink offer at "that's all"
     add = {**TURN, "topic": "order_change", "intent": "order", "replyText": "Added 1 × Beef Sizzling.",
@@ -386,7 +386,8 @@ def test_sizes_are_asked_for_then_priced_correctly():
     ops, _ = brain._validate_ops([{"op": "add", "item": ref, "quantity": 2, "variant": "full"}], idx, {}, {})
     assert ops[0]["variant"] == "Full" and ops[0]["price"] == 850
     reply = brain._cart_change_reply(ops, False, idx, {"kb": 2}, "en", None, {"kb": 850.0}, {"kb": "Full"})
-    assert "2 × Kacchi Biryani (Full)" in reply and "৳1700" in reply      # the Full price, not the base price
+    assert "2 × Kacchi Biryani (Full)" in reply and "৳850" in reply       # the Full price, not the base price
+    assert "৳1700" not in reply  # (short confirmation: the tray total is on screen, read back at confirmation)
 
 
 def test_questions_guessed_sizes_and_guessed_choices_never_touch_the_cart():
@@ -429,7 +430,7 @@ def test_questions_guessed_sizes_and_guessed_choices_never_touch_the_cart():
     ops, _ = brain._validate_ops(add(thali, choices=["Fish"]), idx, {}, {}, "Fish please")
     assert ops[0]["price"] == 400
     text = brain._cart_change_reply(ops, False, idx, {"th": 1}, "en", None, {"th": 400.0}, {"th": "Fish"})
-    assert "Lunch Thali (Fish) — ৳400" in text and "৳400" in text.split("Your order")[1]
+    assert "Lunch Thali (Fish) — ৳400" in text and "Your order" not in text  # (short: no tray read-back)
     # if the model still claims it added something, a clear question replaces the reply
     q = brain._clarify_reply(["Kacchi Biryani needs a size/option first"], idx, "en")
     assert q == "Would you like the Kacchi Biryani Half (৳420) or Full (৳780)?"
@@ -647,7 +648,8 @@ def test_bangla_asks_for_picks_and_den_accepts_the_offer():
 def test_offline_fallback_still_recommends_and_never_misleads():
     brain.OPENAI_API_KEY = ""
     out = asyncio.run(brain.generate_reply("what do you recommend?", menu_snapshot={"items": MENU}, context={"mealKinds": ["dinner"]}))
-    assert out["meta"]["suggestions"] and "suggest" in out["replyText"].lower()
+    # (a plain ask needs no model at all: the waiter's fixed shape, from the ranked picks)
+    assert out["meta"]["suggestions"] and out["meta"]["suggestions"][0]["title"].split(" (")[0] in out["replyText"]
     out = asyncio.run(brain.generate_reply("Is the Hot & Sour Soup spicy?", menu_snapshot={"items": MENU}))
     assert "৳" not in out["replyText"]                       # doesn't answer a spice question with a price
     out = asyncio.run(brain.generate_reply("How much is the Spring Roll?", menu_snapshot={"items": MENU}))

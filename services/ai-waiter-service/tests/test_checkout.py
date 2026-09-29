@@ -306,7 +306,7 @@ def test_invented_order_status_is_never_spoken():
 
     brain._call_openai = fake2
     try:
-        out = asyncio.run(brain.generate_reply("কি খাও যেতে ভারে", menu_snapshot={"items": ITEMS},
+        out = asyncio.run(brain.generate_reply("কি খাও যেতে ভারে আপন দেরিখা নেমাস", menu_snapshot={"items": ITEMS},
                                                context={"cartItems": CART, "table": "12"}, locale="bn"))
     finally:
         brain._call_openai = orig

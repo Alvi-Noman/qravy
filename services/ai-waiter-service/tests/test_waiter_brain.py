@@ -264,7 +264,11 @@ def test_validate_ops_guards_the_cart():
 def test_cart_change_reply_states_the_truth():
     ops = [{"op": "add", "itemId": "s2", "name": "Chicken Corn Soup", "quantity": 2}]
     text = brain._cart_change_reply(ops, False, IDX, {"s2": 2}, "en", {"menuNotes": ["All Food Are Exclusive of 5% VAT"]})
-    assert "Added 2 × Chicken Corn Soup" in text and "৳600" in text and "+5% VAT" in text
+    # short, like a waiter: what changed + "anything else?" — the tray and its total are on screen, and the full
+    # read-back (with VAT) comes once, at confirmation
+    assert text == "Added 2 × Chicken Corn Soup. Anything else, or shall I confirm your order?", text
+    bn = brain._cart_change_reply(ops, False, IDX, {"s2": 2}, "bn", None)
+    assert bn == "2টা Chicken Corn Soup যোগ করলাম। আর কিছু লাগবে, নাকি অর্ডার কনফার্ম করব?", bn
 
 
 def test_price_slips_flag_misquoted_prices_only():

@@ -414,6 +414,31 @@ OPENAI_STT_TIMEOUT_S = float(os.environ.get("OPENAI_STT_TIMEOUT_MS", "8000")) / 
 
 _STT_PROMPTS: Dict[Tuple[str, str], Tuple[float, str]] = {}
 _STT_PROMPT_TTL_S = 600
+_STT_NAMES: Dict[Tuple[str, str], List[Tuple[str, str]]] = {}
+
+
+def stt_turn_hint(tenant: Optional[str], session: Optional[str], lang: Optional[str], max_chars: int = 160) -> str:
+    """The dishes the waiter just named — what the guest will most likely say next. "থাই থিক স্যুপ" right after the
+    waiter suggested it is then heard as that, not "ভাইস ঠিক স্যুপ". Dish names only (see stt_prompt), from the
+    waiter's last reply; empty when it named none."""
+    l = "en" if lang == "en" else "bn"
+    pairs = _STT_NAMES.get((tenant or "", l)) or []
+    if not pairs or not session:
+        return ""
+    try:
+        last = next((m.get("content") or "" for m in reversed(get_history(tenant, session) or [])
+                     if m.get("role") == "assistant"), "")
+    except Exception:
+        return ""
+    low = last.lower()
+    said = [spoken for _, spoken in sorted((low.find(n.lower()), s) for n, s in pairs if n.lower() in low)]  # as said
+    said = list(dict.fromkeys(re.sub(r"\s*\(.*?\)", "", s).strip() for s in said))
+    out = ""
+    for s in said:
+        if len(out) + len(s) + 2 > max_chars:
+            break
+        out += s + ", "
+    return out.rstrip(", ")
 
 def stt_prompt(tenant: Optional[str], lang: Optional[str], max_chars: int = 420) -> str:
     """This restaurant's dish names (Bangla script for Bangla speech), so the transcriber expects
@@ -429,10 +454,13 @@ def stt_prompt(tenant: Optional[str], lang: Optional[str], max_chars: int = 420)
     names: List[str] = []
     try:
         snap = fetch_menu_snapshot(tenant, limit=MENU_SNAPSHOT_MAX, lang=l)
+        pairs: List[Tuple[str, str]] = []
         for it in snap.get("items", []):
             n = str(it.get("name") or "").strip()
             if n:
                 names.append(to_bangla_script(n) if l == "bn" else n)
+                pairs.append((n, names[-1]))
+        _STT_NAMES[key] = pairs  # (menu name, as it's said) — for the per-turn hint (stt_turn_hint)
     except Exception as e:
         print("[ai-waiter-service] ⚠️ stt prompt menu fetch failed:", e)
     bn = l == "bn"
@@ -581,6 +609,9 @@ async def cloud_transcribe(
     if OPENAI_STT_ON:
         t0 = time.monotonic()
         prompt = stt_prompt(tenant, lang)
+        just = stt_turn_hint(tenant, session, lang)
+        if just:  # the dishes just named lead the hint (they're the likeliest words this turn)
+            prompt = f"{just}। {prompt}" if lang != "en" else f"{just}. {prompt}"
         text = await openai_transcribe(pcm_bytes, lang, rate=rate, prompt=prompt)
         print(f"[ai-waiter-service] OpenAI STT ({OPENAI_STT_MODEL}) {time.monotonic() - t0:.2f}s → {text!r}")
         if is_prompt_echo(text, prompt):
@@ -1428,9 +1459,8 @@ async def run_text_turn(
     lang = locale if lock_language and locale in ("bn", "en") else reply_language(text, locale)
     snapshot = fetch_menu_snapshot(tenant, limit=MENU_SNAPSHOT_MAX, branch=branch, channel=channel, lang=lang, now=now)
     vocab = build_vocab_from_snapshot(snapshot)
-    if lang == "bn":
-        # a misheard Bangla word is snapped to the nearest word of THIS menu, in Bangla script ("প্রাউন" → "প্রন")
-        vocab = vocab + bangla_menu_words(snapshot)
+    # (Bangla word-snapping is OFF: it cut Bangla vowel signs off as punctuation and garbled correct words —
+    # "সিজলিং" → "সিজলিংিং", "চিকেনটা" → "চিকেনা". gpt-4o-transcribe + the menu hint already write dish names right.)
     norm_text, changes = normalize_text(text, vocab=vocab, fuzzy_threshold=FUZZY_THRESHOLD)
 
     # history before this utterance (the brain gets the utterance itself separately)
@@ -1612,6 +1642,7 @@ async def handle_conn(ws: WebSocketServerProtocol):
 
     closing = False
     final_sent = False
+    typed_text: Optional[str] = None  # a tapped answer ({"t": "say"}) instead of speech
 
     def cap_buffer():
         MAX_ACCUM_BYTES = 60 * rate * 2
@@ -1827,6 +1858,17 @@ async def handle_conn(ws: WebSocketServerProtocol):
                 )
                 break
 
+            # the guest TAPPED an answer ("which one?" → "2টা Beef Sizzling দিন"): the same turn as speech,
+            # minus the speech recognition — the words are exactly the menu's
+            if t == "say":
+                said = re.sub(r"\s+", " ", str(data.get("text") or "")).strip()[:300]
+                if said:
+                    typed_text = said
+                    closing = True
+                    print(f"[ai-waiter-service] typed turn: {said}")
+                    break
+                continue
+
         # Small drain: let worker finish in-flight chunk (~300ms)
         t0 = time.monotonic()
         t_turn = t0  # guest finished speaking → timing starts here
@@ -1854,7 +1896,9 @@ async def handle_conn(ws: WebSocketServerProtocol):
 
             groq_used = False
             stt_engine = "groq"
-            if (
+            if typed_text:
+                selected_text, groq_used, stt_engine = typed_text, True, "typed"
+            elif (
                 (GROQ_API_KEY or OPENAI_STT_ON)
                 and len(final_bytes) >= 16000
                 and not ws.closed
