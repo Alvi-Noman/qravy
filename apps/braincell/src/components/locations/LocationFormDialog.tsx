@@ -231,8 +231,10 @@ export default function LocationFormDialog({
           if (!uploadedFile) {
             throw new Error(`Please upload a menu ${scratchMode === 'pdf' ? 'PDF' : 'Photo'}.`);
           }
-          // Mock API upload processing delay
-          await new Promise((resolve) => setTimeout(resolve, 1500));
+          // Real AI import for the new branch: upload → review → import
+          onClose();
+          navigate('/menu-import', { state: { files: [uploadedFile], locationId: created.id } });
+          return;
         }
       }
       
@@ -264,13 +266,13 @@ export default function LocationFormDialog({
     {
       id: 'pdf',
       title: 'Upload Menu PDF',
-      description: 'PDF format (up to 10MB)',
+      description: 'PDF format (up to 50MB)',
       icon: DocumentArrowUpIcon,
     },
     {
       id: 'photo',
       title: 'Upload Menu Photo',
-      description: 'Screenshot or picture (up to 10MB)',
+      description: 'Photo of your menu (add more pages next)',
       icon: PhotoIcon,
     },
     {
@@ -682,7 +684,7 @@ export default function LocationFormDialog({
                             <input
                               id="menu-photo-upload"
                               type="file"
-                              accept="image/*"
+                              accept="image/jpeg,image/png,image/webp,image/heic,image/heif,.heic,.heif"
                               className="hidden"
                               onChange={handleFileSelect}
                             />

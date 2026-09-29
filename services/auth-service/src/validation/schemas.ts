@@ -12,7 +12,73 @@ const variationSchema = z.object({
   name: z.string().min(1, 'Variation name is required'),
   price: z.coerce.number().nonnegative().optional(),
   imageUrl: z.string().url().optional(),
+  optionValues: z.array(z.string().min(1).max(60)).max(10).optional(),
+  prepMinutes: z.coerce.number().int().min(1).max(240).optional(),
 });
+
+/** Kitchen minutes for one portion (wait-time estimation); null clears on update */
+const prepMinutesField = z.coerce.number().int().min(1, "At least 1 minute").max(240, "At most 240 minutes");
+
+const variantOptionSchema = z.object({
+  name: z.string().trim().min(1, 'Option name is required').max(60),
+  values: z.array(z.string().trim().min(1).max(60)).min(1, 'Add at least one option value').max(50),
+});
+
+const modifierGroupSchema = z
+  .object({
+    id: z.string().max(40).optional(),
+    name: z.string().trim().min(1, 'Add-on group name is required').max(60),
+    min: z.coerce.number().int().min(0).max(50),
+    max: z.coerce.number().int().min(1).max(50),
+    options: z
+      .array(
+        z.object({
+          id: z.string().max(40).optional(),
+          name: z.string().trim().min(1, 'Add-on name is required').max(60),
+          price: z.coerce.number().nonnegative().max(1_000_000),
+        })
+      )
+      .min(1, 'Add at least one option')
+      .max(50),
+  })
+  .refine((g) => g.min <= g.max, { message: 'Minimum cannot be more than maximum', path: ['min'] })
+  .refine((g) => g.max <= g.options.length, { message: 'Maximum cannot exceed the number of options', path: ['max'] });
+
+/** Serving-hours window: days 0 (Sun)–6 (Sat), "HH:mm" times; end < start runs past midnight */
+const timeOfDay = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'Use HH:mm');
+export const availabilityWindowSchema = z
+  .object({
+    days: z.array(z.number().int().min(0).max(6)).min(1, 'Pick at least one day').max(7),
+    start: timeOfDay,
+    end: timeOfDay,
+  })
+  .refine((w) => w.start !== w.end, { message: 'Start and end must differ', path: ['end'] });
+
+const periodIdsSchema = z.array(z.string().trim().min(1).max(40)).max(12);
+const dateOnly = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Use YYYY-MM-DD');
+const itemTimingFields = {
+  servicePeriodIds: periodIdsSchema.optional(),
+  /** null clears */
+  availableFrom: dateOnly.nullable().optional(),
+  availableUntil: dateOnly.nullable().optional(),
+};
+export const servicePeriodSchema = z.object({
+  id: z.string().max(40).optional(),
+  name: z.string().trim().min(1, 'Give the period a name').max(40),
+  days: z.array(z.number().int().min(0).max(6)).min(1).max(7),
+  start: timeOfDay,
+  end: timeOfDay,
+});
+
+const categoryExtraFields = {
+  servicePeriodIds: periodIdsSchema.optional(),
+  description: z.string().max(500).optional(),
+  availability: z.array(availabilityWindowSchema).max(7).optional(),
+  /** Branch override: availability null → use the shared hours again */
+  branchAvailability: z
+    .object({ locationId: objectId, availability: z.array(availabilityWindowSchema).max(7).nullable() })
+    .optional(),
+};
 
 const availabilityFields = {
   hidden: z.boolean().optional(),
@@ -51,8 +117,14 @@ export const menuItemSchema = z
     category: z.string().max(100).optional(),
     categoryId: objectId.optional(),
     media: z.array(z.string().url()).max(20).optional(),
-    variations: z.array(variationSchema).max(100).optional(),
+    variations: z.array(variationSchema).max(250).optional(),
+    options: z.array(variantOptionSchema).max(10).optional(),
+    modifierGroups: z.array(modifierGroupSchema).max(20).optional(),
+    availability: z.array(availabilityWindowSchema).max(7).optional(),
+    ...itemTimingFields,
     tags: z.array(z.string().min(1).max(30)).max(100).optional(),
+    signature: z.boolean().optional(),
+    prepMinutes: prepMinutesField.optional(),
     restaurantId: objectId.optional(),
 
     // owner/admin can target a single branch (branch-scoped item)
@@ -78,6 +150,9 @@ export const menuItemSchema = z
     ...availabilityFields,
   })
   .superRefine((data, ctx) => {
+    if (data.availableFrom && data.availableUntil && data.availableFrom > data.availableUntil) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['availableUntil'], message: 'End date is before start date' });
+    }
     const hasProductPrice = typeof data.price === 'number';
     const hasVariantPrice =
       Array.isArray(data.variations) && data.variations.some((v) => typeof v.price === 'number');
@@ -148,8 +223,14 @@ export const menuItemUpdateSchema = z
     category: z.string().max(100).optional(),
     categoryId: objectId.optional(),
     media: z.array(z.string().url()).max(20).optional(),
-    variations: z.array(variationSchema).max(100).optional(),
+    variations: z.array(variationSchema).max(250).optional(),
+    options: z.array(variantOptionSchema).max(10).optional(),
+    modifierGroups: z.array(modifierGroupSchema).max(20).optional(),
+    availability: z.array(availabilityWindowSchema).max(7).optional(),
+    ...itemTimingFields,
     tags: z.array(z.string().min(1).max(30)).max(100).optional(),
+    signature: z.boolean().optional(),
+    prepMinutes: prepMinutesField.nullable().optional(),
     restaurantId: objectId.optional(),
 
     // ---------- NEW: allow updating item-level channel exclusions ----------
@@ -188,6 +269,8 @@ export const menuItemUpdateSchema = z
 
 /** Bulk: availability (per-branch, per-channel) */
 export const bulkAvailabilitySchema = z.object({
+  /** With active:false — switch back on automatically at the next daily reset */
+  untilReset: z.boolean().optional(),
   ids: z.array(objectId).min(1).max(100),
   active: z.boolean(),
   locationId: objectId.optional(), // owner/admin can target a branch
@@ -223,6 +306,7 @@ export const categorySchema = z
     // for global categories, target branches explicitly
     includeLocationIds: z.array(objectId).optional(),
     excludeLocationIds: z.array(objectId).optional(),
+    ...categoryExtraFields,
   })
   .superRefine((data, ctx) => {
     const hasInclude = Array.isArray(data.includeLocationIds) && data.includeLocationIds.length > 0;
@@ -255,6 +339,7 @@ export const categoryUpdateSchema = z
     channel: categoryChannelEnum.optional(), // ✅ changed
     includeLocationIds: z.array(objectId).optional(),
     excludeLocationIds: z.array(objectId).optional(),
+    ...categoryExtraFields,
   })
   .superRefine((data, ctx) => {
     const hasInclude = Array.isArray(data.includeLocationIds) && data.includeLocationIds.length > 0;
@@ -269,6 +354,10 @@ export const categoryUpdateSchema = z
     if (
       data.name === undefined &&
       data.channel === undefined &&
+      data.description === undefined &&
+      data.availability === undefined &&
+      data.servicePeriodIds === undefined &&
+      data.branchAvailability === undefined &&
       !hasInclude &&
       !hasExclude
     ) {
@@ -347,6 +436,29 @@ export const tenantUpdateSchema = z
         phone: z.string().min(1).optional(),
       })
       .optional(),
+    menuNotes: z.array(z.string().trim().min(1).max(300)).max(20).optional(),
+    waiterKnowledge: z.array(z.string().trim().min(1).max(500)).max(40).optional(),
+    timezone: z
+      .string()
+      .max(64)
+      .refine((tz) => {
+        try {
+          new Intl.DateTimeFormat('en-US', { timeZone: tz });
+          return true;
+        } catch {
+          return false;
+        }
+      }, 'Unknown time zone')
+      .optional(),
+    openingHours: z.array(availabilityWindowSchema).max(7).optional(),
+    dailyResetTime: timeOfDay.optional(),
+    servicePeriods: z.array(servicePeriodSchema).max(12).optional(),
+    kitchen: z
+      .object({
+        defaultPrepMinutes: prepMinutesField,
+        parallelOrders: z.coerce.number().int().min(1).max(50),
+      })
+      .optional(),
   })
   .superRefine((data, ctx) => {
     if (data.restaurantInfo) {
@@ -361,27 +473,122 @@ export const tenantUpdateSchema = z
     }
   });
 
-export const orderCreateSchema = z.object({
-  tenantId: z.string().min(1, 'tenantId is required'),
-  channel: channelEnum.optional(),
-
-  items: z
+/** One requested line. Prices are NEVER taken from the client — the server recomputes them. */
+const orderLineSchema = z.object({
+  itemId: objectId,
+  qty: z.coerce.number().int().min(1).max(50),
+  variation: z.string().trim().max(80).nullable().optional(),
+  modifiers: z
     .array(
       z.object({
-        itemId: z.string().min(1, 'itemId is required'),
-        quantity: z.number().int().min(1, 'quantity must be at least 1'),
-        notes: z.string().max(500).optional(),
+        groupId: z.string().min(1).max(40),
+        optionId: z.string().min(1).max(40).optional(),
+        optionIds: z.array(z.string().min(1).max(40)).max(50).optional(),
       })
     )
-    .min(1, 'At least one item is required'),
+    .max(100)
+    .optional(),
+  notes: z.string().trim().max(300).nullable().optional(),
+});
 
-  tableId: z.string().min(1).optional(),
-  customerName: z.string().max(120).optional(),
-  customerPhone: z.string().max(32).optional(),
+/** Staff enter an order (authenticated; tenant comes from the session) */
+export const orderCreateSchema = z.object({
+  table: z.string().trim().min(1, 'table is required').max(20),
+  items: z.array(orderLineSchema).min(1, 'At least one item is required').max(50),
+  notes: z.string().trim().max(500).optional(),
+  idempotencyKey: z.string().trim().min(8).max(100).optional(),
+  locationId: objectId.optional(),
+});
+
+/** Guest places a dine-in order from the table's QR link (pay at the counter) */
+export const publicOrderCreateSchema = z.object({
+  subdomain: z.string().trim().min(1),
+  branch: z.string().trim().max(80).nullable().optional(),
+  table: z.string().trim().min(1, 'Which table are you at?').max(20),
+  items: z.array(orderLineSchema).min(1, 'Your order is empty').max(50),
+  notes: z.string().trim().max(500).nullable().optional(),
+  sessionId: z.string().trim().max(100).nullable().optional(),
+  idempotencyKey: z.string().trim().min(8).max(100).nullable().optional(),
+  source: z.enum(['ai-waiter', 'menu']).optional(),
+});
+
+export const orderStatusUpdateSchema = z.object({
+  status: z.enum(['placed', 'accepted', 'preparing', 'ready', 'completed', 'cancelled']),
+});
+
+/** Staff push the ready time back (+) or forward (−), e.g. "kitchen is slammed, +10 min" */
+export const orderEtaUpdateSchema = z.object({
+  addMinutes: z.coerce.number().int().min(-60).max(120).refine((n) => n !== 0, 'Add or remove at least a minute'),
+});
+
+/** Guest asks "how long would this take?" before ordering (cart / tray) */
+export const publicWaitTimeSchema = z.object({
+  subdomain: z.string().trim().min(1),
+  branch: z.string().trim().max(80).nullable().optional(),
+  items: z
+    .array(z.object({ itemId: objectId, qty: z.coerce.number().int().min(1).max(50), variation: z.string().trim().max(80).nullable().optional() }))
+    .max(50)
+    .default([]),
 });
 
 export const publicMenuQuerySchema = z.object({
   subdomain: z.string().min(1),
   branch: z.string().optional(),
   channel: channelEnum.optional(),
+});
+/* ---------------------------- Menu import (PDF) ---------------------------- */
+
+const draftItemSchema = z.object({
+  tempId: z.string().min(1).max(64),
+  name: z.string().trim().max(100),
+  description: z.string().max(2000).optional(),
+  price: z.number().nonnegative().optional(),
+  compareAtPrice: z.number().nonnegative().optional(),
+  options: z.array(variantOptionSchema).max(10),
+  variations: z.array(variationSchema).max(250),
+  modifierGroups: z.array(modifierGroupSchema).max(20).default([]),
+  prepMinutes: prepMinutesField.optional(),
+  prepEstimated: z.boolean().optional(),
+  availability: z.array(availabilityWindowSchema).max(7).optional(),
+  tags: z.array(z.string().trim().min(1).max(30)).max(100),
+  media: z.array(z.string().url()).max(20),
+  addOnsNote: z.string().max(500).optional(),
+  confidence: z.enum(['high', 'low']),
+  issues: z.array(z.string().max(300)).max(20),
+  sourcePage: z.number().int().positive().optional(),
+  duplicateOfItemId: objectId.nullable().optional(),
+  action: z.enum(['create', 'update', 'skip']),
+});
+
+const draftCategorySchema = z.object({
+  tempId: z.string().min(1).max(64),
+  name: z.string().trim().min(1, 'Category name is required').max(100),
+  description: z.string().max(500).optional(),
+  matchCategoryId: objectId.nullable().optional(),
+  availability: z.array(availabilityWindowSchema).max(7).optional(),
+  items: z.array(draftItemSchema).max(1000),
+});
+
+export const menuImportDraftSchema = z.object({
+  draft: z.object({
+    currency: z.string().max(10).optional(),
+    notes: z.array(z.string().trim().min(1).max(300)).max(20).optional(),
+    categories: z.array(draftCategorySchema).max(200),
+  }),
+});
+
+export const menuImportCommitSchema = z.object({
+  draft: menuImportDraftSchema.shape.draft.optional(),
+});
+
+/** Drag-and-drop ordering: ids in their new display order */
+export const reorderSchema = z.object({
+  ids: z.array(objectId).min(1).max(1000),
+});
+
+/** Bulk: set serving hours on many items ([] = whenever their category is served) */
+export const bulkHoursSchema = z.object({
+  ids: z.array(objectId).min(1).max(500),
+  availability: z.array(availabilityWindowSchema).max(7),
+  servicePeriodIds: periodIdsSchema.optional(),
 });

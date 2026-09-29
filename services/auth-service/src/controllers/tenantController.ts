@@ -8,6 +8,8 @@ import type { UserDoc } from '../models/User.js';
 import type { MembershipDoc } from '../models/Membership.js';
 import { auditLog } from '../utils/audit.js';
 import { toTenantDTO } from '../utils/mapper.js';
+import { normalizeAvailability, normalizeServicePeriods } from '../utils/availability.js';
+import { kitchenSettings } from '../services/orders/waitTime.js';
 import type { v1 } from '@qravy/shared';
 import { restaurantOnboardingSchema, tenantUpdateSchema } from '../validation/schemas.js';
 
@@ -694,6 +696,18 @@ export async function updateMyTenant(req: Request, res: Response, next: NextFunc
         ...parsed.restaurantInfo,
       };
     }
+
+    if (parsed.menuNotes) {
+      update.menuNotes = parsed.menuNotes.map((n) => n.trim()).filter(Boolean);
+    }
+    if (parsed.waiterKnowledge) {
+      update.waiterKnowledge = parsed.waiterKnowledge.map((n) => n.trim()).filter(Boolean);
+    }
+    if (parsed.timezone) update.timezone = parsed.timezone;
+    if (parsed.openingHours) update.openingHours = normalizeAvailability(parsed.openingHours);
+    if (parsed.dailyResetTime) update.dailyResetTime = parsed.dailyResetTime;
+    if (parsed.servicePeriods) update.servicePeriods = normalizeServicePeriods(parsed.servicePeriods);
+    if (parsed.kitchen) update.kitchen = kitchenSettings({ kitchen: parsed.kitchen });
 
     if (parsed.ownerInfo) {
       update.ownerInfo = {

@@ -7,6 +7,8 @@ export interface Location {
   zip?: string;
   country?: string;
   disabled?: boolean;
+  /** Branch opening hours; null = same as the restaurant */
+  openingHours?: Array<{ days: number[]; start: string; end: string }> | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -78,4 +80,14 @@ export async function importMenuFromLocation(
     { withCredentials: true }
   );
   return res.data;
+}
+/** Sets a branch's own opening hours (null → same as the restaurant). */
+export async function updateLocationHours(
+  id: string,
+  openingHours: Array<{ days: number[]; start: string; end: string }> | null
+): Promise<Location> {
+  const res = await api.patch(`/api/v1/locations/${encodeURIComponent(id)}`, { openingHours }, {
+    withCredentials: true,
+  });
+  return unwrap<Location>(res.data);
 }

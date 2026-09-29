@@ -8,7 +8,9 @@ import {
   XMarkIcon,
   Squares2X2Icon,
   TagIcon,
+  StarIcon as StarOutlineIcon,
 } from '@heroicons/react/24/outline';
+import { StarIcon as StarSolidIcon } from '@heroicons/react/24/solid';
 import { useScope } from '../../context/ScopeContext';
 import { useTenant } from '../../hooks/useTenant';
 
@@ -31,6 +33,9 @@ export default function MenuToolbar({
   sortBy,
   setSortBy,
   channelAlerts,
+  signatureOnly,
+  setSignatureOnly,
+  signatureCount,
 }: {
   q: string;
   setQ: (v: string) => void;
@@ -45,6 +50,10 @@ export default function MenuToolbar({
   setSortBy: (v: SortBy) => void;
   // Optional channel alert flags: show a red dot if at least one item is OFF in that channel but ON in the other
   channelAlerts?: { dineIn: boolean; online: boolean };
+  /** "Signature" filter chip; omit setSignatureOnly to hide it */
+  signatureOnly?: boolean;
+  setSignatureOnly?: (v: boolean) => void;
+  signatureCount?: number;
 }) {
   // Global channel scope
   const { channel, setChannel } = useScope();
@@ -241,6 +250,33 @@ export default function MenuToolbar({
             )}
           </AnimatePresence>
         </div>
+
+        {/* Signature filter (toggle chip) */}
+        {setSignatureOnly && (
+          <button
+            type="button"
+            aria-pressed={!!signatureOnly}
+            onClick={() => setSignatureOnly(!signatureOnly)}
+            title="Show only your signature dishes"
+            className={`inline-flex items-center gap-2 rounded-md border px-3 py-2.5 transition-colors hover:bg-[#f6f6f6] ${
+              signatureOnly ? 'border-amber-500 bg-amber-50' : 'border-[#dbdbdb] bg-[#fcfcfc]'
+            }`}
+          >
+            {signatureOnly ? (
+              <StarSolidIcon className="h-5 w-5 text-amber-500" aria-hidden="true" />
+            ) : (
+              <StarOutlineIcon className="h-5 w-5 text-slate-600" aria-hidden="true" />
+            )}
+            <span className="font-medium text-slate-900">Signature</span>
+            <span
+              className={`rounded-full px-1.5 text-xs tabular-nums ${
+                signatureOnly ? 'bg-amber-100 text-amber-800' : 'bg-[#f1f2f4] text-[#44464b]'
+              }`}
+            >
+              {signatureCount ?? 0}
+            </span>
+          </button>
+        )}
 
         {/* Categories */}
         <div className="relative" ref={catRef}>

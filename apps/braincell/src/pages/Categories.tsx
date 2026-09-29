@@ -410,6 +410,14 @@ export default function CategoriesPage() {
                 Manage Category
               </Link>
             </Can>
+            <Can capability="categories:update">
+              <Link
+                to="/menu-layout"
+                className="rounded-md border border-[#cecece] px-4 py-2 text-sm text-[#2e2e30] hover:bg-[#f5f5f5]"
+              >
+                Menu layout
+              </Link>
+            </Can>
             <Can capability="categories:create">
               <button
                 className="rounded-md bg-[#2e2e30] px-4 py-2 text-sm text-white hover:opacity-90"
@@ -497,7 +505,7 @@ export default function CategoriesPage() {
                 {openForm && (editing ? canUpdate : canCreate) && (
                   <CategoryFormDialog
                     open={openForm}
-                    title={editing ? 'Rename Category' : 'Add Category'}
+                    title={editing ? 'Edit Category' : 'Add Category'}
                     initialName={editing?.name || ''}
                     existingNames={
                       editing
@@ -509,6 +517,10 @@ export default function CategoriesPage() {
                     isSubmitting={createMut.isPending || renameMut.isPending}
                     /* ✅ pass the id so the dialog can read overlay flags for the current branch */
                     initialCategoryId={editing?.id}
+                    initialDescription={editing?.description ?? ''}
+                    initialAvailability={editing?.availability ?? []}
+                    initialAvailabilityOverridden={Boolean(editing?.availabilityOverridden)}
+                    initialServicePeriodIds={editing?.servicePeriodIds ?? []}
                     // Advanced defaults when editing: reflect true channel/branch rules
                     {...(editing
                       ? {
@@ -539,6 +551,10 @@ export default function CategoriesPage() {
                             excludeLocationIds: opts?.excludeLocationIds,
                             // pass through if dialog provides hardExclude
                             hardExclude: (opts as any)?.hardExclude,
+                            description: opts?.description,
+                            availability: opts?.availability,
+                            branchAvailability: opts?.branchAvailability,
+                            servicePeriodIds: opts?.servicePeriodIds,
                           },
                         });
                         setOpenForm(false);

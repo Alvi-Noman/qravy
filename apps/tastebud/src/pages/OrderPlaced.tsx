@@ -1,8 +1,13 @@
+// apps/tastebud/src/pages/OrderPlaced.tsx
+// Legacy "/order/placed" → the guest's latest order (or the waiter if there is none).
+import { Navigate, useParams } from 'react-router-dom';
+import { recentOrders } from '../api/orders';
+import { orderPath, storeBasePath } from '../utils/checkout-flow';
+
 export default function OrderPlaced() {
-  return (
-    <div className="max-w-md mx-auto p-4 text-center">
-      <h2 className="text-xl font-semibold">Thanks! 🎉</h2>
-      <p className="text-gray-600">Your order has been placed.</p>
-    </div>
-  );
+  const { subdomain, branchSlug, branch } = useParams<{ subdomain?: string; branchSlug?: string; branch?: string }>();
+  const sub = subdomain ?? (typeof window !== 'undefined' ? (window as any).__STORE__?.subdomain : null);
+  const br = branchSlug ?? branch ?? null;
+  const last = recentOrders(sub)[0];
+  return <Navigate replace to={last ? orderPath(last.token, sub, br) : storeBasePath(sub, br) || '/'} />;
 }

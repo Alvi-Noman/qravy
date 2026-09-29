@@ -1,0 +1,86 @@
+{
+  "restaurant": {
+    "name": "Dhaka Kitchen",
+    "type": "Casual Dining (Bangladeshi)",
+    "address": "House 12, Road 7, Dhanmondi, Dhaka",
+    "phone": "01700-000000",
+    "dineIn": true,
+    "online": true,
+    "tz": "Asia/Dhaka",
+    "opening": [{ "days": [0, 1, 2, 3, 4, 5, 6], "start": "07:00", "end": "23:00" }],
+    "menuNotes": ["All prices include VAT", "Please tell us about any allergies"],
+    "knowledge": [
+      "All our meat is halal",
+      "We accept cash, bKash, Nagad and all major cards",
+      "Wi-Fi: DhakaKitchen_Guest, password kacchi2026",
+      "Free parking for 6 cars behind the building",
+      "Washrooms are upstairs next to the kids' corner",
+      "Kacchi is cooked fresh twice a day; it can take 15 minutes at peak time"
+    ]
+  },
+  "items": [
+    { "id": "b1", "name": "Paratha", "price": 30, "category": "Breakfast", "tags": ["Vegetarian"], "servicePeriodIds": ["breakfast"] },
+    { "id": "b2", "name": "Egg Omelette", "price": 60, "category": "Breakfast", "servicePeriodIds": ["breakfast"] },
+    { "id": "b3", "name": "Dal Bhaji", "price": 80, "category": "Breakfast", "tags": ["Vegetarian"], "description": "Spiced lentils with mixed vegetables", "servicePeriodIds": ["breakfast"] },
+    { "id": "b4", "name": "Beef Halim", "price": 180, "category": "Breakfast", "description": "Slow-cooked lentils and beef, topped with fried onion", "servicePeriodIds": ["breakfast"] },
+
+    { "id": "k1", "name": "Kacchi Biryani", "price": 420, "category": "Biryani", "signature": true,
+      "description": "Mutton and aromatic basmati rice slow-cooked together with potato, served with borhani-friendly salad",
+      "variations": [{ "name": "Half", "price": 420 }, { "name": "Full", "price": 780 }], "servicePeriodIds": ["lunch", "afternoon", "dinner"] },
+    { "id": "k2", "name": "Chicken Biryani", "price": 320, "category": "Biryani", "servicePeriodIds": ["lunch", "afternoon", "dinner"] },
+    { "id": "k3", "name": "Beef Tehari", "price": 280, "category": "Biryani", "description": "Beef and mustard-oil rice, mildly spiced" },
+    { "id": "k4", "name": "Kacchi Platter for 4", "price": 1800, "category": "Biryani",
+      "description": "Two full kacchi, four chicken roasts, salad and borhani — made for sharing", "servicePeriodIds": ["lunch", "dinner"] },
+
+    { "id": "c1", "name": "Beef Bhuna", "price": 360, "category": "Curries", "tags": ["Spicy"], "description": "Dry, fiery beef curry" },
+    { "id": "c2", "name": "Chicken Roast", "price": 250, "category": "Curries", "description": "Mild, sweet-savoury wedding-style chicken in yoghurt and ghee" },
+    { "id": "c3", "name": "Mutton Rezala", "price": 450, "category": "Curries", "description": "Rich white curry with yoghurt, cashew paste and poppy seeds" },
+    { "id": "c4", "name": "Shorshe Ilish", "price": 550, "category": "Curries", "description": "Hilsa fish in mustard sauce", "soldOut": true },
+    { "id": "c5", "name": "Chingri Malai Curry", "price": 480, "category": "Curries", "description": "Prawns in coconut milk gravy" },
+    { "id": "c6", "name": "Mixed Vegetable Curry", "price": 180, "category": "Curries", "tags": ["Vegetarian"] },
+    { "id": "c7", "name": "Dal", "price": 90, "category": "Curries", "tags": ["Vegetarian"], "description": "Yellow lentil soup-style dal" },
+    { "id": "c8", "name": "Lunch Thali", "price": 350, "category": "Thali",
+      "description": "Plain rice, dal, bhaji, salad and one curry of your choice",
+      "modifierGroups": [{ "id": "g1", "name": "Choose your curry", "min": 1, "max": 1, "options": [
+        { "id": "o1", "name": "Chicken", "price": 0 }, { "id": "o2", "name": "Beef", "price": 30 },
+        { "id": "o3", "name": "Fish", "price": 50 }, { "id": "o4", "name": "Vegetable", "price": 0 } ] }],
+      "servicePeriodIds": ["lunch"] },
+
+    { "id": "g1", "name": "Chicken Tikka", "price": 320, "category": "Kebab & Grill", "tags": ["Spicy"] },
+    { "id": "g2", "name": "Beef Seekh Kebab", "price": 340, "category": "Kebab & Grill" },
+    { "id": "g3", "name": "Reshmi Kebab", "price": 330, "category": "Kebab & Grill", "description": "Creamy, mild chicken kebab with cashew and cream" },
+
+    { "id": "r1", "name": "Plain Rice", "price": 60, "category": "Rice & Bread", "tags": ["Vegetarian"] },
+    { "id": "r2", "name": "Polao", "price": 120, "category": "Rice & Bread", "tags": ["Vegetarian"], "description": "Fragrant ghee rice" },
+    { "id": "r3", "name": "Butter Naan", "price": 60, "category": "Rice & Bread", "tags": ["Vegetarian"] },
+
+    { "id": "s1", "name": "Vegetable Samosa", "price": 40, "category": "Snacks", "tags": ["Vegetarian"] },
+    { "id": "s2", "name": "Beguni", "price": 30, "category": "Snacks", "tags": ["Vegetarian"], "description": "Battered fried aubergine slices" },
+    { "id": "s3", "name": "Fuchka", "price": 120, "category": "Snacks", "tags": ["Vegetarian", "Spicy"], "description": "Crisp shells with tangy tamarind water and chickpeas" },
+    { "id": "s4", "name": "Chicken Chop", "price": 110, "category": "Snacks" },
+
+    { "id": "d1", "name": "Firni", "price": 90, "category": "Dessert", "description": "Rice pudding with milk, cardamom and pistachio" },
+    { "id": "d2", "name": "Mishti Doi", "price": 80, "category": "Dessert", "description": "Sweet set yoghurt" },
+    { "id": "d3", "name": "Rasmalai", "price": 120, "category": "Dessert", "description": "Cheese dumplings in sweet milk with almonds" },
+    { "id": "d4", "name": "Kulfi", "price": 100, "category": "Dessert", "description": "Frozen milk dessert with pistachio" },
+    { "id": "d5", "name": "Fruit Salad", "price": 110, "category": "Dessert", "tags": ["Vegetarian"], "description": "Seasonal fresh fruit" },
+
+    { "id": "x1", "name": "Borhani", "price": 70, "category": "Drinks", "description": "Spiced yoghurt drink with mint" },
+    { "id": "x2", "name": "Mango Lassi", "price": 120, "category": "Drinks", "description": "Mango and yoghurt" },
+    { "id": "x3", "name": "Masala Tea", "price": 40, "category": "Drinks" },
+    { "id": "x4", "name": "Fresh Lime Soda", "price": 80, "category": "Drinks", "tags": ["Vegetarian"] },
+    { "id": "x5", "name": "Mineral Water", "price": 20, "category": "Drinks" },
+    { "id": "x6", "name": "Coffee", "price": 90, "category": "Drinks" }
+  ],
+  "orders": [
+    { "items": [{ "itemId": "k1" }, { "itemId": "x1" }] },
+    { "items": [{ "itemId": "k1" }, { "itemId": "x1" }, { "itemId": "d1" }] },
+    { "items": [{ "itemId": "k1" }, { "itemId": "x1" }] },
+    { "items": [{ "itemId": "k1" }, { "itemId": "x1" }, { "itemId": "c2" }] },
+    { "items": [{ "itemId": "c1" }, { "itemId": "r2" }] },
+    { "items": [{ "itemId": "c1" }, { "itemId": "r2" }, { "itemId": "x4" }] },
+    { "items": [{ "itemId": "k3" }, { "itemId": "x1" }] },
+    { "items": [{ "itemId": "b1" }, { "itemId": "b3" }, { "itemId": "x3" }] },
+    { "items": [{ "itemId": "b1" }, { "itemId": "b2" }, { "itemId": "x3" }] }
+  ]
+}

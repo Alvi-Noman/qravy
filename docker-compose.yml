@@ -10,8 +10,11 @@ services:
     environment:
       NODE_ENV: development
       PORT: "3001"
-      CORS_ORIGIN: ${CORS_ORIGIN:-https://localhost:5501}
-      FRONTEND_URL: ${FRONTEND_URL:-https://localhost:5501}
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:5501}
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:5501}
+      # AI menu import (PDF/photos) — same key as the AI waiter, from the root .env
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      MENU_IMPORT_MODEL: ${MENU_IMPORT_MODEL:-gpt-4.1-mini}
     working_dir: /app/services/auth-service
     ports:
       - "3001:3001"
@@ -30,7 +33,7 @@ services:
     environment:
       NODE_ENV: development
       PORT: "4010"
-      CORS_ORIGIN: ${CORS_ORIGIN:-https://localhost:5501}
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:5501}
       UPLOAD_TOKEN: ${UPLOAD_SERVICE_TOKEN:?Set UPLOAD_SERVICE_TOKEN (OS env or root .env)}
     working_dir: /app/services/upload-service
     ports:
@@ -55,9 +58,6 @@ services:
       AUTH_SERVICE_URL: http://auth-service:3001
       UPLOAD_SERVICE_URL: http://upload-service:4010
       UPLOAD_SERVICE_TOKEN: ${UPLOAD_SERVICE_TOKEN:?Set UPLOAD_SERVICE_TOKEN (OS env or root .env)}
-      # ✅ Enable HTTPS with local certs
-      SSL_KEY_PATH: /app/certs/localhost-key.pem
-      SSL_CERT_PATH: /app/certs/localhost.pem
       # ✅ WS target for AI Waiter
       VOICE_WS_TARGET: http://ai-waiter-service:7071
       # ✅ Azure Speech credentials
@@ -70,8 +70,6 @@ services:
       - upload-service
       - ai-waiter-service
     restart: unless-stopped
-    volumes:
-      - ./certs:/app/certs:ro
 
   storefront-host:
     build:
@@ -83,21 +81,64 @@ services:
       NODE_ENV: development
       PORT: "8090"
       HOST: "0.0.0.0"
-      # storefront-host (container) -> Vite (host)
-      TASTEBUD_DEV_URL: http://host.docker.internal:3007
+      # storefront-host (container) -> Vite (tastebud container)
+      TASTEBUD_DEV_URL: http://tastebud:3007
       # storefront-host (container) -> api-gateway (container)
-      GATEWAY_URL: https://api-gateway:8080
+      GATEWAY_URL: http://api-gateway:8080
       # Allow local Vite + storefront origins
       CORS_ORIGIN: "http://localhost:3007,https://localhost:3007,http://localhost:8090,https://localhost:8090,http://localhost:5501,https://localhost:5501"
-      NODE_TLS_REJECT_UNAUTHORIZED: "0"
       AI_WAITER_URL: http://ai-waiter-service:7071
     ports:
       - "8090:8090"
     depends_on:
       - api-gateway
+      - tastebud
     restart: unless-stopped
     extra_hosts:
       - "host.docker.internal:host-gateway"
+
+  # === Frontends (Vite dev servers with HMR; source is bind-mounted) ===
+  braincell:
+    build:
+      context: .
+      dockerfile: apps/Dockerfile.dev
+      args:
+        APP: braincell
+    environment:
+      VITE_BIND_HOST: "0.0.0.0"
+      VITE_USE_POLLING: "true"
+      API_PROXY_TARGET: http://api-gateway:8080
+    ports:
+      - "5501:5501"
+    volumes:
+      - ./apps/braincell:/repo/apps/braincell
+      - ./packages/shared:/repo/packages/shared
+      # keep the container's Linux node_modules, not the Windows ones
+      - /repo/apps/braincell/node_modules
+      - /repo/packages/shared/node_modules
+    depends_on:
+      - api-gateway
+    restart: unless-stopped
+
+  tastebud:
+    build:
+      context: .
+      dockerfile: apps/Dockerfile.dev
+      args:
+        APP: tastebud
+    environment:
+      VITE_USE_POLLING: "true"
+      VOICE_WS_PROXY_TARGET: ws://ai-waiter-service:7071
+    ports:
+      - "3007:3007"
+    volumes:
+      - ./apps/tastebud:/repo/apps/tastebud
+      - ./packages/shared:/repo/packages/shared
+      - /repo/apps/tastebud/node_modules
+      - /repo/packages/shared/node_modules
+    depends_on:
+      - ai-waiter-service
+    restart: unless-stopped
 
   # === Persistence for transcripts ===
   mongo:
@@ -146,13 +187,13 @@ services:
       - OPENAI_API_KEY=${OPENAI_API_KEY:?Set OPENAI_API_KEY in your .env}
       - OPENAI_BASE=https://api.openai.com
       - OPENAI_CHAT_MODEL=gpt-4.1-mini
-      # Optional tuning
-      - BRAIN_TIMEOUT_S=8.0
-      - BRAIN_MAX_TOKENS=250
-      - BRAIN_TEMP=0.0
-      - BRAIN_TOP_P=1.0
-      - BRAIN_FREQ_PENALTY=0.0
-      - BRAIN_PRES_PENALTY=0.0
+      # Optional tuning (max tokens is a ceiling — Bangla replies + voice text need room)
+      - BRAIN_TIMEOUT_S=12.0
+      - BRAIN_MAX_TOKENS=1800
+      - BRAIN_TEMP=0.2
+      # 1 = bill/water/call-staff requests are saved to qravy.serviceRequests and the waiter
+      # tells guests staff were notified. Keep 0 until a staff screen reads that collection.
+      - STAFF_ALERTS_ENABLED=0
 
       # === Idle finalize + batching ===
       - IDLE_FINALIZE_MS=1200

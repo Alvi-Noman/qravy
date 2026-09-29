@@ -2,11 +2,21 @@
 import React from 'react';
 import type { v1 } from '../../../../packages/shared/src/types';
 import Modal from './Modal';
+import { minutesLabel, prepRange } from '../utils/wait-time';
 
 export type ProductCardProps = {
   item: v1.MenuItemDTO;
   className?: string;
+  /** Set when the item's section is outside its serving hours, e.g. "Available 7am–11am" */
+  closedNote?: string;
 };
+
+/** Short labels shown as badges (Spicy, Vegetarian, Halal…) */
+export function visibleTags(item: any, max = 3): string[] {
+  return Array.isArray(item?.tags)
+    ? (item.tags as unknown[]).filter((t): t is string => typeof t === 'string' && !!t.trim()).slice(0, max)
+    : [];
+}
 
 /* ---------- Perf: cache formatter once ---------- */
 const BDT = new Intl.NumberFormat('en-BD');
@@ -52,7 +62,7 @@ function formatCurrency(n?: number) {
 }
 
 /* ---------- Component ---------- */
-function ProductCardBase({ item, className }: ProductCardProps): JSX.Element {
+function ProductCardBase({ item, className, closedNote }: ProductCardProps): JSX.Element {
   const anyItem = item as any;
 
   // Media
@@ -71,6 +81,8 @@ function ProductCardBase({ item, className }: ProductCardProps): JSX.Element {
   const price = getEffectivePrice(anyItem);
   const compareAt = getCompareAtPrice(anyItem);
   const unavailable = isUnavailable(anyItem);
+  const tags = visibleTags(anyItem);
+  const prep = prepRange(anyItem);
 
   const [open, setOpen] = React.useState(false);
 
@@ -138,6 +150,19 @@ function ProductCardBase({ item, className }: ProductCardProps): JSX.Element {
               </span>
             )}
 
+            {prep && !unavailable && (
+              <span
+                className="inline-flex items-center gap-1 text-[12px] font-medium text-neutral-500"
+                title="About how long the kitchen takes to make it"
+              >
+                <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8" className="h-3 w-3" aria-hidden="true">
+                    <circle cx="10" cy="10" r="7.5" />
+                    <path d="M10 6v4.2l2.6 1.6" strokeLinecap="round" />
+                  </svg>
+                {minutesLabel(prep)}
+              </span>
+            )}
+
             {unavailable && (
               <span
                 className="ml-2 rounded-full px-2.5 py-0.5 text-[11px] font-medium"
@@ -147,6 +172,33 @@ function ProductCardBase({ item, className }: ProductCardProps): JSX.Element {
               </span>
             )}
           </div>
+
+          {closedNote && !unavailable && (
+            <span className="mt-1 self-start rounded-full bg-amber-50 px-2.5 py-0.5 text-[11px] font-medium text-amber-700">
+              {closedNote}
+            </span>
+          )}
+
+          {(anyItem.signature || tags.length > 0) && (
+            <div className="mt-1.5 flex flex-wrap gap-1">
+              {anyItem.signature && (
+                <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-700 ring-1 ring-amber-200">
+                  <svg viewBox="0 0 20 20" fill="currentColor" className="h-3 w-3" aria-hidden="true">
+                    <path d="M10 1.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8L10 14.9l-5.2 2.7 1-5.8L1.5 7.7l5.9-.9L10 1.5z" />
+                  </svg>
+                  Signature
+                </span>
+              )}
+              {tags.map((t) => (
+                <span
+                  key={t}
+                  className="rounded-full border border-neutral-200 px-2 py-0.5 text-[11px] font-medium text-neutral-600"
+                >
+                  {t}
+                </span>
+              ))}
+            </div>
+          )}
 
           {/* Description */}
           {description ? (
@@ -171,9 +223,15 @@ function ProductCardBase({ item, className }: ProductCardProps): JSX.Element {
         images={images}                 // <-- provide all images for the slider
         price={price}
         compareAt={compareAt}
-        unavailable={unavailable}
+        unavailable={unavailable || !!closedNote}
+        unavailableNote={unavailable ? undefined : closedNote}
+        tags={Array.isArray(anyItem.tags) ? anyItem.tags : undefined}
         description={description}
         variations={anyItem.variations} // allow Modal to render variation table
+        options={anyItem.options}
+        modifierGroups={anyItem.modifierGroups}
+        prepMinutes={anyItem.prepMinutes}
+        itemId={anyItem.id ? String(anyItem.id) : undefined}
       />
     </>
   );
@@ -186,12 +244,17 @@ const ProductCard = React.memo(ProductCardBase, (prev, next) => {
 
   return (
     prev.className === next.className &&
+    prev.closedNote === next.closedNote &&
+    (Array.isArray(a.tags) ? a.tags.join('|') : '') === (Array.isArray(b.tags) ? b.tags.join('|') : '') &&
     a.id === b.id &&
+    !!a.signature === !!b.signature &&
     a.name === b.name &&
     a.status === b.status &&
     a.available === b.available &&
     a.price === b.price &&
     a.compareAtPrice === b.compareAtPrice &&
+    JSON.stringify(prepRange(a)) === JSON.stringify(prepRange(b)) &&
+    JSON.stringify(a.modifierGroups ?? null) === JSON.stringify(b.modifierGroups ?? null) &&
     getMinFromVariations(a?.variations, 'price') === getMinFromVariations(b?.variations, 'price') &&
     getMinFromVariations(a?.variations, 'compareAtPrice') ===
       getMinFromVariations(b?.variations, 'compareAtPrice') &&

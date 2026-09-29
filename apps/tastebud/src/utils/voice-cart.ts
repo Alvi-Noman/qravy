@@ -16,13 +16,72 @@ export type AnyMenuItem = {
   [key: string]: any;
 };
 
+export type VoiceCartModifier = {
+  groupId: string;
+  groupName: string;
+  optionId: string;
+  name: string;
+  price: number;
+};
+
 export type VoiceCartFns = {
-  addItem: (input: { id: string; name: string; price: number; qty?: number }) => void;
+  addItem: (input: {
+    id: string;
+    name: string;
+    price: number;
+    qty?: number;
+    variation?: string;
+    notes?: string;
+    modifiers?: VoiceCartModifier[];
+  }) => void;
   updateQty: (id: string, delta: number, variation?: string) => void;
   setQty: (id: string, qty: number, variation?: string) => void;
   removeItem: (id: string, variation?: string) => void;
+  /** Optional: attach a kitchen note to an existing line ("less spicy") */
+  setNotes?: (id: string, notes: string, variation?: string) => void;
   clear: () => void;
+  /** Exact-line operations — the waiter sends a lineKey when it changes something already in the tray */
+  items?: Array<{ id: string; name: string; price: number; qty: number; variation?: string; modifiers?: VoiceCartModifier[]; notes?: string; imageUrl?: string }>;
+  setLineQty?: (lineKey: string, qty: number) => void;
+  removeLine?: (lineKey: string) => void;
+  setLineNotes?: (lineKey: string, notes: string) => void;
+  replaceLine?: (lineKey: string, next: any) => void;
+  /** Lines the waiter flagged (sold out, allergy/diet clash) */
+  setWarnings?: (list: any[]) => void;
 };
+
+/** Spoken choices ("beef hot sauce", "szu-chuan chicken") → the item's real add-on options. */
+function resolveChoices(item: AnyMenuItem | undefined, choices: unknown): VoiceCartModifier[] {
+  if (!item || !Array.isArray(choices) || !choices.length) return [];
+  const groups: any[] = Array.isArray(item.modifierGroups) ? item.modifierGroups : [];
+  const out: VoiceCartModifier[] = [];
+  for (const raw of choices) {
+    const want = String(raw ?? '').trim().toLowerCase();
+    if (!want) continue;
+    for (const g of groups) {
+      const opt = (Array.isArray(g?.options) ? g.options : []).find(
+        (o: any) => String(o?.name ?? '').trim().toLowerCase() === want,
+      );
+      if (opt && !out.some((m) => m.groupId === String(g.id) && m.optionId === String(opt.id))) {
+        out.push({
+          groupId: String(g.id),
+          groupName: String(g.name ?? ''),
+          optionId: String(opt.id),
+          name: String(opt.name),
+          price: typeof opt.price === 'number' ? opt.price : 0,
+        });
+        break;
+      }
+    }
+  }
+  return out;
+}
+
+/** Same identity as CartContext.cartLineKey (kept local so this file has no React imports). */
+function lineKeyOf(it: { id: string; variation?: string; modifiers?: VoiceCartModifier[] }): string {
+  const mods = (it.modifiers ?? []).map((m) => `${m.groupId}:${m.optionId}`).sort().join('|');
+  return `${it.id}::${it.variation ?? ''}::${mods}`;
+}
 
 /* -------------------------------------------------------------------------- */
 /*                               Helper: indexing                             */
@@ -85,7 +144,7 @@ function resolveFromMenu(
 /*                       Helper: op normalization + guards                    */
 /* -------------------------------------------------------------------------- */
 
-type NormalizedOp = 'add' | 'set' | 'remove' | 'delta';
+type NormalizedOp = 'add' | 'set' | 'remove' | 'delta' | 'note' | 'edit' | 'restore';
 
 function normalizeOpType(value: string | undefined): NormalizedOp | null {
   const v = (value || '').toString().toLowerCase();
@@ -94,6 +153,9 @@ function normalizeOpType(value: string | undefined): NormalizedOp | null {
   if (v === 'set') return 'set';
   if (v === 'remove') return 'remove';
   if (v === 'delta' || v === 'inc' || v === 'dec') return 'delta';
+  if (v === 'note') return 'note';
+  if (v === 'edit') return 'edit';
+  if (v === 'restore') return 'restore';
 
   return null;
 }
@@ -136,6 +198,15 @@ export function applyVoiceCartOps(
     : [];
 
   const clearCartFlag = (meta as any).clearCart === true;
+
+  // the waiter's view of the whole tray (sold out / allergy clash) — even when nothing changes this turn
+  if (Array.isArray((meta as any).cartWarnings) && cart.setWarnings) {
+    try {
+      cart.setWarnings((meta as any).cartWarnings);
+    } catch {
+      /* ignore */
+    }
+  }
 
   if (!rawOps.length && !clearCartFlag) return;
 
@@ -192,9 +263,82 @@ export function applyVoiceCartOps(
         ? (raw as any).price
         : undefined;
 
-    const price = basePrice ?? opPrice ?? 0;
+    // size / variant ("Half", "Large"): its own price from the menu, else the price the brain sent
+    const variant = String((raw as any).variant ?? (raw as any).variation ?? '').trim() || undefined;
+    const variantPrice = variant
+      ? (Array.isArray(target?.variations) ? target!.variations : []).find(
+          (v: any) => String(v?.name ?? '').trim().toLowerCase() === variant.toLowerCase(),
+        )?.price
+      : undefined;
+
+    const price =
+      (typeof variantPrice === 'number' ? variantPrice : undefined) ??
+      (variant ? opPrice : undefined) ??
+      basePrice ??
+      opPrice ??
+      0;
+    const note = String((raw as any).note ?? '').trim();
+    const choices: unknown = (raw as any).choices;
+    const lineKey: string | undefined =
+      typeof (raw as any).lineKey === 'string' && (raw as any).lineKey ? (raw as any).lineKey : undefined;
+    const line = lineKey ? cart.items?.find((it) => lineKeyOf(it) === lineKey) : undefined;
 
     try {
+      // ---- exact-line changes (the waiter knows which line: "the Full one", "L2")
+      if (lineKey && kind !== 'add' && kind !== 'restore') {
+        const qty = toInt((raw as any).quantity ?? (raw as any).qty, 0);
+        if (kind === 'remove' && cart.removeLine) {
+          cart.removeLine(lineKey);
+          continue;
+        }
+        if (kind === 'set' && cart.setLineQty) {
+          cart.setLineQty(lineKey, Math.max(0, qty));
+          if (note && cart.setLineNotes) cart.setLineNotes(lineKey, note);
+          continue;
+        }
+        if (kind === 'note' && cart.setLineNotes) {
+          cart.setLineNotes(lineKey, (raw as any).removeNote ? '' : note);
+          continue;
+        }
+        if (kind === 'edit' && cart.replaceLine && line) {
+          // new size and/or add-ons → a re-priced line in the same place
+          const nextVariant = variant ?? line.variation;
+          const vPrice = nextVariant
+            ? (Array.isArray(target?.variations) ? target!.variations : []).find(
+                (v: any) => String(v?.name ?? '').trim().toLowerCase() === nextVariant.toLowerCase(),
+              )?.price
+            : undefined;
+          const mods = Array.isArray(choices) && (choices as unknown[]).length ? resolveChoices(target, choices) : line.modifiers ?? [];
+          const unit = (typeof vPrice === 'number' ? vPrice : basePrice ?? line.price) + mods.reduce((n, m) => n + (m.price || 0), 0);
+          const nextNotes = (raw as any).removeNote ? undefined : note || line.notes;
+          cart.replaceLine(lineKey, {
+            ...line,
+            ...(nextVariant ? { variation: nextVariant } : { variation: undefined }),
+            modifiers: mods.length ? mods : undefined,
+            notes: nextNotes,
+            price: typeof (raw as any).price === 'number' ? (raw as any).price : unit,
+          });
+          continue;
+        }
+      }
+
+      if (kind === 'restore') {
+        // undo: put a line back exactly as it was
+        const l = (raw as any).line || {};
+        if (l.itemId) {
+          cart.addItem({
+            id: String(l.itemId),
+            name: String(l.name || name),
+            price: typeof l.price === 'number' ? l.price : price,
+            qty: Math.max(1, toInt(l.quantity, 1)),
+            ...(l.variation ? { variation: String(l.variation) } : {}),
+            ...(Array.isArray(l.modifiers) && l.modifiers.length ? { modifiers: l.modifiers } : {}),
+            ...(l.notes ? { notes: String(l.notes) } : {}),
+          } as any);
+        }
+        continue;
+      }
+
       switch (kind) {
         case 'add': {
           const qty = Math.max(
@@ -205,7 +349,26 @@ export function applyVoiceCartOps(
             )
           );
           if (!id) break;
-          cart.addItem({ id, name, price, qty });
+          const modifiers = resolveChoices(target, choices);
+          const surcharge = modifiers.reduce((sum, m) => sum + (m.price || 0), 0);
+          cart.addItem({
+            id,
+            name,
+            price: price + surcharge,
+            qty,
+            ...(variant ? { variation: variant } : {}),
+            ...(note ? { notes: note } : {}),
+            ...(modifiers.length ? { modifiers } : {}),
+          });
+          break;
+        }
+
+        case 'note': {
+          // choices on an existing line can't re-key it, so they travel in the note
+          const text = [...(Array.isArray(choices) ? choices.map(String) : []), note]
+            .filter(Boolean)
+            .join(', ');
+          if (id && text && cart.setNotes) cart.setNotes(id, text, variant);
           break;
         }
 
@@ -219,9 +382,10 @@ export function applyVoiceCartOps(
           );
           if (!id) break;
           if (qty <= 0) {
-            cart.removeItem(id);
+            cart.removeItem(id, variant);
           } else {
-            cart.setQty(id, qty);
+            cart.setQty(id, qty, variant);
+            if (note && cart.setNotes) cart.setNotes(id, note, variant);
           }
           break;
         }
@@ -229,13 +393,13 @@ export function applyVoiceCartOps(
         case 'delta': {
           const delta = toInt((raw as any).delta, 0);
           if (!delta || !id) break;
-          cart.updateQty(id, delta);
+          cart.updateQty(id, delta, variant);
           break;
         }
 
         case 'remove': {
           if (!id) break;
-          cart.removeItem(id);
+          cart.removeItem(id, variant);
           break;
         }
       }

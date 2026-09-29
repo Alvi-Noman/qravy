@@ -16,6 +16,11 @@ import { usePublicMenu } from '../hooks/usePublicMenu';
 import { useConversationStore } from '../state/conversation';
 import { useTTS } from '../state/TTSProvider';
 import { applyVoiceCartOps } from '../utils/voice-cart';
+import { claimReveal, ownsReveal } from '../state/reveal-owner';
+import { useCheckoutFlow, orderPath } from '../utils/checkout-flow';
+import { useTable } from '../utils/table';
+import { getOrder, recentOrders } from '../api/orders';
+import { uiLang } from '../utils/ui-lang';
 
 type UIMode = 'idle' | 'thinking' | 'talking';
 
@@ -127,6 +132,9 @@ function SwipeViewport({ text, showCursor }: { text: string; showCursor: boolean
 }
 /* ---------------------- end swipe viewport ---------------------- */
 
+/** How long to keep an utterance's socket open for the reply before giving up (safety net only). */
+const REPLY_TIMEOUT_MS = 30_000;
+
 export default function AiWaiterHome() {
   const navigate = useNavigate();
   const { subdomain, branch, branchSlug } =
@@ -215,10 +223,16 @@ export default function AiWaiterHome() {
 
   const [speaking, setSpeaking] = useState(false);
 
+  // one writer for the live text at a time (a mic bar in a pop-up takes over while it is open)
+  const revealIdRef = useRef(Symbol('waiter-home'));
+  useEffect(() => claimReveal(revealIdRef.current), []);
+
   useEffect(() => {
+    const owns = () => ownsReveal(revealIdRef.current);
     const un = tts.subscribe({
       onStart: (text) => {
         setSpeaking(true);
+        if (!owns()) return;
         const liveNow = (useConversationStore as any).getState?.().aiTextLive || '';
         const cont = inSpeechRef.current || !!liveNow;
         if (!cont) {
@@ -237,6 +251,7 @@ export default function AiWaiterHome() {
         }
       },
       onWord: (w, off) => {
+        if (!owns()) return;
         if (activeGenRef.current !== speakGenRef.current) return;
         if (!anchorSetRef.current) {
           anchorSetRef.current = true;
@@ -274,7 +289,10 @@ export default function AiWaiterHome() {
         }
       },
       onEnd: () => {
-        if (!inSpeechRef.current) return;
+        if (!inSpeechRef.current || !owns()) {
+          setSpeaking(false);
+          return;
+        }
         const myGen = speakGenRef.current;
         const wait = Math.max(0, lastDueRef.current - performance.now() + 80);
         setTimeout(() => {
@@ -332,9 +350,23 @@ export default function AiWaiterHome() {
     ? `/t/${resolvedSub}/${resolvedBranch}/menu`
     : `/t/${resolvedSub}/menu`;
 
-  const confirmationHref = resolvedBranch
-    ? `/t/${resolvedSub}/${resolvedBranch}/confirmation`
-    : `/t/${resolvedSub}/confirmation`;
+  // checkout steps from the waiter (read-back → checkout page, placed → live order page)
+  const [trayAskTable, setTrayAskTable] = useState(false);
+  const openTrayForCheckout = React.useMemo(
+    () => ({
+      openTray: (ask: boolean) => {
+        setShowSuggestions(false);
+        setShowTray(true);
+        setTrayAskTable(ask);
+      },
+    }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  );
+  const handleCheckout = useCheckoutFlow(resolvedSub, resolvedBranch ?? null, openTrayForCheckout);
+  // remember ?table=12 from the table QR for this restaurant
+  const [tableNo] = useTable(resolvedSub);
+  const lastOrder = recentOrders(resolvedSub)[0];
 
   // ws/audio
   const wsRef = useRef<WebSocket | null>(null);
@@ -414,7 +446,75 @@ export default function AiWaiterHome() {
   };
 
   // catalog + cart
-  const { addItem, setQty, updateQty, removeItem, clear } = useCart();
+  const {
+    addItem, setQty, updateQty, removeItem, setNotes, clear, items: cartItems,
+    setLineQty, removeLine, setLineNotes, replaceLine, setWarnings,
+  } = useCart();
+  // ---- coming back to this page: never an old line or a leftover error — a short line for right now
+  // (text only, never spoken). A real reply from the last minute stays.
+  useEffect(() => {
+    const store = useConversationStore as any;
+    const st = store.getState?.() || {};
+    if (!st.aiText) return; // first visit: nothing to replace
+    const sorry = ['no-speech', 'unclear', 'no-audio', 'not_understood'].some((g) => (st.lastMeta?.guards || []).includes(g));
+    const fresh = Date.now() - (st.aiAt || 0) < 60_000;
+    if (fresh && !st.aiNotice && !sorry) return;
+
+    const en = uiLang() === 'en';
+    const bnNum = (n: number) => String(n).replace(/\d/g, (d) => '০১২৩৪৫৬৭৮৯'[Number(d)]);
+    const count = cartItems.reduce((n, it) => n + (it.qty || 0), 0);
+    const trayLine = count
+      ? en
+        ? `You have ${count} item${count > 1 ? 's' : ''} in your tray — place the order, or look for something more?`
+        : `আপনার ট্রেতে ${bnNum(count)}টা আইটেম আছে — অর্ডার দেবেন, নাকি আরও কিছু দেখবেন?`
+      : '';
+    const idleLine = en ? 'What are you in the mood for? Just tell me…' : 'কী খেতে ইচ্ছে করছে? বলুন…';
+    const at = st.aiAt;
+    const show = (line: string) => {
+      // the guest may already be talking to the waiter again — don't overwrite that
+      if ((store.getState?.().aiAt || 0) !== at) return;
+      setAi(line);
+      setMeta(null);
+    };
+
+    // unsent tray first — that's what needs doing
+    if (trayLine || !lastOrder) {
+      show(trayLine || idleLine);
+      return;
+    }
+    show(en ? 'Your order is in. Anything else — water, dessert…?' : 'অর্ডার হয়ে গেছে 🙂 আর কিছু লাগলে বলুন — পানি, ডেজার্ট…');
+    const shownAt = store.getState?.().aiAt || 0;
+    let alive = true;
+    getOrder(lastOrder.token)
+      .then((o) => {
+        // only refine our own return line — not something the waiter said since
+        if (!alive || !o || (store.getState?.().aiAt || 0) !== shownAt) return;
+        const justPlaced = o.status === 'placed' && Date.now() - lastOrder.at < 3 * 60_000;
+        let line: string;
+        if (o.status === 'cancelled') line = idleLine;
+        else if (o.status === 'ready' || o.status === 'completed') line = en ? 'Enjoy your meal! Need anything else?' : 'খাবার উপভোগ করুন! আর কিছু লাগবে?';
+        else if (justPlaced) return; // "অর্ডার হয়ে গেছে" already fits
+        else line = en ? "Your order is being prepared. Tell me if you need anything else." : 'আপনার অর্ডার তৈরি হচ্ছে। আর কিছু লাগলে বলুন।';
+        setAi(line);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+    // once, when the page opens
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // everything the waiter's tray changes need — exact lines, edits, undo restores, warnings
+  const cartFns = {
+    addItem, setQty, updateQty, removeItem, setNotes, clear,
+    items: cartItems, setLineQty, removeLine, setLineNotes, replaceLine, setWarnings,
+  };
+  // the live cart goes with every utterance (the socket opens per utterance)
+  const cartItemsRef = useRef(cartItems);
+  cartItemsRef.current = cartItems;
+  const tableRef = useRef(tableNo);
+  tableRef.current = tableNo;
   const { items: storeItems } = usePublicMenu(resolvedSub, resolvedBranch, 'dine-in');
   const [menuIndex, setMenuIndex] = useState<ReturnType<typeof buildMenuIndex> | null>(null);
 
@@ -430,6 +530,10 @@ export default function AiWaiterHome() {
   };
 
   const [suggestedItems, setSuggestedItems] = useState<SuggestedItem[]>([]);
+  // dishes the waiter pointed at when the guest asked about the list on screen ("which of these…")
+  const [highlightIds, setHighlightIds] = useState<string[]>([]);
+  // suggestions asked for while the tray is open — shown inside the tray
+  const [trayPicks, setTrayPicks] = useState<{ id: string; name: string; price?: number; imageUrl?: string }[]>([]);
 
   const [upsellItems, setUpsellItems] = useState<
     { itemId?: string; id?: string; title: string; price?: number }[]
@@ -552,6 +656,15 @@ export default function AiWaiterHome() {
     return localHeuristicIntent(replyText || '');
   }
 
+  /**
+   * The waiter's "menu" intent means "a question about dishes" (price, spice, what drinks…), not
+   * "open the menu page" — only an explicit request ("মেনু দেখান", "show me the menu") navigates.
+   */
+  function pageIntent(intent: WaiterIntent | undefined, meta?: AiReplyMeta | null): WaiterIntent | undefined {
+    if (intent === 'menu' && !(meta as any)?.decision?.openMenu) return 'chitchat';
+    return intent;
+  }
+
   function handleIntentRouting(intent: WaiterIntent | undefined) {
     if (!intent) return;
 
@@ -608,6 +721,21 @@ export default function AiWaiterHome() {
       title: String(u.title ?? u.name ?? ''),
       price: typeof u.price === 'number' ? u.price : undefined,
     }));
+  }
+
+  // "Thinking…" is shown between ai_reply_pending and ai_reply; if the reply never comes, recover
+  const awaitingReplyRef = useRef(false);
+  function giveUpWaiting() {
+    if (!awaitingReplyRef.current) return;
+    awaitingReplyRef.current = false;
+    setUiMode('idle');
+    try {
+      setAi(
+        selectedLang === 'en'
+          ? "Sorry, I didn't get that in time — please say it again."
+          : 'দুঃখিত, উত্তর দিতে দেরি হয়ে গেল — আরেকবার বলবেন?',
+      );
+    } catch {}
   }
 
   // small gates
@@ -736,8 +864,11 @@ export default function AiWaiterHome() {
       const ws = new WebSocket(getWsURL('/ws/voice'));
       wsRef.current = ws;
       ws.binaryType = 'arraybuffer';
+      stoppingRef.current = false; // a new utterance is live (also if the socket never manages to open)
+      let opened = false;
 
       ws.onopen = () => {
+        opened = true;
         const sid = getStableSessionId();
         stoppingRef.current = false;
         finalSeenRef.current = false;
@@ -771,6 +902,8 @@ export default function AiWaiterHome() {
                 channel: resolvedChannel ?? null,
                 tz,
                 localHour,
+                table: tableRef.current ?? undefined,
+                cart: cartItemsRef.current,
                 ...(extra || {}),
               }),
             );
@@ -813,11 +946,19 @@ export default function AiWaiterHome() {
           }
 
           if (msg.t === 'ai_reply_pending') {
+            awaitingReplyRef.current = true;
             setUiMode('thinking');
             return;
           }
 
           if (msg.t === 'ai_reply') {
+            awaitingReplyRef.current = false;
+            // one socket per utterance: the reply is in, so close it now (not on a fixed timer)
+            setTimeout(() => {
+              try {
+                if (ws.readyState === WebSocket.OPEN) ws.close();
+              } catch {}
+            }, 0);
             const meta: AiReplyMeta | undefined = msg.meta;
             const replyText = (msg.replyText || '').toString().trim();
             const voiceText = (meta?.voiceReplyText || '').toString().trim();
@@ -837,11 +978,13 @@ export default function AiWaiterHome() {
             setUiMode('talking');
 
             setMeta(meta ?? null);
+            // the waiter's flags on the tray (sold out, allergy clash) — every reply, not only when it changes the tray
+            if (Array.isArray((meta as any)?.cartWarnings)) setWarnings((meta as any).cartWarnings);
 
             console.log('[AI PAGE][AIWaiterHome]', { replyText, voiceText, meta });
 
-            if (meta?.decision?.openConfirmationPage) {
-              navigate(confirmationHref);
+            // order placed → clear the tray and open the live order page
+            if (meta?.decision?.orderPlaced && handleCheckout(meta)) {
               return;
             }
 
@@ -859,18 +1002,17 @@ export default function AiWaiterHome() {
                   (meta as any).cartOps.length > 0);
               if (hasCartSignal) {
                 try {
-                  applyVoiceCartOps(meta, storeItems as any[], {
-                    addItem,
-                    setQty,
-                    updateQty,
-                    removeItem,
-                    clear,
-                  });
+                  applyVoiceCartOps(meta, storeItems as any[], cartFns);
                   cartChanged = true;
                 } catch {
                   // ignore malformed ops
                 }
               }
+            }
+
+            // read-back / which table? → the checkout page (after any change was applied)
+            if (handleCheckout(meta)) {
+              return;
             }
 
             if (cartChanged) {
@@ -905,6 +1047,8 @@ export default function AiWaiterHome() {
                   }));
               }
               setSuggestedItems((mapped || []).filter(Boolean));
+              // "ভালো কোনটা হবে?" → the dish the waiter picked is highlighted among the cards
+              setHighlightIds(Array.isArray((meta as any)?.highlight) ? (meta as any).highlight.map(String) : []);
               handleIntentRouting('suggestions');
               return;
             }
@@ -956,14 +1100,14 @@ export default function AiWaiterHome() {
             }
 
             // Everything else
-            handleIntentRouting(intent);
+            handleIntentRouting(pageIntent(intent, meta));
             return;
           }
 
           if (msg.t === 'ai_reply_error') {
             aiSeenRef.current = true;
             pendingAiResolverRef.current?.(false);
-            setUiMode('idle');
+            giveUpWaiting();
             return;
           }
         } catch {
@@ -976,11 +1120,30 @@ export default function AiWaiterHome() {
       };
 
       ws.onclose = () => {
+        // closed without a reply while we were showing "Thinking…" → recover instead of hanging
+        giveUpWaiting();
+        // an older utterance's socket closing must not stop a newer recording
+        if (wsRef.current && wsRef.current !== ws) return;
         setListening(false);
         pendingFinalResolverRef.current?.(false);
         pendingFinalResolverRef.current = null;
         pendingAiResolverRef.current?.(false);
         pendingAiResolverRef.current = null;
+        // the connection dropped (or never opened — e.g. the voice service is restarting) while the mic was
+        // still live: release the mic and the dead socket, otherwise every later mic press is ignored
+        if (!stoppingRef.current) {
+          const neverOpened = !opened;
+          void stopListening();
+          try {
+            setAi(
+              selectedLang === 'en'
+                ? 'Connection lost — please tap the mic and try again.'
+                : neverOpened
+                  ? 'এই মুহূর্তে সংযোগ হচ্ছে না — কয়েক সেকেন্ড পরে আবার মাইক চাপুন।'
+                  : 'সংযোগ বিচ্ছিন্ন হয়েছে — আবার মাইক চাপুন।',
+            );
+          } catch {}
+        }
       };
 
       (node.port as MessagePort).onmessage = (ev) => {
@@ -1053,17 +1216,18 @@ export default function AiWaiterHome() {
     } catch {}
     ctxRef.current = null;
 
-    // Let existing ws.onmessage handle late ai_reply,
-    // but don't leave sockets hanging forever.
+    // Keep the socket open for the reply (it closes itself as soon as ai_reply arrives).
+    // Replies usually take 4–8 s, longer when the answer is double-checked — only a stuck
+    // server hits this safety limit, and then the UI recovers (see giveUpWaiting).
     try {
       if (wsRef.current) {
         const ws = wsRef.current;
         wsRef.current = null; // ✅ clear ref so mic can restart next time
         setTimeout(() => {
           try {
-            if (ws.readyState === WebSocket.OPEN) ws.close();
+            if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) ws.close();
           } catch {}
-        }, 8000); // safety timeout
+        }, REPLY_TIMEOUT_MS);
       }
     } catch {}
 
@@ -1307,30 +1471,45 @@ export default function AiWaiterHome() {
       {/* Modals: consume lastMeta (with fallback) and apply cartOps */}
       <SuggestionsModal
         open={showSuggestions}
-        onClose={() => setShowSuggestions(false)}
+        onClose={() => {
+          setShowSuggestions(false);
+          setHighlightIds([]);
+        }}
         items={suggestedItems}
+        highlightIds={highlightIds}
         onIntent={(intent, meta, replyText) => {
           const m = meta as AiReplyMeta | undefined;
           if (m && storeItems && storeItems.length) {
             try {
-              applyVoiceCartOps(m, storeItems as any[], {
-                addItem,
-                setQty,
-                updateQty,
-                removeItem,
-                clear,
-              });
+              applyVoiceCartOps(m, storeItems as any[], cartFns);
             } catch {
               // ignore
             }
           }
+          if (handleCheckout(m)) return; // read-back / placed → checkout or order page
+          // "which of these is less spicy?" → the answer is highlighted in the list on screen (the list stays)
+          setHighlightIds(Array.isArray((m as any)?.highlight) ? (m as any).highlight.map(String) : []);
+          if ((m as any)?.onScreen) return;
+          // new cards from this reply ("what drinks do you have?") → show them, not the previous ones
+          if (m?.decision?.showSuggestionsModal) {
+            const fresh = buildSuggestionsFromMeta(m);
+            if (fresh?.length) setSuggestedItems(fresh);
+          }
           const finalIntent = intent ?? resolveIntent(m, replyText);
-          handleIntentRouting(finalIntent);
+          handleIntentRouting(pageIntent(finalIntent, m));
         }}
       />
       <TrayModal
         open={showTray}
-        onClose={() => setShowTray(false)}
+        onClose={() => {
+          setShowTray(false);
+          setTrayPicks([]);
+          setTrayAskTable(false);
+          setHighlightIds([]);
+        }}
+        picks={trayPicks}
+        askTable={trayAskTable}
+        highlightIds={highlightIds}
         upsellItems={
           lastMeta?.upsell?.length
             ? mapUpsell(lastMeta.upsell as any[])
@@ -1340,21 +1519,44 @@ export default function AiWaiterHome() {
           const m = meta as AiReplyMeta | undefined;
           if (m && storeItems && storeItems.length) {
             try {
-              applyVoiceCartOps(m, storeItems as any[], {
-                addItem,
-                setQty,
-                updateQty,
-                removeItem,
-                clear,
-              });
+              applyVoiceCartOps(m, storeItems as any[], cartFns);
             } catch {
               // ignore
             }
           }
+          if (handleCheckout(m)) return; // read-back / placed → checkout or order page
+          // "which of these is less spicy?" → the answer is highlighted in the list on screen (the list stays)
+          setHighlightIds(Array.isArray((m as any)?.highlight) ? (m as any).highlight.map(String) : []);
+          if ((m as any)?.onScreen) return;
+          // asked for ideas while in the tray → they appear IN the tray as "waiter's picks" (not tray lines);
+          // saying or tapping one flies it in. The guest stays in their tray.
+          if (m?.decision?.showSuggestionsModal) {
+            const fresh = buildSuggestionsFromMeta(m);
+            if (fresh?.length) {
+              setTrayPicks(
+                fresh
+                  .filter((f) => f.id)
+                  .map((f) => ({ id: String(f.id), name: String(f.name ?? ''), price: f.price, imageUrl: f.imageUrl })),
+              );
+              return;
+            }
+          }
           const finalIntent = intent ?? resolveIntent(m, replyText);
-          handleIntentRouting(finalIntent);
+          if (finalIntent === 'suggestions') return; // stay in the tray
+          handleIntentRouting(pageIntent(finalIntent, m));
         }}
       />
+
+      {/* The guest's latest order — one tap to its live status */}
+      {lastOrder && (
+        <button
+          type="button"
+          onClick={() => navigate(orderPath(lastOrder.token, resolvedSub, resolvedBranch ?? null))}
+          className="fixed top-4 left-1/2 -translate-x-1/2 z-[90] rounded-full bg-white/95 px-4 py-2 text-sm font-medium text-gray-900 shadow-md backdrop-blur"
+        >
+          {selectedLang === 'en' ? `Order #${lastOrder.orderNumber} · track` : `অর্ডার #${lastOrder.orderNumber} · দেখুন`}
+        </button>
+      )}
 
       {/* Floating minimized cart button (only when tray is closed & cart has items) */}
       <CartFab

@@ -6,6 +6,8 @@ import { useScope } from '../../context/ScopeContext';
 import { fetchLocations, type Location } from '../../api/locations';
 import { useAuthContext } from '../../context/AuthContext';
 import { getCategories, type Category } from '../../api/categories';
+import HoursEditor, { validateHours, type AvailabilityWindow } from './HoursEditor';
+import AvailabilityEditor, { validateAvailability } from '../availability/AvailabilityEditor';
 
 type FormValues = { name: string };
 
@@ -14,6 +16,11 @@ type SubmitOptions = {
   includeLocationIds?: string[];
   excludeLocationIds?: string[];
   locationId?: string;
+  description?: string;
+  availability?: AvailabilityWindow[];
+  servicePeriodIds?: string[];
+  /** Branch view: hours for this branch only (availability null = same as all branches) */
+  branchAvailability?: { locationId: string; availability: AvailabilityWindow[] | null };
 };
 
 // Subscribe to the per-branch channel lists so the dialog updates as soon as data arrives
@@ -69,6 +76,10 @@ export default function CategoryFormDialog({
   initialExcludedLocationIds,
   // When editing an existing category, pass its id so we can read overlays
   initialCategoryId,
+  initialDescription = '',
+  initialAvailability,
+  initialAvailabilityOverridden = false,
+  initialServicePeriodIds,
   onClose,
   onSubmit,
   isSubmitting = false,
@@ -81,6 +92,11 @@ export default function CategoryFormDialog({
   initialIncludedLocationIds?: string[];
   initialExcludedLocationIds?: string[];
   initialCategoryId?: string;
+  initialDescription?: string;
+  initialAvailability?: AvailabilityWindow[];
+  /** Branch view: the hours above are this branch's own (not the shared ones) */
+  initialAvailabilityOverridden?: boolean;
+  initialServicePeriodIds?: string[];
   onClose: () => void;
   onSubmit: (name: string, opts?: SubmitOptions) => void | Promise<void>;
   isSubmitting?: boolean;
@@ -117,11 +133,24 @@ export default function CategoryFormDialog({
   const [selectedBranchIds, setSelectedBranchIds] = useState<Set<string>>(new Set());
   const [branchesTouched, setBranchesTouched] = useState(false);
 
+  const [description, setDescription] = useState(initialDescription);
+  const [hours, setHours] = useState<AvailabilityWindow[]>(initialAvailability ?? []);
+  const [periodIds, setPeriodIds] = useState<string[]>(initialServicePeriodIds ?? []);
+  const [hoursError, setHoursError] = useState<string | null>(null);
+  // Editing an existing category while viewing one branch → hours apply to that branch only
+  const branchHoursMode = Boolean(activeLocationId && initialCategoryId);
+  const [sameAsAllBranches, setSameAsAllBranches] = useState(!initialAvailabilityOverridden);
+
   // Initialize channels & name per open (do not touch branches here)
   useEffect(() => {
     if (!open) return;
 
     reset({ name: initialName });
+    setDescription(initialDescription);
+    setHours(initialAvailability ?? []);
+    setPeriodIds(initialServicePeriodIds ?? []);
+    setHoursError(null);
+    setSameAsAllBranches(!initialAvailabilityOverridden);
 
     // If we're in a specific location and editing an existing category, prefer overlay flags
     if (
@@ -265,7 +294,24 @@ export default function CategoryFormDialog({
       return;
     }
 
-    const opts: SubmitOptions = {};
+    const hoursErr = branchHoursMode
+      ? sameAsAllBranches
+        ? null
+        : validateHours(hours)
+      : validateAvailability({ servicePeriodIds: periodIds, availability: hours });
+    setHoursError(hoursErr);
+    if (hoursErr) return;
+
+    const opts: SubmitOptions = { description: description.trim() };
+    if (branchHoursMode && activeLocationId) {
+      opts.branchAvailability = {
+        locationId: activeLocationId,
+        availability: sameAsAllBranches ? null : hours,
+      };
+    } else {
+      opts.availability = hours;
+      opts.servicePeriodIds = periodIds;
+    }
 
     // Channels (independent from branches)
     opts.channel = chDineIn && chOnline ? 'both' : chDineIn ? 'dine-in' : 'online';
@@ -353,7 +399,7 @@ export default function CategoryFormDialog({
             animate={{ scale: 1, opacity: 1, y: 0 }}
             exit={{ scale: 0.98, opacity: 0, y: 8 }}
             transition={{ duration: 0.15, ease: 'easeOut' }}
-            className="relative w-full max-w-md rounded-lg border border-[#ececec] bg-white p-5 shadow-lg"
+            className="relative max-h-[90vh] w-full max-w-md overflow-y-auto rounded-lg border border-[#ececec] bg-white p-5 shadow-lg"
           >
             <div className="mb-4">
               <div className="flex items-center justify-between gap-3">
@@ -385,6 +431,61 @@ export default function CategoryFormDialog({
               {errors.name?.message ? (
                 <div className="text-sm text-red-600">{errors.name.message}</div>
               ) : null}
+            </div>
+
+            <div className="mt-4 space-y-2">
+              <label className="text-sm text-[#5b5b5d]" htmlFor="category-description">
+                Description <span className="text-[#9a9aa0]">(optional)</span>
+              </label>
+              <textarea
+                id="category-description"
+                value={description}
+                maxLength={500}
+                rows={2}
+                onChange={(e) => setDescription(e.target.value)}
+                placeholder="e.g. All curries are served with plain rice"
+                className="w-full rounded-md border border-[#cecece] bg-white px-3 py-2 text-sm text-[#2e2e30] focus:outline-none focus:ring-2 focus:ring-[#e0e0e5]"
+              />
+            </div>
+
+            <div className="mt-4">
+              {branchHoursMode && (
+                <label className="mb-2 flex items-center gap-2 text-sm text-[#2e2e30]">
+                  <input
+                    type="checkbox"
+                    checked={sameAsAllBranches}
+                    onChange={(e) => setSameAsAllBranches(e.target.checked)}
+                  />
+                  Same serving hours as all branches
+                </label>
+              )}
+              {branchHoursMode && !sameAsAllBranches && (
+                <p className="mb-2 text-xs text-[#6b6b70]">These hours apply to this branch only.</p>
+              )}
+              {branchHoursMode ? (
+                !sameAsAllBranches && (
+                  <HoursEditor
+                    value={hours}
+                    onChange={(next) => {
+                      setHours(next);
+                      if (hoursError) setHoursError(validateHours(next));
+                    }}
+                    error={hoursError}
+                    label="Serve only at certain times at this branch"
+                  />
+                )
+              ) : (
+                <AvailabilityEditor
+                  subject="category"
+                  value={{ servicePeriodIds: periodIds, availability: hours }}
+                  onChange={(v) => {
+                    setPeriodIds(v.servicePeriodIds);
+                    setHours(v.availability);
+                    if (hoursError) setHoursError(validateAvailability(v));
+                  }}
+                  error={hoursError}
+                />
+              )}
             </div>
 
             <div className="mt-4">

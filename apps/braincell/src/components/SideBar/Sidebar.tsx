@@ -22,6 +22,7 @@ import { useAuthContext } from '../../context/AuthContext';
 import { useScope } from '../../context/ScopeContext';
 import { useLocations } from '../locations/useLocations';
 import { usePermissions } from '../../context/PermissionsContext';
+import { useOrdersLiveOptional } from '../../context/OrdersLiveContext';
 import { useTenant } from '../../hooks/useTenant';
 
 type NavItem = { name: string; to: string; icon: ElementType; end?: boolean };
@@ -33,6 +34,7 @@ export default function Sidebar(): JSX.Element {
   const { activeLocationId, setActiveLocationId } = useScope();
   const { locations, locationsQuery } = useLocations();
   const { has } = usePermissions();
+  const newOrders = useOrdersLiveOptional()?.newCount ?? 0;
   const { data: tenant } = useTenant();
 
   const isMultipleLocations = tenant?.restaurantInfo?.locationMode === 'multiple';
@@ -50,6 +52,8 @@ export default function Sidebar(): JSX.Element {
     Customers: 'customers:read',
     Locations: 'locations:read',
     'Qravy Store': 'store:view',
+    // owners/admins/editors only — branch devices don't get these
+    Settings: 'categories:update',
 
     // Insights
     'Sales Reports': 'reports:view',
@@ -78,6 +82,12 @@ export default function Sidebar(): JSX.Element {
       items: [
         { name: 'Sales Reports', to: '/reports/sales', icon: BanknotesIcon },
         { name: 'Menu Performance', to: '/reports/menu-performance', icon: ChartBarIcon },
+      ],
+    },
+    {
+      heading: 'Setup',
+      items: [
+        { name: 'Settings', to: '/settings', icon: Cog6ToothIcon, end: true },
       ],
     },
   ];
@@ -195,6 +205,11 @@ export default function Sidebar(): JSX.Element {
                     <NavLink to={item.to} end={item.end} className={({ isActive }) => linkClass(isActive)}>
                       <Icon className="h-5 w-5 text-slate-600 group-[aria-current=page]:text-slate-700" aria-hidden="true" />
                       <span className="font-medium">{item.name}</span>
+                      {item.name === 'Orders' && newOrders > 0 && (
+                        <span className="ml-auto min-w-[20px] rounded-full bg-red-500 px-1.5 py-0.5 text-center text-[11px] font-semibold leading-none text-white" aria-label={`${newOrders} new orders`}>
+                          {newOrders > 99 ? '99+' : newOrders}
+                        </span>
+                      )}
                     </NavLink>
                   </li>
                 );

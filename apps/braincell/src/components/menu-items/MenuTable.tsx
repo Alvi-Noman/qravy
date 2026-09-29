@@ -8,9 +8,11 @@ export default function MenuTable({
   onToggleSelect,
   onToggleSelectAll,
   onToggleAvailability,
+  onSoldOutToday,
   onEdit,
   onDuplicate,
   onDelete,
+  onToggleSignature,
 }: {
   items: TMenuItem[];
   highlightId?: string | null;
@@ -18,9 +20,11 @@ export default function MenuTable({
   onToggleSelect: (id: string) => void;
   onToggleSelectAll: () => void;
   onToggleAvailability: (id: string, active: boolean) => void;
+  onSoldOutToday?: (id: string) => void;
   onEdit: (item: TMenuItem) => void;
   onDuplicate: (id: string) => void;
   onDelete: (id: string) => void;
+  onToggleSignature?: (id: string, signature: boolean) => void;
 }) {
   const allSelected = items.length > 0 && items.every((it) => selectedIds.has(it.id));
 
@@ -59,9 +63,11 @@ export default function MenuTable({
                   isNew={isNew}
                   onToggleSelect={onToggleSelect}
                   onToggleAvailability={onToggleAvailability}
+                  onSoldOutToday={onSoldOutToday}
                   onEdit={onEdit}
                   onDuplicate={onDuplicate}
                   onDelete={onDelete}
+                  onToggleSignature={onToggleSignature}
                 />
               );
             })}

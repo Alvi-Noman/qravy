@@ -7,6 +7,23 @@ export interface TenantDoc {
   ownerId: ObjectId;
   onboardingCompleted: boolean;
 
+  /** Menu-wide notes shown to customers ("Prices include VAT", allergen info) */
+  menuNotes?: string[];
+
+  /** House facts the virtual waiter may tell guests (Wi-Fi, payment methods, parking, halal…) */
+  waiterKnowledge?: string[];
+
+  /** IANA time zone used for all hours (default Asia/Dhaka) */
+  timezone?: string;
+  /** Restaurant opening hours; empty/missing = always open */
+  openingHours?: Array<{ days: number[]; start: string; end: string }>;
+  /** Daily "HH:mm" when "sold out until tomorrow" items come back (default 05:00) */
+  dailyResetTime?: string;
+  /** Named service periods (Breakfast, Lunch…) items/categories reference; missing = defaults */
+  servicePeriods?: Array<{ id: string; name: string; days: number[]; start: string; end: string }>;
+  /** Wait-time estimation: minutes for a dish with no time set, and orders the kitchen cooks at once */
+  kitchen?: { defaultPrepMinutes?: number; parallelOrders?: number };
+
   ownerInfo?: {
     fullName: string;
     phone: string;

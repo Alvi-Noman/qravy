@@ -222,3 +222,22 @@ export async function saveCart(payload: {
     // best-effort; ignore errors
   }
 }
+
+/** Restaurant (or branch) opening hours and time zone. */
+export type StoreHours = {
+  timezone: string;
+  openingHours: Array<{ days: number[]; start: string; end: string }>;
+  source: 'restaurant' | 'branch';
+};
+
+export async function getHours(subdomain: string, branch?: string | null): Promise<StoreHours | null> {
+  try {
+    const { data } = await api.get('/public/hours', {
+      params: { subdomain, ...(branch ? { branch } : {}) },
+      withCredentials: false,
+    });
+    return (data?.item as StoreHours) ?? null;
+  } catch {
+    return null;
+  }
+}

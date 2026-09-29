@@ -142,6 +142,19 @@ function menuItemJsonSchema() {
               name: { bsonType: 'string' },
               price: { bsonType: ['double', 'int', 'long', 'decimal'] },
               imageUrl: { bsonType: ['string', 'null'] },
+              optionValues: { bsonType: ['array', 'null'], items: { bsonType: 'string' } },
+            },
+          },
+        },
+        options: {
+          bsonType: ['array', 'null'],
+          items: {
+            bsonType: 'object',
+            required: ['name', 'values'],
+            additionalProperties: false,
+            properties: {
+              name: { bsonType: 'string' },
+              values: { bsonType: 'array', items: { bsonType: 'string' } },
             },
           },
         },
@@ -505,6 +518,29 @@ export async function ensureUserIndexes(client: MongoClient): Promise<void> {
   logger.info('Ensured index on orders.tenantId,status,createdAt');
   await orders.createIndex({ tenantId: 1, channel: 1, createdAt: -1 }, { name: 'ix_orders_tenant_channel_created' });
   logger.info('Ensured index on orders.tenantId,channel,createdAt');
+  // one order per idempotency key (double taps / retries / voice + button at once)
+  await orders.createIndex(
+    { tenantId: 1, idempotencyKey: 1 },
+    { name: 'ux_orders_tenant_idem', unique: true, partialFilterExpression: { idempotencyKey: { $type: 'string' } } }
+  );
+  // the guest's private tracking link
+  await orders.createIndex(
+    { publicToken: 1 },
+    { name: 'ux_orders_public_token', unique: true, partialFilterExpression: { publicToken: { $type: 'string' } } }
+  );
+  logger.info('Ensured order idempotency + public token indexes');
+
+  // Display order (drag & drop / PDF import)
+  await categories.createIndex({ tenantId: 1, sortOrder: 1 }, { name: 'ix_categories_tenant_sort' });
+  await menuItems.createIndex({ tenantId: 1, categoryId: 1, sortOrder: 1 }, { name: 'ix_menuItems_tenant_cat_sort' });
+  await backfillSortOrder(db);
+
+  // AI menu imports (PDF → draft). Uncommitted jobs expire via expiresAt TTL.
+  const menuImports = db.collection('menuImports');
+  await menuImports.createIndex({ tenantId: 1, createdAt: -1 }, { name: 'ix_menuImports_tenant_created' });
+  await menuImports.createIndex({ status: 1, updatedAt: 1 }, { name: 'ix_menuImports_status_updated' });
+  await menuImports.createIndex({ expiresAt: 1 }, { name: 'ttl_menuImports_expires', expireAfterSeconds: 0 });
+  logger.info('Ensured indexes on menuImports');
 
   // Validators (make sure these remain last to cover first-run create scenarios)
   await ensureValidator(client, 'users', userJsonSchema());
@@ -516,4 +552,64 @@ export async function ensureUserIndexes(client: MongoClient): Promise<void> {
   await ensureValidator(client, 'locations', locationJsonSchema());
   await ensureValidator(client, 'itemAvailability', itemAvailabilityJsonSchema());
   await ensureValidator(client, 'categoryVisibility', categoryVisibilityJsonSchema());
+}
+
+/**
+ * Gives existing categories/items an explicit position that matches how they
+ * were shown before ordering existed: categories A–Z, items newest first.
+ * Idempotent — only touches documents without sortOrder.
+ */
+async function backfillSortOrder(db: ReturnType<MongoClient['db']>): Promise<void> {
+  const categories = db.collection('categories');
+  const menuItems = db.collection('menuItems');
+
+  const catTenants = await categories.distinct('tenantId', { sortOrder: { $exists: false } });
+  for (const tenantId of catTenants) {
+    const last = await categories
+      .find({ tenantId, sortOrder: { $exists: true } }, { projection: { sortOrder: 1 } })
+      .sort({ sortOrder: -1 })
+      .limit(1)
+      .next();
+    let pos = typeof last?.sortOrder === 'number' ? last.sortOrder + 1 : 0;
+    const docs = await categories
+      .find({ tenantId, sortOrder: { $exists: false } }, { projection: { _id: 1 } })
+      .sort({ name: 1 })
+      .toArray();
+    if (docs.length) {
+      await categories.bulkWrite(
+        docs.map((d) => ({ updateOne: { filter: { _id: d._id }, update: { $set: { sortOrder: pos++ } } } })),
+        { ordered: false }
+      );
+    }
+  }
+
+  const groups = await menuItems
+    .aggregate<{ _id: { tenantId: unknown; categoryId: unknown } }>([
+      { $match: { sortOrder: { $exists: false } } },
+      { $group: { _id: { tenantId: '$tenantId', categoryId: '$categoryId' } } },
+    ])
+    .toArray();
+  for (const g of groups) {
+    const scope = {
+      tenantId: g._id.tenantId,
+      categoryId: g._id.categoryId ?? null, // null matches missing too
+    };
+    const last = await menuItems
+      .find({ ...scope, sortOrder: { $exists: true } }, { projection: { sortOrder: 1 } })
+      .sort({ sortOrder: -1 })
+      .limit(1)
+      .next();
+    let pos = typeof last?.sortOrder === 'number' ? last.sortOrder + 1 : 0;
+    const docs = await menuItems
+      .find({ ...scope, sortOrder: { $exists: false } }, { projection: { _id: 1 } })
+      .sort({ createdAt: -1 })
+      .toArray();
+    if (docs.length) {
+      await menuItems.bulkWrite(
+        docs.map((d) => ({ updateOne: { filter: { _id: d._id }, update: { $set: { sortOrder: pos++ } } } })),
+        { ordered: false }
+      );
+    }
+  }
+  if (catTenants.length || groups.length) logger.info('Backfilled display order for categories/menu items');
 }

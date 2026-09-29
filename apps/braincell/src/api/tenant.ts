@@ -135,6 +135,20 @@ export async function updateTenant(
       fullName?: string;
       phone?: string;
     };
+    /** Menu-wide notes shown to customers */
+    menuNotes?: string[];
+    /** House facts for the virtual waiter */
+    waiterKnowledge?: string[];
+    /** IANA time zone for all hours */
+    timezone?: string;
+    /** Restaurant opening hours; [] = always open */
+    openingHours?: Array<{ days: number[]; start: string; end: string }>;
+    /** "HH:mm" when "Sold out today" items come back */
+    dailyResetTime?: string;
+    /** Service periods (Breakfast, Lunch…); new ones may omit id */
+    servicePeriods?: Array<{ id?: string; name: string; days: number[]; start: string; end: string }>;
+    /** Wait-time estimation: default minutes per dish, orders cooked at once */
+    kitchen?: { defaultPrepMinutes: number; parallelOrders: number };
   },
   token: string
 ): Promise<TenantDTO> {

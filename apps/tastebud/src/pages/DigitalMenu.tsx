@@ -11,7 +11,7 @@ import {
 import { useQuery } from '@tanstack/react-query';
 import Fuzzysort from 'fuzzysort';
 import type { v1 } from '../../../../packages/shared/src/types';
-import { listMenu, listCategories, getTenant, type Channel } from '../api/storefront';
+import { listMenu, listCategories, getTenant, getHours, type Channel } from '../api/storefront';
 import ProductCard from '../components/ProductCard';
 import CategoryList from '../components/CategoryList';
 import SearchBar from '../components/SearchBar';
@@ -26,6 +26,50 @@ import type { AiReplyMeta, WaiterIntent } from '../types/waiter-intents';
 import { normalizeIntent, localHeuristicIntent } from '../utils/intent-routing';
 import { usePublicMenu } from '../hooks/usePublicMenu';
 import { applyVoiceCartOps } from '../utils/voice-cart';
+import {
+  closedNote as closedNoteFor,
+  formatAvailability,
+  isAvailableAt,
+  nextOpening,
+  type AvailabilityWindow,
+} from '../utils/availability';
+
+/** Section heading with optional serving hours and description */
+function SectionHeader({
+  name,
+  description,
+  availability,
+  open,
+  opensAt,
+}: {
+  name: string;
+  description?: string;
+  availability?: AvailabilityWindow[];
+  open: boolean;
+  opensAt: string | null;
+}) {
+  return (
+    <div className="mb-3">
+      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+        <h2 className="text-base font-semibold text-gray-900 sm:text-lg">{name}</h2>
+        {availability?.length ? (
+          <span
+            className={
+              open
+                ? 'text-[12px] text-gray-500'
+                : 'rounded-full bg-amber-50 px-2 py-0.5 text-[12px] font-medium text-amber-700'
+            }
+          >
+            {open
+              ? formatAvailability(availability)
+              : `Available ${formatAvailability(availability)}${opensAt ? ` · opens ${opensAt}` : ''}`}
+          </span>
+        ) : null}
+      </div>
+      {description ? <p className="mt-0.5 text-[13px] text-gray-600">{description}</p> : null}
+    </div>
+  );
+}
 
 const SWITCH_FLAG_KEY = 'qravy:just-switched';
 const SWITCH_DELAY_MS = 1000;
@@ -75,7 +119,7 @@ export default function DigitalMenu() {
   const effectiveLang = 'bn';
   const location = useLocation();
   const navigate = useNavigate();
-  const { addItem, setQty, updateQty, removeItem, clear } = useCart();
+  const { addItem, setQty, updateQty, removeItem, setNotes, clear } = useCart();
 
   if (!subdomain) return <Navigate to="/t/demo/menu" replace />;
 
@@ -146,11 +190,40 @@ export default function DigitalMenu() {
 
   /** Category name map (usable in rows and grouping) */
   const catNameById = new Map<string, string>();
-  for (const c of categories) {
+  /** Server order (owner's drag & drop / PDF order), description and serving hours per category */
+  const catMetaById = new Map<
+    string,
+    { index: number; description?: string; availability?: AvailabilityWindow[] }
+  >();
+  categories.forEach((c, index) => {
     const id = (c as any).id ?? (c as any)._id ?? (c as any).categoryId;
     const name = (c as any).name ?? (c as any).title ?? 'Untitled';
-    if (id) catNameById.set(String(id), String(name));
-  }
+    if (!id) return;
+    catNameById.set(String(id), String(name));
+    catMetaById.set(String(id), {
+      index,
+      description: (c as any).description || undefined,
+      availability: Array.isArray((c as any).availability) ? (c as any).availability : undefined,
+    });
+  });
+
+  /** Opening hours + time zone (branch hours when the branch has its own) */
+  const { data: hours } = useQuery({
+    queryKey: ['publicHours', { subdomain, branchSlug: normalizedBranch }],
+    enabled: Boolean(subdomain),
+    queryFn: () => getHours(subdomain!, normalizedBranch),
+    staleTime: 300_000,
+    refetchOnWindowFocus: false,
+  });
+  const tz = hours?.timezone ?? null;
+  const openingHours = hours?.openingHours ?? [];
+
+  // Re-evaluate serving hours every minute
+  const [now, setNow] = React.useState(() => new Date());
+  React.useEffect(() => {
+    const t = setInterval(() => setNow(new Date()), 60_000);
+    return () => clearInterval(t);
+  }, []);
 
   const searchableRows: SearchRow[] = React.useMemo(() => {
     return items.map((it) => {
@@ -215,13 +288,29 @@ export default function DigitalMenu() {
   }, [items, query, searchableRows]);
 
   /** Group items by category (post-filter) */
-  type Grouped = Record<string, { name: string; items: v1.MenuItemDTO[] }>;
+  type Group = {
+    name: string;
+    items: v1.MenuItemDTO[];
+    description?: string;
+    availability?: AvailabilityWindow[];
+    order: number;
+  };
+  type Grouped = Record<string, Group>;
 
   const grouped: Grouped = React.useMemo(() => {
     if (!filteredItems.length) return {};
     const acc: Grouped = {};
-    const upsert = (key: string, name: string, item: v1.MenuItemDTO) => {
-      if (!acc[key]) acc[key] = { name, items: [] };
+    const upsert = (key: string, name: string, item: v1.MenuItemDTO, catId?: string) => {
+      if (!acc[key]) {
+        const meta = catId ? catMetaById.get(catId) : undefined;
+        acc[key] = {
+          name,
+          items: [],
+          description: meta?.description,
+          availability: meta?.availability,
+          order: meta?.index ?? Number.MAX_SAFE_INTEGER,
+        };
+      }
       acc[key].items.push(item);
     };
 
@@ -248,16 +337,39 @@ export default function DigitalMenu() {
       if (catId || catName) {
         const key = catId ?? `name:${catName}`;
         const name = catName ?? catNameById.get(catId!) ?? 'Category';
-        upsert(key, name, item);
+        upsert(key, name, item, catId);
       } else {
         upsert('__uncategorized__', 'Uncategorized', item);
       }
     }
 
+    // Owner-defined category order; unknown categories last, A–Z
     return Object.fromEntries(
-      Object.entries(acc).sort((a, b) => a[1].name.localeCompare(b[1].name)),
+      Object.entries(acc).sort(
+        (a, b) => a[1].order - b[1].order || a[1].name.localeCompare(b[1].name),
+      ),
     );
-  }, [filteredItems, catNameById]);
+  }, [filteredItems, catNameById, catMetaById]);
+
+  const sectionState = (g: Group) => {
+    const open = isAvailableAt(g.availability, now, tz);
+    return { open, opensAt: open ? null : nextOpening(g.availability, now, tz) };
+  };
+
+  const restaurantOpen = isAvailableAt(openingHours, now, tz);
+  const opensAt = restaurantOpen ? null : nextOpening(openingHours, now, tz);
+
+  /** Why an item can't be ordered now: restaurant closed → section hours → item hours */
+  const itemClosedNote = (item: v1.MenuItemDTO, g?: Group) =>
+    closedNoteFor({
+      at: now,
+      tz,
+      openingHours,
+      categoryHours: g?.availability,
+      itemHours: (item as any).availability,
+      itemFrom: (item as any).availableFrom,
+      itemUntil: (item as any).availableUntil,
+    }) ?? undefined;
 
   const hasCategories = Object.keys(grouped).length > 0 && !isCatError;
 
@@ -547,6 +659,7 @@ export default function DigitalMenu() {
           setQty,
           updateQty,
           removeItem,
+          setNotes,
           clear,
         });
       } catch {
@@ -702,6 +815,20 @@ export default function DigitalMenu() {
       </div>
 
       <div className="mx-auto max-w-6xl px-4 py-4 pb-28">
+        {/* Closed banner (opening hours, restaurant time zone) */}
+        {!restaurantOpen && (
+          <div
+            role="status"
+            className="mb-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-[14px] text-amber-800"
+          >
+            <span className="font-semibold">Closed now</span>
+            {opensAt ? <> · opens {opensAt}</> : null}
+            <span className="block text-[12px] text-amber-700">
+              You can browse the menu; ordering opens during our hours ({formatAvailability(openingHours)}).
+            </span>
+          </div>
+        )}
+
         {/* Search bar */}
         <SearchBar
           value={query}
@@ -773,14 +900,29 @@ export default function DigitalMenu() {
                             id={`cat-${key}`}
                             className="scroll-mt-20"
                           >
-                            <h2 className="mb-3 text-base font-semibold text-gray-900 sm:text-lg">
-                              {group.name}
-                            </h2>
-                            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                              {slice.map((item) => (
-                                <ProductCard key={item.id} item={item} />
-                              ))}
-                            </div>
+                            {(() => {
+                              const st = sectionState(group);
+                              return (
+                                <>
+                                  <SectionHeader
+                                    name={group.name}
+                                    description={group.description}
+                                    availability={group.availability}
+                                    open={st.open}
+                                    opensAt={st.opensAt}
+                                  />
+                                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                                    {slice.map((item) => (
+                                      <ProductCard
+                                        key={item.id}
+                                        item={item}
+                                        closedNote={itemClosedNote(item, group)}
+                                      />
+                                    ))}
+                                  </div>
+                                </>
+                              );
+                            })()}
                           </section>,
                         );
                         remaining -= slice.length;
@@ -824,14 +966,29 @@ export default function DigitalMenu() {
                       id={`cat-${key}`}
                       className="scroll-mt-20"
                     >
-                      <h2 className="mb-3 text-base font-semibold text-gray-900 sm:text-lg">
-                        {g.name}
-                      </h2>
-                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                        {itemsSlice.map((item) => (
-                          <ProductCard key={item.id} item={item} />
-                        ))}
-                      </div>
+                      {(() => {
+                        const st = sectionState(g);
+                        return (
+                          <>
+                            <SectionHeader
+                              name={g.name}
+                              description={g.description}
+                              availability={g.availability}
+                              open={st.open}
+                              opensAt={st.opensAt}
+                            />
+                            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                              {itemsSlice.map((item) => (
+                                <ProductCard
+                                  key={item.id}
+                                  item={item}
+                                  closedNote={itemClosedNote(item, g)}
+                                />
+                              ))}
+                            </div>
+                          </>
+                        );
+                      })()}
                     </section>
                     {visibleCount < g.items.length && (
                       <div ref={sentinelRef} className="h-10 w-full" />
@@ -851,7 +1008,7 @@ export default function DigitalMenu() {
             />
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               {filteredItems.slice(0, visibleCount).map((item) => (
-                <ProductCard key={item.id} item={item} />
+                <ProductCard key={item.id} item={item} closedNote={itemClosedNote(item)} />
               ))}
             </div>
             {visibleCount < filteredItems.length && (
@@ -859,6 +1016,14 @@ export default function DigitalMenu() {
             )}
           </>
         )}
+
+        {Array.isArray((tenant as any)?.menuNotes) && (tenant as any).menuNotes.length > 0 ? (
+          <footer className="mt-10 border-t border-gray-200 pt-4 text-[12px] leading-relaxed text-gray-500">
+            {((tenant as any).menuNotes as string[]).map((note) => (
+              <p key={note}>{note}</p>
+            ))}
+          </footer>
+        ) : null}
 
         {!isCatLoading && isCatError ? (
           <p className="mt-6 text-center text-xs text-gray-500">

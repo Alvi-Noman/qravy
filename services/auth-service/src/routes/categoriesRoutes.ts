@@ -5,6 +5,7 @@ import {
   updateCategory,
   deleteCategory,
   bulkSetCategoryVisibility,
+  reorderCategories,
 } from '../controllers/categoriesController.js';
 import { authenticateJWT } from '../middleware/auth.js';
 import { applyScope } from '../middleware/scope.js';
@@ -15,6 +16,7 @@ import {
   categoryUpdateSchema,
   listCategoriesQuerySchema,
   bulkCategoryVisibilitySchema,
+  reorderSchema,
 } from '../validation/schemas.js';
 
 const router: express.Router = express.Router();
@@ -90,6 +92,16 @@ router.post(
   allowBranchOrAuthorize('categories:update'), // allow branch sessions
   validateRequest(bulkCategoryVisibilitySchema),
   bulkSetCategoryVisibility
+);
+
+// Drag-and-drop display order
+router.post(
+  '/categories/reorder',
+  authenticateJWT,
+  applyScope,
+  authorize('categories:update'),
+  validateRequest(reorderSchema),
+  reorderCategories
 );
 
 export default router;

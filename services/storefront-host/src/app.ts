@@ -234,10 +234,15 @@ export function createApp(): Application {
           // branch from /t/:sub/branch/:slug  OR  first segment (prod style)  OR  ?branch=
           const branch = parseBranch(pathname, search);
 
+          // table from the QR code (?table=12) — dine-in orders are placed for this table
+          const tableRaw = (search.get('table') || '').trim();
+          const table = /^[A-Za-z0-9-]{1,12}$/.test(tableRaw) ? tableRaw : null;
+
           const html = injectRuntime(raw, {
             subdomain: tenant,
             channel,
             branch,
+            table,
             apiBase: '/api/v1',
           });
 
@@ -295,7 +300,7 @@ function parseChannel(
 function parseBranch(pathname: string, search: URLSearchParams): string | null {
   // 1) NEW dev routes: /t/:subdomain/:branchSlug(/...)
   //    Reserve special segments so they are NOT treated as branch
-  const RESERVED = new Set(['dine-in', 'online', 'menu']);
+  const RESERVED = new Set(['dine-in', 'online', 'menu', 'checkout', 'order', 'confirmation']);
   const mNew = pathname.match(/^\/t\/[^/]+\/([^/]+)(?:\/|$)/);
   const cand = mNew?.[1];
   if (cand && !RESERVED.has(cand)) {
@@ -321,9 +326,11 @@ function injectRuntime(html: string, payload: {
   subdomain: string | null;
   channel: 'dine-in' | 'online' | null;
   branch: string | null;
+  table: string | null;
   apiBase: string;
 }): string {
-  const snippet = `<script>window.__STORE__=${JSON.stringify(payload)};</script>`;
+  // escape "<" so a crafted path can't close the script tag
+  const snippet = `<script>window.__STORE__=${JSON.stringify(payload).replace(/</g, '\\u003c')};</script>`;
   if (html.includes('</head>')) return html.replace('</head>', `${snippet}\n</head>`);
   if (html.includes('</body>')) return html.replace('</body>', `${snippet}\n</body>`);
   return `${snippet}\n${html}`;

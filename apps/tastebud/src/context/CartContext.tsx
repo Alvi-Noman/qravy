@@ -12,6 +12,7 @@ import React, {
 } from 'react';
 import { useLocation } from 'react-router-dom';
 import { loadCart as apiLoadCart, saveCart as apiSaveCart } from '../api/cart';
+import { getStableSessionId } from '../utils/ws';
 
 /* -------------------------------------------------------------------------- */
 /*                                Type Definitions                            */
@@ -19,17 +20,79 @@ import { loadCart as apiLoadCart, saveCart as apiSaveCart } from '../api/cart';
 
 export type Channel = 'dine-in' | 'online';
 
+/** A chosen add-on on a cart line (snapshot of name/price at add time). */
+export type CartModifier = {
+  groupId: string;
+  groupName: string;
+  optionId: string;
+  name: string;
+  price: number;
+};
+
 export type CartItem = {
   id: string;
   name: string;
+  /** Unit price, including any add-ons */
   price: number;
   qty: number;
   variation?: string;
+  modifiers?: CartModifier[];
   notes?: string;
   imageUrl?: string;
 };
 
+/** Stable key for the chosen add-ons (order-independent). */
+export function modifiersKey(mods?: CartModifier[]): string {
+  if (!mods?.length) return '';
+  return mods
+    .map((m) => `${m.groupId}:${m.optionId}`)
+    .sort()
+    .join('|');
+}
+
+/** Identity of a cart line: same item + variation + add-ons merge into one line. */
+export function cartLineKey(it: { id: string; variation?: string; modifiers?: CartModifier[] }): string {
+  return `${it.id}::${it.variation ?? ''}::${modifiersKey(it.modifiers)}`;
+}
+
 export type AddItemInput = Omit<CartItem, 'qty'> & { qty?: number };
+
+export type CartWarning = {
+  lineKey: string;
+  itemId: string;
+  name: string;
+  kind: 'unavailable' | 'diet';
+  reason: string;
+};
+
+/** What one change did — lines added/changed (keys after) and removed (as they were). */
+export type CartChange = {
+  id: number;
+  at: number;
+  added: CartItem[];
+  changed: { before: CartItem; after: CartItem }[];
+  removed: CartItem[];
+  before: CartItem[];
+};
+
+/** Diff two trays line by line (null = nothing changed). */
+export function diffCart(before: CartItem[], after: CartItem[]): Omit<CartChange, 'id' | 'at'> | null {
+  const b = new Map(before.map((it) => [cartLineKey(it), it]));
+  const a = new Map(after.map((it) => [cartLineKey(it), it]));
+  const added: CartItem[] = [];
+  const changed: { before: CartItem; after: CartItem }[] = [];
+  const removed: CartItem[] = [];
+  a.forEach((it, k) => {
+    const old = b.get(k);
+    if (!old) added.push(it);
+    else if (old.qty !== it.qty || (old.notes ?? '') !== (it.notes ?? '')) changed.push({ before: old, after: it });
+  });
+  b.forEach((it, k) => {
+    if (!a.has(k)) removed.push(it);
+  });
+  if (!added.length && !changed.length && !removed.length) return null;
+  return { added, changed, removed, before };
+}
 
 /**
  * CartState is persisted.
@@ -49,7 +112,27 @@ export type CartContextValue = {
   updateQty: (id: string, delta: number, variation?: string) => void;
   setQty: (id: string, qty: number, variation?: string) => void;
   removeItem: (id: string, variation?: string) => void;
-  clear: () => void;
+  /** Kitchen note on a line ("less spicy"); empty string clears it */
+  setNotes: (id: string, notes: string, variation?: string) => void;
+  /** Line-key based updates (needed for lines with add-ons) */
+  setLineQty: (lineKey: string, qty: number) => void;
+  removeLine: (lineKey: string) => void;
+  /** Note on one exact line; empty string clears it */
+  setLineNotes: (lineKey: string, notes: string) => void;
+  /** Swap one line for an edited version (new size / add-ons / note), keeping its place in the tray */
+  replaceLine: (lineKey: string, next: CartItem) => void;
+  /** `silent`: no "changed" record / undo offer (e.g. the tray empties because the order was placed) */
+  clear: (opts?: { silent?: boolean }) => void;
+
+  /** The last change to the tray (by voice or by tapping) — drives the highlight and the Undo toast */
+  lastChange: CartChange | null;
+  /** Put the tray back exactly as it was before `lastChange` */
+  undoLast: () => void;
+  dismissChange: () => void;
+
+  /** Lines the waiter flagged (sold out, allergy/diet clash) — keyed by line key */
+  warnings: Record<string, CartWarning>;
+  setWarnings: (list: CartWarning[] | undefined | null) => void;
 
   channel: Channel;
   setChannel: (ch: Channel) => void;
@@ -141,15 +224,14 @@ const CART_TTL_MS = 10 * 60 * 1000;
 
 /* --------------------------- Session ID helper ---------------------------- */
 
+/** The same id the voice waiter uses, so the waiter's saved-cart fallback sees this cart. */
 function getCartSessionId(): string | null {
   if (typeof window === 'undefined') return null;
-  const key = 'tastebud:cartSessionId';
-  let sid = window.localStorage.getItem(key);
-  if (!sid) {
-    sid = `${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`;
-    window.localStorage.setItem(key, sid);
+  try {
+    return getStableSessionId();
+  } catch {
+    return null;
   }
-  return sid;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -159,12 +241,32 @@ function getCartSessionId(): string | null {
 type Action =
   | { type: 'HYDRATE'; payload: CartItem[]; now: number }
   | { type: 'ADD'; payload: AddItemInput & { qty: number }; now: number }
-  | { type: 'DEL'; payload: { id: string; variation?: string }; now: number }
-  | { type: 'SET_QTY'; payload: { id: string; qty: number; variation?: string }; now: number }
+  | { type: 'DEL'; payload: { id: string; variation?: string } | { lineKey: string }; now: number }
+  | {
+      type: 'SET_QTY';
+      payload: ({ id: string; variation?: string } | { lineKey: string }) & { qty: number };
+      now: number;
+    }
+  | { type: 'SET_NOTES'; payload: { id: string; variation?: string; notes: string }; now: number }
+  | { type: 'SET_LINE_NOTES'; payload: { lineKey: string; notes: string }; now: number }
+  | { type: 'REPLACE_LINE'; payload: { lineKey: string; next: CartItem }; now: number }
+  | { type: 'REPLACE_ALL'; payload: CartItem[]; now: number }
   | { type: 'CLEAR'; now: number };
 
-function sameLine(a: CartItem, b: { id: string; variation?: string }) {
-  return a.id === b.id && (a.variation ?? '') === (b.variation ?? '');
+/**
+ * Matches by line key, by full identity (id + variation + add-ons), or — for voice/legacy
+ * callers that only know (id, variation) — any line of that item regardless of add-ons.
+ */
+function sameLine(
+  a: CartItem,
+  b: { id: string; variation?: string; modifiers?: CartModifier[] } | { lineKey: string },
+) {
+  if ('lineKey' in b) return cartLineKey(a) === b.lineKey;
+  if (b.modifiers === undefined) {
+    // no size given ("remove the kacchi") → any line of that item; a size given → exactly that size
+    return a.id === b.id && (b.variation === undefined || (a.variation ?? '') === b.variation);
+  }
+  return cartLineKey(a) === cartLineKey(b);
 }
 
 function withUpdatedAt(items: CartItem[], now: number): CartState {
@@ -184,11 +286,17 @@ function reducer(state: CartState, action: Action): CartState {
     }
 
     case 'ADD': {
-      const { id, variation, qty } = action.payload;
-      const idx = state.items.findIndex((it) => sameLine(it, { id, variation }));
+      const { qty } = action.payload;
+      // an ADD is a full line identity: no add-ons means "the plain line", not "any line"
+      const identity = { ...action.payload, modifiers: action.payload.modifiers ?? [] };
+      const idx = state.items.findIndex((it) => sameLine(it, identity));
       if (idx >= 0) {
         const next = [...state.items];
-        next[idx] = { ...next[idx], qty: next[idx].qty + qty };
+        next[idx] = {
+          ...next[idx],
+          qty: next[idx].qty + qty,
+          ...(action.payload.notes ? { notes: action.payload.notes } : {}),
+        };
         return withUpdatedAt(next.filter((it) => it.qty > 0), action.now);
       }
       return withUpdatedAt([...state.items, { ...action.payload, qty }], action.now);
@@ -200,9 +308,9 @@ function reducer(state: CartState, action: Action): CartState {
     }
 
     case 'SET_QTY': {
-      const { id, variation, qty } = action.payload;
+      const { qty } = action.payload;
       const next = state.items.map((it) =>
-        sameLine(it, { id, variation })
+        sameLine(it, action.payload)
           ? { ...it, qty: Math.max(0, qty) }
           : it,
       );
@@ -211,6 +319,41 @@ function reducer(state: CartState, action: Action): CartState {
         action.now,
       );
     }
+
+    case 'SET_NOTES': {
+      const { notes } = action.payload;
+      const next = state.items.map((it) =>
+        sameLine(it, action.payload) ? { ...it, notes: notes.trim() || undefined } : it,
+      );
+      return withUpdatedAt(next, action.now);
+    }
+
+    case 'SET_LINE_NOTES': {
+      const { lineKey, notes } = action.payload;
+      const next = state.items.map((it) =>
+        cartLineKey(it) === lineKey ? { ...it, notes: notes.trim() || undefined } : it,
+      );
+      return withUpdatedAt(next, action.now);
+    }
+
+    case 'REPLACE_LINE': {
+      const { lineKey, next } = action.payload;
+      const idx = state.items.findIndex((it) => cartLineKey(it) === lineKey);
+      if (idx < 0) return state;
+      const items = [...state.items];
+      // the edited line may now equal another line (Full → Half when a Half exists) → merge them
+      const dup = items.findIndex((it, i) => i !== idx && cartLineKey(it) === cartLineKey(next));
+      if (dup >= 0) {
+        items[dup] = { ...items[dup], qty: items[dup].qty + next.qty };
+        items.splice(idx, 1);
+      } else {
+        items[idx] = next;
+      }
+      return withUpdatedAt(items.filter((it) => it.qty > 0), action.now);
+    }
+
+    case 'REPLACE_ALL':
+      return withUpdatedAt(action.payload.filter((it) => it && it.qty > 0), action.now);
 
     case 'CLEAR':
       return withUpdatedAt([], action.now);
@@ -251,6 +394,25 @@ export function CartProvider({ children }: PropsWithChildren<{}>) {
     items: [],
     updatedAt: null,
   });
+
+  // every change to the tray (voice or tap) is recorded: what was added / changed / removed, and the tray before
+  const [lastChange, setLastChange] = useState<CartChange | null>(null);
+  const lastChangeRef = useRef<CartChange | null>(null);
+  lastChangeRef.current = lastChange;
+  const prevItemsRef = useRef<CartItem[] | null>(null);
+  const suppressRef = useRef(false);
+  const changeIdRef = useRef(0);
+  useEffect(() => {
+    const prev = prevItemsRef.current;
+    prevItemsRef.current = state.items;
+    if (prev === null || !initialLoaded.current) return; // loading the saved tray isn't a change
+    if (suppressRef.current) {
+      suppressRef.current = false;
+      return;
+    }
+    const d = diffCart(prev, state.items);
+    if (d) setLastChange({ ...d, id: ++changeIdRef.current, at: Date.now() });
+  }, [state.items]);
 
   /* --------------------------- Load from storage + API -------------------- */
 
@@ -427,9 +589,56 @@ export function CartProvider({ children }: PropsWithChildren<{}>) {
     });
   }, []);
 
-  const clear = useCallback(() => {
+  const setNotes = useCallback((id: string, notes: string, variation?: string) => {
+    dispatch({ type: 'SET_NOTES', payload: { id, variation, notes }, now: Date.now() });
+  }, []);
+
+  const setLineQty = useCallback((lineKey: string, qty: number) => {
+    dispatch({ type: 'SET_QTY', payload: { lineKey, qty: Math.max(0, qty) }, now: Date.now() });
+  }, []);
+
+  const removeLine = useCallback((lineKey: string) => {
+    dispatch({ type: 'DEL', payload: { lineKey }, now: Date.now() });
+  }, []);
+
+  const clear = useCallback((opts?: { silent?: boolean }) => {
+    if (opts?.silent) {
+      suppressRef.current = true;
+      setLastChange(null);
+    }
     dispatch({ type: 'CLEAR', now: Date.now() });
   }, []);
+
+  const setLineNotes = useCallback((lineKey: string, notes: string) => {
+    dispatch({ type: 'SET_LINE_NOTES', payload: { lineKey, notes }, now: Date.now() });
+  }, []);
+
+  const replaceLine = useCallback((lineKey: string, next: CartItem) => {
+    dispatch({ type: 'REPLACE_LINE', payload: { lineKey, next }, now: Date.now() });
+  }, []);
+
+  /* ------------------------ change record, undo, warnings ------------------ */
+
+  const undoLast = useCallback(() => {
+    const change = lastChangeRef.current;
+    if (!change) return;
+    suppressRef.current = true; // restoring isn't a new change to offer undo for
+    dispatch({ type: 'REPLACE_ALL', payload: change.before, now: Date.now() });
+    setLastChange(null);
+  }, []);
+
+  const dismissChange = useCallback(() => setLastChange(null), []);
+
+  const [warningList, setWarningList] = useState<CartWarning[]>([]);
+  const setWarnings = useCallback((list: CartWarning[] | undefined | null) => {
+    if (Array.isArray(list)) setWarningList(list.filter((w) => w && typeof w.lineKey === 'string'));
+  }, []);
+  const warnings = useMemo(() => {
+    const keys = new Set(state.items.map((it) => cartLineKey(it)));
+    const out: Record<string, CartWarning> = {};
+    for (const w of warningList) if (keys.has(w.lineKey)) out[w.lineKey] = w;
+    return out;
+  }, [warningList, state.items]);
 
   /* --------------------------- Derived computations ------------------------ */
 
@@ -454,7 +663,18 @@ export function CartProvider({ children }: PropsWithChildren<{}>) {
     updateQty,
     setQty,
     removeItem,
+    setNotes,
+    setLineQty,
+    removeLine,
+    setLineNotes,
+    replaceLine,
     clear,
+
+    lastChange,
+    undoLast,
+    dismissChange,
+    warnings,
+    setWarnings,
 
     channel,
     setChannel: (ch) => {

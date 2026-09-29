@@ -37,6 +37,9 @@ RUN python -m pip install --upgrade pip && \
       aiohttp==3.9.5 && \
     pip install --no-cache-dir --no-deps faster-whisper==1.0.1
 
+# Time zones for opening/serving hours (zoneinfo) — separate layer keeps the cache above
+RUN pip install --no-cache-dir tzdata==2025.2
+
 COPY . .
 
 CMD ["python", "server.py"]

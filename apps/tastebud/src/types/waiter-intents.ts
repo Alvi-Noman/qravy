@@ -51,7 +51,7 @@ export type AiOrderItem = {
  * - remove → remove specific line
  * - clear  → clear all items
  */
-export type VoiceCartOpType = 'add' | 'set' | 'remove' | 'inc' | 'dec' | 'clear';
+export type VoiceCartOpType = 'add' | 'set' | 'remove' | 'inc' | 'dec' | 'clear' | 'note';
 
 /**
  * One voice cart operation; interpreted client-side by voice-cart.ts.
@@ -75,6 +75,15 @@ export type VoiceCartOp = {
 
   /** Optional price hint; UI may ignore in favor of catalog. */
   price?: number;
+
+  /** Kitchen note for the line ("less spicy", "no onion"). */
+  note?: string;
+
+  /** Size / variant name ("Half", "Large") — matched to the item's variations. */
+  variant?: string;
+
+  /** Chosen add-on option names (e.g. the 2 curries of a combo), matched to modifierGroups. */
+  choices?: string[];
 };
 
 /* -------------------------------------------------------------------------- */
@@ -105,7 +114,17 @@ export type AiUpsellItem = {
 export type AiDecision = {
   /** If true, UI should show the upsell tray/modal. */
   showUpsellTray?: boolean;
+  /** Legacy: set together with orderPlaced */
   openConfirmationPage?: boolean;
+  /** Checkout: the waiter read the order back and waits for a yes → show the checkout page */
+  showCheckout?: boolean;
+  /** Checkout: the waiter needs the table number */
+  askTable?: boolean;
+  /** The order was really placed (meta.order has token + orderNumber) */
+  orderPlaced?: boolean;
+  /** Placing failed (the reply says why) */
+  orderFailed?: boolean;
+  checkoutStage?: 'none' | 'table' | 'readback' | 'placing';
 };
 
 /* -------------------------------------------------------------------------- */

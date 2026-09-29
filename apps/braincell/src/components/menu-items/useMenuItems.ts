@@ -71,6 +71,54 @@ type BulkAvailRes = { items: TMenuItem[]; matchedCount: number; modifiedCount: n
 type BulkDeleteRes = { ids: string[]; deletedCount: number };
 type BulkCategoryRes = { items: TMenuItem[]; matchedCount: number; modifiedCount: number };
 
+/**
+ * Copy of an item's content for "Duplicate": prices, variations, add-ons, photos, tags.
+ * Branch/channel targeting is added by the caller from the current scope.
+ */
+export function buildDuplicatePayload(it: TMenuItem): NewMenuItem {
+  const variations = (it.variations ?? []).map((v) => ({
+    name: v.name,
+    ...(typeof v.price === 'number' ? { price: v.price } : {}),
+    ...(v.imageUrl ? { imageUrl: v.imageUrl } : {}),
+    ...(v.optionValues?.length ? { optionValues: v.optionValues } : {}),
+    ...(typeof v.prepMinutes === 'number' ? { prepMinutes: v.prepMinutes } : {}),
+  }));
+  const hasVariantPrice = variations.some((v) => typeof v.price === 'number');
+  // With priced variants the server derives the base price; without, copy it.
+  const price = hasVariantPrice ? undefined : it.price;
+
+  return {
+    name: `${it.name} (Copy)`,
+    ...(typeof price === 'number' ? { price } : {}),
+    ...(typeof price === 'number' && typeof it.compareAtPrice === 'number' && it.compareAtPrice >= price
+      ? { compareAtPrice: it.compareAtPrice }
+      : {}),
+    ...(it.description ? { description: it.description } : {}),
+    ...(it.category ? { category: it.category } : {}),
+    ...(it.categoryId ? { categoryId: it.categoryId } : {}),
+    ...(it.media?.length ? { media: [...it.media] } : {}),
+    ...(variations.length ? { variations } : {}),
+    ...(variations.length && it.options?.length ? { options: it.options.map((o) => ({ ...o, values: [...o.values] })) } : {}),
+    ...(it.modifierGroups?.length
+      ? {
+          // New ids are assigned server-side, so the copy's groups are independent.
+          modifierGroups: it.modifierGroups.map((g) => ({
+            name: g.name,
+            min: g.min,
+            max: g.max,
+            options: g.options.map((o) => ({ name: o.name, price: o.price })),
+          })),
+        }
+      : {}),
+    ...(it.tags?.length ? { tags: [...it.tags] } : {}),
+    ...(typeof it.prepMinutes === 'number' ? { prepMinutes: it.prepMinutes } : {}),
+    ...(it.availability?.length ? { availability: it.availability.map((w) => ({ ...w, days: [...w.days] })) } : {}),
+  };
+}
+
+/** Signature works best for a handful of dishes; past this we nudge (never block). */
+export const SIGNATURE_SOFT_LIMIT = 8;
+
 export function useMenuItems() {
   const { token, session } = useAuthContext();
   const { activeLocationId, channel } = useScope();
@@ -297,20 +345,64 @@ export function useMenuItems() {
     },
   });
 
+  // ⭐ Signature star: instant (optimistic in every cached list), quiet, undoable.
+  const signatureMut = useMutation<
+    TMenuItem,
+    Error,
+    { id: string; signature: boolean; silent?: boolean },
+    { snapshots: Array<[readonly unknown[], TMenuItem[] | undefined]> }
+  >({
+    mutationFn: ({ id, signature }) => updateMenuItem(id, { signature }, token as string),
+    onMutate: async ({ id, signature }) => {
+      await queryClient.cancelQueries({ queryKey: ['menu-items', token] });
+      const snapshots = queryClient.getQueriesData<TMenuItem[]>({ queryKey: ['menu-items', token] });
+      for (const [key, data] of snapshots) {
+        if (!Array.isArray(data)) continue;
+        queryClient.setQueryData<TMenuItem[]>(
+          key as any,
+          data.map((it) => (it.id === id ? ({ ...it, signature } as TMenuItem) : it))
+        );
+      }
+      return { snapshots };
+    },
+    onError: (e, _v, ctx) => {
+      for (const [key, data] of ctx?.snapshots ?? []) queryClient.setQueryData(key as any, data);
+      toastError(e?.message || 'Could not update signature dish');
+    },
+    onSuccess: (_updated, { id, signature, silent }) => {
+      broadcast();
+      if (silent) return;
+      const name = items.find((it) => it.id === id)?.name ?? 'Item';
+      const count = items.filter((it) => (it.id === id ? signature : it.signature)).length;
+      const undo = { label: 'Undo', onClick: () => signatureMut.mutate({ id, signature: !signature, silent: true }) };
+      if (signature && count > SIGNATURE_SOFT_LIMIT) {
+        toastSuccess(
+          `${name} is now a signature dish. Tip: signature works best for a handful of dishes — you have ${count}.`,
+          { action: undo, duration: 7000 }
+        );
+      } else {
+        toastSuccess(signature ? `${name} marked as a signature dish` : `${name} removed from signature dishes`, {
+          action: undo,
+        });
+      }
+    },
+  });
+
   // Single toggle (availability only; never removes rows)
   const availabilityMut = useMutation<
     TMenuItem[],
     Error,
-    { id: string; active: boolean },
+    { id: string; active: boolean; untilReset?: boolean },
     { snapshot?: TMenuItem[] }
   >({
-    mutationFn: async ({ id, active }) => {
+    mutationFn: async ({ id, active, untilReset }) => {
       const res = await bulkUpdateAvailability(
         [id],
         active,
         token as string,
         locationIdForQuery || undefined,
-        channelForQuery || undefined
+        channelForQuery || undefined,
+        { untilReset }
       );
       return res.items;
     },
@@ -350,8 +442,24 @@ export function useMenuItems() {
       });
       if (e instanceof Error) toastError(e.message);
     },
-    onSuccess: () => {
+    onSuccess: (items, vars) => {
+      // Only the "back at" time comes from the server; the switch itself was already
+      // updated optimistically — patch that row in every cached list, no reload.
+      const soldOutUntil = (items?.find((i) => i.id === vars.id) as any)?.soldOutUntil ?? null;
+      queryClient.setQueriesData<TMenuItem[]>(
+        {
+          predicate: (q) => {
+            const k = q.queryKey as any[];
+            return Array.isArray(k) && k[0] === 'menu-items' && k[1] === token;
+          },
+        },
+        (prev) =>
+          Array.isArray(prev)
+            ? prev.map((row) => (row.id === vars.id ? ({ ...row, soldOutUntil } as TMenuItem) : row))
+            : prev
+      );
       broadcast();
+      if (vars.untilReset) toastSuccess('Sold out for today — it switches back on automatically');
     },
   });
 
@@ -533,12 +641,8 @@ export function useMenuItems() {
     mutationFn: async (id: string) => {
       const it = items.find((x) => x.id === id);
       if (!it) throw new Error('Item not found');
-      const copyName = `${it.name} (Copy)`;
       const payload: NewMenuItem = {
-        name: copyName,
-        price: (it as any).price,
-        category: it.category,
-        description: it.description,
+        ...buildDuplicatePayload(it),
         ...(activeLocationId && session?.type !== 'central' ? { locationId: activeLocationId } : {}),
         ...(channelForQuery ? { channel: channelForQuery } : {}),
       };
@@ -767,5 +871,6 @@ export function useMenuItems() {
     bulkAvailabilityMut,
     bulkDeleteMut,
     bulkCategoryMut,
+    signatureMut,
   };
 }

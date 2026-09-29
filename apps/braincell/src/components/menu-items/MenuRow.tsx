@@ -6,10 +6,14 @@ import {
   TrashIcon,
   EllipsisHorizontalIcon,
   DocumentDuplicateIcon,
+  StarIcon as StarOutlineIcon,
 } from '@heroicons/react/24/outline';
+import { StarIcon as StarSolidIcon } from '@heroicons/react/24/solid';
 import type { MenuItem as TMenuItem } from '../../api/menuItems';
 import { useScope } from '../../context/ScopeContext';
 import { useSatisfies } from '../../hooks/useCapability'; // 👈 NEW import
+import { formatAvailability } from '../../utils/hours';
+import { useServicePeriods } from '../../hooks/useServicePeriods';
 
 export default function MenuRow({
   item,
@@ -17,15 +21,21 @@ export default function MenuRow({
   isNew = false,
   onToggleSelect,
   onToggleAvailability,
+  onSoldOutToday,
   onEdit,
   onDuplicate,
   onDelete,
+  onToggleSignature,
 }: {
   item: TMenuItem;
   selected: boolean;
   isNew?: boolean;
   onToggleSelect: (id: string) => void;
+  /** Omit for read-only users — the star is then shown but not clickable */
+  onToggleSignature?: (id: string, signature: boolean) => void;
   onToggleAvailability: (id: string, active: boolean) => void;
+  /** Off now, back on at the daily reset */
+  onSoldOutToday?: (id: string) => void;
   onEdit: (item: TMenuItem) => void;
   onDuplicate: (id: string) => void;
   onDelete: (id: string) => void;
@@ -81,10 +91,22 @@ export default function MenuRow({
   // 👇 NEW: Hide 3-dot menu if user lacks edit/delete capabilities
   const canShowRowMenu = useSatisfies(['menuItems:update', 'menuItems:delete'], 'any');
 
+  // "Breakfast · Fri 12pm–3pm · 3 Oct–5 Oct" — service periods, custom times, dates
+  const periods = useServicePeriods();
+  const availabilityLabel = [
+    ...((itAny.servicePeriodIds as string[] | undefined) ?? [])
+      .map((id) => periods.find((p) => p.id === id)?.name)
+      .filter(Boolean),
+    ...(Array.isArray(itAny.availability) && itAny.availability.length ? [formatAvailability(itAny.availability)] : []),
+    ...(itAny.availableFrom || itAny.availableUntil
+      ? [`${itAny.availableFrom ? fmtDay(itAny.availableFrom) : '…'}–${itAny.availableUntil ? fmtDay(itAny.availableUntil) : '…'}`]
+      : []),
+  ].join(' · ');
+
   return (
     <tr
       data-item-id={item.id}
-      className="border-t border-[#f2f2f2] hover:bg-[#fafafa] transition-colors duration-700"
+      className="group border-t border-[#f2f2f2] hover:bg-[#fafafa] transition-colors duration-700"
       style={{
         backgroundColor: isNew ? 'var(--brand-25, #f9fbff)' : undefined,
       }}
@@ -103,7 +125,19 @@ export default function MenuRow({
         <div className="flex items-center gap-3">
           <Avatar name={item.name} imageUrl={(itAny.media?.[0] as string) || itAny.imageUrl} />
           <div className="min-w-0">
-            <div className="truncate font-medium text-[#111827]">{item.name}</div>
+            <div className="flex min-w-0 items-center gap-1">
+              <div className="truncate font-medium text-[#111827]">{item.name}</div>
+              <SignatureStar
+                name={item.name}
+                on={!!item.signature}
+                onToggle={onToggleSignature ? (next) => onToggleSignature(item.id, next) : undefined}
+              />
+            </div>
+            {availabilityLabel && (
+              <div className="mt-0.5 truncate text-xs text-amber-700" title={`Availability: ${availabilityLabel}`}>
+                🕐 {availabilityLabel}
+              </div>
+            )}
           </div>
         </div>
       </td>
@@ -159,6 +193,20 @@ export default function MenuRow({
             }`}
           />
         </button>
+        {!active && itAny.soldOutUntil ? (
+          <div className="mt-1 whitespace-nowrap text-[11px] text-amber-700" title="Sold out today — switches back on automatically">
+            Back {formatBackAt(itAny.soldOutUntil)}
+          </div>
+        ) : active && onSoldOutToday ? (
+          <button
+            type="button"
+            onClick={() => onSoldOutToday(item.id)}
+            title="Turn off now and back on automatically at the daily reset time"
+            className="mt-1 block whitespace-nowrap text-[11px] text-[#6b7280] underline-offset-2 hover:text-[#111827] hover:underline"
+          >
+            Sold out today
+          </button>
+        ) : null}
       </td>
 
       {/* 👇 Only show RowMenu if user has edit/delete rights */}
@@ -322,6 +370,41 @@ function RowMenu({
   );
 }
 
+/**
+ * Signature toggle: filled amber when on (always visible); a faint outline appears on row
+ * hover / keyboard focus (always on touch screens) so the list stays calm.
+ */
+function SignatureStar({ name, on, onToggle }: { name: string; on: boolean; onToggle?: (next: boolean) => void }) {
+  const label = on ? `Remove ${name} from signature dishes` : `Mark ${name} as a signature dish`;
+  if (!onToggle) {
+    return on ? (
+      <span title="Signature dish" className="shrink-0 text-amber-500">
+        <StarSolidIcon className="h-4 w-4" aria-hidden="true" />
+        <span className="sr-only">Signature dish</span>
+      </span>
+    ) : null;
+  }
+  return (
+    <button
+      type="button"
+      aria-pressed={on}
+      aria-label={label}
+      title={on ? 'Signature dish — click to remove' : 'Mark as signature dish'}
+      onClick={(e) => {
+        e.stopPropagation();
+        onToggle(!on);
+      }}
+      className={`shrink-0 rounded p-0.5 transition focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400 ${
+        on
+          ? 'text-amber-500 hover:text-amber-600'
+          : 'text-[#c4c4c8] opacity-0 hover:text-amber-500 focus-visible:opacity-100 group-hover:opacity-100 [@media(hover:none)]:opacity-100'
+      }`}
+    >
+      {on ? <StarSolidIcon className="h-4 w-4" aria-hidden="true" /> : <StarOutlineIcon className="h-4 w-4" aria-hidden="true" />}
+    </button>
+  );
+}
+
 function Avatar({ name, imageUrl }: { name: string; imageUrl?: string }) {
   const letter = name?.trim()?.[0]?.toUpperCase() || '•';
   if (imageUrl)
@@ -333,3 +416,20 @@ function Avatar({ name, imageUrl }: { name: string; imageUrl?: string }) {
   );
 }
  
+/** "5:00 AM" today/tomorrow, or "Tue 5:00 AM" further out. */
+function formatBackAt(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return 'later';
+  const time = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  const today = new Date();
+  const tomorrow = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1);
+  if (d.toDateString() === today.toDateString()) return `at ${time}`;
+  if (d.toDateString() === tomorrow.toDateString()) return `tomorrow ${time}`;
+  return `${d.toLocaleDateString([], { weekday: 'short' })} ${time}`;
+}
+
+/** "2026-10-03" → "3 Oct" */
+function fmtDay(ymd: string): string {
+  const d = new Date(`${ymd}T12:00:00Z`);
+  return Number.isNaN(d.getTime()) ? ymd : d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' });
+}

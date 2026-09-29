@@ -18,14 +18,41 @@ import {
   type Category as FullCategory,
 } from '../../api/categories';
 import { QuestionMarkCircleIcon } from '@heroicons/react/24/outline';
+import { StarIcon as StarSolidIcon } from '@heroicons/react/24/solid';
 import Variations from './Variations';
+import PrepTime from './PrepTime';
+import { parsePrepMinutes, useKitchenSettings } from '../../hooks/useKitchenSettings';
 import ImageUploadZone from './ImageUploadZone';
 import Tags from './Tags';
+import AddOns, {
+  toApiModifierGroups,
+  toUiModifierGroups,
+  validateModifierGroups,
+  type ApiModifierGroup,
+  type UiModifierGroup,
+} from './AddOns';
+import type { AvailabilityWindow } from '../Categories/HoursEditor';
+import AvailabilityEditor, {
+  validateAvailability,
+  type AvailabilityValue,
+} from '../availability/AvailabilityEditor';
 import type { TenantDTO } from '../../../../../packages/shared/src/types/v1';
 import { useScope } from '../../context/ScopeContext';
 import { fetchLocations, type Location } from '../../api/locations';
 
-type UiVariation = { label: string; price?: string; imagePreview?: string | null; imageUrl?: string | null };
+type UiVariation = {
+  label: string;
+  price?: string;
+  /** "" = same as the item */
+  prepMinutes?: string;
+  imagePreview?: string | null;
+  imageUrl?: string | null;
+  optionValues?: string[];
+};
+type UiOption = { name: string; values: string[] };
+
+const variantImageUrl = (v: UiVariation) =>
+  v.imageUrl || (v.imagePreview && !v.imagePreview.startsWith('blob:') ? v.imagePreview : null);
 
 // keep a local “AugCategory” aligned with CategorySelect.CategoryLike
 type AugCategory = CatLike & { id?: string };
@@ -72,7 +99,15 @@ export default function MenuItemModal({
     prepMinutes?: number;
     imagePreviews?: (string | null)[];
     tags?: string[];
+    signature?: boolean;
     variations?: UiVariation[];
+    options?: UiOption[];
+    modifierGroups?: ApiModifierGroup[];
+    /** Item's own serving hours (e.g. Friday special) */
+    availability?: AvailabilityWindow[];
+    servicePeriodIds?: string[];
+    availableFrom?: string | null;
+    availableUntil?: string | null;
 
     // --- Advanced (item-level) ---
     channel?: 'dine-in' | 'online';
@@ -91,8 +126,18 @@ export default function MenuItemModal({
     description?: string;
     category?: string;
     media?: string[];
-    variations?: { name: string; price?: number; imageUrl?: string }[];
+    variations?: { name: string; price?: number; imageUrl?: string; optionValues?: string[]; prepMinutes?: number }[];
+    options?: UiOption[];
+    modifierGroups?: ApiModifierGroup[];
+    availability?: AvailabilityWindow[];
+    servicePeriodIds?: string[];
+    /** null clears */
+    availableFrom?: string | null;
+    availableUntil?: string | null;
     tags?: string[];
+    signature?: boolean;
+    /** Kitchen minutes for one portion; null clears (restaurant default) */
+    prepMinutes?: number | null;
     // Advanced selections (optional)
     channel?: 'dine-in' | 'online';
     includeLocationIds?: string[];
@@ -124,7 +169,7 @@ export default function MenuItemModal({
     description: initial.description || '',
     category: initial.category || '', // string still kept for payload
     compareAtPrice: initial.compareAtPrice || '',
-    prepMinutes: initial.prepMinutes ?? 15,
+    prepMinutes: initial.prepMinutes != null ? String(initial.prepMinutes) : '',
     imageFiles: [] as (File | null)[],
     imagePreviews: initPreviews as (string | null)[],
   }));
@@ -136,7 +181,20 @@ export default function MenuItemModal({
     (initial.imagePreviews || []).map((u) => (u && !u.startsWith('blob:') ? u : '')).slice(0, MAX_MEDIA)
   );
   const [tags, setTags] = useState<string[]>(initial.tags || []);
+  const [signature, setSignature] = useState<boolean>(!!initial.signature);
   const [uiVariations, setUiVariations] = useState<UiVariation[]>(initial.variations || []);
+  const [uiOptions, setUiOptions] = useState<UiOption[]>(initial.options || []);
+  const [modGroups, setModGroups] = useState<UiModifierGroup[]>(() => toUiModifierGroups(initial.modifierGroups));
+  const [modGroupsErr, setModGroupsErr] = useState<string | null>(null);
+  const [avail, setAvail] = useState<AvailabilityValue>({
+    servicePeriodIds: initial.servicePeriodIds ?? [],
+    availability: initial.availability ?? [],
+    availableFrom: initial.availableFrom ?? null,
+    availableUntil: initial.availableUntil ?? null,
+  });
+  const [availErr, setAvailErr] = useState<string | null>(null);
+  // Blocking problem reported by the variant editor (missing option name, too many variants, ...)
+  const [variationsIssue, setVariationsIssue] = useState<string | null>(null);
 
   // Advanced: UI state
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -290,13 +348,14 @@ export default function MenuItemModal({
 
   // Global errors
   const [localError, setLocalError] = useState<string | null>(null);
-  const [varNameError, setVarNameError] = useState<string | null>(null);
   const [varImageError, setVarImageError] = useState<string | null>(null);
   const [mediaImageError, setMediaImageError] = useState<string | null>(null);
 
   // Field-level errors
   const [nameErr, setNameErr] = useState<string | null>(null);
   const [priceErr, setPriceErr] = useState<string | null>(null);
+  const [prepErr, setPrepErr] = useState<string | null>(null);
+  const kitchen = useKitchenSettings();
   const [compareAtErr, setCompareAtErr] = useState<string | null>(null);
 
   const [saving, setSaving] = useState(false);
@@ -348,6 +407,8 @@ export default function MenuItemModal({
         values?: typeof values;
         tags?: string[];
         uiVariations?: UiVariation[];
+        uiOptions?: UiOption[];
+        modGroups?: UiModifierGroup[];
         remoteUrls?: string[];
       };
 
@@ -379,6 +440,17 @@ export default function MenuItemModal({
         setUiVariations((prev) => (deepEqual(prev, newVars) ? prev : newVars));
       }
 
+      if (Array.isArray(snap.uiOptions)) {
+        const newOpts: UiOption[] = snap.uiOptions;
+        setUiOptions((prev) => (deepEqual(prev, newOpts) ? prev : newOpts));
+        setVariationsSyncKey((k) => k + 1);
+      }
+
+      if (Array.isArray(snap.modGroups)) {
+        const newGroups: UiModifierGroup[] = snap.modGroups;
+        setModGroups((prev) => (deepEqual(prev, newGroups) ? prev : newGroups));
+      }
+
       if (Array.isArray(snap.remoteUrls)) {
         const newRemote: string[] = snap.remoteUrls;
         setRemoteUrls((prev) => (deepEqual(prev, newRemote) ? prev : newRemote));
@@ -404,27 +476,27 @@ export default function MenuItemModal({
   );
 
   // Resolved (non-blob) variant URLs (for dedupe and base filtering)
+  // (deduped: several variants, e.g. "Large / Mild" and "Large / Hot", can share one image)
   const variantUrls = useMemo(() => {
-    const items: string[] = [];
+    const items = new Set<string>();
     typedVariants.forEach((v) => {
-      const url = v.imageUrl || (v.imagePreview && !v.imagePreview.startsWith('blob:') ? v.imagePreview : null);
-      if (url) items.push(url);
+      const url = variantImageUrl(v);
+      if (url) items.add(url);
     });
-    return items;
+    return [...items];
   }, [typedVariants]);
 
   // Variant tiles for Media grid
   const variantTiles = useMemo(() => {
-    return (
-      typedVariants
-        .map((v) => {
-          const cdn = v.imageUrl || (v.imagePreview && !v.imagePreview.startsWith('blob:') ? v.imagePreview : null);
-          if (cdn) return cdn;
-          const blob = v.imagePreview && v.imagePreview.startsWith('blob:') ? v.imagePreview : null;
-          return blob ? `loading:${v.imagePreview}` : null;
-        })
-        .filter(Boolean) as string[]
-    );
+    const tiles = typedVariants
+      .map((v) => {
+        const cdn = variantImageUrl(v);
+        if (cdn) return cdn;
+        const blob = v.imagePreview && v.imagePreview.startsWith('blob:') ? v.imagePreview : null;
+        return blob ? `loading:${v.imagePreview}` : null;
+      })
+      .filter(Boolean) as string[];
+    return [...new Set(tiles)];
   }, [typedVariants]);
 
   // Base gallery images (excluding those used by resolved variant URLs)
@@ -468,12 +540,13 @@ export default function MenuItemModal({
       };
 
       const scrubVar = (v: UiVariation): UiVariation => {
-        const finalUrl = v.imageUrl || (v.imagePreview && !v.imagePreview.startsWith('blob:') ? v.imagePreview : null);
+        const finalUrl = variantImageUrl(v);
         return {
           label: v.label,
           price: v.price,
           imagePreview: finalUrl,
           imageUrl: finalUrl,
+          optionValues: v.optionValues,
         };
       };
 
@@ -483,6 +556,8 @@ export default function MenuItemModal({
         values: snapValues,
         tags,
         uiVariations: (uiVariations || []).map(scrubVar),
+        uiOptions,
+        modGroups,
         remoteUrls,
       };
       sessionStorage.setItem(storageKey, JSON.stringify(snap));
@@ -582,6 +657,14 @@ export default function MenuItemModal({
   // Inline validators
   const validateBeforeSubmit = (): boolean => {
     let hasError = false;
+
+    const addOnsErr = validateModifierGroups(modGroups);
+    setModGroupsErr(addOnsErr);
+    if (addOnsErr) hasError = true;
+
+    const hoursErr = validateAvailability(avail);
+    setAvailErr(hoursErr);
+    if (hoursErr) hasError = true;
     setLocalError(null);
 
     if (!values.name.trim()) {
@@ -627,6 +710,13 @@ export default function MenuItemModal({
       }
     }
 
+    if (parsePrepMinutes(values.prepMinutes) === 'invalid') {
+      setPrepErr('Enter whole minutes between 1 and 240, or leave it empty.');
+      hasError = true;
+    } else {
+      setPrepErr(null);
+    }
+
     const channelsUnchecked = !chDineIn && !chOnline;
     if (channelsUnchecked) {
       setLocalError('Select at least one channel (Dine-In or Online) in Advanced.');
@@ -640,7 +730,12 @@ export default function MenuItemModal({
       }
     }
 
-    if (varNameError || varImageError || mediaImageError) hasError = true;
+    if (variationsIssue) {
+      setVarPriceValidateTick((t) => t + 1); // lets the editor highlight what's wrong
+      hasError = true;
+    }
+
+    if (varImageError || mediaImageError) hasError = true;
 
     return !hasError;
   };
@@ -664,15 +759,16 @@ export default function MenuItemModal({
       typedVariants
         .map((v) => {
           const p = v.price ? Number(v.price) : undefined;
-          const imageUrl =
-            v.imageUrl || (v.imagePreview && !v.imagePreview.startsWith('blob:') ? v.imagePreview : undefined);
           return {
             name: v.label.trim(),
             price: p !== undefined && Number.isFinite(p) && p >= 0 ? p : undefined,
-            imageUrl,
+            imageUrl: variantImageUrl(v) || undefined,
+            optionValues: v.optionValues,
+            prepMinutes: ((m) => (typeof m === 'number' ? m : undefined))(parsePrepMinutes(v.prepMinutes)),
           };
         })
         .filter((v) => v.name.length > 0);
+    const prep = parsePrepMinutes(values.prepMinutes);
 
     const payload: Parameters<typeof onSubmit>[0] = {
       name: values.name.trim(),
@@ -680,7 +776,15 @@ export default function MenuItemModal({
       category: values.category || undefined,
       media,
       variations,
+      options: variations.length ? uiOptions : [],
+      modifierGroups: toApiModifierGroups(modGroups),
+      availability: avail.availability,
+      servicePeriodIds: avail.servicePeriodIds,
+      availableFrom: avail.availableFrom || null,
+      availableUntil: avail.availableUntil || null,
       tags: tags.length ? tags : undefined,
+      signature,
+      prepMinutes: prep === 'invalid' ? null : prep,
     };
 
     if (!hasAnyVariants && hasMainPrice) {
@@ -749,7 +853,6 @@ export default function MenuItemModal({
       nameErr ||
       priceErr ||
       compareAtErr ||
-      varNameError ||
       varImageError ||
       mediaImageError ||
       createCatMut.isError ||
@@ -761,7 +864,6 @@ export default function MenuItemModal({
     nameErr,
     priceErr,
     compareAtErr,
-    varNameError,
     varImageError,
     mediaImageError,
     createCatMut.isError,
@@ -781,7 +883,7 @@ export default function MenuItemModal({
   const pendingTargetsRef = useRef<
     Map<
       number,
-      | { kind: 'variant'; realIdx: number }
+      | { kind: 'variant'; realIdxs: number[] }
       | { kind: 'base'; baseIdx: number; prev: string | null; added: boolean }
     >
   >(new Map());
@@ -790,7 +892,7 @@ export default function MenuItemModal({
     (mergedIndex: number) => {
       const original = values.imagePreviews || [];
 
-      const variantCount = (typedVariants || []).length;
+      const variantCount = variantTiles.length;
 
       const baseIndices: number[] = [];
       const vUrlSet = new Set(variantUrls);
@@ -809,7 +911,7 @@ export default function MenuItemModal({
       const extra = basePos - baseIndices.length;
       return original.length + extra;
     },
-    [typedVariants, variantUrls, values.imagePreviews]
+    [variantTiles, variantUrls, values.imagePreviews]
   );
 
   const removeUrlEverywhere = (url: string) => {
@@ -865,29 +967,20 @@ export default function MenuItemModal({
     if (isVariantTile && urlAtTile) {
       setUiVariations((prev) => {
         const next = prev.slice();
-        const typed = next.filter((v) => v.label.trim() !== '');
-        const idx = typed.findIndex((v) => {
-          const final =
-            v.imageUrl || (v.imagePreview && !v.imagePreview.startsWith('blob:') ? v.imagePreview : null);
-          const sentinel = v.imagePreview && v.imagePreview.startsWith('blob:')
-            ? `loading:${v.imagePreview}`
-            : null;
-          return final === urlAtTile || sentinel === urlAtTile;
+        const realIdxs: number[] = [];
+        next.forEach((v, j) => {
+          if (v.label.trim() === '') return;
+          const sentinel = v.imagePreview && v.imagePreview.startsWith('blob:') ? `loading:${v.imagePreview}` : null;
+          if (variantImageUrl(v) === urlAtTile || sentinel === urlAtTile) realIdxs.push(j);
         });
-        if (idx < 0) return prev;
-        const realIdx = next
-          .map((v, idx2) => ({ v, idx2 }))
-          .filter(({ v }) => v.label.trim() !== '')
-          [idx]?.idx2;
-        if (realIdx === undefined) return prev;
+        if (!realIdxs.length) return prev;
 
-        pendingTargetsRef.current.set(i, { kind: 'variant', realIdx });
+        pendingTargetsRef.current.set(i, { kind: 'variant', realIdxs });
 
-        const prevPreview = next[realIdx].imagePreview;
-        if (prevPreview && prevPreview.startsWith('blob:')) {
-          safeRevoke(prevPreview);
-        }
-        next[realIdx] = { ...next[realIdx], imagePreview: url, imageUrl: null };
+        realIdxs.forEach((j) => {
+          safeRevoke(next[j].imagePreview);
+          next[j] = { ...next[j], imagePreview: url, imageUrl: null };
+        });
         return deepEqual(prev, next) ? prev : next;
       });
       return;
@@ -908,26 +1001,16 @@ export default function MenuItemModal({
     const cdnUrl = resp.cdn.medium;
 
     if (pinned?.kind === 'variant') {
-      let duplicate = false;
       setUiVariations((prev) => {
         const next = prev.slice();
-        const realIdx = pinned.realIdx;
-        if (realIdx < 0 || realIdx >= next.length) return prev;
-
-        const existsElsewhere = next.some((v, j) => {
-          if (j === realIdx) return false;
-          const u = v.imageUrl || (v.imagePreview && !v.imagePreview.startsWith('blob:') ? v.imagePreview : null);
-          return u === cdnUrl;
+        pinned.realIdxs.forEach((j) => {
+          if (j >= 0 && j < next.length) next[j] = { ...next[j], imagePreview: cdnUrl, imageUrl: cdnUrl };
         });
-        if (existsElsewhere) {
-          duplicate = true;
-          return prev;
-        }
-
-        next[realIdx] = { ...next[realIdx], imagePreview: cdnUrl, imageUrl: cdnUrl };
         return deepEqual(prev, next) ? prev : next;
       });
-      setVarImageError(duplicate ? 'Each variation must have a unique image.' : null);
+      setVarImageError(null);
+      // Remount the variant editor so its table shows the new image
+      setVariationsSyncKey((k) => k + 1);
       pendingTargetsRef.current.delete(i);
       return;
     }
@@ -1030,34 +1113,12 @@ export default function MenuItemModal({
     });
   };
 
-  const handleVariationsChange = useCallback((list: UiVariation[]) => {
-    const typed = (list || []).filter((v) => v.label.trim() !== '');
-    const nameSet = new Set<string>();
-    let nameDup = false;
-    for (const v of typed) {
-      const key = v.label.trim().toLowerCase();
-      if (nameSet.has(key)) {
-        nameDup = true;
-        break;
-      }
-      nameSet.add(key);
-    }
-
-    const urlSet = new Set<string>();
-    let imgDup = false;
-    for (const v of typed) {
-      const u = v.imageUrl || (v.imagePreview && !v.imagePreview.startsWith('blob:') ? v.imagePreview : null);
-      if (u) {
-        if (urlSet.has(u)) {
-          imgDup = true;
-          break;
-        }
-        urlSet.add(u);
-      }
-    }
-
-    setVarNameError(nameDup ? 'Each variation must have a unique name.' : null);
-    setVarImageError(imgDup ? 'Each variation must have a unique image.' : null);
+  // Variant names are unique by construction (one per option-value combination) and
+  // variants may share an image, so only the editor's own issue needs tracking here.
+  const handleVariationsChange = useCallback((list: UiVariation[], options: UiOption[], issue: string | null) => {
+    setVariationsIssue(issue);
+    setVarImageError(null);
+    setUiOptions((prev) => (deepEqual(prev, options) ? prev : options));
     setUiVariations((prev) => (deepEqual(prev, list) ? prev : list));
   }, []);
 
@@ -1302,6 +1363,18 @@ export default function MenuItemModal({
             </div>
 
             <Field>
+              <PrepTime
+                value={values.prepMinutes}
+                onChange={(v) => {
+                  setValues((prev) => ({ ...prev, prepMinutes: v }));
+                  if (prepErr) setPrepErr(null);
+                }}
+                defaultMinutes={kitchen.defaultPrepMinutes}
+                error={prepErr}
+              />
+            </Field>
+
+            <Field>
               <CategorySelect
                 label="Category"
                 value={values.category || ''}
@@ -1356,14 +1429,14 @@ export default function MenuItemModal({
             <Variations
               key={variationsSyncKey}
               value={uiVariations}
+              options={uiOptions}
               onChange={handleVariationsChange}
+              itemPrepMinutes={values.prepMinutes || String(kitchen.defaultPrepMinutes)}
               uploadUrl={`${API_BASE}/api/uploads/images`}
               authToken={token || undefined}
               mediaUrls={mediaUrls}
               validatePricesTick={varPriceValidateTick}
-              onImageRemove={(_, url) => {
-                if (url) removeUrlEverywhere(url);
-              }}
+              onImageRemove={removeUrlEverywhere}
             />
             {varImageError && (
               <div className="text-sm text-red-600" role="alert" aria-live="polite">
@@ -1372,7 +1445,67 @@ export default function MenuItemModal({
             )}
 
             <Field>
+              <AddOns
+                value={modGroups}
+                onChange={(next) => {
+                  setModGroups(next);
+                  if (modGroupsErr) setModGroupsErr(validateModifierGroups(next));
+                }}
+                error={modGroupsErr}
+              />
+            </Field>
+
+            <Field>
+              <AvailabilityEditor
+                value={avail}
+                onChange={(next) => {
+                  setAvail(next);
+                  if (availErr) setAvailErr(validateAvailability(next));
+                }}
+                error={availErr}
+                showDates
+              />
+            </Field>
+
+            <Field>
               <Tags value={tags} onChange={setTags} />
+            </Field>
+
+            <Field>
+              <div className="flex items-start justify-between gap-4 rounded-lg border border-[#ececec] bg-[#fcfcfc] px-4 py-3">
+                <div className="flex items-start gap-2.5">
+                  <StarSolidIcon
+                    className={`mt-0.5 h-5 w-5 shrink-0 transition-colors ${signature ? 'text-amber-500' : 'text-[#d4d4d8]'}`}
+                    aria-hidden="true"
+                  />
+                  <div>
+                    <div id="signature-label" className="text-sm font-medium text-[#2e2e30]">
+                      Signature dish
+                    </div>
+                    <p id="signature-help" className="mt-0.5 text-xs text-[#6b6b70]">
+                      Shows a “Signature” badge on your menu, and your virtual waiter recommends it first when it
+                      suits the time of day. Best kept to a handful of dishes.
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={signature}
+                  aria-labelledby="signature-label"
+                  aria-describedby="signature-help"
+                  onClick={() => setSignature((v) => !v)}
+                  className={`relative mt-0.5 inline-flex h-6 w-11 shrink-0 items-center rounded-full transition focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400 ${
+                    signature ? 'bg-amber-500' : 'bg-slate-300'
+                  }`}
+                >
+                  <span
+                    className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition ${
+                      signature ? 'translate-x-6' : 'translate-x-1'
+                    }`}
+                  />
+                </button>
+              </div>
             </Field>
 
             {/* Advanced section */}

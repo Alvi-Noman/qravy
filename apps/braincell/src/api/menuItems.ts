@@ -10,6 +10,22 @@ export type VariationInput = {
   name: string;
   price?: number;
   imageUrl?: string;
+  optionValues?: string[];
+  /** Kitchen minutes for this variant when it differs from the item */
+  prepMinutes?: number;
+};
+
+export type VariantOptionInput = {
+  name: string;
+  values: string[];
+};
+
+export type ModifierGroupInput = {
+  id?: string;
+  name: string;
+  min: number;
+  max: number;
+  options: Array<{ id?: string; name: string; price: number }>;
 };
 
 export type NewMenuItem = {
@@ -21,7 +37,20 @@ export type NewMenuItem = {
   categoryId?: string;
   media?: string[];
   variations?: VariationInput[];
+  options?: VariantOptionInput[];
+  modifierGroups?: ModifierGroupInput[];
+  /** Item's own serving hours; [] = whenever its category is served */
+  availability?: Array<{ days: number[]; start: string; end: string }>;
+  /** Service periods from Settings (Breakfast, Lunch…) */
+  servicePeriodIds?: string[];
+  /** Only sold between these dates (YYYY-MM-DD); null clears */
+  availableFrom?: string | null;
+  availableUntil?: string | null;
   tags?: string[];
+  /** Star-marked signature dish */
+  signature?: boolean;
+  /** Kitchen minutes for one portion (wait-time estimation); null clears → restaurant default */
+  prepMinutes?: number | null;
   restaurantId?: string;
   hidden?: boolean;
   status?: 'active' | 'hidden';
@@ -138,9 +167,12 @@ export async function bulkUpdateAvailability(
   active: boolean,
   token: string,
   locationId?: string,
-  channel?: Channel
+  channel?: Channel,
+  /** untilReset: with active=false, switch back on automatically at the daily reset ("sold out today") */
+  opts?: { untilReset?: boolean }
 ): Promise<{ items: MenuItem[]; matchedCount: number; modifiedCount: number }> {
   const body: any = { ids, active };
+  if (opts?.untilReset && !active) body.untilReset = true;
   if (locationId) body.locationId = locationId;
   if (channel) body.channel = channel;
 
@@ -181,4 +213,18 @@ export async function bulkChangeCategoryApi(
     { headers: { Authorization: `Bearer ${token}` } }
   );
   return res.data as { items: MenuItem[]; matchedCount: number; modifiedCount: number };
+}
+
+/** Saves the display order of items (normally one category): ids in their new order. */
+export async function reorderMenuItems(ids: string[]): Promise<void> {
+  await api.post('/api/v1/auth/menu-items/reorder', { ids });
+}
+
+/** Sets serving hours on many items ([] = follow their category again). */
+export async function bulkSetItemHours(
+  ids: string[],
+  availability: Array<{ days: number[]; start: string; end: string }>,
+  servicePeriodIds: string[] = []
+): Promise<void> {
+  await api.post('/api/v1/auth/menu-items/bulk/hours', { ids, availability, servicePeriodIds });
 }

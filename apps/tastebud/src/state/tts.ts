@@ -277,7 +277,14 @@ class TTSManager implements TTSPublicAPI {
   }
   private _emitWord(word: string, offsetMs?: number) {
     if (!word) return;
-    this.listeners.forEach(h => { h.onWord?.(word, offsetMs); });
+    // the speech engine reports SSML-escaped text ("&amp;") — show what was actually said
+    const shown = word
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/&apos;/g, "'");
+    this.listeners.forEach(h => { h.onWord?.(shown, offsetMs); });
   }
   private _emitEnd() {
     this.listeners.forEach(h => { h.onEnd?.(); });

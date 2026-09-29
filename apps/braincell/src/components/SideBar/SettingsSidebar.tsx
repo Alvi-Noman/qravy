@@ -22,6 +22,7 @@ import {
   HomeModernIcon,
   AdjustmentsHorizontalIcon,
   MagnifyingGlassIcon,
+  ClockIcon,
 } from '@heroicons/react/24/outline';
 
 type NavItem = {
@@ -34,6 +35,7 @@ type NavItem = {
 const items: NavItem[] = [
   { name: 'General', to: '/settings', icon: Cog6ToothIcon, end: true },
   { name: 'Operations', to: '/settings/operations', icon: AdjustmentsHorizontalIcon },
+  { name: 'Hours & availability', to: '/settings/availability', icon: ClockIcon },
   { name: 'Plan', to: '/settings/Plan', icon: CurrencyDollarIcon },
   { name: 'Billing', to: '/settings/Billing', icon: CreditCardIcon },
 

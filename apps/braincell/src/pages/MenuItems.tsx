@@ -7,14 +7,15 @@
 import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence } from 'framer-motion';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Squares2X2Icon } from '@heroicons/react/24/outline';
+import { Cog6ToothIcon, Squares2X2Icon, StarIcon } from '@heroicons/react/24/outline';
 import { useMenuItems } from '../components/menu-items/useMenuItems';
 import MenuToolbar, { type SortBy } from '../components/menu-items/MenuToolbar';
 import MenuToolbarSkeleton from '../components/menu-items/MenuToolbarSkeleton';
 import MenuTableSkeleton from '../components/menu-items/MenuTableSkeleton';
 import BulkActionsBar from '../components/menu-items/BulkActionsBar';
-import { getMenuItems, type MenuItem as TMenuItem, type NewMenuItem } from '../api/menuItems';
-import { useSearchParams } from 'react-router-dom';
+import { getMenuItems, bulkSetItemHours, type MenuItem as TMenuItem, type NewMenuItem } from '../api/menuItems';
+import { toastError, toastSuccess } from '../components/Toaster';
+import { Link, useSearchParams } from 'react-router-dom';
 import Can from '../components/Can';
 import { usePermissions } from '../context/PermissionsContext';
 import { useAuthContext } from '../context/AuthContext';
@@ -22,6 +23,7 @@ import { useScope } from '../context/ScopeContext';
 
 const MenuTable = lazy(() => import('../components/menu-items/MenuTable'));
 const BulkChangeCategoryDialog = lazy(() => import('../components/menu-items/BulkChangeCategoryDialog'));
+const BulkHoursDialog = lazy(() => import('../components/menu-items/BulkHoursDialog'));
 const ConfirmDeleteItemsDialog = lazy(() => import('../components/menu-items/ConfirmDeleteItemsDialog'));
 const MenuItemModal = lazy(() => import('../components/menu-item-modal/MenuItemModal'));
 
@@ -35,8 +37,17 @@ type DrawerSubmitValues = {
   category?: string;
   description?: string;
   media?: string[];
-  variations?: { name: string; price?: number; imageUrl?: string }[];
+  variations?: { name: string; price?: number; imageUrl?: string; optionValues?: string[]; prepMinutes?: number }[];
+  options?: { name: string; values: string[] }[];
+  modifierGroups?: NewMenuItem['modifierGroups'];
+  availability?: NewMenuItem['availability'];
+  servicePeriodIds?: string[];
+  availableFrom?: string | null;
+  availableUntil?: string | null;
   tags?: string[];
+  signature?: boolean;
+  /** null = no time of its own (restaurant default) */
+  prepMinutes?: number | null;
   // Advanced from drawer
   channel?: Channel;                // if single channel selected
   includeLocationIds?: string[];    // only show in these branches (global item)
@@ -106,6 +117,7 @@ export default function MenuItemsPage(): JSX.Element {
     bulkAvailabilityMut,
     bulkDeleteMut, // ensure this is exported by useMenuItems
     bulkCategoryMut,
+    signatureMut,
   } = useMenuItems();
 
   const { has } = usePermissions();
@@ -157,12 +169,15 @@ export default function MenuItemsPage(): JSX.Element {
   const [status, setStatus] = useState<Set<Status>>(new Set());
   // ⬇️ removed local channels state; we derive it from ScopeContext instead
   const [selectedCategory, setSelectedCategory] = useState<string>('');
+  const [signatureOnly, setSignatureOnly] = useState(false);
   const [sortBy, setSortBy] = useState<SortBy>('name-asc');
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
   const [openAdd, setOpenAdd] = useState(routeWantsNew && canCreate);
   const [openEdit, setOpenEdit] = useState<TMenuItem | null>(null);
   const [openBulkCategory, setOpenBulkCategory] = useState(false);
+  const [openBulkHours, setOpenBulkHours] = useState(false);
+  const [savingHours, setSavingHours] = useState(false);
 
   // New: dialog control for deletes
   const [openDeleteOne, setOpenDeleteOne] = useState(false);
@@ -194,11 +209,9 @@ export default function MenuItemsPage(): JSX.Element {
     scroller.addEventListener('scroll', onScroll, { passive: true });
   }, []);
 
-  const loading =
-    itemsQuery.isLoading ||
-    categoriesQuery.isLoading ||
-    (itemsQuery.isFetching && !itemsQuery.isLoading) ||
-    (categoriesQuery.isFetching && !categoriesQuery.isLoading);
+  // Skeleton only while there's nothing to show yet. Background refreshes (after a
+  // toggle, another tab, etc.) update rows in place — no flashing, no layout jump.
+  const loading = itemsQuery.isLoading || categoriesQuery.isLoading;
 
   // Pull channel + setter from scope, and derive pills from it
   const { activeLocationId, channel, setChannel } = useScope(); // backend handles channel visibility
@@ -237,7 +250,8 @@ export default function MenuItemsPage(): JSX.Element {
 
       const isHidden = itAny.hidden || itAny.status === 'hidden';
       const matchesStatus = status.size === 0 || status.has(isHidden ? 'hidden' : 'active');
-      return matchesQ && matchesCategory && matchesStatus;
+      const matchesSignature = !signatureOnly || !!it.signature;
+      return matchesQ && matchesCategory && matchesStatus && matchesSignature;
     });
 
     // Do not apply any additional client-side channel filtering.
@@ -255,7 +269,9 @@ export default function MenuItemsPage(): JSX.Element {
         .sort((a: any, b: any) => (b.usageCount || b.ordersCount || 0) - (a.usageCount || a.ordersCount || 0));
     }
     return list;
-  }, [sourceItems, q, status, selectedCategory, sortBy]);
+  }, [sourceItems, q, status, selectedCategory, sortBy, signatureOnly]);
+
+  const signatureCount = useMemo(() => sourceItems.filter((it) => it.signature).length, [sourceItems]);
 
   useEffect(() => {
     if (!pendingHighlightId) return;
@@ -376,6 +392,11 @@ export default function MenuItemsPage(): JSX.Element {
       }
     );
   };
+  /** Off now, back on automatically at the daily reset (Settings → Opening hours) */
+  const handleSoldOutToday = (id: string) => {
+    if (!canToggleAvailability) return;
+    availabilityMut.mutate({ id, active: false, untilReset: true });
+  };
   const handleEdit = (item: TMenuItem) => {
     if (!canUpdate) return;
     setOpenEdit(item);
@@ -411,6 +432,31 @@ export default function MenuItemsPage(): JSX.Element {
       }
     );
   };
+  const applyBulkHours = async (v: {
+    availability: Array<{ days: number[]; start: string; end: string }>;
+    servicePeriodIds: string[];
+  }) => {
+    const ids = Array.from(selectedIds);
+    setSavingHours(true);
+    try {
+      await bulkSetItemHours(ids, v.availability, v.servicePeriodIds);
+      await queryClient.invalidateQueries({
+        predicate: (q) => Array.isArray(q.queryKey) && q.queryKey[0] === 'menu-items',
+      });
+      toastSuccess(
+        v.availability.length || v.servicePeriodIds.length
+          ? `Availability set for ${ids.length} item${ids.length === 1 ? '' : 's'}`
+          : `Availability cleared for ${ids.length} item${ids.length === 1 ? '' : 's'}`
+      );
+      setOpenBulkHours(false);
+      clearSelection();
+    } catch (err: any) {
+      toastError(err?.response?.data?.message || 'Could not update serving hours');
+    } finally {
+      setSavingHours(false);
+    }
+  };
+
   const onAssignCategory = () => {
     if (!canUpdate) return;
     setOpenBulkCategory(true);
@@ -451,17 +497,41 @@ export default function MenuItemsPage(): JSX.Element {
           </h2>
 
           <Can capability="menuItems:create">
-            <button
-              className="rounded-md bg-[#2e2e30] px-4 py-2 text-white hover:opacity-90 transition-transform"
+            <div
+              className="flex items-center gap-2"
               style={{
                 transform: `scale(${1 - 0.05 * shrink})`,
                 transformOrigin: 'right center',
                 willChange: 'transform',
               }}
-              onClick={handleAddClick}
             >
-              Add Menu Item
-            </button>
+              <Link
+                to="/settings/availability#service-periods"
+                title="Hours & availability: service periods, opening hours, sold-out reset"
+                aria-label="Hours & availability settings"
+                className="rounded-md border border-[#dbdbdb] bg-white p-2 text-[#2e2e30] hover:bg-[#f6f6f6]"
+              >
+                <Cog6ToothIcon className="h-5 w-5" />
+              </Link>
+              <Link
+                to="/menu-layout"
+                className="rounded-md border border-[#dbdbdb] bg-white px-4 py-2 text-[#2e2e30] hover:bg-[#f6f6f6]"
+              >
+                Arrange
+              </Link>
+              <Link
+                to="/menu-import"
+                className="rounded-md border border-[#dbdbdb] bg-white px-4 py-2 text-[#2e2e30] hover:bg-[#f6f6f6]"
+              >
+                Import from PDF
+              </Link>
+              <button
+                className="rounded-md bg-[#2e2e30] px-4 py-2 text-white hover:opacity-90 transition-transform"
+                onClick={handleAddClick}
+              >
+                Add Menu Item
+              </button>
+            </div>
           </Can>
         </div>
 
@@ -490,10 +560,29 @@ export default function MenuItemsPage(): JSX.Element {
                 sortBy={sortBy}
                 setSortBy={setSortBy}
                 channelAlerts={{ dineIn: dineInExclusiveOff, online: onlineExclusiveOff }}
+                signatureOnly={signatureOnly}
+                setSignatureOnly={setSignatureOnly}
+                signatureCount={signatureCount}
               />
 
               <div className="mt-4 space-y-4">
-                {!viewItems.length ? (
+                {!viewItems.length && signatureOnly ? (
+                  <div className="flex h-[50vh] flex-col items-center justify-center p-8 text-center">
+                    <StarIcon className="mb-3 h-12 w-12 text-amber-400" aria-hidden="true" />
+                    <h2 className="text-xl font-semibold text-[#2e2e30]">No signature dishes yet</h2>
+                    <p className="mt-2 mb-6 max-w-md text-sm text-[#6b6b70]">
+                      Star the dishes you're proudest of. They get a “Signature” badge on your menu and your virtual
+                      waiter recommends them first — a handful works best.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => setSignatureOnly(false)}
+                      className="rounded-md border border-[#dbdbdb] bg-white px-5 py-2 text-[#2e2e30] hover:bg-[#f6f6f6]"
+                    >
+                      Show all items
+                    </button>
+                  </div>
+                ) : !viewItems.length ? (
                   <div className="flex h-[60vh] flex-col items-center justify-center text-center p-8">
                     <Squares2X2Icon className="h-12 w-12 text-slate-400 mb-3" />
                     <h2 className="text-xl font-semibold text-[#2e2e30]">No Menu Items Yet</h2>
@@ -501,12 +590,20 @@ export default function MenuItemsPage(): JSX.Element {
                       Get started by adding your first menu item. Menu items will appear here once created.
                     </p>
                     <Can capability="menuItems:create">
-                      <button
-                        onClick={handleAddClick}
-                        className="rounded-md bg-[#2e2e30] text-white px-5 py-2 hover:opacity-90"
-                      >
-                        Add Menu Item
-                      </button>
+                      <div className="flex flex-wrap justify-center gap-2">
+                        <button
+                          onClick={handleAddClick}
+                          className="rounded-md bg-[#2e2e30] text-white px-5 py-2 hover:opacity-90"
+                        >
+                          Add Menu Item
+                        </button>
+                        <Link
+                          to="/menu-import"
+                          className="rounded-md border border-[#dbdbdb] bg-white px-5 py-2 text-[#2e2e30] hover:bg-[#f6f6f6]"
+                        >
+                          Import from PDF
+                        </Link>
+                      </div>
                     </Can>
                   </div>
                 ) : (
@@ -518,9 +615,11 @@ export default function MenuItemsPage(): JSX.Element {
                       onToggleSelect={toggleSelect}
                       onToggleSelectAll={toggleSelectAll}
                       onToggleAvailability={handleToggleAvailability}
+                      onSoldOutToday={canToggleAvailability ? handleSoldOutToday : undefined}
                       onEdit={handleEdit}
                       onDuplicate={handleDuplicate}
                       onDelete={handleDelete}
+                      onToggleSignature={canUpdate ? (id, signature) => signatureMut.mutate({ id, signature }) : undefined}
                     />
                   </Suspense>
                 )}
@@ -532,9 +631,21 @@ export default function MenuItemsPage(): JSX.Element {
                   onSetAvailable={onSetAvailable}
                   onSetUnavailable={onSetUnavailable}
                   onAssignCategory={onAssignCategory}
+                  onSetHours={canUpdate ? () => setOpenBulkHours(true) : undefined}
                   onDelete={onBulkDelete}
                   onClear={clearSelection}
                 />
+              )}
+
+              {openBulkHours && (
+                <Suspense fallback={null}>
+                  <BulkHoursDialog
+                    count={selectedIds.size}
+                    saving={savingHours}
+                    onClose={() => setOpenBulkHours(false)}
+                    onApply={applyBulkHours}
+                  />
+                </Suspense>
               )}
 
               <Suspense fallback={null}>
@@ -551,6 +662,7 @@ export default function MenuItemsPage(): JSX.Element {
                         description: '',
                         imagePreviews: [],
                         tags: [],
+                        signature: false,
                         variations: [],
                       }}
                       onClose={() => {
@@ -568,9 +680,17 @@ export default function MenuItemsPage(): JSX.Element {
                           compareAtPrice: values.compareAtPrice,
                           media: values.media,
                           variations: values.variations,
+                          options: values.options,
+                          modifierGroups: values.modifierGroups,
+                          availability: values.availability,
+                          servicePeriodIds: values.servicePeriodIds,
+                          availableFrom: values.availableFrom,
+                          availableUntil: values.availableUntil,
                           tags: values.tags,
+                          signature: values.signature,
                         };
                         if (typeof values.price === 'number') payload.price = values.price;
+                        if (typeof values.prepMinutes === 'number') payload.prepMinutes = values.prepMinutes;
 
                         // Forward Advanced selections
                         if (values.channel) payload.channel = values.channel;
@@ -608,12 +728,22 @@ export default function MenuItemsPage(): JSX.Element {
                         description: (openEdit as any).description || '',
                         imagePreviews: (openEdit as any).media || [],
                         tags: (openEdit as any).tags || [],
+                        signature: !!openEdit.signature,
+                        prepMinutes: (openEdit as any).prepMinutes,
                         variations:
                           ((openEdit as any).variations || []).map((v: any) => ({
                             label: v.name,
                             price: v.price != null ? String(v.price) : '',
                             imagePreview: v.imageUrl || null,
+                            optionValues: v.optionValues,
+                            prepMinutes: v.prepMinutes != null ? String(v.prepMinutes) : '',
                           })) || [],
+                        options: (openEdit as any).options || [],
+                        modifierGroups: (openEdit as any).modifierGroups || [],
+                        availability: (openEdit as any).availability || [],
+                        servicePeriodIds: (openEdit as any).servicePeriodIds || [],
+                        availableFrom: (openEdit as any).availableFrom ?? null,
+                        availableUntil: (openEdit as any).availableUntil ?? null,
 
                         // ----- NEW: seed Advanced from the item itself -----
                         channel: (openEdit as any).channel,
@@ -645,7 +775,15 @@ export default function MenuItemsPage(): JSX.Element {
                           compareAtPrice: values.compareAtPrice,
                           media: values.media,
                           variations: values.variations,
+                          options: values.options,
+                          modifierGroups: values.modifierGroups,
+                          availability: values.availability,
+                          servicePeriodIds: values.servicePeriodIds,
+                          availableFrom: values.availableFrom,
+                          availableUntil: values.availableUntil,
                           tags: values.tags,
+                          signature: values.signature,
+                          prepMinutes: values.prepMinutes ?? null,
                         };
                         if (typeof values.price === 'number') payload.price = values.price;
 

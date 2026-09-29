@@ -8,6 +8,8 @@ import { toMenuItemDTO } from '../utils/mapper.js';
 import type { TenantDoc } from '../models/Tenant.js';
 import type { MenuItemDoc } from '../models/MenuItem.js';
 import type { ItemAvailabilityDoc } from '../models/ItemAvailability.js';
+import { DEFAULT_TIMEZONE, resolveWindows, tenantServicePeriods } from '../utils/availability.js';
+import { resolveBranchLocationId } from '../controllers/categoriesController.js';
 
 const router: express.Router = express.Router();
 
@@ -64,6 +66,7 @@ function toPublicTenantItem(tenant: TenantDoc, fallbackSub: string) {
       (tenant as any).branding?.primaryColor ??
       (tenant as any).brandColor ??
       null,
+    menuNotes: Array.isArray(tenant.menuNotes) ? tenant.menuNotes : [],
   };
 }
 
@@ -130,6 +133,51 @@ router.get(
 );
 
 /* -------------------------------------------------------------------------- */
+/*                               Public hours                                  */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * GET /api/v1/public/hours?subdomain=...&branch=...
+ * Time zone + opening hours for the storefront (branch hours when the branch sets its own).
+ */
+router.get('/public/hours', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const subdomain = typeof req.query.subdomain === 'string' ? req.query.subdomain.trim() : '';
+    if (!subdomain) return res.status(400).json({ message: 'subdomain is required' });
+    const tenant = await findTenantBySubdomain(subdomain);
+    if (!tenant?._id) return res.status(404).json({ message: 'Tenant not found' });
+
+    let openingHours = tenant.openingHours ?? [];
+    let source: 'restaurant' | 'branch' = 'restaurant';
+    const branch = typeof req.query.branch === 'string' ? req.query.branch.trim() : '';
+    if (branch) {
+      const locId = await resolveBranchLocationId(tenant._id as ObjectId, branch);
+      if (locId) {
+        const loc = await client
+          .db('authDB')
+          .collection('locations')
+          .findOne({ _id: locId, tenantId: tenant._id }, { projection: { openingHours: 1 } });
+        if (Array.isArray(loc?.openingHours)) {
+          openingHours = loc!.openingHours;
+          source = 'branch';
+        }
+      }
+    }
+
+    return res.json({
+      item: {
+        timezone: tenant.timezone ?? DEFAULT_TIMEZONE,
+        openingHours,
+        source,
+      },
+    });
+  } catch (err) {
+    logger.error(`[PUBLIC HOURS] ${String((err as Error)?.message || err)}`);
+    next(err);
+  }
+});
+
+/* -------------------------------------------------------------------------- */
 /*                                 Public menu                                */
 /* -------------------------------------------------------------------------- */
 
@@ -152,6 +200,7 @@ router.get('/public/menu', async (req: Request, res: Response, next: NextFunctio
       return res.status(404).json({ message: 'Tenant not found' });
     }
     const tenantOid = tenant._id!;
+    const periods = tenantServicePeriods(tenant);
 
     // Resolve branch (location) if provided
     let locId: ObjectId | null = null;
@@ -196,7 +245,8 @@ router.get('/public/menu', async (req: Request, res: Response, next: NextFunctio
           }
         : { tenantId: tenantOid };
 
-    const docs = await itemsCol.find(filter).sort({ createdAt: -1 }).toArray();
+    // Owner-defined order (drag & drop / PDF order), newest first for unordered items
+    const docs = await itemsCol.find(filter).sort({ sortOrder: 1, createdAt: -1 }).toArray();
     if (docs.length === 0) {
       return res.json({ items: [] });
     }
@@ -336,7 +386,14 @@ router.get('/public/menu', async (req: Request, res: Response, next: NextFunctio
 
       if (!present) continue;
 
+      if ((d as any).offline) anyOn = false; // switched off restaurant-wide / sold out today
+
       const dto = toMenuItemDTO(d);
+      // Customers get the effective hours: service periods (Breakfast…) + custom times
+      const effective = resolveWindows(d.servicePeriodIds, d.availability, periods);
+      if (effective.length) dto.availability = effective;
+      else delete (dto as any).availability;
+      delete (dto as any).servicePeriodIds;
       dto.hidden = !anyOn;
       dto.status = anyOn ? 'active' : 'hidden';
       out.push(dto);

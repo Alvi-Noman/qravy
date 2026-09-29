@@ -8,6 +8,7 @@ import {
   bulkSetCategoryVisibility,
   type Category,
   type Channel,
+  type AvailabilityWindow,
 } from '../../api/categories';
 import {
   getMenuItems,
@@ -291,6 +292,9 @@ export function useCategories() {
     channel?: Channel | 'both'; // allow 'both' in UI, we normalize before calling API
     includeLocationIds?: string[];
     excludeLocationIds?: string[];
+    description?: string;
+    availability?: AvailabilityWindow[];
+    servicePeriodIds?: string[];
   };
   type CreateVars = string | { name: string; opts?: CreateOpts };
 
@@ -314,6 +318,9 @@ export function useCategories() {
         channel: normalizedChannel || undefined, // only 'dine-in' | 'online'; omit for BOTH
         includeLocationIds: formOpts?.includeLocationIds,
         excludeLocationIds: formOpts?.excludeLocationIds,
+        description: formOpts?.description,
+        availability: formOpts?.availability,
+        servicePeriodIds: formOpts?.servicePeriodIds,
       });
     },
     onSuccess: (_created) => {
@@ -355,6 +362,10 @@ export function useCategories() {
     includeLocationIds?: string[];
     excludeLocationIds?: string[];
     hardExclude?: boolean;
+    description?: string;
+    availability?: AvailabilityWindow[];
+    branchAvailability?: { locationId: string; availability: AvailabilityWindow[] | null };
+    servicePeriodIds?: string[];
   };
 
   const renameMut = useMutation({

@@ -1,6 +1,14 @@
 // apps/tastebud/src/components/Modal.tsx
 import React, { useEffect, useRef, useCallback, useState, useMemo } from 'react';
 import { createPortal } from 'react-dom';
+import { useCart } from '../context/CartContext';
+import { minutesLabel, prepFor, prepRange } from '../utils/wait-time';
+import ModifierPicker, {
+  picksToModifiers,
+  validatePicks,
+  type ModifierGroup,
+  type ModifierPicks,
+} from './ModifierPicker';
 
 export type ModalProps = {
   open: boolean;
@@ -11,13 +19,30 @@ export type ModalProps = {
   price?: number | null;
   compareAt?: number | null;
   unavailable?: boolean;
+  /** Replaces the "Unavailable" badge, e.g. "Available 7am–11am" */
+  unavailableNote?: string;
+  /** Short labels (Spicy, Vegetarian…) */
+  tags?: string[];
   description?: string;
   variations?: Array<{
     name?: string;
     price?: number;
     compareAtPrice?: number;
     available?: boolean;
+    imageUrl?: string;
+    /** One value per entry in `options` (same order) */
+    optionValues?: string[];
+    /** Kitchen minutes for this size, when it differs */
+    prepMinutes?: number;
   }>;
+  /** Kitchen minutes for one portion (shown as "Ready in about N min") */
+  prepMinutes?: number;
+  /** Variant options, e.g. [{ name: 'Size', values: ['Small', 'Large'] }] */
+  options?: Array<{ name: string; values: string[] }>;
+  /** Add-on / choice groups ("Extras", "Choose a side") */
+  modifierGroups?: ModifierGroup[];
+  /** When set, the sheet shows quantity + "Add to cart" */
+  itemId?: string;
   size?: 'sm' | 'md' | 'lg';
   dismissible?: boolean;
 };
@@ -118,11 +143,30 @@ export default function Modal({
   price,
   compareAt,
   unavailable,
+  unavailableNote,
+  tags,
   description,
   variations,
+  options,
+  modifierGroups,
+  prepMinutes,
+  itemId,
   size = 'md',
   dismissible = true,
 }: ModalProps) {
+  const { addItem } = useCart();
+  const groups = useMemo(() => (Array.isArray(modifierGroups) ? modifierGroups : []), [modifierGroups]);
+  const [picks, setPicks] = useState<ModifierPicks>({});
+  const [qty, setQty] = useState(1);
+  const [showErrors, setShowErrors] = useState(false);
+  const bodyRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    setPicks({});
+    setQty(1);
+    setShowErrors(false);
+  }, [open]);
   const backdropRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<HTMLDivElement>(null);
@@ -192,6 +236,66 @@ export default function Modal({
       setSelectedVar(null);
     }
   }, [open, hasVariations, variations]);
+
+  // Items with 2+ options get one button group per option (Size, Spice level, ...);
+  // a single option keeps the radio list, which shows every price at a glance.
+  const optionGroups = useMemo(() => {
+    if (!hasVariations || !Array.isArray(options) || options.length < 2) return null;
+    const ok = variations!.every(
+      (v) => Array.isArray(v.optionValues) && v.optionValues.length === options.length
+    );
+    return ok ? options : null;
+  }, [hasVariations, options, variations]);
+
+  const selectedValues =
+    selectedVar !== null ? variations?.[selectedVar]?.optionValues ?? null : null;
+
+  const findVariant = (vals: string[], mustBeAvailable = true) =>
+    variations!.findIndex(
+      (v) =>
+        (!mustBeAvailable || v.available !== false) &&
+        v.optionValues!.every((x, i) => x === vals[i])
+    );
+
+  /** Pick a value; if that exact combination isn't sold, jump to the closest one that is. */
+  const chooseOptionValue = (optIdx: number, value: string) => {
+    const current = selectedValues ?? [];
+    const wanted = current.map((x, i) => (i === optIdx ? value : x));
+    const exact = findVariant(wanted);
+    if (exact >= 0) {
+      setSelectedVar(exact);
+      return;
+    }
+    let best = -1;
+    let bestScore = -1;
+    variations!.forEach((v, i) => {
+      if (v.available === false || v.optionValues![optIdx] !== value) return;
+      const score = v.optionValues!.filter((x, j) => x === current[j]).length;
+      if (score > bestScore) {
+        best = i;
+        bestScore = score;
+      }
+    });
+    if (best >= 0) setSelectedVar(best);
+  };
+
+  /** 'on' = sold with the other current choices, 'switch' = sold but changes another choice, 'off' = never sold */
+  const valueState = (optIdx: number, value: string): 'on' | 'switch' | 'off' => {
+    const soldAtAll = variations!.some(
+      (v) => v.available !== false && v.optionValues![optIdx] === value
+    );
+    if (!soldAtAll) return 'off';
+    const wanted = (selectedValues ?? []).map((x, i) => (i === optIdx ? value : x));
+    return findVariant(wanted) >= 0 ? 'on' : 'switch';
+  };
+
+  // Show the chosen variant's photo when it has one
+  const selectedImage = selectedVar !== null ? variations?.[selectedVar]?.imageUrl : undefined;
+  useEffect(() => {
+    if (!open || !selectedImage) return;
+    const i = gallery.indexOf(selectedImage);
+    if (i >= 0) setIdx(i);
+  }, [open, selectedImage, gallery]);
 
   const close = useCallback(() => {
     if (!dismissible) return;
@@ -265,6 +369,44 @@ export default function Modal({
   const selected = hasVariations && selectedVar !== null ? variations![selectedVar] : null;
   const displayPrice = (selected?.price ?? price) ?? null;
   const displayCompareAt = (selected?.compareAtPrice ?? compareAt) ?? null;
+  // kitchen time for the chosen size (or the range across sizes before one is picked)
+  const prepItem = { prepMinutes, variations };
+  const prepNow = selected ? prepFor(prepItem, selected.name) : null;
+  const prepAll = prepRange(prepItem);
+  const prepText = prepNow
+    ? `Takes about ${minutesLabel(prepNow)} to make`
+    : prepAll
+    ? `Takes about ${minutesLabel(prepAll)} to make`
+    : null;
+
+  // -------- Add-ons + cart --------
+  const pickErrors = validatePicks(groups, picks);
+  const chosenModifiers = picksToModifiers(groups, picks);
+  const modifiersTotal = chosenModifiers.reduce((s, m) => s + m.price, 0);
+  const unitPrice = (typeof displayPrice === 'number' ? displayPrice : 0) + modifiersTotal;
+  const canOrder = !!itemId && !unavailable && typeof displayPrice === 'number';
+
+  const handleAdd = () => {
+    if (!itemId) return;
+    const firstBad = Object.keys(pickErrors)[0];
+    if (firstBad) {
+      setShowErrors(true);
+      bodyRef.current
+        ?.querySelector(`[data-modifier-group="${firstBad}"]`)
+        ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      return;
+    }
+    addItem({
+      id: itemId,
+      name: title,
+      price: unitPrice,
+      qty,
+      ...(selected?.name ? { variation: selected.name } : {}),
+      ...(chosenModifiers.length ? { modifiers: chosenModifiers } : {}),
+      ...(gallery[0] ? { imageUrl: gallery[0] } : {}),
+    });
+    close();
+  };
 
   return createPortal(
     <div
@@ -375,7 +517,7 @@ export default function Modal({
         </div>
 
         {/* Body */}
-        <div className="flex-1 overflow-y-auto px-4 pt-4 pb-8 sm:px-5 sm:pb-8">
+        <div ref={bodyRef} className="flex-1 overflow-y-auto px-4 pt-4 pb-8 sm:px-5 sm:pb-8">
           <div className="flex items-start justify-between gap-3">
             <h4 className="min-w-0 truncate text-[17px] sm:text-[19px] font-semibold tracking-tight text-neutral-900">
               {title}
@@ -406,20 +548,91 @@ export default function Modal({
               className="mt-2 inline-block rounded-full px-2.5 py-0.5 text-[11px] font-medium"
               style={{ backgroundColor: '#F5E6E8', color: '#FA2851' }}
             >
-              Unavailable
+              {unavailableNote || 'Unavailable'}
             </span>
+          )}
+
+          {Array.isArray(tags) && tags.length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {tags.map((t) => (
+                <span
+                  key={t}
+                  className="rounded-full border border-neutral-200 bg-white px-2.5 py-0.5 text-[12px] font-medium text-neutral-600"
+                >
+                  {t}
+                </span>
+              ))}
+            </div>
+          )}
+
+          {prepText && (
+            <p className="mt-3 inline-flex items-center gap-1.5 rounded-full bg-neutral-100 px-3 py-1 text-[13px] font-medium text-neutral-700">
+              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8" className="h-4 w-4" aria-hidden="true">
+                <circle cx="10" cy="10" r="7.5" />
+                <path d="M10 6v4.2l2.6 1.6" strokeLinecap="round" />
+              </svg>
+              {prepText}
+            </p>
           )}
 
           {description && (
             <p className="mt-3 text-[14px] leading-[1.6] text-neutral-600">{description}</p>
           )}
 
-          {hasVariations && (
+          {optionGroups && (
+            <div className="mt-5 space-y-5 rounded-[22px] border border-gray-100 bg-white px-4 pt-4 pb-10 shadow-[0_1px_3px_rgba(0,0,0,0.04)] sm:px-5 sm:pt-5 sm:pb-12">
+              {optionGroups.map((opt, optIdx) => (
+                <div key={opt.name} role="radiogroup" aria-label={`Choose ${opt.name}`}>
+                  <h5 className="mb-2.5 text-[15px] font-semibold text-neutral-900">
+                    {opt.name}
+                    {selectedValues?.[optIdx] && (
+                      <span className="font-normal text-neutral-500">: {selectedValues[optIdx]}</span>
+                    )}
+                  </h5>
+                  <div className="flex flex-wrap gap-2">
+                    {opt.values.map((val) => {
+                      const state = valueState(optIdx, val);
+                      const checked = selectedValues?.[optIdx] === val;
+                      return (
+                        <button
+                          key={val}
+                          type="button"
+                          role="radio"
+                          aria-checked={checked}
+                          disabled={state === 'off'}
+                          onClick={() => chooseOptionValue(optIdx, val)}
+                          title={state === 'switch' ? 'Changes your other choices' : undefined}
+                          className={cx(
+                            'min-h-[40px] rounded-full border px-4 py-2 text-[14px] font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-neutral-400',
+                            checked
+                              ? 'border-neutral-900 bg-neutral-900 text-white'
+                              : state === 'on'
+                              ? 'border-neutral-300 bg-white text-neutral-900 hover:border-neutral-900'
+                              : state === 'switch'
+                              ? 'border-dashed border-neutral-300 bg-white text-neutral-400 hover:border-neutral-500'
+                              : 'cursor-not-allowed border-neutral-200 bg-neutral-50 text-neutral-300 line-through'
+                          )}
+                        >
+                          {val}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {hasVariations && !optionGroups && (
             <div className="mt-5 rounded-[22px] border border-gray-100 bg-white px-4 pt-4 pb-10 shadow-[0_1px_3px_rgba(0,0,0,0.04)] sm:px-5 sm:pt-5 sm:pb-12">
               <h5 className="mb-3 text-center text-[16px] font-semibold text-neutral-900">
-                Variation
+                {options?.[0]?.name || 'Variation'}
               </h5>
-              <div role="radiogroup" aria-label="Choose a variation" className="divide-y divide-neutral-200">
+              <div
+                role="radiogroup"
+                aria-label={`Choose ${options?.[0]?.name || 'a variation'}`}
+                className="divide-y divide-neutral-200"
+              >
                 {variations!.map((v, i) => {
                   const disabled = v.available === false;
                   const checked = selectedVar === i;
@@ -469,7 +682,53 @@ export default function Modal({
               </div>
             </div>
           )}
+
+          {groups.length > 0 && (
+            <ModifierPicker
+              groups={groups}
+              picks={picks}
+              onChange={(next) => setPicks(next)}
+              errors={showErrors ? pickErrors : undefined}
+            />
+          )}
         </div>
+
+        {canOrder && (
+          <div className="shrink-0 border-t border-gray-200 bg-white px-4 py-3 sm:rounded-b-[16px] sm:px-5">
+            <div className="flex items-center gap-3">
+              <div className="flex items-center rounded-full border border-neutral-300">
+                <button
+                  type="button"
+                  aria-label="Decrease quantity"
+                  onClick={() => setQty((q) => Math.max(1, q - 1))}
+                  className="h-10 w-10 text-lg text-neutral-700 disabled:opacity-40"
+                  disabled={qty <= 1}
+                >
+                  −
+                </button>
+                <span className="w-6 text-center text-[15px] font-semibold tabular-nums" aria-live="polite">
+                  {qty}
+                </span>
+                <button
+                  type="button"
+                  aria-label="Increase quantity"
+                  onClick={() => setQty((q) => Math.min(99, q + 1))}
+                  className="h-10 w-10 text-lg text-neutral-700"
+                >
+                  +
+                </button>
+              </div>
+              <button
+                type="button"
+                onClick={handleAdd}
+                className="flex h-11 flex-1 items-center justify-between rounded-full bg-neutral-900 px-5 text-[15px] font-semibold text-white hover:bg-neutral-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-neutral-400"
+              >
+                <span>Add to cart</span>
+                <span className="tabular-nums">{formatBDT(unitPrice * qty)}</span>
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     </div>,
     document.body

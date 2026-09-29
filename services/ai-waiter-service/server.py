@@ -1,5 +1,5 @@
 import asyncio, json, os, time, re, io, wave
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo  # ✅ stdlib tz support
 import numpy as np
 import websockets
@@ -9,7 +9,7 @@ from pymongo import MongoClient
 from vad import Segmenter
 import httpx
 from typing import Dict, Any, List, Tuple, Optional, Deque
-from bson import ObjectId  # ✅
+from bson import Binary, ObjectId  # ✅
 from collections import defaultdict, deque
 from aiohttp import web  # ✅ HTTP server for cart API
 
@@ -24,6 +24,21 @@ from session_ctx import (
 
 # ✅ In-process brain (OpenAI) call
 from brain import generate_reply
+import checkout
+from bn_translit import to_bangla_script
+
+# nothing clear was heard → ask politely, never guess
+SORRY_REPEAT = {
+    "bn": "দুঃখিত, ঠিক বুঝতে পারিনি। আরেকবার বলবেন, প্লিজ?",
+    "en": "Sorry, I didn't quite catch that — could you say it again, please?",
+}
+
+# Bangla replies: dish names in Bangla script (set BN_SCRIPT_NAMES=0 to keep English names)
+BN_SCRIPT_NAMES = os.environ.get("BN_SCRIPT_NAMES", "1") == "1"
+from waiter_knowledge import meal_kinds, reply_language
+from recommender import OrderStats
+import wait_time
+import wait_talk
 
 # ✅ Normalizer (exact pairs + phonetic + fuzzy)
 from normalizer import normalize_text
@@ -33,6 +48,16 @@ from stt import stt_np_float32
 
 # ✅ Cart persistence helper
 from cart_store import save_cart, load_cart
+from availability import (
+    DEFAULT_PERIODS,
+    DEFAULT_TZ,
+    format_windows,
+    is_within,
+    load_rules,
+    local_now,
+    resolve_location_id,
+    unavailable_reason,
+)
 
 # ---------- Config ----------
 
@@ -46,7 +71,7 @@ MENU_DB_NAME = os.environ.get("MENU_DB", TRANS_DB_NAME)
 MENU_COLL = os.environ.get("MENU_COLLECTION", "menu_items")
 
 # Session context (kept for compatibility; actual logic in session_ctx)
-MAX_TURNS = int(os.environ.get("SESSION_CTX_TURNS", "8"))
+MAX_TURNS = int(os.environ.get("SESSION_CTX_TURNS", "12"))
 SESSION_CTX: Dict[Tuple[str, str], Deque[Dict[str, str]]] = defaultdict(
     lambda: deque(maxlen=MAX_TURNS)
 )
@@ -86,6 +111,15 @@ def ping_mongo_with_retries(client, attempts=6, delay_s=5):
 
 
 ping_mongo_with_retries(DB.client)
+
+# conversations survive restarts/deploys (history + checkout stage), kept one day
+try:
+    import session_ctx as _session_ctx
+
+    DB.waiter_sessions.create_index("at", expireAfterSeconds=24 * 3600, name="ttl_1d")
+    _session_ctx.attach_store(DB.waiter_sessions)
+except Exception as e:
+    print("[ai-waiter-service] ⚠️ session store unavailable (memory only):", e)
 
 # TTL (30 days) so transcripts auto-expire
 try:
@@ -257,6 +291,19 @@ _BENGALI = re.compile(r"[\u0980-\u09FF]")
 BANGLA_PROMPT = "আসসালামু আলাইকুম, আমি খাবার অর্ডার করতে চাই।"
 
 
+_JUNK = re.compile(
+    r"^\W*(thanks? (you )?for watching|please subscribe|subscribe|thank you|thanks|you|bye|see you|"
+    r"সাবস্ক্রাইব|ধন্যবাদ দেখার জন্য)\W*$",
+    re.I,
+)
+
+
+def is_junk_transcript(text: str) -> bool:
+    """Classic transcriber filler on near-silence ("Thanks for watching!") — never a real order."""
+    s = (text or "").strip()
+    return len(s) < 2 or bool(_JUNK.match(s))
+
+
 def looks_sane(text: str, lang: Optional[str]) -> bool:
     s = (text or "").strip()
     if len(s) < 2:
@@ -296,7 +343,7 @@ def pcm16_mono_to_wav_bytes(pcm_bytes: bytes, rate: int = 16000) -> bytes:
     return bio.getvalue()
 
 
-async def groq_transcribe(pcm_bytes: bytes, lang: Optional[str], rate: int = 16000) -> Optional[str]:
+async def groq_transcribe(pcm_bytes: bytes, lang: Optional[str], rate: int = 16000, prompt: str = "") -> Optional[str]:
     if not GROQ_API_KEY:
         return None
     try:
@@ -306,6 +353,10 @@ async def groq_transcribe(pcm_bytes: bytes, lang: Optional[str], rate: int = 160
         data = {"model": GROQ_MODEL, "response_format": "json"}
         if lang and lang not in ("auto", "", None):
             data["language"] = lang
+        if prompt:
+            # Whisper reads only ~224 prompt tokens (Bangla ≈ 1–2 tokens per letter) — keep it short
+            data["prompt"] = prompt[:180]
+            data["temperature"] = "0"
         files = {"file": ("audio.wav", wav_bytes, "audio/wav")}
         async with httpx.AsyncClient(timeout=GROQ_TIMEOUT_MS / 1000) as client:
             resp = await client.post(url, headers=headers, data=data, files=files)
@@ -319,6 +370,199 @@ async def groq_transcribe(pcm_bytes: bytes, lang: Optional[str], rate: int = 160
     except Exception as e:
         print("[ai-waiter-service] Groq call failed:", e)
     return None
+
+
+# ---------- Final transcription: OpenAI (menu-aware) first, Groq Whisper as backup ----------
+
+OPENAI_STT_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
+OPENAI_STT_BASE = os.environ.get("OPENAI_BASE", "https://api.openai.com").rstrip("/")
+OPENAI_STT_MODEL = os.environ.get("OPENAI_STT_MODEL", "gpt-4o-mini-transcribe").strip()
+# STT_ENGINE=openai (default when an OpenAI key is set) | groq
+STT_ENGINE = os.environ.get("STT_ENGINE", "openai" if OPENAI_STT_KEY else "groq").strip().lower()
+OPENAI_STT_ON = STT_ENGINE == "openai" and bool(OPENAI_STT_KEY)
+OPENAI_STT_TIMEOUT_S = float(os.environ.get("OPENAI_STT_TIMEOUT_MS", "8000")) / 1000
+
+_STT_PROMPTS: Dict[Tuple[str, str], Tuple[float, str]] = {}
+_STT_PROMPT_TTL_S = 600
+
+def stt_prompt(tenant: Optional[str], lang: Optional[str], max_chars: int = 1400) -> str:
+    """This restaurant's dish names (Bangla script for Bangla speech), so the transcriber expects
+    "স্পেশাল ফ্রাইড প্রন" instead of inventing "স্পেশল ফ্রাইট প্রাউন". Cached per tenant for 10 minutes.
+
+    Menu vocabulary ONLY — never action phrases ("place my order", "yes"): on silence, transcribers can echo
+    their hint, and an echoed "yes, place it" must never be possible."""
+    l = "en" if lang == "en" else "bn"
+    key = (tenant or "", l)
+    hit = _STT_PROMPTS.get(key)
+    if hit and time.time() - hit[0] < _STT_PROMPT_TTL_S:
+        return hit[1]
+    names: List[str] = []
+    try:
+        snap = fetch_menu_snapshot(tenant, limit=MENU_SNAPSHOT_MAX, lang=l)
+        for it in snap.get("items", []):
+            n = str(it.get("name") or "").strip()
+            if n:
+                names.append(to_bangla_script(n) if l == "bn" else n)
+    except Exception as e:
+        print("[ai-waiter-service] ⚠️ stt prompt menu fetch failed:", e)
+    bn = l == "bn"
+    end = "।" if bn else "."
+    head = "রেস্টুরেন্টে খাবারের অর্ডার নিয়ে কথা। " if bn else "A guest ordering food at a restaurant. "
+    tail = ""
+    # compact: short dish names as said ("স্পেশাল ফ্রাইড প্রন"), then every other menu word once, so the whole
+    # menu's vocabulary fits (long names like "Choice of 4 Curry with Fried Rice & Vegetable" waste the budget)
+    clean = [re.sub(r"\s+", " ", re.sub(r"\s*\(.*?\)\s*", " ", n).replace("&", " ")).strip() for n in names]
+    short = [n for n in dict.fromkeys(clean) if n and len(n.split()) <= 4]
+    words = [w for n in clean for w in re.findall(r"[^\s,/\-\d]+", n) if len(w) > 1]
+    body = "মেনু: " if bn else "Menu: "
+    used: set = set()
+    for n in short:
+        if len(head) + len(body) + len(n) + len(tail) + 40 > max_chars:
+            break
+        body += n + ", "
+        used.update(n.split())
+    # how guests name kinds of things ("ঠান্ডা" = a cold drink) — nouns only, safe to hint
+    kinds = ["ঠান্ডা", "কোল্ড ড্রিংকস", "পানীয়", "ডেজার্ট", "হাফ", "ফুল"] if bn else ["cold drinks", "dessert", "half", "full"]
+    extra = [w for w in dict.fromkeys(kinds + words) if w not in used]
+    for w in extra:
+        if len(head) + len(body) + len(w) + len(tail) + 2 > max_chars:
+            break
+        body += w + ", "
+    prompt = (head + body.rstrip(", ") + end + " " + tail).strip()
+    _STT_PROMPTS[key] = (time.time(), prompt)
+    return prompt
+
+
+def has_speech(pcm_bytes: bytes, rate: int = 16000) -> bool:
+    """Enough voiced audio to be worth transcribing? (Silence/noise → transcribers invent text.)"""
+    try:
+        a = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32)
+        frame = max(1, rate // 50)  # 20 ms
+        n = len(a) // frame
+        if n == 0:
+            return False
+        rms = np.sqrt(np.mean(a[: n * frame].reshape(n, frame) ** 2, axis=1))
+        floor = float(np.percentile(rms, 20))
+        voiced = int(np.sum(rms > max(300.0, floor * 3.0)))
+        return voiced >= 10  # ≥ 200 ms of clearly-above-background sound
+    except Exception:
+        return True
+
+
+def is_prompt_echo(text: Optional[str], prompt: str) -> bool:
+    """The transcript is mostly a copy of the hint list (happens on silence/noise) → not what the guest said."""
+    if not text or not prompt:
+        return False
+    hint = {x.strip() for x in re.split(r"[,،।:]", prompt) if x.strip()}
+    parts = [x.strip() for x in re.split(r"[,،।]", text) if x.strip()]
+    if not parts:
+        return False
+    hits = sum(1 for x in parts if x in hint)
+    return (len(parts) >= 2 and hits >= 2 and hits / len(parts) >= 0.6) or (len(text) > 25 and text.strip(" ।.,") in prompt)
+
+
+async def openai_transcribe(
+    pcm_bytes: bytes, lang: Optional[str], rate: int = 16000, prompt: str = "", model: Optional[str] = None
+) -> Optional[str]:
+    if not OPENAI_STT_KEY:
+        return None
+    try:
+        wav_bytes = pcm16_mono_to_wav_bytes(pcm_bytes, rate=rate)
+        data = {"model": model or OPENAI_STT_MODEL, "response_format": "json", "temperature": "0"}
+        if lang and lang not in ("auto", "", None):
+            data["language"] = lang
+        if prompt:
+            data["prompt"] = prompt
+        files = {"file": ("audio.wav", wav_bytes, "audio/wav")}
+        async with httpx.AsyncClient(timeout=OPENAI_STT_TIMEOUT_S) as client:
+            resp = await client.post(
+                f"{OPENAI_STT_BASE}/v1/audio/transcriptions",
+                headers={"Authorization": f"Bearer {OPENAI_STT_KEY}"},
+                data=data,
+                files=files,
+            )
+        if resp.status_code >= 400:
+            print("[ai-waiter-service] OpenAI STT error:", resp.status_code, resp.text[:300])
+            return None
+        return (resp.json().get("text") or "").strip() or None
+    except Exception as e:
+        print("[ai-waiter-service] OpenAI STT failed:", repr(e))
+    return None
+
+
+_AB_FLAG: Dict[str, Any] = {"at": 0.0, "on": False}
+
+
+def stt_ab_on() -> bool:
+    """A/B test mode — toggled at runtime (no restart): qravy.settings {_id: "stt_ab", on: true}."""
+    if time.time() - _AB_FLAG["at"] > 10:
+        try:
+            doc = DB.settings.find_one({"_id": "stt_ab"}) or {}
+            _AB_FLAG["on"] = bool(doc.get("on"))
+        except Exception:
+            _AB_FLAG["on"] = False
+        _AB_FLAG["at"] = time.time()
+    return _AB_FLAG["on"]
+
+
+async def _timed(coro) -> Tuple[Optional[str], int]:
+    t0 = time.monotonic()
+    try:
+        out = await coro
+    except Exception:
+        out = None
+    return out, int((time.monotonic() - t0) * 1000)
+
+
+async def cloud_transcribe(
+    pcm_bytes: bytes, lang: Optional[str], rate: int = 16000, tenant: Optional[str] = None,
+    session: Optional[str] = None,
+) -> Tuple[Optional[str], str]:
+    """(text, engine) — OpenAI gpt-4o-mini-transcribe with the menu as a hint; Groq Whisper if that fails.
+    In A/B mode both run on the same audio and both results (+ the clip) are saved to qravy.stt_ab."""
+    if not has_speech(pcm_bytes, rate):
+        print("[ai-waiter-service] 🔇 no speech in the clip — not transcribing (avoids invented text)")
+        return None, "no-speech"
+    if OPENAI_STT_ON and GROQ_API_KEY and stt_ab_on():
+        prompt = stt_prompt(tenant, lang)
+        (oa, oa_ms), (gq, gq_ms) = await asyncio.gather(
+            _timed(openai_transcribe(pcm_bytes, lang, rate=rate, prompt=prompt)),
+            _timed(groq_transcribe(pcm_bytes, lang, rate=rate)),
+        )
+        echoed = is_prompt_echo(oa, prompt)
+        if echoed:
+            print(f"[ai-waiter-service] ⚠️ OpenAI echoed the menu hint → ignored: {oa!r}")
+            oa = None
+        print(f"[ai-waiter-service] 🅰🅱 openai {oa_ms}ms → {oa!r} | groq {gq_ms}ms → {gq!r}")
+        try:
+            DB.stt_ab.insert_one({
+                "ts": datetime.utcnow(), "tenant": tenant, "session": session, "lang": lang,
+                "wav": Binary(pcm16_mono_to_wav_bytes(pcm_bytes, rate=rate)),
+                "results": {
+                    "openai_mini+menu": {"text": oa, "ms": oa_ms},
+                    "groq": {"text": gq, "ms": gq_ms},
+                },
+            })
+        except Exception as e:
+            print("[ai-waiter-service] ⚠️ stt_ab save failed:", e)
+        if oa:
+            return oa, "openai"
+        if echoed:
+            return None, "unclear"
+        return gq, "groq"
+    if OPENAI_STT_ON:
+        t0 = time.monotonic()
+        prompt = stt_prompt(tenant, lang)
+        text = await openai_transcribe(pcm_bytes, lang, rate=rate, prompt=prompt)
+        print(f"[ai-waiter-service] OpenAI STT ({OPENAI_STT_MODEL}) {time.monotonic() - t0:.2f}s → {text!r}")
+        if is_prompt_echo(text, prompt):
+            # it heard nothing clear and repeated its hint — Groq would only invent words for the same audio
+            print("[ai-waiter-service] ⚠️ OpenAI echoed the menu hint → nothing clear was said")
+            return None, "unclear"
+        if text:
+            return text, "openai"
+    text = await groq_transcribe(pcm_bytes, lang, rate=rate)
+    return text, "groq"
 
 
 # ---------- Time-of-day + Climate helpers ----------
@@ -475,7 +719,14 @@ def build_menu_query(tenant: Optional[str]) -> Dict[str, Any]:
     return q
 
 
-def fetch_menu_snapshot(tenant: Optional[str], limit: int = MENU_SNAPSHOT_MAX) -> Dict[str, Any]:
+def fetch_menu_snapshot(
+    tenant: Optional[str],
+    limit: int = MENU_SNAPSHOT_MAX,
+    branch: Optional[str] = None,
+    channel: Optional[str] = None,
+    lang: Optional[str] = None,
+    now: Optional[datetime] = None,
+) -> Dict[str, Any]:
     """
     Build a compact, real-time slice of the menu (source of truth for the brain).
     Uses MenuItemDoc-like fields.
@@ -490,6 +741,14 @@ def fetch_menu_snapshot(tenant: Optional[str], limit: int = MENU_SNAPSHOT_MAX) -
                 "_id": 1,
                 "name": 1,
                 "price": 1,
+                "compareAtPrice": 1,
+                "description": 1,
+                "variations": 1,
+                "options": 1,
+                "modifierGroups": 1,
+                "sortOrder": 1,
+                "signature": 1,
+                "prepMinutes": 1,
                 "categoryId": 1,
                 "category": 1,
                 "visibility": 1,
@@ -497,6 +756,11 @@ def fetch_menu_snapshot(tenant: Optional[str], limit: int = MENU_SNAPSHOT_MAX) -
                 "hidden": 1,
                 "aliases": 1,
                 "tags": 1,
+                "availability": 1,
+                "offline": 1,
+                "servicePeriodIds": 1,
+                "availableFrom": 1,
+                "availableUntil": 1,
             },
         ).limit(limit)
 
@@ -517,6 +781,14 @@ def fetch_menu_snapshot(tenant: Optional[str], limit: int = MENU_SNAPSHOT_MAX) -
                     "categoryId": str(d.get("categoryId")) if d.get("categoryId") else None,
                     "category": d.get("category"),
                     "price": d.get("price"),
+                    "compareAtPrice": d.get("compareAtPrice"),
+                    "description": d.get("description") or "",
+                    "variations": d.get("variations") or [],
+                    "options": d.get("options") or [],
+                    "modifierGroups": d.get("modifierGroups") or [],
+                    "sortOrder": d.get("sortOrder"),
+                    "signature": bool(d.get("signature")),
+                    "prepMinutes": d.get("prepMinutes"),
                     "status": d.get("status"),
                     "hidden": bool(d.get("hidden")),
                     "visibility": {
@@ -527,8 +799,26 @@ def fetch_menu_snapshot(tenant: Optional[str], limit: int = MENU_SNAPSHOT_MAX) -
                     "available": bool(base_available and (dine_in_ok or online_ok)),
                     "aliases": d.get("aliases") or [],
                     "tags": tags,
+                    "availability": d.get("availability") or [],
+                    "offline": bool(d.get("offline")),
+                    "servicePeriodIds": d.get("servicePeriodIds") or [],
+                    "availableFrom": d.get("availableFrom"),
+                    "availableUntil": d.get("availableUntil"),
                 }
             )
+
+        # Time-based availability: opening hours, category/item hours, sold out
+        tenant_oid = q.get("tenantId")
+        if tenant_oid is not None and items:
+            menu_db = _CLIENT[MENU_DB_NAME]
+            loc_id = resolve_location_id(menu_db, tenant_oid, branch)
+            rules = load_rules(menu_db, tenant_oid, loc_id, channel)
+            now = now or datetime.utcnow()
+            for it in items:
+                reason = unavailable_reason(it, rules, now=now, lang=(lang or "en"))
+                if reason:
+                    it["available"] = False
+                    it["unavailableReason"] = reason
 
         print("[debug] snapshot items count =", len(items))
 
@@ -681,84 +971,6 @@ def _extract_cart_item_ids(dialog_state: Optional[Dict[str, Any]]) -> List[str]:
     return list(ids)
 
 
-def build_suggestion_candidates(
-    snapshot: Dict[str, Any],
-    context: Dict[str, Any],
-    limit: int = 40,
-) -> List[Dict[str, Any]]:
-    """
-    Channel-aware shortlist:
-      - status == active
-      - hidden != true
-      - visibility allows this channel
-      - tagged items boosted, but untagged items included.
-    """
-    channel = context.get("channel")
-    tod = context.get("timeOfDay")  # breakfast/lunch/evening/late
-
-    rows = []
-    for it in snapshot.get("items", []):
-        if it.get("status") != "active":
-            continue
-        if it.get("hidden"):
-            continue
-        vis = it.get("visibility") or {}
-        if not _channel_allows(vis, channel):
-            continue
-
-        base = 1.0
-        tags = [str(t).lower() for t in (it.get("tags") or [])]
-        name = (it.get("name") or "").lower()
-        cat = (it.get("category") or "").lower()
-
-        # Tag-based boosts
-        if "recommended" in tags or "bestseller" in tags:
-            base += 3.0
-        if "popular" in tags:
-            base += 2.0
-        if "new" in tags:
-            base += 1.5
-        if "sharing" in tags or "combo" in tags or "platter" in tags:
-            base += 0.8
-
-        # Time-of-day heuristics
-        if tod == "breakfast":
-            if "breakfast" in tags or "breakfast" in cat:
-                base += 2.0
-            if any(k in name for k in ["egg", "toast", "paratha", "porota", "tea", "coffee"]):
-                base += 1.0
-        elif tod == "lunch":
-            if any(k in cat for k in ["meal", "rice", "bowl", "platter"]):
-                base += 1.0
-        elif tod == "evening":
-            if any(k in cat for k in ["snacks", "fries", "burger", "pizza"]):
-                base += 1.0
-
-        rid = str(it.get("id") or it.get("_id") or "")
-        if not rid:
-            continue
-
-        rows.append(
-            {
-                "itemId": rid,
-                "id": rid,
-                "title": it.get("name"),
-                "name": it.get("name"),
-                "categoryId": it.get("categoryId"),
-                "price": it.get("price"),
-                "tags": it.get("tags") or [],
-                "_score": base,
-            }
-        )
-
-    rows.sort(key=lambda r: r["_score"], reverse=True)
-    out = []
-    for r in rows[:limit]:
-        r.pop("_score", None)
-        out.append(r)
-    return out
-
-
 def build_upsell_candidates(
     snapshot: Dict[str, Any],
     context: Dict[str, Any],
@@ -782,6 +994,8 @@ def build_upsell_candidates(
         if it.get("status") != "active":
             continue
         if it.get("hidden"):
+            continue
+        if it.get("available") is False:  # closed / not served now / sold out
             continue
         vis = it.get("visibility") or {}
         if not _channel_allows(vis, channel):
@@ -833,228 +1047,411 @@ def build_upsell_candidates(
     return out
 
 
-# ---------- Deterministic pre-match (snapshot → DB fallback) ----------
+# ---------- Restaurant profile (facts the waiter may state) ----------
 
-def _tokenize_lower(s: str) -> List[str]:
-    s = (s or "").lower()
-    return re.findall(r"[a-z\u0980-\u09FF]+(?:\s+[a-z\u0980-\u09FF]+)?", s)
-
-
-def _match_in_snapshot(norm_text: str, snapshot: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Find items whose name/aliases appear in normalized text."""
-    text = (norm_text or "").lower()
-    if not text.strip():
-        return []
-    hits = []
-    for it in snapshot.get("items", []):
-        name = (it.get("name") or "").strip()
-        aliases = [a.strip() for a in (it.get("aliases") or []) if a]
-        cand_strings = [name.lower()] + [a.lower() for a in aliases]
-        if any(re.search(rf"\b{re.escape(c)}\b", text) for c in cand_strings if c):
-            hits.append(it)
-    return hits
+STAFF_ALERTS_ENABLED = os.environ.get("STAFF_ALERTS_ENABLED", "0") == "1"
+PROFILE_TTL_S = float(os.environ.get("RESTAURANT_PROFILE_TTL_S", "60"))
+_PROFILE_CACHE: Dict[Tuple[str, str], Tuple[float, Dict[str, Any]]] = {}
 
 
-def _db_fallback_search(tenant_hint: Optional[str], norm_text: str, limit: int = 10) -> List[Dict[str, Any]]:
-    """If snapshot missed it (due to cap), query DB with visibility constraints."""
-    q_base = build_menu_query(tenant_hint)
-    text = (norm_text or "").strip()
-    if not text:
-        return []
-    tokens = list(set(_tokenize_lower(text)))[:6]
-    if not tokens:
-        return []
+def fetch_restaurant_profile(tenant: Optional[str], branch: Optional[str] = None) -> Dict[str, Any]:
+    """Name, address, hours, channels, menu notes and house knowledge (cached for a minute)."""
+    key = (tenant or "", branch or "")
+    hit = _PROFILE_CACHE.get(key)
+    if hit and time.monotonic() - hit[0] < PROFILE_TTL_S:
+        return hit[1]
 
-    regexes = [{"name": {"$regex": re.escape(tok), "$options": "i"}} for tok in tokens]
-    alias_regexes = [
-        {"aliases": {"$elemMatch": {"$regex": re.escape(tok), "$options": "i"}}}
-        for tok in tokens
-    ]
-    q = {"$and": [q_base, {"$or": regexes + alias_regexes}]}
-    print("[debug] DB fallback query:", q)
+    profile: Dict[str, Any] = {"staffAlerts": STAFF_ALERTS_ENABLED}
+    try:
+        tenant_oid = resolve_tenant_id(tenant)
+        if tenant_oid is not None:
+            menu_db = _CLIENT[MENU_DB_NAME]
+            t = menu_db["tenants"].find_one(
+                {"_id": tenant_oid},
+                {"name": 1, "restaurantInfo": 1, "menuNotes": 1, "waiterKnowledge": 1, "timezone": 1, "openingHours": 1, "servicePeriods": 1, "kitchen": 1},
+            ) or {}
+            info = t.get("restaurantInfo") or {}
+            opening = t.get("openingHours") or []
+            profile.update(
+                {
+                    "name": t.get("name"),
+                    "type": info.get("restaurantType"),
+                    "address": info.get("address"),
+                    "phone": info.get("phone"),
+                    "dineIn": info.get("dineInEnabled", True) is not False,
+                    "online": bool(info.get("onlineSalesEnabled")),
+                    "menuNotes": [n for n in (t.get("menuNotes") or []) if n],
+                    "knowledge": [k for k in (t.get("waiterKnowledge") or []) if k],
+                    "tz": t.get("timezone") or DEFAULT_TZ,
+                    "periods": t.get("servicePeriods") if isinstance(t.get("servicePeriods"), list) else DEFAULT_PERIODS,
+                    "kitchen": wait_time.kitchen_settings(t),
+                }
+            )
+            loc_id = resolve_location_id(menu_db, tenant_oid, branch)
+            if loc_id is not None:
+                loc = menu_db["locations"].find_one({"_id": loc_id}, {"name": 1, "address": 1, "openingHours": 1}) or {}
+                profile["branch"] = loc.get("name")
+                if loc.get("address"):
+                    profile["address"] = loc["address"]
+                if isinstance(loc.get("openingHours"), list) and loc["openingHours"]:
+                    opening = loc["openingHours"]
+            profile["opening"] = opening
+            profile["hours"] = format_windows(opening) if opening else ""
+    except Exception as e:
+        print("[ai-waiter-service] ⚠️ restaurant profile failed:", e)
 
-    cur = ITEMS.find(
-        q,
-        {
-            "_id": 1,
-            "name": 1,
-            "price": 1,
-            "category": 1,
-            "categoryId": 1,
-            "aliases": 1,
-            "status": 1,
-            "hidden": 1,
-            "visibility": 1,
-        },
-    ).limit(limit)
-    out = []
-    for d in cur:
-        vis = d.get("visibility") or {}
-        dine_in_ok = vis.get("dineIn", vis.get("dinein", True)) is not False
-        out.append(
-            {
-                "id": str(d.get("_id")),
-                "name": d.get("name"),
-                "category_id": str(d.get("categoryId")) if d.get("categoryId") else None,
-                "category": d.get("category"),
-                "price": d.get("price"),
-                "available": (not bool(d.get("hidden")))
-                and (d.get("status") == "active")
-                and dine_in_ok,
-                "aliases": d.get("aliases") or [],
-            }
-        )
+    _PROFILE_CACHE[key] = (time.monotonic(), profile)
+    return profile
+
+
+def current_meal_period(periods: List[Dict[str, Any]], tz: Optional[str], now: Optional[datetime] = None) -> Tuple[str, List[str]]:
+    """Restaurant's own service periods (Settings → Hours) active right now, e.g. 'Lunch (12pm–3pm)'."""
+    active = []
+    for p in periods or []:
+        try:
+            win = [{"days": p.get("days") or [0, 1, 2, 3, 4, 5, 6], "start": p["start"], "end": p["end"]}]
+        except (KeyError, TypeError):
+            continue
+        if is_within(win, tz, now):
+            active.append((p.get("name") or "Service", format_windows(win)))
+    label = ", ".join(f"{n} ({w})" for n, w in active) or "between service periods"
+    return label, [n for n, _ in active]
+
+
+ORDER_STATS_TTL_S = float(os.environ.get("ORDER_STATS_TTL_S", "600"))
+ORDER_STATS_DAYS = int(os.environ.get("ORDER_STATS_DAYS", "90"))
+_ORDER_STATS_CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+
+
+def order_stats(tenant: Optional[str]) -> Dict[str, Any]:
+    """Popularity + ordered-together counts from this restaurant's real orders (last 90 days).
+    Empty until orders exist; the recommender then simply ignores it. Cached for 10 minutes."""
+    key = tenant or ""
+    hit = _ORDER_STATS_CACHE.get(key)
+    if hit and time.monotonic() - hit[0] < ORDER_STATS_TTL_S:
+        return hit[1]
+    out: Dict[str, Any] = {"popularity": {}, "pairs": {}}
+    try:
+        tenant_oid = resolve_tenant_id(tenant)
+        if tenant_oid is not None:
+            since = datetime.utcnow() - timedelta(days=ORDER_STATS_DAYS)
+            cur = _CLIENT[MENU_DB_NAME]["orders"].find(
+                {"tenantId": tenant_oid, "createdAt": {"$gte": since}, "status": {"$ne": "cancelled"}},
+                {"items.itemId": 1},
+            ).limit(20000)
+            stats = OrderStats.from_orders(cur)
+            out = {"popularity": stats.popularity, "pairs": stats.pairs}
+    except Exception as e:
+        print("[ai-waiter-service] ⚠️ order stats failed:", e)
+    _ORDER_STATS_CACHE[key] = (time.monotonic(), out)
     return out
 
 
-def _compose_availability_reply(items: List[Dict[str, Any]], lang_hint: Optional[str]) -> str:
-    """Short, deterministic availability message with prices."""
-    lang = (lang_hint or "").lower()
-    if not items:
-        return "Not found."
-
-    top = items[0]
-    name = top.get("name") or "that item"
-    price = top.get("price")
-    price_str = f" (৳{price})" if isinstance(price, (int, float)) else ""
-
-    alts = [it.get("name") for it in items[1:3] if it.get("name")]
-    if lang == "bn":
-        base = f"জি, {name} রয়েছে{price_str}। নেবেন কি?"
-        if alts:
-            base += f" কাছাকাছি আরও আছে: {', '.join(alts)}।"
-        return base
-    else:
-        base = f"Yes, {name} is available{price_str}. Would you like to add one?"
-        if alts:
-            base += f" Similar options: {', '.join(alts)}."
-        return base
+KITCHEN_STALE_S = 3 * 60 * 60  # an order "open" for longer is a forgotten ticket, not kitchen load
 
 
-# ---------- Brain call wrapper ----------
+def kitchen_now(
+    tenant: Optional[str], branch: Optional[str], session_id: Optional[str], settings: Dict[str, int],
+    now: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """Live kitchen view for wait-time answers: minutes until a kitchen station is free, and this guest's own
+    orders still in the kitchen (status + minutes left, from the ETA auth-service keeps on every order)."""
+    now = now or datetime.utcnow()
+    out: Dict[str, Any] = {"queueMinutes": 0, "ordersInKitchen": 0, "busy": "quiet", "myOrders": [], "settings": settings}
+    try:
+        tenant_oid = resolve_tenant_id(tenant)
+        if tenant_oid is None:
+            return out
+        menu_db = _CLIENT[MENU_DB_NAME]
+        q: Dict[str, Any] = {
+            "tenantId": tenant_oid,
+            "status": {"$in": ["placed", "accepted", "preparing", "ready"]},
+            "createdAt": {"$gte": now - timedelta(seconds=KITCHEN_STALE_S)},
+        }
+        loc_id = resolve_location_id(menu_db, tenant_oid, branch)
+        if loc_id is not None:
+            q["locationId"] = loc_id
+        docs = list(
+            menu_db["orders"]
+            .find(q, {"status": 1, "eta": 1, "items": 1, "sessionId": 1, "orderNumber": 1})
+            .sort("createdAt", 1)
+            .limit(200)
+        )
+        ahead = []
+        for o in docs:
+            if o.get("status") == "ready":
+                continue
+            eta = o.get("eta") or {}
+            prep = eta.get("prepMinutes") or wait_time.order_prep_minutes(
+                (l.get("prepMinutes") or settings["defaultPrepMinutes"], int(l.get("qty") or 1)) for l in o.get("items") or []
+            )
+            ahead.append({"status": o.get("status"), "prepMinutes": prep, "readyAt": eta.get("readyAt")})
+        queue = wait_time.queue_minutes(ahead, settings["parallelOrders"], now)
+        out.update({"queueMinutes": queue, "ordersInKitchen": len(ahead), "busy": wait_time.busy_level(queue)})
+        for o in docs if session_id else []:
+            if o.get("sessionId") != session_id:
+                continue
+            ready_at = (o.get("eta") or {}).get("readyAt")
+            ready = o.get("status") == "ready"
+            out["myOrders"].append({
+                "orderNumber": o.get("orderNumber"),
+                "status": o.get("status"),
+                "minutesLeft": 0 if ready else wait_time.minutes_left(ready_at, now),
+                "late": (not ready) and isinstance(ready_at, datetime) and ready_at < now,
+                "hasEta": isinstance(ready_at, datetime),
+                "items": [str(l.get("name") or "") for l in o.get("items") or []][:8],
+            })
+    except Exception as e:
+        print("[ai-waiter-service] ⚠️ kitchen status failed:", e)
+    return out
 
-async def call_brain_and_push(
-    ws: WebSocketServerProtocol,
+
+def record_service_request(
+    tenant: Optional[str],
+    branch: Optional[str],
+    session_id: Optional[str],
+    channel: Optional[str],
+    request: Dict[str, Any],
+    text: str,
+) -> None:
+    """Persist bill/water/call-staff requests for a staff screen (only when paging is enabled)."""
+    if not STAFF_ALERTS_ENABLED or not isinstance(request, dict):
+        return
+    try:
+        DB.serviceRequests.insert_one(
+            {
+                "tenant": tenant,
+                "branch": branch,
+                "sessionId": session_id,
+                "channel": channel,
+                "type": request.get("type"),
+                "note": request.get("note") or "",
+                "utterance": text,
+                "status": "open",
+                "createdAt": datetime.utcnow(),
+            }
+        )
+    except Exception as e:
+        print("[ai-waiter-service] ⚠️ service request insert failed:", e)
+
+
+# ---------- Placing orders (auth-service owns orders: pricing, availability, order numbers) ----------
+
+AUTH_INTERNAL_URL = os.environ.get("AUTH_INTERNAL_URL", "http://auth-service:3001").rstrip("/")
+
+
+def tenant_subdomain(tenant: Optional[str]) -> Optional[str]:
+    """The public order endpoint is keyed by subdomain; the socket may know the tenant by id or slug."""
+    if not tenant:
+        return None
+    oid = resolve_tenant_id(tenant)
+    if not oid:
+        return tenant
+    for coll in (_CLIENT[MENU_DB_NAME]["tenants"], DB.tenants):
+        try:
+            t = coll.find_one({"_id": oid}, {"subdomain": 1})
+            if t and t.get("subdomain"):
+                return t["subdomain"]
+        except Exception as e:
+            print("[ai-waiter-service] ⚠️ subdomain lookup failed:", e)
+    return tenant
+
+
+async def place_order_via_api(
+    *, tenant: Optional[str], branch: Optional[str], session_id: Optional[str], draft: Dict[str, Any]
+) -> Dict[str, Any]:
+    """POST /api/v1/public/orders → {"ok": True, "order": {...}} or {"ok": False, "message": str}.
+    Idempotent per (session, cart signature): a repeated "yes" never creates a second order."""
+    body: Dict[str, Any] = {
+        "subdomain": tenant_subdomain(tenant),
+        "table": draft.get("table"),
+        "items": draft.get("items") or [],
+        "sessionId": session_id,
+        "source": "ai-waiter",
+        "idempotencyKey": f"waiter:{(session_id or 'anon')[:60]}:{draft.get('signature') or ''}"[:100],
+    }
+    if branch:
+        body["branch"] = branch
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            r = await client.post(f"{AUTH_INTERNAL_URL}/api/v1/public/orders", json=body)
+        data = r.json() if r.content else {}
+    except Exception as e:
+        print("[ai-waiter-service] ⚠️ place order failed:", repr(e))
+        return {"ok": False, "message": "The ordering system didn't respond."}
+    payload = data.get("data") if isinstance(data.get("data"), dict) else data
+    order = (payload or {}).get("order")
+    if r.status_code < 300 and isinstance(order, dict):
+        return {"ok": True, "order": order, "created": bool((payload or {}).get("created", True))}
+    msg = data.get("message") or f"HTTP {r.status_code}"
+    details = data.get("error") if isinstance(data.get("error"), dict) else {}
+    print("[ai-waiter-service] ⚠️ order rejected:", r.status_code, msg, details)
+    return {"ok": False, "message": str(msg).rstrip(".") + ".", "needs": details.get("needs")}
+
+
+# ---------- One guest turn (text → waiter reply) ----------
+
+async def run_text_turn(
     *,
-    transcript: str,
-    transcript_norm: str,
-    norm_changes: List[Tuple[str, str, float]],
+    text: str,
     tenant: Optional[str],
     branch: Optional[str],
     channel: Optional[str],
     session_id: Optional[str],
     user_id: Optional[str],
-    menu_snapshot: Dict[str, Any],
-    history: Optional[List[Dict[str, str]]] = None,
-    dialog_state: Optional[Dict[str, Any]] = None,
-    locale: Optional[str] = None,
-    context: Optional[Dict[str, Any]] = None,
-    suggestion_candidates: Optional[List[Dict[str, Any]]] = None,
-    upsell_candidates: Optional[List[Dict[str, Any]]] = None,
+    locale: Optional[str],
+    cart_items: Optional[List[Dict[str, Any]]] = None,
+    user_tz: Optional[str] = None,
+    user_local_hour: Optional[int] = None,
+    climate_bucket: Optional[str] = None,
+    now: Optional[datetime] = None,
+    table: Optional[str] = None,
+    place_order=None,
+    shown: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """
-    Single entrypoint to brain.generate_reply.
-    Forwards all structured context + candidates; pushes WS ai_reply.
+    `now` (UTC) overrides the clock — used by the eval to simulate breakfast/dinner/closed hours.
+    `table` comes from the storefront (?table=12). `place_order` overrides the order placer (evals never
+    create real orders).
+    Snapshot the live menu, normalise the transcript, build context and ask the brain.
+    Used by the voice socket and by evals/run_eval.py. Returns {replyText, meta, textNorm, normChanges, snapshotSize}.
     """
-    print(
-        f"[ai-waiter-service] 🧠 calling brain for transcript_norm: '{transcript_norm[:80]}...'"
+    lang = reply_language(text, locale)
+    snapshot = fetch_menu_snapshot(tenant, limit=MENU_SNAPSHOT_MAX, branch=branch, channel=channel, lang=lang, now=now)
+    vocab = build_vocab_from_snapshot(snapshot)
+    norm_text, changes = normalize_text(text, vocab=vocab, fuzzy_threshold=FUZZY_THRESHOLD)
+
+    # history before this utterance (the brain gets the utterance itself separately)
+    history = get_history(tenant, session_id)
+    dialog_state = get_state(tenant, session_id)
+    push_user(tenant, session_id, norm_text)
+
+    profile = fetch_restaurant_profile(tenant, branch)
+    ctx = build_runtime_context(
+        tenant=tenant,
+        branch=branch,
+        channel=channel,
+        lang_hint=lang,
+        dialog_state=dialog_state,
+        user_tz=user_tz or profile.get("tz"),
+        climate_bucket=climate_bucket,
+        user_local_hour=user_local_hour,
     )
-    reply_obj = {"replyText": "", "meta": {}}
-    try:
-        # Call new brain signature; fallback to legacy if needed
-        try:
-            reply = await generate_reply(
-                transcript=transcript_norm,
-                tenant=tenant,
-                branch=branch,
-                channel=channel,
-                locale=locale,
-                menu_snapshot=menu_snapshot,
-                conversation_id=session_id,
-                user_id=user_id,
-                history=history,
-                dialog_state=dialog_state,
-                context=context,
-                suggestion_candidates=suggestion_candidates,
-                upsell_candidates=upsell_candidates,
-            )
-        except TypeError:
-            # Legacy compatibility (no extra args)
-            reply = await generate_reply(
-                transcript=transcript_norm,
-                tenant=tenant,
-                branch=branch,
-                channel=channel,
-                locale=locale,
-                menu_snapshot=menu_snapshot,
-                conversation_id=session_id,
-                user_id=user_id,
-                history=history,
-                dialog_state=dialog_state,
-            )
+    if profile.get("tz"):
+        # recommendations follow the restaurant's clock, not the guest's phone
+        now_local = local_now(profile["tz"], now)
+        ctx["localTime"] = now_local.strftime("%a %H:%M")
+        ctx["timeOfDay"] = _time_of_day_for_tz(profile["tz"], now_local.hour)
+        ctx["mealPeriod"], period_names = current_meal_period(profile.get("periods") or DEFAULT_PERIODS, profile["tz"], now)
+        ctx["mealKinds"] = meal_kinds(period_names, now_local.hour)
+    if profile.get("opening"):
+        ctx["openNow"] = is_within(profile["opening"], profile.get("tz"), now)
 
-        reply_obj = {
-            "replyText": reply.get("replyText") or "",
-            "meta": reply.get("meta") or {},
+    if cart_items is None:
+        cart_items = load_cart(tenant or "unknown", session_id or "anon") or []
+    ctx["cartItems"] = [
+        {
+            "itemId": it.get("itemId") or it.get("id") or it.get("_id"),
+            "quantity": int(it.get("qty") or it.get("quantity") or 0),
+            "price": it.get("price"),
+            "notes": it.get("notes") or "",
+            "variation": it.get("variation") or "",
+            "modifiers": [m for m in it.get("modifiers") or [] if isinstance(m, dict)],
         }
-        print(
-            f"[ai-waiter-service] 🧠 brain replyText: '{reply_obj['replyText'][:80]}...'"
-        )
+        for it in cart_items
+        if int(it.get("qty") or it.get("quantity") or 0) > 0
+    ]
+    if table:
+        ctx["table"] = str(table).strip()[:12]
+    if shown:
+        ctx["shownItems"] = list(shown)
 
-        meta = reply_obj.get("meta", {})
-        print(
-            "[ai-waiter-service] model=",
-            meta.get("model"),
-            "lang=",
-            meta.get("language"),
-            "intent=",
-            meta.get("intent"),
-            "fallback=",
-            meta.get("fallback"),
-        )
+    unavailable_now = [
+        {"name": i.get("name"), "reason": i.get("unavailableReason")}
+        for i in snapshot.get("items", [])
+        if i.get("available") is False and i.get("unavailableReason")
+    ]
+    if unavailable_now:
+        ctx["unavailableNow"] = unavailable_now
 
-        if not ws.closed:
-            await ws.send(
-                json.dumps(
-                    {
-                        "t": "ai_reply",
-                        "replyText": reply_obj["replyText"],
-                        "meta": {
-                            **meta,
-                            "normalizer": {
-                                "changed": [
-                                    {"from": a, "to": b, "score": s}
-                                    for (a, b, s) in norm_changes
-                                ]
-                            },
-                        },
-                    }
-                )
-            )
-            print("[ai-waiter-service] ✅ ai_reply sent")
+    ctx["orderStats"] = order_stats(tenant)  # popularity + ordered-together (empty until orders exist)
+    # wait times: the kitchen queue right now + this guest's orders still in the kitchen
+    ctx["kitchen"] = kitchen_now(tenant, branch, session_id, profile.get("kitchen") or wait_time.kitchen_settings(None), now)
+    upsell_candidates = build_upsell_candidates(snapshot, ctx, {"items": ctx["cartItems"]}, limit=16)
+
+    reply = await generate_reply(
+        transcript=norm_text,
+        tenant=tenant,
+        branch=branch,
+        channel=channel,
+        locale=locale,
+        menu_snapshot=snapshot,
+        conversation_id=session_id,
+        user_id=user_id,
+        history=history,
+        dialog_state=dialog_state,
+        context=ctx,
+        upsell_candidates=upsell_candidates,
+        restaurant=profile,
+    )
+    reply_text = reply.get("replyText") or ""
+    meta = reply.get("meta") or {}
+    meta["normalizer"] = {"changed": [{"from": a, "to": b, "score": s} for (a, b, s) in changes]}
+
+    # The guest said yes to the read-back → place it for real, and say what actually happened.
+    decision = meta.setdefault("decision", {})
+    draft = meta.pop("orderDraft", None)
+    if decision.get("placeOrder") and draft:
+        placer = place_order or place_order_via_api
+        res = await placer(tenant=tenant, branch=branch, session_id=session_id, draft=draft)
+        lang_out = meta.get("language") or lang
+        if res.get("ok"):
+            order = res["order"]
+            reply_text = checkout.placed_text(order, lang_out, wait_talk.placed_hint(order, lang_out))
+            meta["order"] = {k: order.get(k) for k in ("token", "orderNumber", "status", "total", "table", "currency", "eta")}
+            decision["orderPlaced"] = True
+            decision["openConfirmationPage"] = True  # older storefronts open the confirmation view on this
         else:
-            print("[ai-waiter-service] ⚠️ WS closed, cannot send ai_reply")
-    except Exception as e:
-        print(f"[ai-waiter-service] ❌ brain call failed: {e}")
-        import traceback
+            reply_text = checkout.failed_text(res.get("message") or "", lang_out)
+            decision["orderFailed"] = True
+            if res.get("needs") == "table":
+                reply_text = checkout.ask_table_text(lang_out)
+                meta["checkout"] = {"stage": "table", "sig": "", "table": ""}
+        decision["placeOrder"] = False
+        if lang_out == "bn":
+            meta["voiceReplyText"] = reply_text
 
-        traceback.print_exc()
-        if not ws.closed:
-            try:
-                await ws.send(
-                    json.dumps(
-                        {
-                            "t": "ai_reply_error",
-                            "message": "AI unavailable",
-                        }
-                    )
-                )
-            except Exception as send_err:
-                print(
-                    "[ai-waiter-service] ❌ failed to send ai_reply_error:",
-                    send_err,
-                )
-    return reply_obj
+    # memory keeps exact English MENU names (keeps the model grounded) …
+    push_assistant(tenant, session_id, reply_text)
+    update_state(tenant, session_id, meta=meta, user_text=norm_text)
+    # … while a Bangla guest reads and hears every name in Bangla script ("চিকেন চিলি অনিয়ন", not an English accent)
+    if (meta.get("language") or lang) == "bn" and BN_SCRIPT_NAMES:
+        # "Set Menu A-01" → "সেট মেনু 1" when every code on this menu uses the same letter (else "এ-1")
+        code_letters = {
+            m.group(1).upper()
+            for it in snapshot.get("items", [])
+            for m in re.finditer(r"\b([A-Za-z])\s*-\s*\d", str(it.get("name") or ""))
+        }
+        drop = len(code_letters) == 1
+        # the voice is built from the reply itself — names and numbers converted by fixed rules
+        # (the model's own spoken version misspelled numbers: "পঁইশ" for 25)
+        voice_src = reply_text
+        reply_text = to_bangla_script(reply_text, drop_code_letter=drop)
+        meta["voiceReplyText"] = to_bangla_script(voice_src, spoken=True, drop_code_letter=drop)
+    # the guest profile (allergies, diet…) stays in server memory — not sent to the browser or logged
+    meta.pop("reco", None)
+    meta.pop("guestProfile", None)
+    meta.pop("tray", None)  # server-side memory (undo / pending questions), not for the browser
+    if meta.get("serviceRequest"):
+        record_service_request(tenant, branch, session_id, channel, meta["serviceRequest"], norm_text)
+
+    return {
+        "replyText": reply_text,
+        "meta": meta,
+        "textNorm": norm_text,
+        "normChanges": changes,
+        "snapshotSize": len(snapshot.get("items", [])),
+    }
 
 
 # ---------- WS handler ----------
@@ -1070,6 +1467,9 @@ async def handle_conn(ws: WebSocketServerProtocol):
     tenant_hint: Optional[str] = None
     branch_hint: Optional[str] = None
     channel_hint: Optional[str] = None
+    table_hint: Optional[str] = None
+    cart_hint: Optional[List[Dict[str, Any]]] = None  # None → the saved cart (load_cart)
+    shown_hint: List[str] = []  # ids of the dishes on the guest's screen ("which of these…")
 
     last_detected_lang = None
 
@@ -1234,6 +1634,14 @@ async def handle_conn(ws: WebSocketServerProtocol):
                 tenant_hint = data.get("tenant") or tenant_hint
                 branch_hint = data.get("branch") or branch_hint
                 channel_hint = data.get("channel") or channel_hint
+                # the guest's table (?table=12) and the cart exactly as the guest sees it (sizes, add-ons)
+                if isinstance(data.get("table"), (str, int)) and str(data.get("table")).strip():
+                    table_hint = str(data.get("table")).strip()[:12]
+                if isinstance(data.get("cart"), list):
+                    cart_hint = [c for c in data["cart"] if isinstance(c, dict)][:100]
+                # the dishes on the guest's screen right now (suggestions pop-up / the tray's picks)
+                if isinstance(data.get("shown"), list):
+                    shown_hint = [str(x) for x in data["shown"] if isinstance(x, (str, int))][:12]
 
                 # ⭐ user timezone & geo from frontend
                 tz = data.get("tz")
@@ -1302,8 +1710,9 @@ async def handle_conn(ws: WebSocketServerProtocol):
                     lang_pref = "en"
 
             groq_used = False
+            stt_engine = "groq"
             if (
-                GROQ_API_KEY
+                (GROQ_API_KEY or OPENAI_STT_ON)
                 and len(final_bytes) >= 16000
                 and not ws.closed
             ):
@@ -1311,16 +1720,16 @@ async def handle_conn(ws: WebSocketServerProtocol):
                     print(
                         f"[ai-waiter-service] lang preference for final: {lang_pref or 'auto'}"
                     )
-                    print(
-                        "[ai-waiter-service] calling Groq for final…"
-                    )
-                    groq_text = await groq_transcribe(
-                        final_bytes, lang_pref, rate=rate
+                    groq_text, stt_engine = await cloud_transcribe(
+                        final_bytes, lang_pref, rate=rate, tenant=tenant_hint, session=session_id
                     )
 
                     # single-retry on opposite language if obviously wrong
+                    # Groq-only: Whisper sometimes answers in the wrong language → one retry.
+                    # OpenAI writes mixed Bangla/English ordering ("choice of two curry … দিবেন") faithfully — keep it.
                     if (
-                        groq_text
+                        stt_engine == "groq"
+                        and groq_text
                         and lang_pref == "bn"
                         and _LATIN.search(groq_text)
                         and not _BENGALI.search(groq_text)
@@ -1328,13 +1737,14 @@ async def handle_conn(ws: WebSocketServerProtocol):
                         print(
                             "[ai-waiter-service] BN expected but got EN → retry en"
                         )
-                        en_text = await groq_transcribe(
-                            final_bytes, "en", rate=rate
+                        en_text, stt_engine = await cloud_transcribe(
+                            final_bytes, "en", rate=rate, tenant=tenant_hint, session=session_id
                         )
                         if en_text:
                             groq_text = en_text
                     elif (
-                        groq_text
+                        stt_engine == "groq"
+                        and groq_text
                         and lang_pref == "en"
                         and _BENGALI.search(groq_text)
                         and not _LATIN.search(groq_text)
@@ -1342,19 +1752,20 @@ async def handle_conn(ws: WebSocketServerProtocol):
                         print(
                             "[ai-waiter-service] EN expected but got BN → retry bn"
                         )
-                        bn_text = await groq_transcribe(
-                            final_bytes, "bn", rate=rate
+                        bn_text, stt_engine = await cloud_transcribe(
+                            final_bytes, "bn", rate=rate, tenant=tenant_hint, session=session_id
                         )
                         if bn_text:
                             groq_text = bn_text
 
-                    if groq_text and looks_sane(
-                        groq_text, lang_pref
+                    if groq_text and (
+                        (stt_engine == "openai" and not is_junk_transcript(groq_text))
+                        or looks_sane(groq_text, lang_pref)
                     ):
                         selected_text = groq_text
                         groq_used = True
                         print(
-                            "[ai-waiter-service] ✅ using Groq final"
+                            f"[ai-waiter-service] ✅ using {stt_engine} final: {groq_text[:120]}"
                         )
                 except Exception as e:
                     print(
@@ -1362,7 +1773,8 @@ async def handle_conn(ws: WebSocketServerProtocol):
                         e,
                     )
 
-            if not selected_text:
+            # nothing was said → don't fall back to the local preview model's guesses ("Thank you.")
+            if not selected_text and stt_engine not in ("no-speech", "unclear"):
                 if last_partial_text and looks_sane(
                     last_partial_text, lang_pref
                 ):
@@ -1398,258 +1810,72 @@ async def handle_conn(ws: WebSocketServerProtocol):
                             e,
                         )
 
-            if selected_text and not ws.closed:
-                # Live menu snapshot (tenant-scoped)
-                snapshot = fetch_menu_snapshot(
-                    tenant_hint, limit=MENU_SNAPSHOT_MAX
-                )
-                vocab = build_vocab_from_snapshot(snapshot)
+            # the guest released the mic but (almost) no audio arrived — a quick tap, or the mic started late.
+            # Answer anyway: a silent server left the guest staring at "Thinking…".
+            if not selected_text and closing and len(final_bytes) < 16000 and stt_engine not in ("no-speech", "unclear"):
+                stt_engine = "no-audio"
 
-                # Normalize with live vocab
-                norm_text, changes = normalize_text(
-                    selected_text,
-                    vocab=vocab,
-                    fuzzy_threshold=FUZZY_THRESHOLD,
-                )
-
-                # Record USER turn
-                push_user(tenant_hint, session_id, norm_text)
-
-                # --------- Deterministic availability path ---------
-                matches = _match_in_snapshot(norm_text, snapshot)
-                if not matches:
-                    matches = _db_fallback_search(
-                        tenant_hint, norm_text, limit=10
-                    )
-
-                if matches:
-                    reply_text = _compose_availability_reply(
-                        matches,
-                        (session_lang or last_detected_lang or "en"),
-                    )
-                    final_lang = (
-                        session_lang or last_detected_lang
-                    )
-                    if not final_lang:
-                        final_lang = (
-                            "bn"
-                            if _BENGALI.search(norm_text)
-                            else "en"
-                        )
-
-                    meta = {
-                        "model": "deterministic",
-                        "language": final_lang,
-                        "intent": "order",
-                        "items": [
-                            {
-                                "name": m.get("name"),
-                                "itemId": m.get("id"),
-                                "price": m.get("price"),
-                            }
-                            for m in matches[:5]
-                        ],
-                        "tenant": tenant_hint,
-                        "branch": branch_hint,
-                        "channel": channel_hint,
-                        "fallback": False,
-                        "source": "snapshot"
-                        if matches
-                        and matches[0]
-                        in snapshot.get("items", [])
-                        else "db",
-                    }
-                    try:
-                        await ws.send(
-                            json.dumps(
-                                {
-                                    "t": "ai_reply",
-                                    "replyText": reply_text,
-                                    "meta": {
-                                        **meta,
-                                        "normalizer": {
-                                            "changed": [
-                                                {
-                                                    "from": a,
-                                                    "to": b,
-                                                    "score": s,
-                                                }
-                                                for (
-                                                    a,
-                                                    b,
-                                                    s,
-                                                ) in changes
-                                            ]
-                                        },
-                                    },
-                                }
-                            )
-                        )
-                        print(
-                            "[ai-waiter-service] ✅ deterministic ai_reply sent"
-                        )
-                    except Exception as e:
-                        print(
-                            "[ai-waiter-service] ❌ failed to send deterministic ai_reply:",
-                            e,
-                        )
-
-                    # update context/state
-                    push_assistant(
-                        tenant_hint, session_id, reply_text
-                    )
-                    update_state(
-                        tenant_hint,
-                        session_id,
-                        meta=meta,
-                        user_text=norm_text,
-                    )
-
-                    # persist transcript + deterministic answer
-                    try:
-                        await writer_q.put(
-                            {
-                                "user": user_id,
-                                "session": session_id,
-                                "text": selected_text,
-                                "text_norm": norm_text,
-                                "norm_changes": changes,
-                                "segments": [],
-                                "ts": datetime.utcnow(),
-                                "status": "new",
-                                "engine": "deterministic",
-                                "ai": {
-                                    "replyText": reply_text,
-                                    "meta": meta,
-                                },
-                                "tenant": tenant_hint,
-                                "menu_snapshot_size": len(
-                                    snapshot.get(
-                                        "items", []
-                                    )
-                                ),
-                            }
-                        )
-                    except Exception as e:
-                        print(
-                            "[ai-waiter-service] writer queue error:",
-                            e,
-                        )
-
-                    final_sent = True
-                    return  # ⛔ no LLM
-
-                # ---------------- LLM path ----------------
-
+            # nothing clear was said → a polite "please say it again" (no guessing, no model call)
+            if not selected_text and stt_engine in ("no-speech", "unclear", "no-audio") and not ws.closed:
+                sorry_lang = "en" if (session_lang or last_detected_lang) == "en" else "bn"
+                sorry = SORRY_REPEAT[sorry_lang]
                 try:
-                    if not ws.closed:
-                        await ws.send(
-                            json.dumps(
-                                {"t": "ai_reply_pending"}
-                            )
-                        )
+                    await ws.send(json.dumps({"t": "ai_reply", "replyText": sorry, "meta": {
+                        "language": sorry_lang, "intent": "chitchat", "topic": "other", "voiceReplyText": sorry,
+                        "decision": {"showSuggestionsModal": False, "showUpsellTray": False},
+                        "cartOps": [], "items": [], "suggestions": [], "guards": [stt_engine],
+                    }}))
+                    print(f"[ai-waiter-service] 🙏 {stt_engine} → asked the guest to repeat")
                 except Exception:
                     pass
 
-                print(
-                    "[ai-waiter-service] 🧠 starting brain task…"
-                )
-
-                last_ai = {"replyText": "", "meta": {}}
+            if selected_text and not ws.closed:
                 try:
-                    history_list = get_history(
-                        tenant_hint, session_id
-                    )
-                    dialog_state = get_state(
-                        tenant_hint, session_id
-                    )
+                    await ws.send(json.dumps({"t": "ai_reply_pending"}))
+                except Exception:
+                    pass
 
-                    # ⭐ NEW: climate bucket from geo (if available)
-                    climate_bucket = None
-                    if user_geo:
-                        climate_bucket = await fetch_weather_bucket(
-                            user_geo["lat"], user_geo["lon"]
-                        )
+                climate_bucket = None
+                if user_geo:
+                    climate_bucket = await fetch_weather_bucket(user_geo["lat"], user_geo["lon"])
 
-                    # Build context + shortlists (now tz + localHour + climate aware)
-                    ctx = build_runtime_context(
-                        tenant=tenant_hint,
-                        branch=branch_hint,
-                        channel=channel_hint,
-                        lang_hint=(session_lang or last_detected_lang),
-                        dialog_state=dialog_state,
-                        user_tz=user_tz,
-                        climate_bucket=climate_bucket,
-                        user_local_hour=user_local_hour,
-                    )
-
-                    # 🔗 NEW: include persisted cart so brain can merge quantities
-                    cart_items = load_cart(tenant_hint or "unknown", session_id or "anon") or []
-                    ctx["cartItems"] = [
-                        {
-                            "itemId": (
-                                it.get("itemId")
-                                or it.get("id")
-                                or it.get("_id")
-                            ),
-                            "quantity": int(it.get("qty") or it.get("quantity") or 0),
-                        }
-                        for it in cart_items
-                        if int(it.get("qty") or it.get("quantity") or 0) > 0
-                    ]
-
-                    suggestion_candidates = build_suggestion_candidates(snapshot, ctx, limit=40)
-                    upsell_candidates = build_upsell_candidates(snapshot, ctx, dialog_state, limit=16)
-
-                    last_ai = await call_brain_and_push(
-                        ws,
-                        transcript=selected_text,
-                        transcript_norm=norm_text,
-                        norm_changes=changes,
+                turn: Dict[str, Any] = {"replyText": "", "meta": {}, "textNorm": selected_text, "normChanges": []}
+                try:
+                    turn = await run_text_turn(
+                        text=selected_text,
                         tenant=tenant_hint,
                         branch=branch_hint,
                         channel=channel_hint,
                         session_id=session_id,
                         user_id=user_id,
-                        menu_snapshot=snapshot,
-                        history=history_list,
-                        dialog_state=dialog_state,
-                        locale=(
-                            session_lang
-                            or last_detected_lang
-                        ),
-                        context=ctx,
-                        suggestion_candidates=(
-                            suggestion_candidates
-                        ),
-                        upsell_candidates=(
-                            upsell_candidates
-                        ),
+                        locale=(session_lang or last_detected_lang),
+                        user_tz=user_tz,
+                        user_local_hour=user_local_hour,
+                        climate_bucket=climate_bucket,
+                        cart_items=cart_hint,
+                        table=table_hint,
+                        shown=shown_hint,
                     )
+                    meta = turn.get("meta") or {}
                     print(
-                        "[ai-waiter-service] 🧠 brain task completed"
+                        f"[ai-waiter-service] 🧠 reply='{turn['replyText'][:80]}' intent={meta.get('intent')} "
+                        f"topic={meta.get('topic')} fallback={meta.get('fallback')}"
                     )
+                    if not ws.closed:
+                        await ws.send(
+                            json.dumps({"t": "ai_reply", "replyText": turn["replyText"], "meta": meta}, default=str)
+                        )
+                        print("[ai-waiter-service] ✅ ai_reply sent")
                 except Exception as e:
-                    print(
-                        "[ai-waiter-service] ❌ brain task failed:",
-                        e,
-                    )
+                    print("[ai-waiter-service] ❌ waiter turn failed:", e)
                     import traceback
 
                     traceback.print_exc()
-
-                # update context + dialog state
-                push_assistant(
-                    tenant_hint,
-                    session_id,
-                    last_ai.get("replyText") or "",
-                )
-                update_state(
-                    tenant_hint,
-                    session_id,
-                    meta=last_ai.get("meta"),
-                    user_text=norm_text,
-                )
+                    if not ws.closed:
+                        try:
+                            await ws.send(json.dumps({"t": "ai_reply_error", "message": "AI unavailable"}))
+                        except Exception:
+                            pass
 
                 # store for finetune/export
                 try:
@@ -1658,33 +1884,19 @@ async def handle_conn(ws: WebSocketServerProtocol):
                             "user": user_id,
                             "session": session_id,
                             "text": selected_text,
-                            "text_norm": norm_text,
-                            "norm_changes": changes,
+                            "text_norm": turn.get("textNorm"),
+                            "norm_changes": turn.get("normChanges"),
                             "segments": [],
                             "ts": datetime.utcnow(),
                             "status": "new",
-                            "engine": "groq"
-                            if groq_used
-                            else (
-                                "local-partial"
-                                if selected_segs
-                                == []
-                                else "local-full"
-                            ),
-                            "ai": last_ai,
+                            "engine": stt_engine if groq_used else ("local-partial" if selected_segs == [] else "local-full"),
+                            "ai": {"replyText": turn.get("replyText"), "meta": turn.get("meta")},
                             "tenant": tenant_hint,
-                            "menu_snapshot_size": len(
-                                snapshot.get(
-                                    "items", []
-                                )
-                            ),
+                            "menu_snapshot_size": turn.get("snapshotSize"),
                         }
                     )
                 except Exception as e:
-                    print(
-                        "[ai-waiter-service] writer queue error:",
-                        e,
-                    )
+                    print("[ai-waiter-service] writer queue error:", e)
 
                 final_sent = True
             else:

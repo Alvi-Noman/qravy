@@ -6,6 +6,7 @@ const BRANCH_BASE_CAPS = [
     // Orders / service requests basic ops
     'orders:read',
     'orders:update',
+    'orders:create',
     'serviceRequests:read',
     'serviceRequests:update',
     // MENU & CATEGORIES — IMPORTANT: include READ
@@ -35,6 +36,7 @@ const ROLE_CAPS = {
         'reports:view',
         'orders:read',
         'orders:update',
+        'orders:create',
         'serviceRequests:read',
         'serviceRequests:update',
         'menuItems:read',

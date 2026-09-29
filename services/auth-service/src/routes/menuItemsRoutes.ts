@@ -10,6 +10,8 @@ import {
   bulkSetAvailability,
   bulkDeleteMenuItems,
   bulkChangeCategory,
+  reorderMenuItems,
+  bulkSetItemHours,
 } from '../controllers/menuItemsController.js';
 import { authenticateJWT } from '../middleware/auth.js';
 import { applyScope } from '../middleware/scope.js';
@@ -22,6 +24,8 @@ import {
   bulkDeleteSchema,
   bulkCategorySchema,
   listMenuItemsQuerySchema,
+  reorderSchema,
+  bulkHoursSchema,
 } from '../validation/schemas.js';
 
 const router: express.Router = express.Router();
@@ -99,6 +103,26 @@ router.post(
   authorize('menuItems:update'),
   validateRequest(bulkCategorySchema),
   bulkChangeCategory
+);
+
+// Serving hours for many items at once (e.g. breakfast items)
+router.post(
+  '/menu-items/bulk/hours',
+  authenticateJWT,
+  applyScope,
+  authorize('menuItems:update'),
+  validateRequest(bulkHoursSchema),
+  bulkSetItemHours
+);
+
+// Drag-and-drop display order (items of one category)
+router.post(
+  '/menu-items/reorder',
+  authenticateJWT,
+  applyScope,
+  authorize('menuItems:update'),
+  validateRequest(reorderSchema),
+  reorderMenuItems
 );
 
 export default router;

@@ -5,6 +5,8 @@ import type { CategoryDoc } from '../models/Category.js';
 import type { TenantDoc } from '../models/Tenant.js';
 import type { UserDoc } from '../models/User.js';
 import type { v1 } from '@qravy/shared';
+import { DEFAULT_RESET_TIME, DEFAULT_TIMEZONE, tenantServicePeriods } from './availability.js';
+import { kitchenSettings } from '../services/orders/waitTime.js';
 
 /** Convert a MongoDB ObjectId to a string. */
 function toId(id?: ObjectId): string {
@@ -46,8 +48,30 @@ export function toMenuItemDTO(
       name: v.name,
       price: v.price,
       imageUrl: v.imageUrl,
+      ...(Array.isArray(v.optionValues) && v.optionValues.length ? { optionValues: v.optionValues } : {}),
+      ...(typeof v.prepMinutes === 'number' ? { prepMinutes: v.prepMinutes } : {}),
     })),
+    ...(Array.isArray(doc.options) && doc.options.length ? { options: doc.options } : {}),
+    ...(Array.isArray(doc.modifierGroups) && doc.modifierGroups.length
+      ? {
+          modifierGroups: doc.modifierGroups.map((g) => ({
+            id: g.id,
+            name: g.name,
+            min: g.min,
+            max: g.max,
+            options: g.options.map((o) => ({ id: o.id, name: o.name, price: o.price })),
+          })),
+        }
+      : {}),
     tags: doc.tags ?? [],
+    ...(doc.signature ? { signature: true } : {}),
+    ...(typeof doc.prepMinutes === 'number' ? { prepMinutes: doc.prepMinutes } : {}),
+    ...(typeof doc.sortOrder === 'number' ? { sortOrder: doc.sortOrder } : {}),
+    ...(doc.availability?.length ? { availability: doc.availability } : {}),
+    ...(doc.offline ? { offline: true } : {}),
+    ...(doc.servicePeriodIds?.length ? { servicePeriodIds: doc.servicePeriodIds } : {}),
+    ...(doc.availableFrom ? { availableFrom: doc.availableFrom } : {}),
+    ...(doc.availableUntil ? { availableUntil: doc.availableUntil } : {}),
     restaurantId: toId(doc.restaurantId),
 
     // Branch scope
@@ -86,6 +110,18 @@ export function toCategoryDTO(doc: CategoryDoc): CategoryDTOWithExtras {
   return {
     id: toId(doc._id),
     name: doc.name,
+    ...(doc.description ? { description: doc.description } : {}),
+    ...(typeof doc.sortOrder === 'number' ? { sortOrder: doc.sortOrder } : {}),
+    ...(doc.availability?.length ? { availability: doc.availability } : {}),
+    ...(doc.servicePeriodIds?.length ? { servicePeriodIds: doc.servicePeriodIds } : {}),
+    ...(doc.branchAvailability?.length
+      ? {
+          branchAvailability: doc.branchAvailability.map((b) => ({
+            locationId: toId(b.locationId),
+            availability: b.availability ?? [],
+          })),
+        }
+      : {}),
 
     // NEW: expose channelScope to client
     channel: scope === 'all' || scope == null ? 'both' : scope,
@@ -115,6 +151,13 @@ export function toTenantDTO(doc: TenantDoc): v1.TenantDTO {
     name: doc.name,
     subdomain: doc.subdomain,
     onboardingCompleted: !!doc.onboardingCompleted,
+    menuNotes: doc.menuNotes ?? [],
+    waiterKnowledge: doc.waiterKnowledge ?? [],
+    timezone: doc.timezone ?? DEFAULT_TIMEZONE,
+    openingHours: doc.openingHours ?? [],
+    dailyResetTime: doc.dailyResetTime ?? DEFAULT_RESET_TIME,
+    kitchen: kitchenSettings(doc),
+    servicePeriods: tenantServicePeriods(doc),
 
     // trial info
     trialStartedAt: doc.trialStartedAt ? doc.trialStartedAt.toISOString() : null,

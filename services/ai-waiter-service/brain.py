@@ -1,2429 +1,1706 @@
+"""
+Qravy virtual waiter — the "brain".
+
+One grounded LLM call per guest turn:
+  static playbook (system)  →  restaurant + full menu catalog (system, cache-friendly)
+  →  recent conversation  →  this turn's live state (cart, time, what's not orderable, …)
+The model answers with a strict JSON schema (actions first, then the spoken reply).
+Every action is validated against the real menu/cart before it reaches the UI, and a few
+high-stakes moments (order confirmation, cart summaries) have deterministic guards.
+
+Public API: generate_reply(...) → {"replyText": str, "meta": {...}}  (shape used by the storefront)
+"""
 from __future__ import annotations
 
-import os
+import asyncio
 import json
+import os
 import re
-from typing import Any, Dict, Optional, List, Tuple
+from datetime import datetime
+from typing import Any, Dict, List, Optional, Tuple
+
 import httpx
+
+import checkout as co
+import tray as _tray
+from bn_translit import to_bangla_script
+from recommender import (
+    allergy_guide,
+    ALLERGENS,
+    DIETS,
+    MOODS,
+    SPICE,
+    GuestProfile,
+    OrderStats,
+    Pick,
+    RecoState,
+    build_plan,
+    complements,
+    decide_mode,
+    dish_facts,
+    extract_prefs,
+    is_decline,
+    rank,
+    violations,
+)
+from waiter_knowledge import (
+    MenuIndex,
+    cart_lines,
+    explicitly_asked,
+    find_mentions,
+    is_affirmative,
+    is_done_ordering,
+    is_explicit_confirm,
+    is_signature,
+    kind_items,
+    last_assistant_asked_to_confirm,
+    missing_kinds,
+    render_cart,
+    render_catalog,
+    render_price_guide,
+    render_restaurant,
+    reply_language,
+)
+import wait_talk as wtalk
+from wait_time import ORDER_WORDS, PLACED_Q, asks_quickest, asks_time
 
 # --------------------------- Configuration ---------------------------
 
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
 OPENAI_BASE = os.environ.get("OPENAI_BASE", "https://api.openai.com").rstrip("/")
 OPENAI_CHAT_MODEL = os.environ.get("OPENAI_CHAT_MODEL", "gpt-4.1-mini").strip()
-
-BRAIN_MAX_TOKENS = int(os.environ.get("BRAIN_MAX_TOKENS", "1024"))
-BRAIN_TIMEOUT_S = float(os.environ.get("BRAIN_TIMEOUT_S", "8.0"))
-BRAIN_TEMP = float(os.environ.get("BRAIN_TEMP", "0.2"))
-BRAIN_TOP_P = float(os.environ.get("BRAIN_TOP_P", "1.0"))
-
-INTENT_MODEL = os.environ.get("OPENAI_INTENT_MODEL", OPENAI_CHAT_MODEL).strip()
-INTENT_MAX_TOKENS = int(os.environ.get("INTENT_MAX_TOKENS", "32"))
-INTENT_TIMEOUT_S = float(os.environ.get("INTENT_TIMEOUT_S", "2.0"))
-INTENT_CONF_THRESHOLD = float(os.environ.get("INTENT_CONF_THRESHOLD", "0.6"))
-
 OPENAI_CHAT_URL = f"{OPENAI_BASE}/v1/chat/completions"
 
-print("[brain] loaded from:", __file__)
-print("[brain] OPENAI_BASE=", OPENAI_BASE)
-print("[brain] OPENAI_CHAT_MODEL=", OPENAI_CHAT_MODEL)
-print("[brain] BRAIN_TEMP=", BRAIN_TEMP)
-print("[brain] INTENT_MODEL=", INTENT_MODEL)
-
-# --------------------------- Debug helpers ---------------------------
-
-_DEBUG_KEYWORDS = ("calamari", "shrimp")
-
-
-def _debug_has_kw(name: str) -> bool:
-    if not name:
-        return False
-    n = name.lower()
-    return any(k in n for k in _DEBUG_KEYWORDS)
-
-
-def _debug_log_kw(prefix: str, data: Any):
-    try:
-        if isinstance(data, dict):
-            name = (data.get("name") or data.get("title") or "").strip()
-            if _debug_has_kw(name):
-                print(prefix, json.dumps(data, ensure_ascii=False))
-        elif isinstance(data, list):
-            for d in data:
-                _debug_log_kw(prefix, d)
-        else:
-            s = str(data)
-            if _debug_has_kw(s):
-                print(prefix, s)
-    except Exception as e:
-        print("[debug][error]", prefix, "log failed:", e)
-
-
-# --------------------------- Small utils ---------------------------
-
-
-def _clamp(s: str, max_chars: int) -> str:
-    if not s:
-        return ""
-    return s if len(s) <= max_chars else (s[: max_chars - 1] + "…")
-
-
-_BENGALI = re.compile(r"[\u0980-\u09FF]")
-
-
-def _guess_lang(text: str) -> str:
-    return "bn" if _BENGALI.search(text or "") else "en"
-
-
-def _safe_snip(s: str | bytes, n: int = 800) -> str:
-    if s is None:
-        return ""
-    if isinstance(s, bytes):
-        try:
-            s = s.decode("utf-8", errors="replace")
-        except Exception:
-            s = str(s)
-    return s if len(s) <= n else (s[:n] + "…")
-
-
-# ---------------------- Bangla quantity helpers ----------------------
-
-_BN_DIGIT_MAP = str.maketrans("০১২৩৪৫৬৭৮৯", "0123456789")
-
-_BN_QTY_WORDS = {
-    # 1
-    "এক": 1,
-    "একটা": 1,
-    "একটি": 1,
-    "১": 1,
-    "১টা": 1,
-    # 2
-    "দুই": 2,
-    "দুইটা": 2,
-    "২": 2,
-    "২টা": 2,
-    # 3
-    "তিন": 3,
-    "তিনটা": 3,
-    "৩": 3,
-    "৩টা": 3,
-    # 4
-    "চার": 4,
-    "চারটা": 4,
-    "৪": 4,
-    "৪টা": 4,
-    # 5
-    "পাঁচ": 5,
-    "পাঁচটা": 5,
-    "৫": 5,
-    "৫টা": 5,
-    # 6
-    "ছয়": 6,
-    "ছয়": 6,
-    "ছয়টা": 6,
-    "ছয়টা": 6,
-    "৬": 6,
-    "৬টা": 6,
-    # 7
-    "সাত": 7,
-    "সাতটা": 7,
-    "৭": 7,
-    "৭টা": 7,
-    # 8
-    "আট": 8,
-    "আটটা": 8,
-    "৮": 8,
-    "৮টা": 8,
-    # 9
-    "নয়": 9,
-    "নয়": 9,
-    "নয়টা": 9,
-    "নয়টা": 9,
-    "৯": 9,
-    "৯টা": 9,
-    # 10
-    "দশ": 10,
-    "দশটা": 10,
-    "১০": 10,
-    "১০টা": 10,
-}
-
-
-def _parse_quantity_any(value: Any, *, allow_zero: bool = False) -> Optional[int]:
-    """
-    Parse quantity from:
-    - int / float
-    - strings with ASCII or Bangla digits (e.g. '2', '২', '২টা')
-    - common Bangla words ('দুইটা', 'একটি', etc.)
-    Returns None if nothing valid found.
-    """
-    if value is None:
-        return None
-
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
-        n = int(value)
-        if n < 0:
-            return None
-        if n == 0 and not allow_zero:
-            return None
-        return n
-
-    s = str(value).strip()
-    if not s:
-        return None
-
-    s_norm = s.translate(_BN_DIGIT_MAP)
-    m = re.search(r"(-?\d+)", s_norm)
-    if m:
-        n = int(m.group(1))
-        if n < 0:
-            return None
-        if n == 0 and not allow_zero:
-            return None
-        return n
-
-    token = s.lower()
-    if token in _BN_QTY_WORDS:
-        n = _BN_QTY_WORDS[token]
-        if n == 0 and not allow_zero:
-            return None
-        return n
-
-    for word, n in _BN_QTY_WORDS.items():
-        if token.startswith(word):
-            if n == 0 and not allow_zero:
-                return None
-            return n
-
-    return None
-
-
-def _parse_delta_any(value: Any) -> Optional[int]:
-    """
-    Parse signed delta for 'delta' ops. Supports ASCII/Bangla digits.
-    """
-    if value is None:
-        return None
-
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
-        d = int(value)
-        return d if d != 0 else None
-
-    s = str(value).strip()
-    if not s:
-        return None
-
-    s_norm = s.translate(_BN_DIGIT_MAP)
-    m = re.search(r"(-?\d+)", s_norm)
-    if not m:
-        return None
-
-    d = int(m.group(1))
-    return d if d != 0 else None
-
-
-def _is_very_short_turn(transcript: str) -> bool:
-    return len((transcript or "").strip()) <= 24
-
-
-def _is_price_or_availability_query(transcript: str) -> bool:
-    if not transcript:
-        return False
-    t = (transcript or "").strip().lower()
-    if not t or len(t) > 140:
-        return False
-
-    has_q = "?" in t
-    price_terms = ("price", "how much", "tk", "taka", "টাকা", "দাম")
-    avail_terms = ("available", "availability", "in stock", "আছে")
-
-    if any(p in t for p in price_terms) or any(a in t for a in avail_terms):
-        return True
-
-    if not has_q and t.endswith("আছে"):
-        return True
-
-    return False
-
-
-# --------------------------- Candidate helpers ---------------------------
-
-
-def _normalize_id(raw: Any) -> str:
-    return str(raw).strip() if raw is not None else ""
-
-
-def _build_candidate_index(
-    suggestion_candidates: Optional[List[Dict[str, Any]]],
-    upsell_candidates: Optional[List[Dict[str, Any]]],
-) -> Tuple[Dict[str, Dict[str, Any]], Dict[str, str]]:
-    """
-    Build:
-    by_id: itemId -> candidate dict
-    name_to_id: normalized name -> itemId
-    """
-    by_id: Dict[str, Dict[str, Any]] = {}
-    name_to_id: Dict[str, str] = {}
-
-    def ingest_one(c: Dict[str, Any]):
-        item_id = _normalize_id(
-            c.get("itemId") or c.get("id") or c.get("_id")
-        )
-        title = (c.get("title") or c.get("name") or "").strip()
-        if not item_id:
-            return
-
-        if item_id not in by_id:
-            by_id[item_id] = c
-
-        if title:
-            key = title.lower()
-            if key:
-                name_to_id[key] = item_id
-
-        # aliases
-        for alias in c.get("aliases") or []:
-            a = (alias or "").strip().lower()
-            if a:
-                name_to_id[a] = item_id
-
-        if _debug_has_kw(title):
-            print("[debug][candidate_index] ingest:", title, "->", item_id)
-
-    for src in (suggestion_candidates or []):
-        ingest_one(src)
-    for src in (upsell_candidates or []):
-        ingest_one(src)
-
-    print(
-        "[debug][candidate_index] total_by_id:",
-        len(by_id),
-        "total_name_to_id:",
-        len(name_to_id),
-    )
-    return by_id, name_to_id
-
-
-# ----------------------- Menu canonicalization helpers -----------------------
-
-
-def _build_menu_maps(menu_snapshot: Optional[Dict[str, Any]]):
-    """
-    Build lookup maps from the full menu snapshot:
-    id -> canonical name
-    lower(name/alias) -> id
-    id -> aliases (including its own name)
-    """
-    id_to_name: Dict[str, str] = {}
-    token_to_id: Dict[str, str] = {}
-    id_to_aliases: Dict[str, List[str]] = {}
-
-    if not menu_snapshot:
-        return id_to_name, token_to_id, id_to_aliases
-
-    for it in (menu_snapshot.get("items") or []):
-        _id = _normalize_id(
-            it.get("id") or it.get("_id") or it.get("itemId")
-        )
-        name = (it.get("name") or "").strip()
-        if not _id or not name:
-            continue
-        aliases = (it.get("aliases") or [])[:]
-        all_aliases = list({name, *aliases})
-
-        id_to_name[_id] = name
-        id_to_aliases[_id] = all_aliases
-
-        for tok in all_aliases:
-            t = (tok or "").strip().lower()
-            if t:
-                token_to_id[t] = _id
-
-        if _debug_has_kw(name):
-            print("[debug][menu_maps] item:", name, "->", _id)
-
-    print("[debug][menu_maps] built ids:", len(id_to_name))
-    return id_to_name, token_to_id, id_to_aliases
-
-
-def _canonicalize_reply_text(
-    reply_text: str,
-    model_items: Optional[List[Dict[str, Any]]],
-    menu_snapshot: Optional[Dict[str, Any]],
-) -> str:
-    """
-    Replace any mentioned item aliases in replyText with their canonical menu names.
-    Only uses items[] that survived validation.
-    """
-    if not reply_text or not menu_snapshot or not model_items:
-        return reply_text
-
-    try:
-        id_to_name, _, id_to_aliases = _build_menu_maps(menu_snapshot)
-        if not id_to_name:
-            return reply_text
-
-        intended_ids: List[str] = []
-        for it in model_items:
-            _id = _normalize_id(it.get("itemId"))
-            if _id and _id in id_to_name:
-                intended_ids.append(_id)
-
-        if not intended_ids:
-            return reply_text
-
-        out = reply_text
-        for _id in intended_ids:
-            canonical = id_to_name.get(_id)
-            if not canonical:
-                continue
-            aliases = id_to_aliases.get(_id, [])
-            for alias in aliases:
-                a = (alias or "").strip()
-                if not a or a == canonical:
-                    continue
-                pattern = re.compile(re.escape(a), flags=re.IGNORECASE)
-                out = pattern.sub(canonical, out)
-
-        if _debug_has_kw(reply_text):
-            print("[debug][canonicalize_replyText] before:", reply_text)
-            print("[debug][canonicalize_replyText] after :", out)
-
-        return out
-    except Exception:
-        return reply_text
-
-
-# -------- Availability-aware fix: don't lie about items that exist ---------
-
-
-def _fix_false_unavailability(
-    reply_text: str,
-    menu_snapshot: Optional[Dict[str, Any]],
-) -> str:
-    """
-    If the model claims 'X not in menu / not available' but X clearly exists and
-    is active+visible, strip that sentence fragment.
-    """
-    if not reply_text or not menu_snapshot:
-        return reply_text
-
-    try:
-        valid_names: List[str] = []
-
-        for it in (menu_snapshot.get("items") or []):
-            name = (it.get("name") or "").strip()
-            if not name:
-                continue
-
-            # treat as available if active & not hidden (or explicit available=True)
-            status = (it.get("status") or "active").lower()
-            hidden = bool(it.get("hidden"))
-            available = it.get("available", True)
-            if status == "active" and not hidden and available:
-                valid_names.append(name)
-
-        if not valid_names:
-            return reply_text
-
-        text = reply_text
-        lower = reply_text.lower()
-        neg_patterns = ("নেই", "not available", "nai", " নেই", " নাই")
-
-        for name in valid_names:
-            name_l = name.lower()
-            if name_l not in lower:
-                continue
-
-            for neg in neg_patterns:
-                # name ... neg OR neg ... name (loose window)
-                if re.search(
-                    re.escape(name_l) + r".{0,16}" + re.escape(neg),
-                    lower,
-                ) or re.search(
-                    re.escape(neg) + r".{0,16}" + re.escape(name_l),
-                    lower,
-                ):
-                    # remove the full sentence containing that claim
-                    pattern = (
-                        r"[^।.!?]*" + re.escape(name) +
-                        r"[^।.!?]*(?:।|\.|!|\?)"
-                    )
-                    new_text = re.sub(pattern, "", text).strip()
-                    if new_text:
-                        text = new_text
-                        lower = text.lower()
-                    break
-
-        return text or reply_text
-    except Exception:
-        return reply_text
-
-
-# -------------------- Dialog State Helper ----------------------
-
-
-def _build_state_line(
-    dialog_state: Optional[Dict[str, Any]]
-) -> Optional[Dict[str, str]]:
-    if not dialog_state:
-        return None
-    try:
-        blob = json.dumps(dialog_state, ensure_ascii=False)
-        return {"role": "system", "content": f"[DialogState]: {blob}"}
-    except Exception:
-        return None
-
-
-def _extract_last_intent(
-    context: Optional[Dict[str, Any]],
-    dialog_state: Optional[Dict[str, Any]],
-) -> Optional[str]:
-    for src in (dialog_state, context):
-        if isinstance(src, dict):
-            v = src.get("lastIntent") or src.get("last_intent")
-            if isinstance(v, str) and v.strip():
-                return v.strip().lower()
-    return None
-
-
-def _extract_locked_intent(context: Optional[Dict[str, Any]]) -> Optional[str]:
-    if not isinstance(context, dict):
-        return None
-    v = context.get("lockedIntent") or context.get("locked_intent")
-    if not isinstance(v, str):
-        return None
-    v = v.strip().lower()
-    if v in ("order", "menu", "suggestions", "chitchat"):
-        return v
-    return None
-
-
-# -------------------- NEW: existing cart extractor --------------------
-
-
-def _extract_cart_from_context(ctx: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """
-    Read existing cart items from context/cart snapshot and normalize into
-    [{ itemId, name, quantity, price }].
-    """
-    if not ctx:
-        return []
-
-    raw = ctx.get("cartItems") or ctx.get("cart") or []
-    items: List[Dict[str, Any]] = []
-
-    for it in raw:
-        if not it or not isinstance(it, dict):
-            continue
-
-        item_id = str(it.get("itemId") or it.get("id") or "").strip()
-        name = (it.get("name") or "").strip()
-        qty = it.get("quantity") or it.get("qty") or 1
-
-        if not item_id and not name:
-            continue
-
-        try:
-            q = int(qty)
-        except Exception:
-            q = 1
-
-        items.append(
-            {
-                "itemId": item_id or None,
-                "name": name,
-                "quantity": q,
-                "price": it.get("price"),
-            }
-        )
-
-    return items
-
-
-# -------------------- Language helpers & system prompt ----------------------
-
-
-def _resolve_lang_hint(locale: Optional[str], transcript: str) -> str:
-    v = (locale or "").strip().lower()
-    if v in ("bn", "en"):
-        return v
-    return _guess_lang(transcript)
-
-
-_LANG_DIRECTIVE = {
-    "bn": "Respond ONLY in Bangla (Bengali).",
-    "en": "Respond ONLY in English.",
-}
-
-
-def _build_system_with_lang(
-    lang_hint: str,
-    locked_intent: Optional[str],
-) -> str:
-    directive = _LANG_DIRECTIVE.get(
-        lang_hint,
-        "Mirror the user's language and do not switch mid-conversation.",
-    )
-
-    if locked_intent in ("order", "menu", "suggestions", "chitchat"):
-        locked_intent_clause = (
-            f" The backend has ALREADY decided the intent for this turn as "
-            f"\"{locked_intent}\" (lockedIntent). You MUST treat this as FINAL: "
-            f"- Set your \"intent\" field to exactly \"{locked_intent}\".\n"
-            f"- Make sure replyText, items, suggestions, upsell, and decision are all consistent with \"{locked_intent}\".\n"
-            f"- Do NOT contradict or override lockedIntent."
-        )
-    else:
-        locked_intent_clause = (
-            " The backend will derive the final intent from the user's request and context. "
-            "Your \"intent\" is advisory and may be overridden."
-        )
-
-    concision_clause = (
-        " Keep replyText short and direct (max 280 chars)."
-        " Never list more than 5 items in suggestions or upsell."
-        " For menu/availability queries, show a concise subset instead of the full menu."
-    )
-
-    return (
-        "You are the Qravy AI Waiter brain. "
-        "You MUST interpret the user's utterance (Bangla, English, or mixed) and map it to REAL menu items "
-        "from the provided unified candidates.\n"
-        "When the user mentions an item in Bangla, Banglish, or phonetic form (e.g. \"ক্রিস্পি কলামারি\", \"কলামারি\", "
-        "\"ডাইনামাইট শ্রিম্প\"), you MUST resolve it to the closest matching candidate item name such as "
-        "\"Crispy Calamari\" or \"Dynamite Shrimp\". "
-        "Be robust to minor ASR noise and spelling errors: always choose the best-matching item from the candidates "
-        "by semantic/phonetic similarity instead of defaulting to a random or popular item.\n"
-        "If lockedIntent=\"order\", you MUST reflect the user's requested items in the items[] array using those "
-        "resolved candidate IDs and quantities.\n"
-        "You receive a single [INPUT] JSON from the server with keys like: "
-        "userTranscript, Context, SuggestionCandidates, UpsellCandidates, MenuHint. "
-        "Context may include timeOfDay, climate, channel, tenant, branch, languageHint, lastIntent, lockedIntent, etc. "
-        "Use Context and the provided candidates to propose a helpful reply. "
-        "Use SuggestionCandidates and UpsellCandidates as the primary pools when proposing items, "
-        "suggestions, or upsells, or filling items[]. "
-        "Use ONLY the unified AllowedCandidates (merged shortlist) provided by the backend. "
-        "Never invent items outside this set, even if MenuHint.items exist. "
-        "Never invent items or IDs outside these provided sets. "
-        "Always respect channel, visibility, and availability implied by the candidates. "
-        "Your entire reply MUST be exactly one valid JSON object with this shape: "
-        "{"
-        "\"replyText\": string (<= 280 chars), "
-        "\"intent\": \"order\"|\"menu\"|\"suggestions\"|\"chitchat\", "
-        "\"language\": \"bn\"|\"en\", "
-        "\"items\": ["
-        " {\"name\": string, \"itemId\": string, \"quantity\": integer >=1}"
-        "], "
-        "\"suggestions\": ["
-        " {\"title\": string, \"subtitle\"?: string, \"itemId\"?: string, \"categoryId\"?: string, \"price\"?: number}"
-        "], "
-        "\"upsell\": ["
-        " {\"title\": string, \"subtitle\"?: string, \"itemId\"?: string, \"categoryId\"?: string, \"price\"?: number}"
-        "], "
-        "\"decision\": {"
-        " \"showSuggestionsModal\"?: boolean, "
-        " \"showUpsellTray\"?: boolean"
-        "}, "
-        "\"cartOps\"?: ["
-        " {"
-        " \"op\": \"add\"|\"set\"|\"delta\"|\"remove\", "
-        " \"itemId\"?: string, "
-        " \"name\"?: string, "
-        " \"quantity\"?: integer, "
-        " \"delta\"?: integer"
-        " }"
-        "], "
-        "\"clearCart\"?: boolean, "
-        "\"notes\"?: string, "
-        "\"voiceReplyText\"?: string "
-        "}. "
-        "For Bangla users (language=\"bn\"), UI item names in replyText MUST remain exactly as in candidates/menu "
-        "(English or mixed) so they match the real menu. "
-        "In addition, when language=\"bn\" you MUST ALWAYS provide \"voiceReplyText\" as a natural Bangla-script reading "
-        "of the FULL replyText, including phonetic Bangla spellings for any English menu item names. "
-        "If language=\"en\", you MAY omit voiceReplyText or set it equal to replyText. "
-        "Do NOT add items that are not in candidates/menu. "
-        "Only suggest clearing the cart when the user clearly asks to cancel everything. "
-        "If the user specifies a number or quantity in their request (in any language), "
-        "use that count to limit how many suggestions or items you include."
-        + concision_clause
-        + locked_intent_clause
-        + " "
-        + directive
-    )
-
-
-# -------------------- Intent inference (heuristic fallback) ----------------------
-
-
-def _infer_intent_from_query(
-    transcript: str,
-    *,
-    has_items: bool,
-    last_intent: Optional[str],
-) -> str:
-    t = (transcript or "").strip()
-    if not t:
-        return "chitchat"
-
-    if has_items:
-        return "order"
-
-    if "?" in t:
-        return "menu"
-
-    if last_intent in (
-        "menu",
-        "suggestions",
-        "availability",
-        "availability_check",
-    ):
-        return "chitchat"
-
-    if _is_very_short_turn(t) and not has_items:
-        return "chitchat"
-
-    return "chitchat"
-
-
-# -------------------- Lightweight LLM intent classifier ----------------------
-
-
-async def _call_openai_intent(messages: List[Dict[str, str]]) -> str:
-    if not OPENAI_API_KEY:
-        raise RuntimeError("OPENAI_API_KEY is not set")
-
-    headers = {
-        "Authorization": f"Bearer {OPENAI_API_KEY}",
-        "Content-Type": "application/json",
-    }
-
-    payload = {
-        "model": INTENT_MODEL or OPENAI_CHAT_MODEL,
-        "messages": messages,
-        "max_tokens": INTENT_MAX_TOKENS,
-        "temperature": 0.0,
-        "top_p": 1.0,
-        "stream": False,
-        "response_format": {"type": "json_object"},
-    }
-
-    try:
-        print(
-            "[brain:intent] >>>",
-            _safe_snip(json.dumps(payload, ensure_ascii=False)),
-        )
-    except Exception:
-        pass
-
-    async with httpx.AsyncClient(timeout=INTENT_TIMEOUT_S) as client:
-        r = await client.post(
-            OPENAI_CHAT_URL,
-            headers=headers,
-            json=payload,
-        )
-        print("[brain:intent] HTTP", r.status_code)
-        print("[brain:intent] <<<", _safe_snip(r.text))
-        r.raise_for_status()
-        data = r.json()
-
-    return (
-        data.get("choices", [{}])[0]
-        .get("message", {})
-        .get("content", "")
-        .strip()
-    )
-
-
-async def _classify_intent_llm(
-    transcript: str,
-    last_intent: Optional[str],
-    context: Optional[Dict[str, Any]],
-) -> Tuple[Optional[str], float]:
-    transcript = (transcript or "").strip()
-    if not transcript:
-        return None, 0.0
-
-    ctx: Dict[str, Any] = {}
-    if isinstance(context, dict):
-        for k in ("timeOfDay", "channel", "tenant", "branch", "languageHint"):
-            if k in context:
-                ctx[k] = context[k]
-        locked = context.get("lockedIntent") or context.get("locked_intent")
-        if locked:
-            ctx["lockedIntentUpstream"] = locked
-
-    if last_intent:
-        ctx["lastIntent"] = last_intent
-
-    system_msg = (
-        "You are a lightweight intent classifier for Qravy AI Waiter.\n"
-        "Classify the user's latest message into one of these intents:\n"
-        "- \"order\": user is trying to place or modify an order, add items, quantities, confirm.\n"
-        "- \"menu\": user is asking about availability, price, ingredients, or menu info.\n"
-        "- \"suggestions\": user is asking for recommendations or 'what to eat/drink'.\n"
-        "- \"chitchat\": greetings, thanks, small talk, or anything not related to ordering/menu.\n"
-        "Use the semantics of the message and the provided lastIntent/context. "
-        "Be conservative but do NOT rely on hardcoded keywords; infer from meaning.\n"
-        "Return ONLY a single JSON object like:\n"
-        "{ \"intent\": \"order\"|\"menu\"|\"suggestions\"|\"chitchat\", \"confidence\": 0.0-1.0 }"
-    )
-
-    user_payload = {
-        "userTranscript": transcript,
-        "Context": ctx or None,
-    }
-
-    messages = [
-        {"role": "system", "content": system_msg},
-        {
-            "role": "user",
-            "content": json.dumps(
-                user_payload,
-                ensure_ascii=False,
-            ),
+BRAIN_MAX_TOKENS = int(os.environ.get("BRAIN_MAX_TOKENS", "1800"))
+BRAIN_TIMEOUT_S = float(os.environ.get("BRAIN_TIMEOUT_S", "10.0"))
+BRAIN_TEMP = float(os.environ.get("BRAIN_TEMP", "0.2"))
+BRAIN_RETRIES = int(os.environ.get("BRAIN_RETRIES", "1"))
+# Strict JSON-schema structured outputs; falls back to json_object if the endpoint rejects it.
+BRAIN_STRUCTURED = os.environ.get("BRAIN_STRUCTURED", "1") == "1"
+HISTORY_MESSAGES = int(os.environ.get("BRAIN_HISTORY_MESSAGES", "12"))
+
+print("[brain] model=", OPENAI_CHAT_MODEL, "base=", OPENAI_BASE, "structured=", BRAIN_STRUCTURED)
+
+INTENTS = ("order", "menu", "suggestions", "chitchat")
+TOPICS = (
+    "item_question", "dietary", "price", "recommendation", "availability", "order_change", "order_review",
+    "confirm_order", "cancel_order", "special_request", "service_request", "restaurant_info", "greeting",
+    "thanks", "wait_time", "other",
+)
+SERVICE_TYPES = ("bill", "water", "call_staff", "cutlery", "napkins", "condiments", "cleanup", "other")
+
+# --------------------------- Output schema ---------------------------
+
+_STR = {"type": "string"}
+RESPONSE_SCHEMA: Dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": [
+        "topic", "intent", "language", "mentionedItems", "cartOps", "clearCart", "confirmOrder", "checkout", "understood", "answerItems",
+        "serviceRequest", "suggestions", "guestPrefs", "replyText", "voiceReplyText",
+    ],
+    "properties": {
+        "topic": {"type": "string", "enum": list(TOPICS)},
+        "intent": {"type": "string", "enum": list(INTENTS)},
+        "language": {"type": "string", "enum": ["bn", "en"]},
+        "mentionedItems": {"type": "array", "items": _STR},
+        "cartOps": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["op", "item", "line", "quantity", "variant", "note", "removeNote", "choices"],
+                "properties": {
+                    "op": {"type": "string", "enum": ["add", "set", "sub", "remove", "note", "edit"]},
+                    "item": _STR,
+                    "line": _STR,
+                    "quantity": {"type": "integer"},
+                    "note": _STR,
+                    "removeNote": {"type": "boolean"},
+                    "choices": {"type": "array", "items": _STR},
+                    "variant": _STR,
+                },
+            },
         },
-    ]
-
-    try:
-        raw = await _call_openai_intent(messages)
-        obj = _parse_model_json(raw)
-    except Exception as e:
-        print("[brain:intent] intent classification failed:", e)
-        return None, 0.0
-
-    intent = (obj.get("intent") or "").strip().lower()
-    try:
-        confidence = float(obj.get("confidence", 0.0))
-    except Exception:
-        confidence = 0.0
-
-    if intent not in ("order", "menu", "suggestions", "chitchat"):
-        return None, 0.0
-
-    confidence = max(0.0, min(1.0, confidence))
-    print(f"[brain:intent] classified intent={intent} conf={confidence}")
-    return intent, confidence
-
-
-# -------------------- Locked intent decision ----------------------
-
-
-async def _decide_locked_intent(
-    transcript: str,
-    context: Optional[Dict[str, Any]],
-    dialog_state: Optional[Dict[str, Any]],
-) -> str:
-    ctx_locked = _extract_locked_intent(context)
-    if ctx_locked:
-        print("[brain:intent] using upstream lockedIntent:", ctx_locked)
-        return ctx_locked
-
-    last_intent = _extract_last_intent(context, dialog_state)
-
-    intent_llm: Optional[str] = None
-    conf_llm: float = 0.0
-    try:
-        intent_llm, conf_llm = await _classify_intent_llm(
-            transcript=transcript,
-            last_intent=last_intent,
-            context=context,
-        )
-    except Exception as e:
-        print("[brain:intent] _classify_intent_llm error:", e)
-
-    if (
-        intent_llm in ("order", "menu", "suggestions", "chitchat")
-        and conf_llm >= INTENT_CONF_THRESHOLD
-    ):
-        print(
-            f"[brain:intent] LLM classifier lockedIntent={intent_llm} conf={conf_llm}"
-        )
-        return intent_llm or "chitchat"
-
-    intent = _infer_intent_from_query(
-        transcript=transcript,
-        has_items=False,
-        last_intent=last_intent,
-    )
-    if intent not in ("order", "menu", "suggestions", "chitchat"):
-        intent = "chitchat"
-
-    print(
-        f"[brain:intent] heuristic lockedIntent={intent} (LLM_conf={conf_llm})"
-    )
-    return intent
-
-
-# -------------------- User/content payload builder ----------------------
-
-
-def _build_menu_hint(
-    menu_snapshot: Optional[Dict[str, Any]]
-) -> Optional[Dict[str, Any]]:
-    if not menu_snapshot:
-        return None
-
-    try:
-        items_src = sorted(
-            (menu_snapshot.get("items") or []),
-            key=lambda z: (z.get("name") or "").lower(),
-        )
-
-        compact = {
-            "categories": [
+        "clearCart": {"type": "boolean"},
+        "confirmOrder": {"type": "boolean"},
+        "checkout": {"type": "string", "enum": ["none", "start", "confirm", "cancel"]},
+        "understood": {"type": "boolean"},
+        "answerItems": {"type": "array", "items": _STR},
+        "serviceRequest": {
+            "anyOf": [
+                {"type": "null"},
                 {
-                    "id": c.get("id") or c.get("_id"),
-                    "name": c.get("name"),
-                }
-                for c in (menu_snapshot.get("categories") or [])[:8]
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["type", "note"],
+                    "properties": {"type": {"type": "string", "enum": list(SERVICE_TYPES)}, "note": _STR},
+                },
+            ]
+        },
+        "suggestions": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["item", "reason"],
+                "properties": {"item": _STR, "reason": _STR},
+            },
+        },
+        "guestPrefs": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": [
+                "diet", "allergies", "avoid", "spice", "budget", "partySize", "vegetariansInParty", "kids", "mood",
+                "declined", "liked",
             ],
-            "items": [
-                {
-                    "id": i.get("id")
-                    or i.get("_id")
-                    or i.get("itemId"),
-                    "name": i.get("name"),
-                    "price": i.get("price"),
-                    "aliases": i.get("aliases") or [],
-                    "categoryIds": (
-                        i.get("categoryIds")
-                        or (
-                            [i.get("categoryId")]
-                            if i.get("categoryId")
-                            else []
-                        )
-                    )[:2],
-                }
-                for i in items_src[:120]
-            ],
-        }
+            "properties": {
+                "diet": {"type": "array", "items": {"type": "string", "enum": list(DIETS)}},
+                "allergies": {"type": "array", "items": {"type": "string", "enum": list(ALLERGENS)}},
+                "avoid": {"type": "array", "items": _STR},
+                "spice": {"type": "string", "enum": list(SPICE)},
+                "budget": {"type": "integer"},
+                "partySize": {"type": "integer"},
+                "vegetariansInParty": {"type": "integer"},
+                "kids": {"type": "boolean"},
+                "mood": {"type": "array", "items": {"type": "string", "enum": list(MOODS)}},
+                "declined": {"type": "array", "items": _STR},
+                "liked": {"type": "array", "items": _STR},
+            },
+        },
+        "replyText": _STR,
+        "voiceReplyText": _STR,
+    },
+}
 
-        _debug_log_kw(
-            "[debug][menu_hint] item:",
-            compact["items"],
-        )
-        return compact
-    except Exception as e:
-        print("[debug][menu_hint] error building menu hint:", e)
+MODE_INSTRUCTIONS = {
+    "full": "Recommend 2–3 dishes from RANKED PICKS (or exactly one if they asked for one), each with a short personal "
+            "reason. For a table or a budget, present the MEAL PLAN — every dish with its quantity (\"3 × Egg Fried Rice\"); "
+            "say its exact total only if the guest gave a budget or asked about price. If party size or taste would change "
+            "the answer and is unknown, end with ONE short question. Put the dishes in suggestions.",
+    "complement": "If you add food to the cart this turn, offer exactly ONE item from PAIRING in a few words: name that "
+                  "pairing dish and say why it fits, in your own words (a drink is 'something to drink with it', rice "
+                  "'goes with your curry'). Never describe it as a different dish. If nothing is being ordered, just answer.",
+    "last_call": "The guest is wrapping up: summarise the order with the subtotal, offer the ONE drink from PAIRING in a "
+                 "few words, then ask whether to confirm the order.",
+    "greet": "Greet warmly in one sentence and offer help; you may mention ONE signature dish from RANKED PICKS as a "
+             "highlight. Don't list the menu.",
+    "answer": "Answer the question. Suggest at most ONE alternative dish from RANKED PICKS, and only when it genuinely "
+              "helps (unavailable, too spicy, over budget, clashes with their diet).",
+    "quiet": "Do NOT recommend, upsell or suggest any dish this turn. Just help.",
+    "compare": "The guest is asking about the dishes ON SCREEN / JUST LISTED (below). Answer ONLY about those, and judge "
+               "them by EXACTLY what the guest asked: \"ভালো কোনটা / which is best / what do you recommend\" = the one you'd "
+               "recommend most (signature, a guest favourite, suits the time and what they told you) — NOT heat; \"কম ঝাল / "
+               "least spicy\" = heat; \"সস্তা / cheapest\" = price; \"বেশি পেট ভরবে / most filling\" = portion. Lead with the "
+               "ONE dish that best answers, then one short honest reason; mention the others only briefly if it helps. Put that "
+               "dish's ref in answerItems. Do NOT bring in any other dish — only if none of them fits, say so plainly.",
+    "overview": "The guest wants to know what the restaurant has. Give a quick spoken tour: name the main sections of the "
+                "MENU in a few words (soups, rice & noodles, curries, drinks…), then highlight 3–4 dishes from RANKED PICKS "
+                "(signature first) and put exactly those in suggestions — they appear as cards the guest can tap. Don't read "
+                "out a long list. End by asking what they're in the mood for.",
+}
+
+# "which of these", "এগুলোর মধ্যে", "সেগুলো", "কোনটা", "the second one" → the list on the guest's screen
+_REF_LIST = re.compile(
+    r"এগুলো|এগুলা|এগুলি|সেগুলো|সেগুলা|সেগুলি|ওগুলো|ওগুলা|এর মধ্যে|এদের মধ্যে|এখান থেকে|এখানকার|"
+    r"(?<![ঀ-৿])(কোনটা|কোনটি|কোনগুলো|কোনটায়|কোনটাতে|প্রথমটা|দ্বিতীয়টা|তৃতীয়টা|শেষেরটা|শেষটা)|"
+    r"\b(which (one|ones|of)|of (these|those|them)|among (these|those|them)|these|those|the (first|second|third|last) one|"
+    r"egula|egulo|shegula|shegulo|kon ?ta|konta)\b",
+    re.I,
+)
+
+# --------------------------- Playbook (static system prompt) ---------------------------
+
+PLAYBOOK = """You are the virtual waiter of the restaurant described below. Guests talk to you by voice from their table or the online menu. Be the best waiter they have ever had: warm, attentive, knowledgeable, honest and quick.
+
+# Ground truth
+- MENU and RESTAURANT below are the only source of facts about this restaurant: dishes, prices (৳ taka), what a set includes, choices, tags, hours, address, notes. Never invent dishes, prices, sizes, discounts, ingredients the restaurant hasn't listed, policies, wait times, Wi-Fi passwords, or certifications.
+- Refer to dishes by their exact MENU names. Use refs (i12) only inside JSON fields, never in replyText.
+- If a dish has no description you MAY explain how it is typically prepared, using "usually"/"typically" — make it sound appetising (sauce, texture, flavour), not a list of hints. Never state house-specific details you don't have.
+- Heat, taste, portion the menu doesn't state: answer like an experienced waiter from the kind of dish — soups, fries, fried rice, noodles, lemon / sweet-and-sour / cashew / oyster-sauce dishes are usually mild; chilli, hot sauce, red curry, Szechuan, masala, "flaming" dishes usually hot. Say it naturally with "usually" ("স্যুপটা সাধারণত হালকা হয়"). NEVER tell the guest that the menu has no information, isn't listed, isn't mentioned, or that you don't know ("ঝালের তথ্য নেই", "মেনুতে উল্লেখ নেই", "the menu doesn't list its heat") — that means nothing to a guest. If it helps, offer a "less spicy" note on their order.
+- Allergies / exact ingredients are different (safety): if you're not sure, say staff can confirm — never guess an allergen is absent.
+- Something not on the menu: say so plainly, then offer the closest real dish.
+- Local words: "ঠান্ডা" / "thanda" / "কোল্ড ড্রিংকস" = a cold soft drink (Coke, Sprite…), never a dish; "পানীয়" = drinks.
+- NOT ORDERABLE NOW items exist but can't be ordered at the moment: say why (the reason given) and suggest an available alternative. Never add them to the cart.
+- If a fact isn't available, say you don't have that information and that a staff member can help. Guessing is worse than saying you don't know.
+- Wait times: how long a dish takes to make is in MENU as "prep ~N min"; live numbers (how busy the kitchen is, the CART if ordered now, the quickest dishes, the guest's PLACED orders) are in WAIT TIMES in THIS TURN. Quote only those, rounded and approximate ("about 15 minutes", "১৫ মিনিটের মতো") — never an exact promise, never a number you made up, never "I've told the kitchen to hurry". A dish without a prep time takes the default given in WAIT TIMES. "Where's my food?" after ordering → answer from GUEST'S PLACED ORDER (its status and minutes left; running late → a short apology and "it's coming soon"). A guest in a hurry → lead with the quickest dishes. Ordering and asking "how long?" in the same breath → do both (topic wait_time only when time is all they asked).
+
+# Allergies & diets (safety first)
+- Menu tags (e.g. spicy, vegetarian) are facts. "has:" / "likely spicy" / "likely mild" / "likely vegetarian" are hints derived from dish names — treat them as likely, not guaranteed, and never read these labels out; say it naturally ("the name suggests it's on the spicier side", "it's usually mild").
+- Common knowledge for this kind of menu: "Special" fried rice / chowmein / soup / salad usually mixes chicken, prawn and/or beef; wontons usually have a meat or prawn filling; spring rolls may contain chicken; set menus and fried rice usually include egg; "Thai" dishes often use fish sauce; Chinese vegetable dishes often use oyster sauce.
+- Allergy question: say which dishes to avoid GROUPED, the way a waiter would say it out loud ("all the prawn dishes, the 'Special' dishes, and the Prawn Cashew Nut Salad") — use the ALLERGY GUIDE when given; never read out a long list (max ~6 names). Then suggest 2–3 dishes they CAN have. Always add that the guest should tell the staff so the kitchen can confirm, because cross-contact can't be ruled out. Never call a dish safe, free-of or guaranteed.
+- Vegetarian/vegan: lead with dishes tagged vegetarian. Then up to 4 dishes marked likely vegetarian, as "should be vegetarian — please confirm with staff, as sauces can contain oyster or fish sauce". Never list "Special" dishes, wontons, set menus or anything with meat, seafood, oyster or fish sauce as vegetarian.
+- Halal, spice adjustments, cooking changes: answer from RESTAURANT info if listed; otherwise don't promise — say you'll note the request (see special requests) or that staff can confirm.
+
+# How to talk
+- Answer the actual question first, in 1–3 short spoken sentences (about 45 words; up to 65 for a meal plan or allergy list; up to 5 dishes, or all dishes an allergy question needs). No lists, markdown, emojis or item refs. Then at most one natural follow-up that fits the question (an offer to add it, or one helpful question). Don't upsell on every turn.
+- PRICES: don't mention prices unless the guest asked the price, gave a budget, asked the total, or you are summarising their order — the screen already shows prices on the dish cards, and reading them out makes answers long. When you do give a price, use it exactly as listed, always as digits in the form ৳230 (never Bangla digits, never rounded). Double-check any arithmetic (budgets, totals). When quoting a total, mention VAT if a menu note says prices exclude it.
+- Resolve "it / that / those / the same / another one" from the conversation and RECENTLY DISCUSSED.
+- Guests speak by voice and the transcript can be garbled. Work out the most likely meaning from the conversation ("কি খাও যেতে ভারে" ≈ "কী খাওয়া যেতে পারে?" = what can I eat). understood = false when you honestly can't tell what the guest wants (nonsense words like "নিউবদ্র সাস্কর ভাব্য়া পাসি") — then change nothing and just ask them kindly to say it again. Never invent a meaning, never comment on their order.
+# Recommending (the most important thing you do)
+- WHEN: follow RECOMMENDATION MODE in THIS TURN exactly. It already accounts for what the guest asked, what's in the cart, whether they just said no, and how recently you suggested something. QUIET means no suggestions at all.
+- WHAT: recommend from RANKED PICKS — already filtered for this guest (allergies, diet, dislikes, budget, dishes they declined), availability and the meal period, and ranked (signature dishes, time fit, taste fit, popularity, variety). Keep their order unless the guest's latest words clearly favour a lower one. Never recommend a dish that isn't in RANKED PICKS unless the guest explicitly asked for that dish or kind of dish.
+- WHY: every recommendation gets a short, personal reason — use the listed reasons and the GUEST PROFILE ("since you'd like it mild…", "it's our signature", "perfect for sharing between the three of you", "fits your ৳800"). One reason per dish, no clichés.
+- HOW MANY: 2–3 dishes for a full recommendation, exactly one if they asked for one, one pairing in COMPLEMENT/LAST_CALL. For a table or a budget, present the MEAL PLAN (its total is checked — use it).
+- ASK SMART: when the answer depends on something unknown (party size, spice, diet) recommend anyway with a sensible default, then end with ONE short question that would sharpen it ("How many of you are eating?"). Never interrogate before helping.
+- LISTEN: when the guest reacts ("too spicy", "something cheaper", "not beef"), adjust immediately and don't repeat a dish they turned down. When they like something, build on it (a pairing, a similar dish).
+- SIGNATURE dishes are the owner's pride: lead with one when it's in RANKED PICKS and fits, and say so naturally — but don't mention signatures every turn.
+- Time: match the CURRENT meal period from "Meal period now" / "Local time" — never name another one (no "lunch"/"দুপুর" at night, no "dinner" in the morning). Late at night say "এত রাতে"/"late tonight", or simply don't mention the time. A dish outside its serving time can't be ordered — say when it's served and suggest what's available now.
+- guestPrefs: record ONLY what the guest said about themselves or their table this turn (allergies, diet, dislikes, spice, budget, party size, kids, mood; "declined"/"liked" = refs of dishes they turned down or liked). Asking "does it have gluten?" is not an allergy. Leave fields empty/0 when not said.
+- Never claim a dish serves a number of people unless the menu says so (set menus are one person's meal).
+- Cheapest / budget questions: use the PRICE GUIDE (and the MEAL PLAN when given). For a budget, propose one concrete combination for the whole party (respecting any diets mentioned) and ALWAYS say its total in ৳, and say it fits (e.g. "2 × Set Menu A-02 is ৳700, within your ৳800 before VAT"). "Main dish" = the chicken, beef, prawn, fish, vegetable, sizzling, rice & noodles or set-menu sections — not starters, soups, salads or drinks.
+- Asked about a choice that matches a NOT ORDERABLE NOW dish: mention it may be unavailable today.
+- Greetings / thanks: short and warm; offer help. Don't recite the menu.
+
+# Orders (the cart)
+- Ambiguous order ("the soup", "the chicken", "that" when you just named several dishes): ask which one, naming 2–3 options, and change NOTHING this turn. Never ask a question and add something in the same turn.
+- Self-corrections ("the beef — no wait, the chicken") → only the final choice. Swaps → remove the old dish and add the new one.
+- If the guest has mentioned an allergy or diet in this conversation and orders a dish that conflicts with it (or usually does, e.g. "Special" dishes and prawn), do NOT add it: warn briefly and offer a safe alternative; add it only if they confirm after the warning.
+- Asked for ONE recommendation ("recommend me one soup", "your best dish?") → name exactly one dish, nothing else.
+- Similar names: pick the dish whose full name matches what the guest said. "Chinese Mixed Vegetable" is NOT "Chinese Mixed Vegetable with Chicken/Prawn" — only choose a longer variant if the guest said the extra words.
+- You offered ONE dish ("আপনার জন্য এটা দেব?", "Shall I add it?") and the guest says yes / দিন / দেন / দ্যান / হ্যাঁ / ok → add that dish.
+- Questions about a dish are NOT orders. Change the cart only when the guest clearly asks ("I'll have…", "give me", "add", "2 of those", "make it 3", "remove", "দিন", "লাগবে", "নেব", "den", "dao").
+- When the guest orders AND asks something in the same breath ("we'll take 3 half kacchi — what's the total?", "add these, and something for the kids?"), do BOTH: put the ordered dishes in cartOps, then answer. Never answer only the question and forget the order — and never propose dishes as "shall I add these?" while also adding them.
+- Only set clearCart when the guest explicitly asks to cancel/clear everything; "suggest something cheaper instead" is a new recommendation, not a cleared cart.
+- cartOps: add (quantity ≥1, adds to what's there) · set (absolute quantity from CART; 0 removes) · sub (take away "quantity" — "একটা কমান", "one less") · remove · note (attach a note to a line; removeNote=true removes it — "ঝাল কম লাগবে না") · edit (change a line's size in "variant" and/or its choices in "choices" — give the FULL new list of choices). Use MENU refs in "item".
+- TRAY LINES: every CART line has a ref (L1, L2 …). When changing something already in the tray put its ref in "line" — always when the same dish is there twice (Half and Full, two curry combos): "বড়টা বাদ দিন" → remove the Full line; "make the second one half" → edit L2 variant Half. If you can't tell which line they mean, ask. For "add", "line" is "".
+- Relative changes: "আরেকটা দিন" / "one more of that" / "same again" → add 1 more of the LAST CHANGE line; "একটা কমান" → sub 1; "দুইটা করে দিন" / "two of each" → set each line to 2; "ড্রিংকস বাদ দিন" → remove every drink line. Undo ("আগের মতো করে দিন", "undo") is handled by the system — don't do it yourself.
+- UNDERSTAND THE TRAY LIKE A REAL WAITER. Work out what the guest wants from their words + CART + LAST CHANGE + the conversation, then do exactly that:
+  · Position: CART lines are in tray order — "প্রথমটা / first one" = L1, "দ্বিতীয়টা / second" = L2, "শেষেরটা / last one" = the last line, "নতুনটা / the one I just added" = LAST CHANGE.
+  · Kind: "ড্রিংকটা / the drink", "ভাতটা / the rice", "স্যুপটা", "মিষ্টিটা", "the spicy one", "the beef one" = the CART line(s) of that kind. One such line → change it; several → ask which (name them).
+  · Several changes in one breath → one op each, in order: "স্যুপটা বাদ দিয়ে কাচ্চিটা ফুল করে দিন আর একটা কোক দিন" → remove the soup line, edit the kacchi line to Full, add 1 Coke.
+  · Corrections: "দুইটা… না না, তিনটা" → only 3. "Beef না, Chicken" → the Chicken one. "ওটা না, আগেরটা" → the line before.
+  · Totals: "মোট তিনটা করে দিন" / "make it 3 in total" → set (not add). "আরও দুইটা" → add 2. "একটাই রাখুন" → set 1.
+  · Swaps: "স্প্রিং রোলের বদলে চিকেন কর্ন স্যুপ দিন" → remove the Spring Roll line + add Chicken Corn Soup (same quantity unless they say otherwise).
+  · Whole-tray questions — "এটা কি যথেষ্ট?", "আমাদের ৩ জনের হবে?", "বাজেটের বেশি হয়ে গেল?", "আর কী লাগবে?": answer from TRAY FACTS honestly in 1–2 sentences, suggest at most ONE concrete change (one more main, a drink each, the cheapest swap to fit the budget), and change the tray only if they say yes.
+  · Unsure what they mean (two lines fit, the dish isn't in the tray, the number is odd)? Ask one short question naming the options — never guess and never say it's done.
+  Examples (CART: L1 1 × Crispy Rice Soup, L2 1 × Kacchi Biryani (Half), L3 2 × Choice of Soft Drinks):
+  "প্রথমটা বাদ দিন" → [remove L1] · "কাচ্চিটা ফুল করে দিন" → [edit L2 variant Full] · "ড্রিংক একটা কমান" → [sub L3 1] ·
+  "শেষেরটা দুইটা না, একটা" → [set L3 1] · "স্যুপটা বাদ, আর একটা বোরহানি" → [remove L1, add Borhani 1] ·
+  "আমরা চারজন, এটা কি যথেষ্ট?" → no ops; "২টা মেইন ডিশ চারজনের জন্য একটু কম হতে পারে — আরেকটা কাচ্চি দেব?"
+- Dishes whose MENU line says "must pick N": if the guest hasn't named their choices, don't add it yet — ask which ones, listing the options briefly. When they answer, add it with those exact option names in "choices".
+- Dishes with "variants" (sizes like Half/Full, Small/Large): if the guest didn't say which, ask ("Half or full?", with both prices) before adding; then put the exact variant name in "variant" and quote that variant's price. Leave "variant" empty for dishes without variants.
+- Special requests (less spicy, no onion, extra sauce, sauce on the side): record them in the op's "note" (op "note" if the dish is already in the cart) and tell the guest you've ADDED A NOTE to their order ("I've added a note: less spicy" / "ঝাল কম — নোট যোগ করেছি"). The note travels with the order; you did NOT send, tell or inform the kitchen yourself — never say so. Don't promise the kitchen can do it.
+- After changing the cart, confirm exactly what changed (quantity + name). Offer a pairing only in COMPLEMENT mode, and only the ONE from PAIRING.
+- Order review ("what did I order?", "total?"): read back CART and its subtotal. Don't change anything.
+- When the guest says they're done ("that's all", "no thanks") and the cart has items: summarise briefly with the subtotal (in LAST_CALL mode offer the ONE drink first) and ask "Shall I confirm your order?".
+- checkout = what the guest wants about PLACING the order, judged from their words AND the conversation (any language, any phrasing — "that's it, send it", "অর্ডারটা দিয়ে দিন", "order kore den", "we're ready", "let's do it" after you offered to place it): "start" = they want to order/check out now; "confirm" = a clear yes to your read-back question ("Shall I place it?"); "cancel" = not yet / wait / no to placing; otherwise "none". A question is never start/confirm. confirmOrder = (checkout is start or confirm).
+- You never place orders yourself and never say an order is placed or confirmed — the system reads the order back and places it after the guest's yes. Payment is at the counter; orders are dine-in at the guest's table.
+- clearCart=true only when the guest asks to cancel/clear everything.
+
+# Service requests
+- Bill, water, napkins, cutlery, condiments, cleaning, calling a staff member → set serviceRequest and follow the "Staff paging" line in RESTAURANT exactly: if paging is available say you've let the staff know; if not, tell the guest kindly to wave to a staff member or ask at the counter. Never claim you did something you can't.
+- Water: bottled Mineral Water is on the menu (small/large) — offer it and ask the size unless they said it.
+
+# Language
+- Reply in the language given in THIS TURN (en = natural English; bn = natural, polite spoken Bangla written in Bangla script — even when the guest typed Banglish in English letters). In replyText ALWAYS keep dish names exactly as on the MENU, in English letters, and prices as ৳ with Western digits — never translate or transliterate them there. bn example: "Spring Roll এর দাম ৳230। সাথে একটা Hot & Sour Soup নিলে দারুণ জমবে — নেবেন?"
+- Bangla style: talk like a polite, warm Bangladeshi waiter (always "আপনি"; never literal English translations). End with the question that fits the moment:
+  · after recommending (nothing ordered yet): "এর মধ্যে কোনটা আপনাকে দেব?", "কোনটা নিতে চান, বলুন?", "আপনার জন্য কোনটা দেব?"
+  · after adding something to the order: "আর কিছু লাগবে, নাকি অর্ডার কনফার্ম করব?"
+  · when they seem done: "অর্ডারটা দিয়ে দেব?"
+  · after answering a question: "আর কিছু জানতে চান?" only if it fits — often no question is needed.
+  Never "আর কিছু যোগ করতে চান?" before anything was ordered, and avoid stiff words like "যোগ করতে চান", "অপশন", "নির্বাচন করুন".
+  · say what YOU did, in your own voice: "একটা অনিয়ন রিং কমিয়ে দিলাম", "যোগ করলাম" — never "আপনি … দিয়েছি".
+- For bn, voiceReplyText = the same reply fully in Bangla script (dish names transliterated, numbers as spoken Bangla words) for text-to-speech. For en, voiceReplyText = "".
+
+# Fields
+- topic: what the guest wanted. intent: "order" if you changed/cleared/confirmed the cart or reviewed the order; "suggestions" if you recommended or listed several dishes to choose from (also fill suggestions with their refs and a 3–6 word reason); "menu" for questions about specific dishes, prices, availability or the restaurant; "chitchat" for greetings, thanks, service requests and anything else.
+- mentionedItems: refs of dishes this turn is about (for follow-up questions).
+- answerItems: when the guest asks WHICH dish ("which of these is least spicy / cheapest / best for kids?"), the ref(s) of the dish(es) your answer picks — usually ONE (two only if truly tied). It is highlighted on their screen. Otherwise [].
+
+# Examples (MENU refs are illustrative)
+Guest: "Is the Hot & Sour Soup spicy?" → topic item_question, intent menu, cartOps [], reply: "Yes, the Hot & Sour Soup has a good peppery kick — it's one of our spicier soups. If you'd like something milder, the Chicken Corn Soup is a gentle choice."
+Guest: "I'm allergic to peanuts" → topic dietary, intent menu, reply names the nut dishes, then: "Please also let the staff know about your allergy so the kitchen can take care."
+Guest: "What vegetarian dishes do you have?" → "Our Vegetable Sizzling is marked vegetarian. The Chinese Mixed Vegetable, Thai Vegetable Fried Rice and French Fry should be vegetarian too — just confirm with the staff, as some sauces use oyster or fish sauce."
+Guest: "Is the Flaming Chicken spicy?" (no spicy tag) → "As the name suggests, it's usually on the fiery side. I can add a 'less spicy' note, or the Chicken with Lemon Sauce is a gentle choice."
+Guest: "এগুলোর মধ্যে কোনটা কম ঝাল?" (Crispy Rice Soup, Beef with Red Curry, French Fry on screen) → "সবচেয়ে কম ঝাল হবে French Fry — একদম ঝাল থাকে না। Crispy Rice Soup-ও সাধারণত হালকা হয়।"
+Guest: "We're 3, one vegetarian, budget 1200 taka" → "How about a Vegetable Sizzling (৳320) for your vegetarian friend and two Set Menu A-02 (৳700) for the others — ৳1020 in total, within your ৳1200 before VAT. Shall I add them?"
+Guest: "2 Chicken Corn Soup please" → cartOps [{"op":"add","item":"i17","quantity":2,"note":"","choices":[]}], intent order, reply: "Two Chicken Corn Soups added. Anything else, or shall I confirm your order?"
+Guest (cart has 1 Spring Roll): "actually make it 3" → cartOps [{"op":"set","item":"i3","quantity":3,…}]
+Guest: "Can you make the Masala Chicken less spicy?" (in cart) → cartOps [{"op":"note","item":"i40","quantity":0,"note":"less spicy","choices":[]}], topic special_request, intent order.
+Waiter asked "Shall I confirm your order?" → Guest: "yes please" → checkout "confirm", confirmOrder true.
+Guest: "ok that's everything, send it to the kitchen" → checkout "start". Guest: "wait, not yet" → checkout "cancel".
+Guest: "you have desserts?" → a question, never a confirmation.
+"""
+
+# --------------------------- small helpers ---------------------------
+
+_BN_DIGITS = str.maketrans("০১২৩৪৫৬৭৮৯", "0123456789")
+_BN_QTY = {
+    "এক": 1, "একটা": 1, "একটি": 1, "দুই": 2, "দুইটা": 2, "দুটো": 2, "দুটি": 2, "তিন": 3, "তিনটা": 3, "তিনটি": 3,
+    "চার": 4, "চারটা": 4, "পাঁচ": 5, "পাঁচটা": 5, "ছয়": 6, "ছয়টা": 6, "সাত": 7, "আট": 8, "নয়": 9, "দশ": 10,
+}
+
+
+def _qty(value: Any, *, allow_zero: bool = False) -> Optional[int]:
+    """int / '2' / '২টা' / 'দুইটা' → int; None when unusable."""
+    if value is None or isinstance(value, bool):
         return None
+    if isinstance(value, (int, float)):
+        n = int(value)
+    else:
+        s = str(value).strip().translate(_BN_DIGITS)
+        m = re.search(r"-?\d+", s)
+        if m:
+            n = int(m.group(0))
+        else:
+            n = next((v for k, v in sorted(_BN_QTY.items(), key=lambda kv: -len(kv[0])) if s.startswith(k)), -1)
+    if n < 0 or (n == 0 and not allow_zero):
+        return None
+    return min(n, 99)
 
 
-def _build_user_input_payload(
-    transcript: str,
-    context: Optional[Dict[str, Any]],
-    suggestion_candidates: Optional[List[Dict[str, Any]]],
-    upsell_candidates: Optional[List[Dict[str, Any]]],
-    menu_snapshot: Optional[Dict[str, Any]],
-    locked_intent: Optional[str],
-) -> str:
-    payload: Dict[str, Any] = {
-        "userTranscript": (transcript or "").strip(),
-    }
-
-    ctx_obj: Dict[str, Any] = {}
-    if isinstance(context, dict):
-        ctx_obj.update(context)
-
-    if locked_intent in ("order", "menu", "suggestions", "chitchat"):
-        ctx_obj["lockedIntent"] = locked_intent
-
-    if ctx_obj:
-        payload["Context"] = ctx_obj
-
-    if suggestion_candidates:
-        payload["SuggestionCandidates"] = suggestion_candidates
-    if upsell_candidates:
-        payload["UpsellCandidates"] = upsell_candidates
-
-    s = json.dumps(payload, ensure_ascii=False)
-    if any(k in s.lower() for k in _DEBUG_KEYWORDS):
-        print("[debug][user_input_payload]", _safe_snip(s, 400))
-    return s
+_EN_NUM = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+           "just one": 1, "only one": 1}
 
 
-# --------------------------- OpenAI Call (main brain) ---------------------------
+def _said_quantity(text: str) -> Optional[int]:
+    """The first quantity the guest said: '২টা', '2', 'দুইটা', 'শুধু একটা', 'two' → int; None if no number."""
+    t = (text or "").translate(_BN_DIGITS).lower()
+    m = re.search(r"(?<!\d)(\d{1,3})(?!\d)", t)
+    if m:
+        return int(m.group(1))
+    for w in re.findall(r"[a-z]+|[ঀ-৿]+", t):
+        if w in _EN_NUM:
+            return _EN_NUM[w]
+        for k, v in sorted(_BN_QTY.items(), key=lambda kv: -len(kv[0])):
+            if w == k or (w.startswith(k) and w[len(k):] in ("টা", "টি", "টো", "খানা", "জন", "প্লেট")):
+                return v
+    return None
 
 
-async def _call_openai(messages: List[Dict[str, str]]) -> str:
-    if not OPENAI_API_KEY:
-        raise RuntimeError("OPENAI_API_KEY is not set")
-
-    headers = {
-        "Authorization": f"Bearer {OPENAI_API_KEY}",
-        "Content-Type": "application/json",
-    }
-
-    payload = {
-        "model": OPENAI_CHAT_MODEL,
-        "messages": messages,
-        "max_tokens": BRAIN_MAX_TOKENS,
-        "temperature": BRAIN_TEMP,
-        "top_p": BRAIN_TOP_P,
-        "stream": False,
-        "response_format": {"type": "json_object"},
-    }
-
+def _money(v: Any) -> str:
     try:
-        print("[brain] >>>", _safe_snip(json.dumps(payload, ensure_ascii=False)))
-    except Exception:
-        pass
-
-    async with httpx.AsyncClient(timeout=BRAIN_TIMEOUT_S) as client:
-        r = await client.post(
-            OPENAI_CHAT_URL,
-            headers=headers,
-            json=payload,
-        )
-        print("[brain] HTTP", r.status_code)
-        print("[brain] <<<", _safe_snip(r.text))
-        r.raise_for_status()
-        data = r.json()
-
-    content = (
-        data.get("choices", [{}])[0]
-        .get("message", {})
-        .get("content", "")
-        .strip()
-    )
-
-    if any(k in content.lower() for k in _DEBUG_KEYWORDS):
-        print(
-            "[debug][model_raw_content]",
-            _safe_snip(content, 800),
-        )
-
-    return content
+        f = float(v)
+    except (TypeError, ValueError):
+        return ""
+    return f"৳{int(f)}" if f == int(f) else f"৳{f:.2f}"
 
 
-# ------------------------ JSON Parse Helpers ------------------------
-
-_JSON_FIRST_OBJECT = re.compile(r"\{.*\}", re.DOTALL)
+def _safe_snip(s: Any, n: int = 600) -> str:
+    s = s if isinstance(s, str) else json.dumps(s, ensure_ascii=False, default=str)
+    return s if len(s) <= n else s[:n] + "…"
 
 
 def _parse_model_json(text: str) -> Dict[str, Any]:
     raw = (text or "").strip()
     if not raw:
-        raise ValueError("Empty model response")
-
-    # 1) Direct parse
+        raise ValueError("empty model response")
     try:
         obj = json.loads(raw)
         if isinstance(obj, dict):
-            if any(k in raw.lower() for k in _DEBUG_KEYWORDS):
-                print(
-                    "[debug][parse_model_json] parsed_direct:",
-                    _safe_snip(raw, 600),
-                )
-            return obj
-        print("[brain:json] Top-level is not an object. raw=", _safe_snip(raw, 800))
-    except json.JSONDecodeError:
-        pass
-
-    # 2) First {...} span
-    candidate = raw
-    if not candidate.lstrip().startswith("{"):
-        m = _JSON_FIRST_OBJECT.search(raw)
-        if m:
-            candidate = m.group(0)
-
-    try:
-        obj = json.loads(candidate)
-        if isinstance(obj, dict):
-            if any(k in candidate.lower() for k in _DEBUG_KEYWORDS):
-                print(
-                    "[debug][parse_model_json] parsed_span:",
-                    _safe_snip(candidate, 600),
-                )
             return obj
     except json.JSONDecodeError:
         pass
-
-    # 3) Trim trailing garbage
-    s = candidate
-    last_brace = max(s.rfind("}"), s.rfind("]"))
-    if last_brace != -1:
-        trimmed = s[: last_brace + 1]
+    m = re.search(r"\{.*\}", raw, re.DOTALL)
+    if m:
         try:
-            obj = json.loads(trimmed)
+            obj = json.loads(m.group(0))
             if isinstance(obj, dict):
-                print("[brain:json] Salvaged valid JSON after trimming")
-                if any(k in trimmed.lower() for k in _DEBUG_KEYWORDS):
-                    print(
-                        "[debug][parse_model_json] parsed_trimmed:",
-                        _safe_snip(trimmed, 600),
-                    )
                 return obj
         except json.JSONDecodeError:
             pass
+    m = re.search(r'"replyText"\s*:\s*"((?:[^"\\]|\\.)*)"', raw)
+    if m:
+        return {"replyText": json.loads(f'"{m.group(1)}"'), "_partial": True}
+    raise ValueError("unable to parse model JSON")
 
-    # 4) Minimal fallback on replyText
-    try:
-        m = re.search(r'"replyText"\s*:\s*"([^"]*)"', raw)
-        if m:
-            reply_text = m.group(1).strip()
-            if reply_text:
-                lang = _guess_lang(reply_text)
-                print(
-                    "[brain:json] Using minimal fallback object with replyText"
-                )
-                if any(k in reply_text.lower() for k in _DEBUG_KEYWORDS):
-                    print(
-                        "[debug][parse_model_json] minimal_replyText:",
-                        reply_text,
-                    )
-                return {
-                    "replyText": reply_text,
-                    "language": lang,
-                    "_minimalFromFallback": True,
-                }
-    except Exception:
-        pass
 
-    try:
-        json.loads(candidate)
-    except json.JSONDecodeError as e:
-        print("[brain:json] JSONDecodeError:", repr(e))
-        print(
-            "[brain:json] raw (truncated):",
-            _safe_snip(candidate, 1500),
-        )
+# --------------------------- OpenAI call ---------------------------
 
-    raise ValueError("Unable to parse JSON object from model response")
+_structured_ok = BRAIN_STRUCTURED
 
 
-# ------------------------ Normalization helpers ------------------------
+async def _call_openai(messages: List[Dict[str, str]]) -> str:
+    global _structured_ok
+    if not OPENAI_API_KEY:
+        raise RuntimeError("OPENAI_API_KEY is not set")
 
-
-def _normalize_intent(raw: Any, has_items: bool) -> str:
-    r = (str(raw or "")).strip().lower()
-    intent_map = {
-        "order_food": "order",
-        "add_to_cart": "order",
-        "place_order": "order",
-        "confirm_order": "order",
-        "menuinquiry": "menu",
-        "menu_inquiry": "menu",
-        "menu_query": "menu",
-        "show_menu": "menu",
-        "see_menu": "menu",
-        "recommendation": "suggestions",
-        "recommendations": "suggestions",
-        "recommend": "suggestions",
-        "recs": "suggestions",
-    }
-    if r in intent_map:
-        r = intent_map[r]
-    if r not in {"order", "menu", "suggestions", "chitchat"}:
-        r = "order" if has_items else "chitchat"
-    return r
-
-
-def _normalize_items(
-    raw_items: Any,
-    cand_by_id: Dict[str, Dict[str, Any]],
-    cand_name_to_id: Dict[str, str],
-    max_items: int = 24,
-) -> List[Dict[str, Any]]:
-    """
-    Normalize items[] using candidates.
-    - IDs are ONLY trusted if they match a known candidate.
-    - If both name and id present but mismatch, name wins.
-    - If nothing resolves to a candidate, the item is dropped.
-    """
-    if not raw_items or not isinstance(raw_items, list):
-        return []
-
-    out: List[Dict[str, Any]] = []
-    seen_ids = set()
-    have_candidates = bool(cand_by_id)
-
-    for it in raw_items:
-        if not isinstance(it, dict):
-            continue
-
-        name = (it.get("name") or "").strip()
-        raw_id = _normalize_id(it.get("itemId"))
-
-        if _debug_has_kw(name):
-            print("[debug][normalize_items] raw_in:", name, raw_id)
-
-        resolved_id = ""
-        resolved_name = name
-
-        if have_candidates:
-            # 1) Try by name first
-            if name:
-                key = name.lower()
-                resolved_id = cand_name_to_id.get(key, "")
-
-            # 2) If id given but different, verify it matches that candidate's name/aliases
-            if not resolved_id and raw_id:
-                cand = cand_by_id.get(raw_id)
-                if cand:
-                    cand_name = (cand.get("name") or cand.get("title") or "").strip()
-                    aliases = [
-                        a.strip().lower()
-                        for a in (cand.get("aliases") or [])
-                        if a
-                    ]
-                    if not name:
-                        resolved_id = raw_id
-                        resolved_name = cand_name
-                    else:
-                        key = name.lower()
-                        if (
-                            key == (cand_name or "").lower()
-                            or key in aliases
-                        ):
-                            resolved_id = raw_id
-                            resolved_name = cand_name or name
-                        else:
-                            # name/id disagree → prefer name mapping if exists, else drop
-                            nid = cand_name_to_id.get(key, "")
-                            if nid and nid in cand_by_id:
-                                resolved_id = nid
-                                cc = cand_by_id[nid]
-                                resolved_name = (
-                                    cc.get("name")
-                                    or cc.get("title")
-                                    or name
-                                ).strip()
-
-            # 3) If we still only have name
-            if not resolved_id and name:
-                key = name.lower()
-                nid = cand_name_to_id.get(key, "")
-                if nid and nid in cand_by_id:
-                    resolved_id = nid
-                    cand = cand_by_id[nid]
-                    resolved_name = (
-                        cand.get("name")
-                        or cand.get("title")
-                        or name
-                    ).strip()
-
-            # 4) If we still don't have valid id → drop
-            if not resolved_id or resolved_id not in cand_by_id:
-                continue
-        else:
-            # No candidate info: very defensive, but keep if some id or name
-            if not (raw_id or name):
-                continue
-            resolved_id = raw_id or name
-            resolved_name = name or resolved_id
-
-        if resolved_id in seen_ids:
-            continue
-
-        q = _parse_quantity_any(it.get("quantity"))
-        qty = q if q is not None else 1
-
-        row = {
-            "name": resolved_name or resolved_id,
-            "itemId": resolved_id,
-            "quantity": qty,
-        }
-        out.append(row)
-        seen_ids.add(resolved_id)
-
-        if _debug_has_kw(resolved_name):
-            print("[debug][normalize_items] kept:", row)
-
-        if len(out) >= max_items:
-            break
-
-    return out
-
-
-def _normalize_suggestion_like_list(
-    raw_list: Any,
-    cand_by_id: Dict[str, Dict[str, Any]],
-    cand_name_to_id: Dict[str, str],
-    max_len: int = 5,
-) -> List[Dict[str, Any]]:
-    """
-    Normalize suggestions[] or upsell[].
-    - Only keep entries resolvable to known candidates (when candidates are present).
-    - Cross-check id/name like in _normalize_items.
-    """
-    if not raw_list or not isinstance(raw_list, list):
-        return []
-
-    out: List[Dict[str, Any]] = []
-    seen_ids = set()
-    have_candidates = bool(cand_by_id)
-
-    for it in raw_list:
-        if not isinstance(it, dict):
-            continue
-
-        title = (it.get("title") or it.get("name") or "").strip()
-        raw_id = _normalize_id(it.get("itemId"))
-        category_id = _normalize_id(it.get("categoryId"))
-        price = it.get("price")
-        subtitle = (it.get("subtitle") or "").strip()
-
-        resolved_id = ""
-        resolved_title = title
-
-        if have_candidates:
-            if title:
-                key = title.lower()
-                resolved_id = cand_name_to_id.get(key, "")
-
-            if not resolved_id and raw_id:
-                cand = cand_by_id.get(raw_id)
-                if cand:
-                    cand_name = (cand.get("name") or cand.get("title") or "").strip()
-                    aliases = [
-                        a.strip().lower()
-                        for a in (cand.get("aliases") or [])
-                        if a
-                    ]
-                    if not title:
-                        resolved_id = raw_id
-                        resolved_title = cand_name
-                    else:
-                        key = title.lower()
-                        if (
-                            key == (cand_name or "").lower()
-                            or key in aliases
-                        ):
-                            resolved_id = raw_id
-                            resolved_title = cand_name or title
-                        else:
-                            nid = cand_name_to_id.get(key, "")
-                            if nid and nid in cand_by_id:
-                                resolved_id = nid
-                                cc = cand_by_id[nid]
-                                resolved_title = (
-                                    cc.get("name")
-                                    or cc.get("title")
-                                    or title
-                                ).strip()
-
-            if not resolved_id or resolved_id not in cand_by_id:
-                # if we can't resolve, skip
-                continue
-
-            cand = cand_by_id[resolved_id]
-
-            if not category_id:
-                category_id = _normalize_id(
-                    cand.get("categoryId")
-                    or (cand.get("categoryIds") or [None])[0]
-                )
-
-            if price in (None, ""):
-                price = cand.get("price")
-        else:
-            if not title:
-                continue
-            resolved_title = title
-            if raw_id:
-                resolved_id = raw_id
-            if have_candidates and (not resolved_id or resolved_id in seen_ids):
-                continue
-
-        row: Dict[str, Any] = {
-            "title": resolved_title or (resolved_id or ""),
-        }
-        if subtitle:
-            row["subtitle"] = subtitle
-        if resolved_id:
-            row["itemId"] = resolved_id
-        if category_id:
-            row["categoryId"] = category_id
-        if isinstance(price, (int, float)) and price >= 0:
-            row["price"] = price
-
-        out.append(row)
-        if resolved_id:
-            seen_ids.add(resolved_id)
-
-        if _debug_has_kw(resolved_title):
-            print("[debug][normalize_suggestions] kept:", row)
-
-        if len(out) >= max_len:
-            break
-
-    return out
-
-
-def _normalize_decision(
-    raw: Any,
-    has_suggestions: bool,
-    has_upsell: bool,
-) -> Dict[str, bool]:
-    if not isinstance(raw, dict):
-        raw = {}
-
-    show_suggestions = raw.get("showSuggestionsModal")
-    show_upsell = raw.get("showUpsellTray")
-
-    if not isinstance(show_suggestions, bool):
-        show_suggestions = bool(has_suggestions)
-    if not isinstance(show_upsell, bool):
-        show_upsell = bool(has_upsell)
-
-    return {
-        "showSuggestionsModal": show_suggestions,
-        "showUpsellTray": show_upsell,
-    }
-
-
-def _normalize_cart_ops(
-    raw_ops: Any,
-    cand_by_id: Dict[str, Dict[str, Any]],
-    cand_name_to_id: Dict[str, str],
-    max_ops: int = 32,
-) -> Tuple[List[Dict[str, Any]], bool]:
-    if not raw_ops or not isinstance(raw_ops, list):
-        print("[debug][cartOps] no raw_ops from model")
-        return [], False
-
-    print(
-        "[debug][cartOps] raw_ops_in:",
-        _safe_snip(json.dumps(raw_ops, ensure_ascii=False), 400),
-    )
-
-    out: List[Dict[str, Any]] = []
-    have_candidates = bool(cand_by_id)
-    clear_all = False
-
-    def resolve_item(op: Dict[str, Any]) -> Tuple[str, str]:
-        name = (op.get("name") or op.get("title") or "").strip()
-        raw_id = _normalize_id(op.get("itemId"))
-
-        if have_candidates:
-            if name:
-                nid = cand_name_to_id.get(name.lower())
-                if nid and nid in cand_by_id:
-                    cand = cand_by_id[nid]
-                    return nid, (
-                        cand.get("name")
-                        or cand.get("title")
-                        or name
-                    )
-
-            if raw_id and raw_id in cand_by_id:
-                cand = cand_by_id[raw_id]
-                return raw_id, (
-                    cand.get("name")
-                    or cand.get("title")
-                    or name
-                )
-            return "", ""
-        else:
-            if raw_id:
-                return raw_id, name or raw_id
-            if name:
-                return "", name
-            return "", ""
-
-    for raw in raw_ops:
-        if not isinstance(raw, dict):
-            continue
-
-        op_raw = (raw.get("op") or raw.get("type") or "").strip().lower()
-
-        if op_raw in (
-            "clear",
-            "clearall",
-            "clear_cart",
-            "cancel_all",
-            "cancel-order",
-            "cancel_order",
-        ):
-            clear_all = True
-            print("[debug][cartOps] detected clear_all op")
-            continue
-
-        if op_raw in ("add", "plus", "increment"):
-            op = "add"
-        elif op_raw in ("set", "assign", "update"):
-            op = "set"
-        elif op_raw in ("delta", "change", "adjust"):
-            op = "delta"
-        elif op_raw in ("remove", "delete", "rm"):
-            op = "remove"
-        else:
-            continue
-
-        item_id, name = resolve_item(raw)
-
-        if op == "remove" and not (item_id or name):
-            continue
-        if op in ("add", "set", "delta") and not (item_id or name):
-            continue
-
-        quantity = raw.get("quantity", raw.get("qty"))
-        delta = raw.get("delta")
-
-        norm_quantity: Optional[int] = None
-        norm_delta: Optional[int] = None
-
-        if op in ("add", "set"):
-            q = _parse_quantity_any(
-                quantity
-                if quantity is not None
-                else (1 if op == "add" else 0),
-                allow_zero=(op == "set"),
-            )
-            if q is None:
-                q = 1 if op == "add" else 0
-            if op == "add" and q <= 0:
-                q = 1
-            if op == "set" and q < 0:
-                q = 0
-            norm_quantity = q
-        elif op == "delta":
-            d = _parse_delta_any(delta)
-            if d is None:
-                continue
-            norm_delta = d
-
-        op_obj: Dict[str, Any] = {"op": op}
-        if item_id:
-            op_obj["itemId"] = item_id
-        if name:
-            op_obj["name"] = name
-        if norm_quantity is not None:
-            op_obj["quantity"] = norm_quantity
-        if norm_delta is not None:
-            op_obj["delta"] = norm_delta
-
-        out.append(op_obj)
-
-        if _debug_has_kw(name):
-            print("[debug][cartOps] kept_op:", op_obj)
-
-        if len(out) >= max_ops:
-            break
-
-    print("[debug][cartOps] normalized_ops:", out, "clear_all:", clear_all)
-    return out, clear_all
-
-
-# -------------------- NEW: merge DB cart + cartOps --------------------
-
-
-def _merge_cart_state(
-    context: Optional[Dict[str, Any]],
-    cart_ops: List[Dict[str, Any]],
-    clear_cart_flag: bool,
-) -> Dict[str, int]:
-    """
-    Build final cart quantities:
-    - start from Context.cartItems (DB / upstream tray)
-    - apply cartOps from this turn
-    - respect clearCart
-
-    Returns: { itemId: quantity }
-    """
-    base: Dict[str, int] = {}
-
-    # Seed from existing cartItems
-    for it in (context or {}).get("cartItems", []):
-        iid = _normalize_id(
-            it.get("itemId")
-            or it.get("id")
-            or it.get("_id")
-        )
-        if not iid:
-            continue
-        try:
-            q = int(
-                it.get("quantity", it.get("qty", 0)) or 0
-            )
-        except Exception:
-            q = 0
-        if q > 0:
-            base[iid] = q
-
-    # If clearCart is triggered, start from empty
-    if clear_cart_flag:
-        base = {}
-
-    # Apply ops from model
-    for op in cart_ops:
-        op_type = (op.get("op") or "").strip().lower()
-        iid = _normalize_id(op.get("itemId"))
-        if not iid:
-            continue
-
-        if op_type == "add":
-            q = _parse_quantity_any(
-                op.get("quantity"),
-                allow_zero=False,
-            ) or 1
-            base[iid] = base.get(iid, 0) + q
-
-        elif op_type == "set":
-            q = _parse_quantity_any(
-                op.get("quantity"),
-                allow_zero=True,
-            )
-            if q is None:
-                continue
-            if q > 0:
-                base[iid] = q
-            else:
-                base.pop(iid, None)
-
-        elif op_type == "delta":
-            d = _parse_delta_any(op.get("delta"))
-            if d is None:
-                continue
-            new_q = base.get(iid, 0) + d
-            if new_q > 0:
-                base[iid] = new_q
-            else:
-                base.pop(iid, None)
-
-        elif op_type == "remove":
-            base.pop(iid, None)
-
-    return base
-
-
-def _materialize_items_from_qty(
-    qty_map: Dict[str, int],
-    cand_by_id: Dict[str, Dict[str, Any]],
-) -> List[Dict[str, Any]]:
-    """
-    Convert {itemId: qty} into [{itemId, name, quantity}],
-    using menu/candidate names.
-    """
-    items: List[Dict[str, Any]] = []
-
-    for iid, qty in qty_map.items():
-        if qty <= 0:
-            continue
-        cand = cand_by_id.get(iid, {})
-        name = (
-            cand.get("name")
-            or cand.get("title")
-            or ""
-        ).strip() or iid
-
-        items.append(
-            {
-                "itemId": iid,
-                "name": name,
-                "quantity": int(qty),
-            }
-        )
-
-    return items
-
-
-# --------- Recover items from replyText when JSON is minimal/broken ---------
-
-
-def _extract_items_from_text(
-    text: str,
-    cand_by_id: Dict[str, Dict[str, Any]],
-    cand_name_to_id: Dict[str, str],
-) -> List[Dict[str, Any]]:
-    """
-    Very lightweight NER: if replyText mentions known item names, treat those as items.
-    Quantities default to 1 (we keep it simple).
-    """
-    if not text or not cand_name_to_id:
-        return []
-
-    t = text.lower()
-    seen = set()
-    out: List[Dict[str, Any]] = []
-
-    for name_l, item_id in cand_name_to_id.items():
-        if (
-            name_l
-            and name_l in t
-            and item_id in cand_by_id
-            and item_id not in seen
-        ):
-            cand = cand_by_id[item_id]
-            name = (
-                cand.get("name")
-                or cand.get("title")
-                or name_l
-            ).strip()
-            if not name:
-                continue
-            out.append(
-                {
-                    "name": name,
-                    "itemId": item_id,
-                    "quantity": 1,
-                }
-            )
-            seen.add(item_id)
-
-    return out
-
-
-def _maybe_adjust_quantities_from_transcript(
-    transcript: str,
-    items: List[Dict[str, Any]],
-) -> None:
-    """
-    If items all have default-ish qty but the transcript clearly contains a
-    quantity near the item name, adjust it.
-    """
-    t = (transcript or "").strip().lower()
-    if not t or not items:
-        return
-
-    def find_qty_for_label(label: str) -> Optional[int]:
-        key = (label or "").strip().lower()
-        if not key:
-            return None
-        idx = t.find(key)
-        if idx == -1:
-            return None
-
-        before = t[max(0, idx - 24): idx]
-        after = t[idx + len(key): idx + len(key) + 24]
-
-        q = _parse_quantity_any(before)
-        if q:
-            return q
-        q = _parse_quantity_any(after)
-        if q:
-            return q
-        return None
-
-    for it in items:
-        try:
-            current_q = int(it.get("quantity", 0) or 0)
-        except Exception:
-            current_q = 0
-
-        if current_q > 1:
-            continue
-
-        label = (it.get("name") or "").strip()
-        q = find_qty_for_label(label)
-        if q and q > 0:
-            it["quantity"] = q
-
-
-# --------------------- voiceReplyText builder ---------------------
-
-
-def _build_voice_reply_text(
-    reply_text: str,
-    *,
-    language: str,
-    model_obj: Dict[str, Any],
-) -> str:
-    explicit = str(model_obj.get("voiceReplyText") or "").strip()
-    if explicit:
-        if _debug_has_kw(explicit):
-            print("[debug][voiceReplyText] explicit:", explicit)
-        return explicit
-
-    if not reply_text:
-        return ""
-
-    if language == "bn":
-        return reply_text
-
-    return ""
-
-
-# --------------------- Helpers for BN templates ---------------------
-
-
-def _bn_qty(n: int) -> str:
-    try:
-        n = int(n)
-    except Exception:
-        n = 1
-    return f"{n}টি" if n > 0 else "১টি"
-
-
-def _format_items_summary_bn(items: List[Dict[str, Any]]) -> str:
-    """
-    Build: '2 Crispy Chicken Burger এবং 3 Coke'
-    Uses digits for clarity.
-    """
-    parts: List[str] = []
-    for it in items:
-        name = (it.get("name") or "").strip() or "আইটেম"
-        try:
-            q = int(it.get("quantity", 1) or 1)
-        except Exception:
-            q = 1
-        parts.append(f"{q} {name}")
-
-    if not parts:
-        return ""
-    if len(parts) == 1:
-        return parts[0]
-    if len(parts) == 2:
-        return " এবং ".join(parts)
-
-    # 3+ → "a, b এবং c"
-    return ", ".join(parts[:-1]) + " এবং " + parts[-1]
-
-
-def _pick_upsell_pair(upsell: List[Dict[str, Any]]) -> List[str]:
-    names: List[str] = []
-    for u in upsell:
-        t = (u.get("title") or u.get("name") or "").strip()
-        if t and t not in names:
-            names.append(t)
-        if len(names) >= 2:
-            break
-    return names
-
-
-def _is_negative_reply(text: str) -> bool:
-    t = (text or "").strip().lower()
-    if not t:
-        return False
-    # Very simple: "না" in Bangla, or short no-ish replies
-    neg_kw = [
-        "না",
-        "না লাগবে",
-        "লাগবে না",
-        "চাই না",
-        "dont want",
-        "don't want",
-        "no",
-    ]
-    return any(k in t for k in neg_kw) and len(t) <= 32
-
-
-def _is_confirm_message(text: str) -> bool:
-    if not text:
-        return False
-
-    t = text.strip().lower()
-
-    # Cheap normalization for common ASR / spelling quirks
-    norm = t
-    norm = norm.replace("ড়", "ড").replace("ড়", "ড")
-    norm = norm.replace("হার ডাক্টা", "অর্ডার টা")
-    norm = norm.replace("হারডাক্টা", "অর্ডার টা")
-    norm = norm.replace("আর্ডার", "অর্ডার")
-
-    # Early exit for explicit *negative* confirmation phrases
-    negative_cancel_patterns = [
-        "dont confirm",
-        "don't confirm",
-        "do not confirm",
-        "কনফার্ম করব না",
-        "কনফার্ম করবো না",
-        "কনফাম করব না",
-        "কনফাম করবো না",
-    ]
-    if any(p in norm for p in negative_cancel_patterns):
-        return False
-
-    # English-ish confirm tokens
-    confirm_tokens_en = [
-        "confirm",
-        "konfirm",
-        "konfarm",
-        "confam",
-        "konfam",
-    ]
-
-    # Bangla-ish confirm tokens (incl. noisy spellings)
-    confirm_tokens_bn = [
-        "কনফাম",
-        "কন্ফাম",
-        "কনফার্ম",
-        "কন্ফার্ম",
-    ]
-
-    confirm_tokens = confirm_tokens_en + confirm_tokens_bn
-
-    # Order tokens (Bangla + English)
-    order_tokens = [
-        "অর্ডার",
-        "অর্ডার টা",
-        "অর্ডারটা",
-        "order",
-    ]
-
-    # 1) Short pure-confirm messages: just "confirm"/"কনফাম"/etc.
-    short_norm = norm.replace(" ", "")
-    if len(short_norm) <= 18:
-        if any(tok in short_norm for tok in confirm_tokens):
-            return True
-
-    # 2) Confirm token + polite verb → covers
-    # "ওডাটা কন্ফাম করেন", "কনফাম করে দিন", etc.
-    if any(c in norm for c in confirm_tokens):
-        if (
-            "করুন" in norm
-            or "করেন" in norm
-            or "করে দিন" in norm
-            or "কোরুন" in norm
-        ):
-            return True
-
-    # 3) Contains both an order token and a confirm-ish token
-    if any(o in norm for o in order_tokens) and any(
-        c in norm for c in confirm_tokens
-    ):
-        return True
-
-    # 4) Common explicit phrases (extra safety net)
-    common_phrases = [
-        "অর্ডার কনফাম করুন",
-        "অর্ডার কন্ফাম করুন",
-        "অর্ডারটা কনফাম করুন",
-        "অর্ডারটা কন্ফাম করুন",
-        "অর্ডার টা কনফাম করুন",
-        "অর্ডার টা কনফাম করুন",
-        "কনফাম করে দিন",
-        "কন্ফাম করে দিন",
-        "please confirm",
-        "plz confirm",
-        "ok confirm",
-        "okay confirm",
-    ]
-    if any(p in norm for p in common_phrases):
-        return True
-
-    return False
-
-
-# --------------------- cartOps → replyText (hardcoded logic) ---------------------
-
-
-def _build_reply_from_cart_ops(
-    *,
-    cart_ops: List[Dict[str, Any]],
-    items: List[Dict[str, Any]],
-    upsell: List[Dict[str, Any]],
-    transcript: str,
-    language: str,
-    last_intent: Optional[str],
-) -> str:
-    """
-    Hardcoded Bangla-first behavior.
-
-    Bangla rules:
-    1) Initial order with only add ops:
-    "অসাধারণ চয়েস! আপনি {items} অর্ডার করতে চাইছেন। সাথে কি আপনি {u1} কিংবা {u2} নিতে চান?"
-    (if upsell available)
-    Else: "অসাধারণ চয়েস! আপনি {items} অর্ডার করতে চাইছেন। অর্ডারটা কি কনফার্ম করবো?"
-    2) Add new product (single add) after order flow:
-    "{name} আপনার ট্রে তে যোগ করা হলো, আর কিছু নিতে চান? নাকি অর্ডার কনফার্ম করবো?"
-    3) Quantity change:
-    Add: "{name} Xটি যোগ করা হলো। আপনি অর্ডার করতে চাইছেন {items}। অর্ডারটা কি কনফার্ম করবো?"
-    Remove: "{name} Xটি বাদ দেয়া হলো। আপনি অর্ডার করতে চাইছেন {items}। অর্ডারটা কি কনফার্ম করবো?"
-    English: simple generic confirmations (fallback).
-    """
-    if not cart_ops and not items:
-        return ""
-
-    # If English or other: lightweight generic behavior
-    if language != "bn":
-        parts: List[str] = []
-        for op in cart_ops:
-            t = (op.get("op") or "").strip().lower()
-            name = (op.get("name") or "").strip() or "item"
-
-            if t == "add":
-                q = int(op.get("quantity", 1) or 1)
-                parts.append(f"Added {q} x {name}")
-            elif t == "delta":
-                d = int(op.get("delta", 0) or 0)
-                if d > 0:
-                    parts.append(f"Added {d} x {name}")
-                elif d < 0:
-                    parts.append(f"Removed {abs(d)} x {name}")
-            elif t == "set":
-                q = int(op.get("quantity", 0) or 0)
-                if q <= 0:
-                    parts.append(f"Removed all of {name}")
-                else:
-                    parts.append(f"Set {name} to {q}")
-            elif t == "remove":
-                parts.append(f"Removed {name}")
-
-        msg = "; ".join(parts) if parts else ""
-
-        if items:
-            items_str = ", ".join(
-                f"{int(i.get('quantity', 1) or 1)} x "
-                f"{(i.get('name') or '').strip() or 'item'}"
-                for i in items
-            )
-            if msg:
-                msg += f". Current order: {items_str}."
-            else:
-                msg = f"Current order: {items_str}."
-
-        if msg:
-            return msg + " Shall I confirm the order?"
-        return "Shall I confirm the order?"
-
-    # Bangla-specific logic from here
-    t = (transcript or "").strip()
-
-    # Priority: confirmation / negative handled outside, but keep safe
-    if _is_confirm_message(t):
-        return (
-            "আপনার অর্ডার টি কনফার্ম করা হলো। দয়া করে ১৫ মিনিট সময় দিন, "
-            "আমরা খাবারটি প্রস্তুত করছি।"
-        )
-
-    if _is_negative_reply(t):
-        return (
-            "গ্রেট! সব কিছু ঠিক আছে কিনা দেখে আমাকে অর্ডার কনফার্ম করতে বলুন।"
-        )
-
-    items_summary = _format_items_summary_bn(items)
-
-    # Inspect ops
-    def _op_kind(op: Dict[str, Any]) -> str:
-        return (op.get("op") or "").strip().lower()
-
-    def _op_qty(op: Dict[str, Any]) -> int:
-        try:
-            return int(op.get("quantity", op.get("qty", 0)) or 0)
-        except Exception:
-            return 0
-
-    only_add = bool(cart_ops) and all(
-        _op_kind(op) == "add" for op in cart_ops
-    )
-
-    # All ops are set with positive quantity → treat as fresh adds
-    only_positive_set = bool(cart_ops) and all(
-        _op_kind(op) == "set" and _op_qty(op) > 0
-        for op in cart_ops
-    )
-
-    has_delta = any(_op_kind(op) == "delta" for op in cart_ops)
-
-    # Now, only treat set as "remove-ish" when qty <= 0
-    has_remove = any(
-        _op_kind(op) == "remove"
-        or (_op_kind(op) == "set" and _op_qty(op) <= 0)
-        for op in cart_ops
-    )
-
-    # 1) Initial order: last_intent not 'order', only add ops, we have items
-    if (only_add or only_positive_set) and items and (
-        not last_intent or last_intent != "order"
-    ):
-        upsell_names = _pick_upsell_pair(upsell)
-        if upsell_names:
-            if len(upsell_names) == 1:
-                return (
-                    f"অসাধারণ চয়েস! আপনি {items_summary} অর্ডার করতে চাইছেন। "
-                    f"সাথে কি আপনি {upsell_names[0]} নিতে চান?"
-                )
-            return (
-                f"অসাধারণ চয়েস! আপনি {items_summary} অর্ডার করতে চাইছেন। "
-                f"সাথে কি আপনি {upsell_names[0]} কিংবা {upsell_names[1]} নিতে চান?"
-            )
-
-        return (
-            f"অসাধারণ চয়েস! আপনি {items_summary} অর্ডার করতে চাইছেন। "
-            f"অর্ডারটা কি কনফার্ম করবো?"
-        )
-
-    # 2) Single add op → treat as "new product added to tray"
-    if only_add and len(cart_ops) == 1:
-        op = cart_ops[0]
-        name = (op.get("name") or "").strip() or "আইটেম"
-        return (
-            f"{name} আপনার ট্রে তে যোগ করা হলো, আর কিছু নিতে চান? "
-            f"নাকি অর্ডার কনফার্ম করবো?"
-        )
-
-    # 3) Quantity changes (delta / remove / set) → use first meaningful op
-    if has_delta or has_remove:
-        for op in cart_ops:
-            kind = (op.get("op") or "").lower()
-            name = (op.get("name") or "").strip() or "আইটেম"
-
-            if kind == "delta":
-                d = int(op.get("delta", 0) or 0)
-                if d > 0:
-                    return (
-                        f"{name} {abs(d)}টি যোগ করা হলো। "
-                        f"আপনি অর্ডার করতে চাইছেন {items_summary}। "
-                        f"অর্ডারটা কি কনফার্ম করবো?"
-                    )
-                if d < 0:
-                    return (
-                        f"{name} {abs(d)}টি বাদ দেয়া হলো। "
-                        f"আপনি অর্ডার করতে চাইছেন {items_summary}। "
-                        f"অর্ডারটা কি কনফার্ম করবো?"
-                    )
-
-            if kind == "set":
-                q = int(op.get("quantity", 0) or 0)
-                if q <= 0:
-                    return (
-                        f"{name} কার্ট থেকে বাদ দেয়া হলো। "
-                        f"আপনি অর্ডার করতে চাইছেন {items_summary}। "
-                        f"অর্ডারটা কি কনফার্ম করবো?"
-                    )
-                return (
-                    f"{name} পরিমাণ {q}টি করা হলো। "
-                    f"আপনি অর্ডার করতে চাইছেন {items_summary}। "
-                    f"অর্ডারটা কি কনফার্ম করবো?"
-                )
-
-            if kind == "remove":
-                return (
-                    f"{name} কার্ট থেকে বাদ দেয়া হলো। "
-                    f"আপনি অর্ডার করতে চাইছেন {items_summary}। "
-                    f"অর্ডারটা কি কনফার্ম করবো?"
-                )
-
-    # 4) Fallback for multiple adds / complex ops
-    if items_summary:
-        return (
-            f"আপনি অর্ডার করতে চাইছেন {items_summary}। "
-            f"অর্ডারটা কি কনফার্ম করবো?"
-        )
-
-    return "অর্ডারটা কি কনফার্ম করবো?"
-
-
-# ------------------------ Backend finalizer ------------------------
-
-
-def _finalize_backend_decision(
-    *,
-    transcript: str,
-    lang_hint: str,
-    raw_obj: Dict[str, Any],
-    menu_snapshot: Optional[Dict[str, Any]],
-    cand_by_id: Dict[str, Dict[str, Any]],
-    cand_name_to_id: Dict[str, str],
-    suggestion_candidates: Optional[List[Dict[str, Any]]],
-    upsell_candidates: Optional[List[Dict[str, Any]]],
-    context: Optional[Dict[str, Any]],
-    dialog_state: Optional[Dict[str, Any]],
-    locked_intent: Optional[str],
-) -> Dict[str, Any]:
-    minimal = bool(raw_obj.get("_minimalFromFallback"))
-
-    # 1) Normalize model-proposed items (this turn only)
-    proposed_items = _normalize_items(
-        raw_obj.get("items"),
-        cand_by_id=cand_by_id,
-        cand_name_to_id=cand_name_to_id,
-    )
-    has_items = bool(proposed_items)
-
-    if _debug_has_kw(
-        json.dumps(raw_obj.get("items", ""), ensure_ascii=False)
-    ):
-        print(
-            "[debug][finalize] raw_obj.items:",
-            raw_obj.get("items"),
-        )
-        print(
-            "[debug][finalize] proposed_items:",
-            proposed_items,
-        )
-
-    # 1b) If minimal JSON but replyText mentions items, recover them
-    if minimal and not has_items:
-        recovered = _extract_items_from_text(
-            raw_obj.get("replyText", ""),
-            cand_by_id=cand_by_id,
-            cand_name_to_id=cand_name_to_id,
-        )
-        if recovered:
-            proposed_items = _normalize_items(
-                recovered,
-                cand_by_id=cand_by_id,
-                cand_name_to_id=cand_name_to_id,
-            )
-            has_items = bool(proposed_items)
-            print(
-                "[debug][finalize] recovered_items_from_replyText_norm:",
-                proposed_items,
-            )
-
-    # 1c) Adjust quantities from transcript if they look default-ish
-    if transcript and proposed_items:
-        _maybe_adjust_quantities_from_transcript(
-            transcript,
-            proposed_items,
-        )
-        has_items = bool(proposed_items)
-
-    # Minimal fallback path
-    if minimal:
-        valid_intents = ("order", "menu", "suggestions", "chitchat")
-        if locked_intent in valid_intents:
-            intent = locked_intent
-        else:
-            last_intent = _extract_last_intent(
-                context,
-                dialog_state,
-            )
-            intent = _infer_intent_from_query(
-                transcript=transcript,
-                has_items=has_items,
-                last_intent=last_intent,
-            )
-            if intent not in valid_intents:
-                intent = "chitchat"
-
-        items = proposed_items if (intent == "order" and has_items) else []
-        decision = {
-            "showSuggestionsModal": False,
-            "showUpsellTray": False,
-        }
-
-        print("[debug][finalize] minimal_fallback intent:", intent)
+    def payload(structured: bool) -> Dict[str, Any]:
         return {
-            "intent": intent,
-            "items": items,
-            "suggestions": [],
-            "upsell": [],
-            "decision": decision,
+            "model": OPENAI_CHAT_MODEL,
+            "messages": messages,
+            "max_tokens": BRAIN_MAX_TOKENS,
+            "temperature": BRAIN_TEMP,
+            "response_format": (
+                {"type": "json_schema", "json_schema": {"name": "waiter_turn", "strict": True, "schema": RESPONSE_SCHEMA}}
+                if structured
+                else {"type": "json_object"}
+            ),
         }
 
-    # 2) Start from lockedIntent if valid
-    intent: Optional[str] = None
-    if locked_intent in ("order", "menu", "suggestions", "chitchat"):
-        intent = locked_intent
+    headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
+    last_err: Optional[Exception] = None
+    for attempt in range(BRAIN_RETRIES + 1):
+        try:
+            async with httpx.AsyncClient(timeout=BRAIN_TIMEOUT_S) as client:
+                r = await client.post(OPENAI_CHAT_URL, headers=headers, json=payload(_structured_ok))
+                if r.status_code == 400 and _structured_ok and "response_format" in r.text:
+                    print("[brain] endpoint rejected json_schema → falling back to json_object")
+                    _structured_ok = False
+                    r = await client.post(OPENAI_CHAT_URL, headers=headers, json=payload(False))
+                if r.status_code in (429, 500, 502, 503, 504) and attempt < BRAIN_RETRIES:
+                    raise httpx.HTTPStatusError("retryable", request=r.request, response=r)
+                r.raise_for_status()
+                data = r.json()
+                usage = data.get("usage") or {}
+                cached = (usage.get("prompt_tokens_details") or {}).get("cached_tokens")
+                print(f"[brain] tokens in={usage.get('prompt_tokens')} cached={cached} out={usage.get('completion_tokens')}")
+                return (data.get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
+        except (httpx.TimeoutException, httpx.TransportError, httpx.HTTPStatusError) as e:
+            last_err = e
+            status = getattr(getattr(e, "response", None), "status_code", None)
+            if attempt >= BRAIN_RETRIES or (status is not None and status not in (429, 500, 502, 503, 504)):
+                raise
+            await asyncio.sleep(0.4 * (attempt + 1))
+    raise last_err or RuntimeError("brain call failed")
 
-    # 3) If no lockedIntent, use heuristic + model advisory
-    if not intent:
-        last_intent = _extract_last_intent(context, dialog_state)
-        query_intent = _infer_intent_from_query(
-            transcript=transcript,
-            has_items=has_items,
-            last_intent=last_intent,
-        )
-        model_intent = _normalize_intent(
-            raw_obj.get("intent"),
-            has_items=has_items,
-        )
 
-        intent = query_intent
-        if intent == "chitchat":
-            if model_intent == "order" and has_items:
-                intent = "order"
-            elif model_intent in ("menu", "suggestions"):
-                intent = model_intent
+# --------------------------- prompt assembly ---------------------------
 
-        if intent == "menu" and model_intent == "suggestions":
-            intent = "suggestions"
 
-    # 4) Safety: cannot be order with no items
-    if intent == "order" and not has_items:
-        if locked_intent == "order":
-            intent = "menu"
-        else:
-            intent = "chitchat"
-
-    # 5) Suggestions
-    suggestions: List[Dict[str, Any]] = []
-    if intent in ("suggestions", "menu"):
-        raw_suggestions = raw_obj.get("suggestions")
-        if raw_suggestions:
-            suggestions = _normalize_suggestion_like_list(
-                raw_suggestions,
-                cand_by_id=cand_by_id,
-                cand_name_to_id=cand_name_to_id,
-                max_len=5,
-            )
-        elif suggestion_candidates:
-            suggestions = _normalize_suggestion_like_list(
-                suggestion_candidates,
-                cand_by_id=cand_by_id,
-                cand_name_to_id=cand_name_to_id,
-                max_len=5,
-            )
-
-    # 6) Upsell
-    upsell: List[Dict[str, Any]] = []
-    if intent == "order" and has_items and upsell_candidates:
-        upsell = _normalize_suggestion_like_list(
-            upsell_candidates,
-            cand_by_id=cand_by_id,
-            cand_name_to_id=cand_name_to_id,
-            max_len=5,
-        )
-
-    # 7) Decision flags
-    decision = _normalize_decision(
-        raw_obj.get("decision"),
-        has_suggestions=bool(suggestions),
-        has_upsell=bool(upsell),
+def _knowledge_block(index: MenuIndex, restaurant: Optional[Dict[str, Any]]) -> str:
+    return (
+        "# RESTAURANT\n" + render_restaurant(restaurant) + "\n\n"
+        "# MENU (ref name — price [tags; hints] · desc · choices)\n" + (render_catalog(index) or "(menu unavailable)") + "\n\n"
+        "# PRICE GUIDE (per category: range, cheapest dishes)\n" + render_price_guide(index)
     )
 
-    if intent == "order" and has_items and upsell:
-        decision["showUpsellTray"] = True
 
-    if intent == "suggestions" and suggestions:
-        decision["showSuggestionsModal"] = True
-
-    if intent == "chitchat":
-        decision = {
-            "showSuggestionsModal": False,
-            "showUpsellTray": False,
-        }
-
-    final_items = proposed_items if intent == "order" else []
-
-    if any(_debug_has_kw(i.get("name", "")) for i in final_items):
-        print("[debug][finalize] FINAL intent:", intent)
-        print("[debug][finalize] FINAL items:", final_items)
-        print("[debug][finalize] FINAL suggestions:", suggestions)
-        print("[debug][finalize] FINAL upsell:", upsell)
-        print("[debug][finalize] FINAL decision:", decision)
-
-    return {
-        "intent": intent,
-        "items": final_items,
-        "suggestions": suggestions,
-        "upsell": upsell,
-        "decision": decision,
-    }
-
-
-# ------------------------- Deterministic menu fallback -------------------------
-
-
-def _fallback_menu_reply(
+def _turn_block(
     *,
     transcript: str,
     lang: str,
-    locked_intent: Optional[str],
-    menu_snapshot: Optional[Dict[str, Any]],
-) -> Optional[Dict[str, Any]]:
-    if locked_intent not in ("menu", "suggestions"):
-        return None
-    if not menu_snapshot or not menu_snapshot.get("items"):
-        return None
-
-    items = menu_snapshot.get("items") or []
-    top = items[:5]
-    titles = [i.get("name") for i in top if i.get("name")]
-    if not titles:
-        return None
-
-    if lang == "bn":
-        reply_text = (
-            "আমাদের মেনু থেকে কিছু অপশন: " + ", ".join(titles) + "।"
+    index: MenuIndex,
+    cart_rows: List[Dict[str, Any]],
+    subtotal: float,
+    context: Dict[str, Any],
+    recent: List[Dict[str, Any]],
+    asked_to_confirm: bool,
+    picks: Optional[List[Pick]] = None,
+    profile: Optional[GuestProfile] = None,
+    mode: str = "answer",
+    plan: Optional[Dict[str, Any]] = None,
+    pairings: Optional[List[Tuple[Dict[str, Any], str]]] = None,
+    any_orderable: bool = True,
+    just_suggested: Optional[List[Dict[str, Any]]] = None,
+    ask_next: str = "",
+    missing: Optional[List[str]] = None,
+    asked_kinds: Optional[List[Tuple[str, List[Dict[str, Any]]]]] = None,
+    allergy_guides: Optional[List[Dict[str, Any]]] = None,
+    checkout_stage: str = "none",
+    last_change: str = "",
+    tray_facts: str = "",
+    on_screen: Optional[List[Dict[str, Any]]] = None,
+    wait_facts: str = "",
+) -> str:
+    now = context.get("localTime") or datetime.now().strftime("%a %H:%M")
+    lines = [
+        "# THIS TURN",
+        f"Reply language: {lang}",
+        f"Channel: {context.get('channel') or 'dine-in'} · Local time: {now} ({context.get('timeOfDay') or '?'})"
+        + (f" · Weather: {context['climate']}" if context.get("climate") else "")
+        + (f" · Restaurant open now: {'yes' if context['openNow'] else 'no'}" if isinstance(context.get("openNow"), bool) else ""),
+        f"Meal period now: {context.get('mealPeriod') or context.get('timeOfDay') or 'unknown'}",
+        "CART:\n" + render_cart(cart_rows, subtotal),
+    ]
+    if last_change:
+        lines.append(f"LAST CHANGE (for \"one more of that\" / \"same again\" / \"আরেকটা\"): {last_change}")
+    if tray_facts:
+        lines.append(f"TRAY FACTS (for \"is this enough?\", \"over budget?\", \"what else do we need?\"): {tray_facts}")
+    if wait_facts:
+        lines.append("WAIT TIMES (real numbers — quote only these, as approximate): " + wait_facts)
+    if on_screen:
+        rows = []
+        for n, it in enumerate(on_screen, start=1):
+            f = dish_facts(it)
+            # unknown heat: judge from the dish type — never tell the guest it "isn't listed"
+            bits = [f"heat: {f.get('heat') or 'judge from the dish type'}", f"diet: {f.get('diet') or 'not listed'}"]
+            if f.get("contains"):
+                bits.append("contains: " + ", ".join(sorted(f["contains"]))[:90])
+            if it.get("tags"):
+                bits.append("tags: " + ", ".join(map(str, it.get("tags")))[:60])
+            rows.append(f"{n}. {index.ref(it)} {it.get('name')} {_money(it.get('price'))} — " + "; ".join(bits))
+        lines.append(
+            "ON SCREEN — the guest is looking at exactly these dishes; \"these / those / which of them / এগুলো / সেগুলোর "
+            "মধ্যে / কোনটা / the second one\" means THESE (answer about them only):\n" + "\n".join(rows)
         )
-    else:
-        reply_text = (
-            "Here are some options from our menu: "
-            + ", ".join(titles)
-            + "."
+    unavailable = context.get("unavailableNow") or []
+    if unavailable:
+        by_reason: Dict[str, List[str]] = {}
+        for u in unavailable:
+            by_reason.setdefault(str(u.get("reason") or "not available now"), []).append(str(u.get("name")))
+        rows = []
+        for reason, names in by_reason.items():
+            if len(names) >= len(index.items) > 0:
+                rows.append(f"- EVERY item: {reason}")
+            else:
+                shown = ", ".join(names[:15]) + (f" (+{len(names) - 15} more)" if len(names) > 15 else "")
+                rows.append(f"- {shown}: {reason}")
+        lines.append("NOT ORDERABLE NOW:\n" + "\n".join(rows))
+    if recent:
+        lines.append("RECENTLY DISCUSSED: " + ", ".join(f"{index.ref(it)} {it.get('name')}" for it in recent))
+    if missing:
+        lines.append(
+            f"NOT ON THIS MENU: {', '.join(missing)} — say so plainly and kindly. Offer an alternative ONLY if it is "
+            "genuinely the same kind of thing (for something sweet: a sweet dish or a drink from the MENU); never offer "
+            "savoury food as a dessert or a soup as something to finish with. If there's no real equivalent, just ask "
+            "what else you can get them."
         )
+    for g in allergy_guides or []:
+        if g.get("groups"):
+            lines.append(
+                f"ALLERGY GUIDE ({g['allergen']}) — {g['count']} dishes to avoid; SAY IT GROUPED LIKE THIS (never read "
+                f"out every dish): {'; '.join(g['groups'])}. Then name 2–3 safe dishes from RANKED PICKS and ask them "
+                "to tell the staff."
+            )
+    for kind, items in asked_kinds or []:
+        avail = [i for i in items if i.get("available") is not False]
+        if avail:
+            lines.append(
+                f"GUEST ASKED ABOUT {kind.upper()} — these are ALL of them on the menu that can be ordered now "
+                "(answer from this list; don't add unrelated dishes): "
+                + ", ".join(f"{i.get('name')} {_money(i.get('price'))}" for i in avail[:12])
+            )
+    if just_suggested:
+        lines.append(
+            "YOU JUST SUGGESTED (in this order — \"the first one\", \"the second\", \"the last one\", \"that one\" refer to these): "
+            + "; ".join(f"{n}. {index.ref(it)} {it.get('name')}" for n, it in enumerate(just_suggested, start=1))
+        )
+    lines.append("GUEST PROFILE (what we know about this table): " + (profile.summary() if profile else "nothing specific yet"))
+    lines.append(
+        f"RECOMMENDATION MODE: {mode.upper()} — {MODE_INSTRUCTIONS.get(mode, '')}"
+        + (f' End your reply with exactly this question (in the reply language): "{ask_next}"' if ask_next else "")
+    )
+    if not any_orderable:
+        lines.append("RANKED PICKS: nothing can be ordered at the moment — say so and when ordering is possible again.")
+    elif picks and mode != "quiet":
+        lines.append(
+            "RANKED PICKS (already filtered for THIS guest's diet/allergies/dislikes/budget, availability and the "
+            "meal period; best first; use the reasons). Any other MENU dish can still be ORDERED if the guest asks:\n"
+            + "\n".join(
+                f"- {index.ref(p.item)} {p.item.get('name')} {_money(p.item.get('price'))}"
+                + (" (SIGNATURE)" if is_signature(p.item) else "")
+                + (f" — {', '.join(r)}" if r else "")
+                for p, r in zip(picks, _distinct_reasons(picks))
+            )
+            + "\n(Reasons shared by every pick are listed once, on the first — don't repeat them for each dish.)"
+        )
+    if plan and mode == "full":
+        lines.append(
+            f"MEAL PLAN for {plan['party']} (arithmetic checked — use these numbers): "
+            + " + ".join(
+                f"{l['qty']} × {l['name']}" + (f" ({l['variant']})" if l.get("variant") else "") + f" ({_money(l['price'])})"
+                for l in plan["lines"]
+            )
+            + f" = {_money(plan['total'])}"
+            + (f", within the ৳{plan['budget']} budget" if plan.get("budget") and plan["fits"] else "")
+        )
+    if pairings and mode in ("complement", "last_call"):
+        lines.append(
+            "PAIRING (offer only ONE, briefly): "
+            + "; ".join(f"{index.ref(it)} {it.get('name')} {_money(it.get('price'))} — {why}" for it, why in pairings)
+        )
+    if checkout_stage == "readback":
+        lines.append("CHECKOUT: you just read the order back and asked \"Shall I place it?\" — waiting for the guest's yes.")
+    elif checkout_stage == "table":
+        lines.append("CHECKOUT: you asked which table the guest is at (needed before placing the order).")
+    elif asked_to_confirm:
+        lines.append("You just asked the guest whether to confirm the order.")
+    lines.append(f'Guest said: "{transcript}"')
+    return "\n".join(lines)
 
-    suggestions = []
-    for it in top:
-        name = it.get("name")
-        if not name:
+
+def _distinct_reasons(picks: List[Pick]) -> List[List[str]]:
+    """Reasons every pick shares ('great for dinner') only on the first, so replies don't repeat them per dish."""
+    if not picks:
+        return []
+    common = set(picks[0].reasons)
+    for p in picks[1:]:
+        common &= set(p.reasons)
+    return [p.reasons if i == 0 else [r for r in p.reasons if r not in common] for i, p in enumerate(picks)]
+
+
+_GROUPISH = re.compile(r"\b(we|us|our|we'?re|family|group|table|friends)\b|আমরা|আমাদের|amra|amader", re.I)
+_POPULARITY_CLAIM = re.compile(
+    r"\b(very |most |really )?popular\b|best ?-?sell(er|ing)|most (ordered|loved)|(guest|crowd|customer) favou?rite|everyone loves"
+    r"|জনপ্রিয়|সবচেয়ে বেশি বিক্রি|সবার পছন্দের|সবাই পছন্দ করে", re.I
+)
+_BN_PRICE = re.compile(r"৳\s*([০-৯][০-৯,]*)")
+_ASK_INSTEAD = ("asked a question, not for an order", "needs a size/option first", "needs its choices first", "fit several dishes",
+                "several lines")
+# Any claim about what happened to the ORDER (placed / taken / sent / confirmed / cancelled). Only the system
+# does those things (checkout places, clearCart cancels) — the model saying so on its own is always false.
+_ORDER_STATUS_VERBS_EN = r"(placed|taken|received|sent|submitted|confirmed|cancel+ed|processed|booked)"
+_CLAIMS_CONFIRMED = re.compile(
+    r"\b(is|has been|been|now) confirmed\b"
+    rf"|\border(s)? (is |are |was |were |has been |have been |'s been |got |is now )?{_ORDER_STATUS_VERBS_EN}\b"
+    rf"|\b(i'?ve|i have|i|we'?ve|we have|we) (just )?{_ORDER_STATUS_VERBS_EN} (your|the|this) order"
+    r"|\b(sent|passed) (it|your order|the order) (to|on to) the kitchen"
+    r"|অর্ডার(টা|টি|গুলো)?\s*(সফলভাবে\s*)?(নেওয়া|নেয়া|গ্রহণ|দেওয়া|দেয়া|পাঠানো|কনফার্ম|প্লেস|বাতিল|সম্পন্ন|নিশ্চিত|রিসিভ)\s*(করা\s*)?(হয়েছে|হয়েছে|হলো|হল|হয়ে গেছে)"
+    r"|(কনফার্ম|নিশ্চিত|বাতিল)\s*করা\s*(হয়েছে|হলো|হল)"
+    r"|অর্ডার(টা|টি)?\s*(নিয়েছি|নিয়ে নিয়েছি|পাঠিয়েছি|পাঠিয়ে দিয়েছি|দিয়ে দিয়েছি|কনফার্ম করেছি|বাতিল করেছি)"
+    r"|রান্নাঘরে পাঠিয়ে(ছি|দিয়েছি)"
+    # "আপনার অর্ডার বারো নম্বর টেবিলের জন্য কনফার্ম করলাম" — words in between, first-person past
+    r"|অর্ডার.{0,50}?(কনফার্ম|নিশ্চিত|প্লেস|বাতিল)\s*(করলাম|করে দিলাম|করে দিয়েছি|করেছি|হয়ে গেছে)"
+    r"|অর্ডার(টা|টি|গুলো)?\s*(দিয়ে দিলাম|দিয়ে দিয়েছি|পাঠিয়ে দিলাম|নিয়ে নিলাম)"
+    r"|\b(i'?ve|i have|we'?ve|we have) (just )?(confirmed|placed|submitted)\b",
+    re.I,
+)
+_DIET_CLASH = ("not vegetarian", "not vegan", "has meat", "has beef", "has pork")
+_SORRY_REPEAT = {
+    "bn": "দুঃখিত, ঠিক বুঝতে পারিনি। আরেকবার বলবেন, প্লিজ?",
+    "en": "Sorry, I didn't quite catch that — could you say it again, please?",
+}
+_SWAP_CUE = re.compile(r"বদলে|বদলি|জায়গায়|জায়গায়|এর বদল|instead of|swap|replace|change (it|that) (to|for)|badle", re.I)
+_PRICE_ASK = re.compile(
+    r"how much|\bprices?\b|\bcosts?\b|\btotal\b|\bbill\b|\bcheap|\bexpensive|\bafford|\bkoto\b|\bdam\b|\btaka\b"
+    r"|দাম|কত টাকা|টাকা|মোট|খরচ|সস্তা|কম দামে|বিল",
+    re.I,
+)
+_SEE_MENU = re.compile(
+    r"\b(show|see|open|view|look at|check)\b.{0,15}\bmenu\b|\bfull menu\b|\bmenu (please|card)\b"
+    r"|মেনু(টা|টি)?\s*(একটু\s*)?(দেখান|দেখাও|দেখাবেন|দেখতে চাই|দেখি|খুলুন|দিন|দেন)|মেনু কার্ড"
+    r"|\bmenu\s*(ta\s*)?(dekhan|dekhao|dekhi|dekhte chai|den|din)\b",
+    re.I,
+)
+# "ঝালের তথ্য নেই", "মেনুতে উল্লেখ নেই", "the menu doesn't list its heat" — a data gap, meaningless to a guest
+_NO_INFO_TALK = re.compile(
+    r"(ঝাল|স্বাদ|মেনু)[^।?!]{0,25}(তথ্য|উল্লেখ|লেখা)\s*(নেই|করা নেই|নাই)|তথ্য পাওয়া যায়নি|তথ্য নেই"
+    r"|\b(menu|it) (doesn'?t|does not) (say|list|mention|show) (its|the|how|whether|if)\b"
+    r"|\b(heat|spice|spiciness)( level)? (isn'?t|is not) (listed|mentioned)\b|\bno (info|information|details?) (on|about)\b",
+    re.I,
+)
+_CLAIMS_CANCELLED = re.compile(r"\bcancel+ed\b|\bcleared\b|বাতিল|খালি করা", re.I)
+_CLEAR_CUE = re.compile(
+    r"\bcancel\b|\bclear\b|remove (everything|all)|start (over|again)|empty (the|my) (cart|order|tray)|delete (everything|all)|"
+    r"forget (it|everything|the order)|বাতিল|সব বাদ|সব মুছে|ক্লিয়ার|ক্যান্সেল|cancel kor|sob bad",
+    re.I,
+)
+# "I've sent it to the kitchen" — the note only travels with the order; the waiter can't reach the kitchen
+_KITCHEN_CLAIM = re.compile(
+    r"(sent|passed|forwarded|told|informed|notified|let)\s+(it |this |that |them )?(on |over )?(to |know )?(the )?(kitchen|chef)|"
+    r"(kitchen|chef) (has been|have been|is|was) (told|informed|notified|alerted)|"
+    r"(কিচেনে|রান্নাঘরে|শেফকে|কিচেনকে|রান্নাঘরকে)\s*(পাঠিয়েছি|পাঠানো হয়েছে|জানিয়েছি|জানানো হয়েছে|বলেছি|বলে দিয়েছি)",
+    re.I,
+)
+
+_OFFERS_TO_ADD = re.compile(
+    r"(would you like|shall i|should i|do you want)( me)? to add (these|them|this|it|those)|(shall|should) i add (these|them|this|it)|"
+    r"যোগ করব কি|যোগ করে দেব|অর্ডারে যোগ করতে চান",
+    re.I,
+)
+_CLAIMS_ADDED = re.compile(r"\badded\b|\bi'?ve added\b|in your (cart|order|tray)|যোগ করা হয়েছে|যোগ করা হলো|যোগ করলাম", re.I)
+_CLAIMS_CHANGED = re.compile(
+    r"\b(removed|changed|updated|reduced|switched|swapped|done)\b|বাদ দিলাম|বাদ দেওয়া হলো|বাদ দিয়েছি|সরিয়ে দিলাম|"
+    r"কমিয়ে দিলাম|কমানো হলো|বদলে দিলাম|বদলানো হলো|বদলে দিয়েছি|করে দিলাম|ঠিক করে দিলাম",
+    re.I,
+)
+
+
+def _clarify_reply(problems: List[str], index: MenuIndex, lang: str) -> str:
+    """Deterministic 'which size / which choice?' when the model still pretended to add something."""
+    bn = lang == "bn"
+    for p in problems:
+        if "fit several dishes:" in p or "several lines:" in p:
+            opts = [o.strip() for o in re.split(r"fit several dishes:|several lines:", p)[1].split("|") if o.strip()]
+            joined = (", ".join(opts[:-1]) + (" নাকি " if bn else " or ") + opts[-1]) if len(opts) > 1 else opts[0]
+            return f"কোনটা দেব — {joined}?" if bn else f"Which one would you like — {joined}?"
+        name = p.split(" needs ")[0].split(":")[0].strip()
+        it = index.resolve(None, name)
+        if not it:
             continue
-        suggestions.append(
-            {
-                "title": name,
-                "itemId": _normalize_id(
-                    it.get("id")
-                    or it.get("_id")
-                    or it.get("itemId")
-                ),
-                "price": it.get("price"),
-            }
-        )
+        if "needs a size" in p:
+            opts = [f"{v['name']} ({_money(v.get('price'))})" for v in it.get("variations") or [] if v.get("name")]
+            joined = " অথবা ".join(opts) if bn else " or ".join(opts)
+            return f"{it['name']} — {joined}, কোনটা নেবেন?" if bn else f"Would you like the {it['name']} {joined}?"
+        if "needs its choices" in p:
+            for g in it.get("modifierGroups") or []:
+                if int(g.get("min") or 0) >= 1:
+                    opts = ", ".join(
+                        o["name"] + (f" (+{_money(o['price'])})" if (o.get("price") or 0) > 0 else "")
+                        for o in g.get("options") or [] if o.get("name")
+                    )
+                    return (f"{it['name']} এর জন্য কোনটা নেবেন: {opts}?" if bn
+                            else f"Which would you like with the {it['name']}: {opts}?")
+    return ""
 
-    if any(
-        _debug_has_kw(s.get("title", ""))
-        for s in suggestions
-    ):
-        print("[debug][fallback_menu] reply_text:", reply_text)
-        print("[debug][fallback_menu] suggestions:", suggestions)
 
+# self-check issue text → short tag stored with the turn (meta.guards) for reviewing real conversations
+_GUARD_TAGS = [
+    ("Don't change the cart yet", "unrequested_cart_change"),
+    ("doesn't match any MENU price", "price_slip"),
+    ("popular, bestsellers", "popularity_claim"),
+    ("The total you stated", "wrong_total"),
+    ("isn't right for this guest", "unsuitable_recommendation"),
+    ("name the recommended dishes", "untranslated_names"),
+    ("IS available and can be ordered", "false_unavailable"),
+    ("IS available and you are adding it", "added_but_said_unavailable"),
+    ("You have NOT placed, taken, sent", "false_order_status_claim"),
+    ("asked about the dishes ON SCREEN", "left_the_list_on_screen"),
+    ("without its total", "plan_without_total"),
+    ("gave a budget", "budget_without_total"),
+    ("which this menu doesn't have", "odd_substitute"),
+    ("Too long to say out loud", "allergy_list_too_long"),
+    ("you sent/told/informed the kitchen", "kitchen_claim"),
+]
+
+
+_CHEAPER = re.compile(r"cheaper|less expensive|lower price|more affordable|budget option|কম দাম|কমদামি|সস্তা|sasta|kom dam", re.I)
+_TOTAL_CUE = re.compile(r"total|altogether|in all|comes to|adds up|সব মিলিয়ে|মোট|sob miliye|mot\b", re.I)
+_QTY_WORDS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "a": 1, "an": 1,
+              "একটা": 1, "একটি": 1, "দুইটা": 2, "দুইটি": 2, "দুটো": 2, "দুটি": 2, "তিনটা": 3, "তিনটি": 3,
+              "চারটা": 4, "চারটি": 4, "পাঁচটা": 5, "পাঁচটি": 5}
+
+
+def _total_slip(reply: str, index: MenuIndex, vat_pct: float = 0.0) -> Optional[Tuple[int, int]]:
+    """(claimed, actual) when the reply states a total that doesn't match the dishes it names.
+    Quantities come from '2 ×', '2x', 'two', 'দুইটা' just before a dish name; default 1."""
+    text = reply or ""
+    if not _TOTAL_CUE.search(text):
+        return None
+    amounts = []
+    for m in _TOTAL_CUE.finditer(text):
+        window = text[m.start(): m.start() + 60]
+        for a in _AMOUNT.finditer(window):
+            raw = (a.group(1) or a.group(2) or "").translate(_BN_DIGITS).replace(",", "")
+            try:
+                amounts.append(int(float(raw)))
+            except ValueError:
+                pass
+    if not amounts:
+        return None
+    low = text.lower().translate(_BN_DIGITS)
+    actual = 0.0
+    for it in find_mentions(text, index, limit=10):
+        name = str(it.get("name") or "").lower()
+        pos = low.find(name)
+        if pos < 0:
+            core = re.sub(r"\s*\(.*?\)\s*", " ", name).strip()
+            pos, name = low.find(core), core
+        before = low[max(0, pos - 22): pos] if pos >= 0 else ""
+        after = low[pos + len(name): pos + len(name) + 22] if pos >= 0 else ""
+        # size: "Full Kacchi Biryani" / "Kacchi Biryani (Full)" → that size's price
+        price = float(it.get("price") or 0)
+        for v in it.get("variations") or []:
+            vn = str(v.get("name") or "").lower()
+            if vn and isinstance(v.get("price"), (int, float)) and (re.search(rf"\b{re.escape(vn)}\b", before) or re.search(rf"\b{re.escape(vn)}\b", after)):
+                price = float(v["price"])
+                break
+        # quantity: "3 × X", "three X", "X তিনটি", "X (3 × ৳780)"
+        qty = 1
+        m = re.search(r"(\d+)\s*(?:×|x)?\s*(?:\w+\s+)?$", before)
+        if m:
+            qty = int(m.group(1))
+        else:
+            words = re.findall(r"[\wঀ-৿]+", before)
+            w_before = next((_QTY_WORDS[w] for w in reversed(words[-2:]) if w in _QTY_WORDS), None)
+            m2 = re.match(r"\s*[\(\-—]?\s*(\d+)\s*(?:×|x|টি|টা|pcs|pieces)", after)
+            # (Bangla vowel signs aren't \w, so use an explicit boundary instead of \b)
+            w_after = next((n for w, n in _QTY_WORDS.items() if re.match(rf"\s*{re.escape(w)}(?![\wঀ-৿])", after)), None)
+            qty = w_before or (int(m2.group(1)) if m2 else None) or w_after or 1
+        actual += price * max(1, min(qty, 20))
+    if actual <= 0:
+        return None
+    ok = {int(round(actual)), int(round(actual * (1 + vat_pct / 100.0)))}
+    claimed = amounts[0]
+    return None if any(abs(claimed - v) <= 1 for v in ok) else (claimed, int(round(actual)))
+
+
+def _with_plan_total(reply: str, plan: Dict[str, Any], index: MenuIndex, lang: str, restaurant: Optional[Dict[str, Any]]) -> str:
+    """Last resort: the reply presents the table plan but never says its total → insert the checked total
+    before the closing question. Only when the reply names plan dishes and no other dishes."""
+    if not reply or (_TOTAL_CUE.search(reply) and _amounts(reply)):
+        return reply
+    plan_ids = {l["itemId"] for l in plan["lines"]}
+    named = [index.item_id(it) for it in find_mentions(reply, index, limit=10)]
+    if len([i for i in named if i in plan_ids]) < 2 or any(i not in plan_ids for i in named):
+        return reply
+    vat = _vat_hint(restaurant, lang)
+    sized = [f"{l['variant']} {l['name']}" for l in plan["lines"] if l.get("variant")]
+    if lang == "bn":
+        sentence = f"সব মিলিয়ে {_money(plan['total'])}{vat}" + (f" ({', '.join(sized)} ধরে)" if sized else "") + "।"
+    else:
+        sentence = f"That's {_money(plan['total'])} in total{vat}" + (f" with the {', '.join(sized)}" if sized else "") + "."
+    parts = re.split(r"(?<=[.!।])\s+", reply.strip())
+    if parts and parts[-1].rstrip().endswith("?"):
+        return " ".join(parts[:-1] + [sentence, parts[-1]])
+    return reply.rstrip() + " " + sentence
+
+
+def _fix_kitchen_claim(reply: str, ops: List[Dict[str, Any]], lang: str) -> str:
+    """Replace 'I've sent it to the kitchen' with what actually happened: a note on the order."""
+    op = next((o for o in ops if o.get("note")), None)
+    dish, note = (op["name"], op["note"]) if op else ("", "")
+    if lang == "bn":
+        fixed = (f"{dish} এর জন্য " if dish else "") + "নোট যোগ করেছি" + (f": {note}" if note else "") + "।"
+    else:
+        fixed = "I've added a note" + (f" to your {dish}" if dish else "") + (f": {note}" if note else "") + "."
+    parts = re.split(r"(?<=[.!?।])\s+", reply.strip())
+    for i, p in enumerate(parts):
+        if _KITCHEN_CLAIM.search(p):
+            parts[i] = fixed
+            break
+    return " ".join(parts)
+
+
+def _western_prices(text: str) -> str:
+    """৳২৫০০ → ৳2500 (prices stay in Western digits, as on the menu)."""
+    return _BN_PRICE.sub(lambda m: "৳" + m.group(1).translate(_BN_DIGITS), text or "")
+
+
+# --------------------------- validation ---------------------------
+
+
+def _norm_choice_list(item: Dict[str, Any], raw: Any) -> List[str]:
+    """Keep only choices that exist on this item (case-insensitive), preserving menu spelling."""
+    names: Dict[str, str] = {}
+    for g in item.get("modifierGroups") or []:
+        for o in g.get("options") or []:
+            if o.get("name"):
+                names[str(o["name"]).strip().lower()] = str(o["name"]).strip()
+    out: List[str] = []
+    for c in raw or []:
+        key = str(c or "").strip().lower()
+        hit = names.get(key) or next((v for k, v in names.items() if key and (key in k or k in key)), None)
+        if hit and hit not in out:
+            out.append(hit)
+    return out
+
+
+def _required_choice_names(item: Dict[str, Any]) -> set:
     return {
-        "replyText": reply_text,
-        "intent": (
-            "menu"
-            if locked_intent == "menu"
-            else "suggestions"
-        ),
-        "language": lang,
-        "items": [],
-        "suggestions": suggestions,
-        "upsell": [],
-        "decision": {
-            "showSuggestionsModal": locked_intent == "suggestions",
-            "showUpsellTray": False,
-        },
-        "cartOps": [],
-        "clearCart": False,
-        "fallback": True,
+        str(o.get("name")).strip()
+        for g in item.get("modifierGroups") or [] if int(g.get("min") or 0) >= 1
+        for o in g.get("options") or [] if o.get("name")
     }
 
 
-# --------------------- Confirmation helpers ---------------------
-
-
-def _was_last_bot_asking_confirm(history: Optional[List[Dict[str, str]]]) -> bool:
-    if not history:
-        return False
-    for m in reversed(history):
-        if m.get("role") != "assistant":
+def _missing_required_choices(item: Dict[str, Any], choices: List[str]) -> bool:
+    chosen = {c.lower() for c in choices}
+    for g in item.get("modifierGroups") or []:
+        need = int(g.get("min") or 0)
+        if need <= 0:
             continue
-        txt = (m.get("content") or "").lower()
-        patterns = [
-            "অর্ডারটা কি কনফার্ম করবো",
-            "অর্ডার কনফার্ম করবো",
-            "অর্ডার কন্ফাম করবো",
-            "অর্ডার কনফাম করবো",
-            "confirm your order",
-            "should i confirm",
-            "shall i confirm",
+        have = sum(1 for o in g.get("options") or [] if str(o.get("name") or "").lower() in chosen)
+        if have < need:
+            return True
+    return False
+
+
+def _norm_variant(item: Dict[str, Any], raw: Any) -> Optional[Dict[str, Any]]:
+    """The item's variation (size/option) the model named, or its only variation; None when unresolved."""
+    variations = [v for v in item.get("variations") or [] if v.get("name")]
+    if not variations:
+        return None
+    if len(variations) == 1:
+        return variations[0]
+    want = str(raw or "").strip().lower()
+    if not want:
+        return None
+    exact = [v for v in variations if str(v["name"]).strip().lower() == want]
+    if exact:
+        return exact[0]
+    loose = [v for v in variations if want in str(v["name"]).lower() or str(v["name"]).lower() in want]
+    return loose[0] if len(loose) == 1 else None
+
+
+_BN_WORDS ={"হাফ": "half", "ফুল": "full", "ছোট": "small", "বড়": "large", "বড়": "large", "মাঝারি": "medium",
+             "মুরগি": "chicken", "চিকেন": "chicken", "গরু": "beef", "বিফ": "beef", "মাছ": "fish", "ফিশ": "fish",
+             "সবজি": "vegetable", "ভেজিটেবল": "vegetable", "চিংড়ি": "prawn", "পানি": "water", "জল": "water"}
+
+
+_STOP = {"with", "and", "of", "in", "a", "an", "the", "served", "glass", "&", "or", "on"}
+_NUM_TOKENS = {
+    "one": "1", "ওয়ান": "1", "এক": "1", "১": "1", "two": "2", "টু": "2", "দুই": "2", "২": "2",
+    "three": "3", "থ্রি": "3", "তিন": "3", "৩": "3", "four": "4", "ফোর": "4", "চার": "4", "৪": "4",
+    "five": "5", "ফাইভ": "5", "পাঁচ": "5", "৫": "5",
+}
+_SIZE_TOKENS = {"ছোট": "small", "ছোটো": "small", "ছোটটা": "small", "বড়": "large", "বড়ো": "large",
+                "বড়টা": "large", "মাঝারি": "medium", "নরমাল": "regular"}
+_BN_SUFFIX = re.compile(r"(গুলো|গুলি|টার|টির|টা|টি|খানা|এর|য়ের|র)$")
+
+
+def _sing(w: str) -> str:
+    """prawns → prawn, curries → curry, drinks → drink (so 'প্রন' and 'Prawns' meet)."""
+    if len(w) > 4 and w.endswith("ies"):
+        return w[:-3] + "y"
+    if len(w) > 3 and w.endswith("s") and not w.endswith("ss"):
+        return w[:-1]
+    return w
+
+
+def _name_tokens(name: str) -> set:
+    """'Mineral Water (small)' → {mineral, water, small}; 'Set Menu A-01' → {set, menu, a, 1}."""
+    toks = set()
+    for w in re.findall(r"[a-z]+|\d+", str(name).lower()):
+        if w in _STOP:
+            continue
+        toks.add(str(int(w)) if w.isdigit() else _sing(w))
+    return toks
+
+
+_MENU_REV: Dict[int, Dict[str, str]] = {}
+
+
+def _menu_rev(index: MenuIndex) -> Dict[str, str]:
+    """This menu's own words in Bangla script → the English word ('স্প্রিং' → spring), cached per menu."""
+    from bn_translit import word_to_bn
+
+    key = id(index)
+    if key not in _MENU_REV:
+        rev: Dict[str, str] = {}
+        for it in index.items:
+            for w in re.findall(r"[A-Za-z]+", str(it.get("name") or "")):
+                rev.setdefault(word_to_bn(w), _sing(w.lower()))
+        if len(_MENU_REV) > 50:
+            _MENU_REV.clear()
+        _MENU_REV[key] = rev
+    return _MENU_REV[key]
+
+
+def _guest_tokens(text: str, menu_rev: Optional[Dict[str, str]] = None) -> set:
+    """The guest's words as menu tokens — English words as they are, Bangla mapped back ('মিনারেল' → mineral)."""
+    from bn_translit import WORDS, word_to_bn
+
+    from bn_translit import PHRASES
+
+    rev: Dict[str, str] = {}
+    for en, bn in WORDS.items():  # prefer the shortest English form ("prawn" over "prawns")
+        if bn not in rev or len(en) < len(rev[bn]):
+            rev[bn] = en
+    # one Bangla word for a two-word name: "কাজুবাদাম" = cashew nut, "সেচুয়ান" = szu-chuan, "ওয়ান্টন" = won thon
+    multi: Dict[str, set] = {}
+    for en, bn in list(PHRASES.items()) + [("cashew nut", "কাজুবাদাম"), ("szu chian", "সেচুয়ান")]:
+        if " " not in bn:
+            multi.setdefault(bn, set()).update(_name_tokens(en.replace("-", " ")))
+    out = set()
+    for raw in re.findall(r"[A-Za-z]+|\d+|[ঀ-৿]+", (text or "").translate(_BN_DIGITS)):
+        w = raw.lower()
+        if w.isdigit():
+            out.add(str(int(w)))
+            continue
+        if re.match(r"[a-z]", w):
+            out.add(_NUM_TOKENS.get(w) or _sing(w))
+            continue
+        for cand in (w, _BN_SUFFIX.sub("", w)):
+            if cand in multi:
+                out |= multi[cand]
+                break
+            hit = (_NUM_TOKENS.get(cand) or _SIZE_TOKENS.get(cand) or _BN_WORDS.get(cand) or rev.get(cand)
+                   or (menu_rev or {}).get(cand))
+            if hit:
+                out.add(hit if hit.isdigit() else _sing(hit))
+                break
+    return out
+
+
+def _ambiguous_pick(it: Dict[str, Any], index: MenuIndex, orderable: Dict[str, bool], heard: Optional[str]) -> List[Dict[str, Any]]:
+    """The guest named something that fits several dishes ("মিনারেল ওয়াটার" → small or large; "রাইস" → which rice)
+    → [the model's pick, the other fits]. Empty when their words point to exactly this dish, or when they
+    didn't name it at all ("ওটা দেন" — a reference the model resolved from the conversation)."""
+    if not heard:
+        return []
+    mine = _name_tokens(it.get("name"))
+    words = _guest_tokens(heard, _menu_rev(index))
+    said = mine & words
+    if not said or said == mine:
+        return []  # nothing named (a reference) or the full name said
+    if any(o is not it and _name_tokens(o.get("name")) and _name_tokens(o.get("name")) <= words for o in index.items):
+        return []  # the guest said ANOTHER dish in full — the retargeting fix corrects the pick, no question needed
+    others = [
+        o for o in index.items
+        if o is not it and orderable.get(index.item_id(o), True) and said <= _name_tokens(o.get("name"))
+    ]
+    return [it] + others[:5] if others else []
+
+
+def _said(label: str, transcript: str) -> bool:
+    """Did the guest's own words name this size/choice? ('Full', 'ফুল', 'the fish one' → Fish)."""
+    t = (transcript or "").lower()
+    for bn, en in _BN_WORDS.items():
+        t = t.replace(bn, f" {en} ")
+    words = [w for w in re.findall(r"[a-z]+", str(label).lower()) if len(w) > 2 or w in ("xl",)]
+    return bool(words) and any(re.search(rf"\b{re.escape(w)}", t) for w in words)
+
+
+# a question is not an order — unless it's phrased as one ("can I have…", "could you add…")
+_ORDER_CUE = re.compile(
+    r"\b(add|order (a|an|one|two|three|four|five|\d+|the|some|this|that|it|them)|i'?ll (have|take|get)|i'?d like|"
+    r"i want|we want|give me|get me|bring|can (i|we) (have|get|order)|"
+    r"could (i|we|you) (have|get|add)|make it|put|one more|another)\b|দিন|দেন|দাও|লাগবে|নেব|নিব|অর্ডার কর|"
+    r"দেওয়া যাবে|দেয়া যাবে|দিতে পারবেন|নিতে চাই|খেতে চাই|দেবেন|দিবেন|দিয়েন|দিয়ে দিন|দিয়ে দেন|দেবো|দিবো|নেবো|নিবো|"
+    r"অর্ডার দিতে|অর্ডার দিব|অর্ডার দেব|অর্ডার করতে চাই|\b(den|dao|nibo|lagbe|diben|deben|dewa jabe|dite parben|order dibo)\b",
+    re.I,
+)
+# ordering in the same breath as a time question ("add 2 kacchi — how long?") → the model does both.
+# Narrower than _ORDER_CUE: "কখন দিবেন?" (when will you bring it?) is a time question, not an order.
+_ORDERS_NOW = re.compile(
+    r"\b(add|i'?ll (have|take|get)|give me|get me|i want|we want|i'?d like|we'?ll (have|take))\b|"
+    r"দিন(?![ঀ-৿])|দেন(?![ঀ-৿])|দাও|নেব|নিব|লাগবে|যোগ কর|\b(den|dao|nibo|lagbe)\b",
+    re.I,
+)
+# "লাগবে" is also the verb of the time question itself: "কতক্ষণ লাগবে?" = how long will it take (not "I need")
+_TIME_TAKES = re.compile(
+    r"(কতক্ষণ|কতক্ষন|কত সময়|কত সময়|কত মিনিট|সময়|সময়|দেরি|দেরী)\s*(লাগবে|লাগে)|"
+    r"\b(koto ?khon|koto (shomoy|somoy|minute)|shomoy|somoy)\s+lag(b)?e\b",
+    re.I,
+)
+
+
+def _orders_now(transcript: str) -> bool:
+    return bool(_ORDERS_NOW.search(_TIME_TAKES.sub(" ", transcript or "")))
+_QUESTION = re.compile(r"\?|^\s*(what|which|how|is|are|do|does|can|could|any|should|where|when)\b|কি\b|কী\b|কোন", re.I)
+
+
+def _is_question_not_order(transcript: str) -> bool:
+    t = (transcript or "").strip()
+    return bool(_QUESTION.search(t)) and not _ORDER_CUE.search(t)
+
+
+def _line_op(
+    kind: str, r: Dict[str, Any], raw: Dict[str, Any], it: Dict[str, Any], index: MenuIndex, note: str,
+    choices: List[str], heard: Optional[str], problems: List[str],
+) -> Optional[Dict[str, Any]]:
+    """One change to one existing tray line → a UI op carrying its lineKey (None = nothing to do)."""
+    iid, name, have = index.item_id(it), it.get("name"), int(r.get("quantity") or 0)
+    base = {"itemId": iid, "name": name, "lineKey": r["key"]}
+    if kind == "remove":
+        return {"op": "remove", **base}
+    if kind == "sub":
+        n = _qty(raw.get("quantity")) or 1
+        return {"op": "remove", **base} if have - n <= 0 else {"op": "set", **base, "quantity": have - n}
+    if kind == "set":
+        q = _qty(raw.get("quantity"), allow_zero=True)
+        if q is None:
+            return None
+        if q == 0:
+            return {"op": "remove", **base}
+        if q != have:
+            op = {"op": "set", **base, "quantity": q}
+            if note:
+                op["note"] = note
+            return op
+        kind = "note" if (note or raw.get("removeNote")) else ("edit" if choices else "")
+        if not kind:
+            return None
+    if kind == "note" and choices:
+        kind = "edit"  # choices on an existing line re-key it (Beef Chili Onion → Szu-Chuan Chicken)
+    if kind == "note":
+        if raw.get("removeNote") is True and r.get("notes"):
+            return {"op": "note", **base, "removeNote": True, "note": ""}
+        return {"op": "note", **base, "note": note} if note else None
+    if kind == "edit":
+        variant = _norm_variant(it, raw.get("variant"))
+        many_sizes = len([v for v in it.get("variations") or [] if v.get("name")]) > 1
+        if variant is not None and many_sizes and heard is not None and not _said(variant["name"], heard):
+            problems.append(f"{name} needs a size/option first")  # a size the guest never said → ask
+            return None
+        new_var = str(variant["name"]) if variant else (r.get("variation") or "")
+        if choices:
+            required = _required_choice_names(it)
+            if heard is not None and required and not any(_said(c, heard) for c in choices if c in required):
+                problems.append(f"{name} needs its choices first")
+                return None
+            if _missing_required_choices(it, choices):
+                problems.append(f"{name} needs its choices first")
+                return None
+            mods = _tray.resolve_choices(it, choices)
+        else:
+            mods = list(r.get("modifiers") or [])
+        remove_note = raw.get("removeNote") is True
+        if new_var == (r.get("variation") or "") and _tray.modifiers_key(mods) == _tray.modifiers_key(r.get("modifiers")) \
+                and not note and not remove_note:
+            return None  # nothing actually changes
+        op = {"op": "edit", **base, "quantity": have, "variant": new_var, "choices": [m["name"] for m in mods],
+              "modifiers": mods, "price": _tray.unit_price(it, new_var, mods)}
+        if note:
+            op["note"] = note
+        if remove_note:
+            op["removeNote"] = True
+        return op
+    return None
+
+
+def _validate_ops(
+    raw_ops: Any,
+    index: MenuIndex,
+    cart_qty: Dict[str, int],
+    orderable: Dict[str, bool],
+    transcript: Optional[str] = None,
+    said: Optional[str] = None,
+    context_ids: Optional[set] = None,
+    rows: Optional[List[Dict[str, Any]]] = None,
+) -> Tuple[List[Dict[str, Any]], List[str]]:
+    """Model ops → safe UI ops {op,itemId,name,quantity?,variant?,price?,note?,choices?,lineKey?}. Returns (ops, problems).
+    With the guest's words: sizes and required choices must come from the guest, and a pure question
+    ("what can we eat?") never adds anything. With the tray `rows`, changes to things already in the tray
+    target one exact line (lineKey) — and ask "which one?" when the dish is in the tray more than once."""
+    ops: List[Dict[str, Any]] = []
+    problems: List[str] = []
+    heard = said if said is not None else transcript  # the guest's recent words, not just this sentence
+    for raw in raw_ops if isinstance(raw_ops, list) else []:
+        if not isinstance(raw, dict):
+            continue
+        kind = str(raw.get("op") or "").strip().lower()
+        line_ref = str(raw.get("line") or "").strip().upper()
+        row = next((r for r in rows or [] if r.get("line") == line_ref), None) if line_ref else None
+        it = (index.by_id.get(str(row["itemId"])) if row else None) or index.resolve(
+            raw.get("item") or raw.get("itemId"), raw.get("name")
+        )
+        if not it:
+            problems.append(f"unknown item {raw.get('item')!r}")
+            continue
+        iid, name = index.item_id(it), it.get("name")
+        note = str(raw.get("note") or "").strip()[:140]
+        choices = _norm_choice_list(it, raw.get("choices"))
+        if choices and note and all(c.lower() in note.lower() for c in choices):
+            note = ""  # the model repeated the choices in the note — keep them once
+        in_cart = cart_qty.get(iid, 0)
+
+        # ---- a change to something already in the tray → exactly one line
+        if rows is not None and kind in ("set", "sub", "remove", "note", "edit"):
+            lines = [row] if row else [r for r in rows if str(r.get("itemId")) == iid]
+            if not lines and kind != "set":
+                continue  # nothing of that in the tray to change
+            if len(lines) > 1:
+                if kind == "remove" and transcript and _tray.ALL_WORDS.search(transcript):
+                    for r in lines:  # "দুইটাই বাদ দিন" / "remove both"
+                        ops.append({"op": "remove", "itemId": iid, "name": name, "lineKey": r["key"]})
+                        cart_qty.pop(iid, None)
+                    continue
+                problems.append(
+                    f"{name}: which one? the tray has several lines: " + " | ".join(_tray.label(r) for r in lines)
+                )
+                continue
+            if lines:
+                op = _line_op(kind, lines[0], raw, it, index, note, choices, heard, problems)
+                if op:
+                    ops.append(op)
+                    if op["op"] == "remove":
+                        cart_qty[iid] = max(0, cart_qty.get(iid, 0) - int(lines[0]["quantity"]))
+                    elif op["op"] == "set":
+                        cart_qty[iid] = cart_qty.get(iid, 0) - int(lines[0]["quantity"]) + op["quantity"]
+                continue
+
+        if kind in ("add", "set") and not orderable.get(iid, True):
+            problems.append(f"{name} is not orderable now")
+            continue
+        variant = _norm_variant(it, raw.get("variant"))
+        many_sizes = len([v for v in it.get("variations") or [] if v.get("name")]) > 1
+        if variant is not None and many_sizes and heard is not None and not _said(variant["name"], heard):
+            variant = None  # the model picked a size the guest never said — ask instead of guessing
+        needs_variant = bool(it.get("variations")) and variant is None
+        if choices and heard is not None and _required_choice_names(it) and not any(
+            _said(c, heard) for c in choices if c in _required_choice_names(it)
+        ):
+            choices = [c for c in choices if c not in _required_choice_names(it)]  # guessed choice → ask
+        if kind in ("add", "set") and not in_cart and transcript is not None and _is_question_not_order(transcript):
+            problems.append(f"{name}: the guest asked a question, not for an order")
+            continue
+        # "মিনারেল ওয়াটার" when there is a small AND a large, "রাইস" when there are five rice dishes → ask which
+        if kind in ("add", "set") and not in_cart:
+            fits = _ambiguous_pick(it, index, orderable, heard)
+            ctx = context_ids or set()
+            if fits and not (iid in ctx and not any(index.item_id(o) in ctx for o in fits[1:])):
+                # the guest DID say what tells them apart ("বড় পানি" → large) but the model picked another → use theirs
+                words = _guest_tokens(heard, _menu_rev(index))
+                scored = sorted(fits, key=lambda o: len(_name_tokens(o.get("name")) & words), reverse=True)
+                top = len(_name_tokens(scored[0].get("name")) & words)
+                if scored[0] is not it and top > len(_name_tokens(it.get("name")) & words) and (
+                    len(scored) == 1 or top > len(_name_tokens(scored[1].get("name")) & words)
+                ):
+                    it = scored[0]
+                    iid, name = index.item_id(it), it.get("name")
+                    in_cart = cart_qty.get(iid, 0)
+                    variant = _norm_variant(it, raw.get("variant"))
+                    needs_variant = bool(it.get("variations")) and variant is None
+                    choices = _norm_choice_list(it, raw.get("choices"))
+                    problems.append(f"{name}: retargeted to the size the guest said")
+                else:
+                    problems.append(f"{name}: which one? the guest's words fit several dishes: " + " | ".join(str(o.get("name")) for o in fits))
+                    continue
+        if kind == "add":
+            q = _qty(raw.get("quantity")) or 1
+            if _missing_required_choices(it, choices):
+                problems.append(f"{name} needs its choices first")
+                continue
+            if needs_variant:
+                problems.append(f"{name} needs a size/option first")
+                continue
+            op = {"op": "add", "itemId": iid, "name": name, "quantity": q}
+        elif kind == "set":
+            q = _qty(raw.get("quantity"), allow_zero=True)
+            if q is None:
+                continue
+            if q == 0:
+                if not in_cart:
+                    continue
+                op = {"op": "remove", "itemId": iid, "name": name}
+            elif not in_cart:
+                if _missing_required_choices(it, choices):
+                    problems.append(f"{name} needs its choices first")
+                    continue
+                if needs_variant:
+                    problems.append(f"{name} needs a size/option first")
+                    continue
+                op = {"op": "add", "itemId": iid, "name": name, "quantity": q}
+            elif q == in_cart:
+                if note or choices:
+                    op = {"op": "note", "itemId": iid, "name": name}
+                else:
+                    continue
+            else:
+                op = {"op": "set", "itemId": iid, "name": name, "quantity": q}
+        elif kind == "remove":
+            if not in_cart:
+                continue
+            op = {"op": "remove", "itemId": iid, "name": name}
+        elif kind == "note":
+            if not (note or choices):
+                continue
+            if not in_cart:
+                problems.append(f"note for {name} which isn't in the cart")
+                continue
+            op = {"op": "note", "itemId": iid, "name": name}
+        else:
+            continue
+        if note and op["op"] != "remove":
+            op["note"] = note
+        if choices and op["op"] != "remove":
+            op["choices"] = choices
+        # the line's real unit price: the size's price (or the base) + paid add-ons ("Fish +৳50")
+        base = variant.get("price") if variant and isinstance(variant.get("price"), (int, float)) else it.get("price")
+        surcharge = sum(
+            float(o.get("price") or 0)
+            for g in it.get("modifierGroups") or [] for o in g.get("options") or []
+            if o.get("name") in (op.get("choices") or [])
+        )
+        if variant:
+            op["variant"] = str(variant["name"])
+        if (variant or surcharge) and isinstance(base, (int, float)):
+            op["price"] = float(base) + surcharge
+        ops.append(op)
+        # keep later ops in this turn consistent with earlier ones
+        if op["op"] == "add":
+            cart_qty[iid] = in_cart + op["quantity"]
+        elif op["op"] == "set":
+            cart_qty[iid] = op["quantity"]
+        elif op["op"] == "remove":
+            cart_qty.pop(iid, None)
+    return ops, problems
+
+
+def _reconcile_ops_with_words(ops: List[Dict[str, Any]], transcript: str, index: MenuIndex) -> List[str]:
+    """The guest said a dish by name, but the model changed a look-alike ("Beef with Red Curry" asked,
+    "Chicken with Red Curry" added) → retarget the op to what the guest actually said. Returns fixes."""
+    from rapidfuzz import fuzz
+
+    named = find_mentions(transcript, index, limit=6)
+    if not named:
+        return []
+    named_ids = {index.item_id(i) for i in named}
+    op_ids = {o["itemId"] for o in ops}
+    fixes = []
+    for op in ops:
+        if op["itemId"] in named_ids:
+            continue
+        said = max(named, key=lambda it: fuzz.ratio(op["name"].lower(), str(it.get("name")).lower()))
+        sid = index.item_id(said)
+        if sid not in op_ids and fuzz.ratio(op["name"].lower(), str(said.get("name")).lower()) >= 70:
+            fixes.append(f"{op['name']} → {said.get('name')}")
+            op["itemId"], op["name"] = sid, said.get("name")
+            op_ids.add(sid)
+    return fixes
+
+
+def _apply_ops(cart_qty: Dict[str, int], ops: List[Dict[str, Any]], clear: bool) -> Dict[str, int]:
+    out = {} if clear else dict(cart_qty)
+    for op in ops:
+        iid = op["itemId"]
+        if op["op"] == "add":
+            out[iid] = out.get(iid, 0) + op["quantity"]
+        elif op["op"] == "set":
+            out[iid] = op["quantity"]
+        elif op["op"] == "remove":
+            out.pop(iid, None)
+    return {k: v for k, v in out.items() if v > 0}
+
+
+# --------------------------- deterministic replies ---------------------------
+
+
+def _summary(
+    index: MenuIndex, qty: Dict[str, int], prices: Optional[Dict[str, float]] = None, labels: Optional[Dict[str, str]] = None
+) -> Tuple[str, float]:
+    """'2 × Kacchi Biryani (Half), 1 × Borhani', total — using the cart line's real unit price (sizes, add-ons)."""
+    parts, total = [], 0.0
+    for iid, q in qty.items():
+        it = index.by_id.get(iid) or {}
+        label = (labels or {}).get(iid)
+        parts.append(f"{q} × {it.get('name') or iid}" + (f" ({label})" if label else ""))
+        unit = (prices or {}).get(iid)
+        total += float(unit if unit is not None else (it.get("price") or 0)) * q
+    return ", ".join(parts), total
+
+
+_END_Q_BN = re.compile(r"(আর কিছু (লাগবে|দেব|নেবেন|চাই)[^?।]*\?|সাথে আর কিছু[^?।]*\?|আর কিছু যোগ[^?।]*\?)\s*$")
+_END_Q_EN = re.compile(r"(anything else[^?.]*\?|would you like anything else[^?.]*\?)\s*$", re.I)
+
+
+def _ask_anything_else_or_confirm(reply: str, lang: str) -> str:
+    """After adding food: "আর কিছু লাগবে, নাকি অর্ডার কনফার্ম করব?" — not just "আর কিছু লাগবে?"."""
+    r = (reply or "").rstrip()
+    if lang == "bn":
+        if "কনফার্ম" in r or "দিয়ে দেব" in r:
+            return r
+        q = "আর কিছু লাগবে, নাকি অর্ডার কনফার্ম করব?"
+        return _END_Q_BN.sub(q, r) if _END_Q_BN.search(r) else (r if r.endswith("?") else f"{r} {q}".strip())
+    if re.search(r"confirm|place (it|your order)", r, re.I):
+        return r
+    q = "Anything else, or shall I confirm your order?"
+    return _END_Q_EN.sub(q, r) if _END_Q_EN.search(r) else (r if r.endswith("?") else f"{r} {q}".strip())
+
+
+def _vat_hint(restaurant: Optional[Dict[str, Any]], lang: str) -> str:
+    for note in (restaurant or {}).get("menuNotes") or []:
+        m = re.search(r"(\d+(?:\.\d+)?)\s*%\s*(vat|tax)", str(note), re.I)
+        if m and re.search(r"exclusive|excluding|not included|\+", str(note), re.I):
+            return f" (+{m.group(1)}% VAT)" if lang == "en" else f" (+{m.group(1)}% ভ্যাট)"
+    return ""
+
+
+def _cart_change_reply(
+    ops: List[Dict[str, Any]], cleared: bool, index: MenuIndex, final_qty: Dict[str, int], lang: str,
+    restaurant: Optional[Dict[str, Any]], prices: Optional[Dict[str, float]] = None, labels: Optional[Dict[str, str]] = None,
+    with_summary: bool = True,
+    rows: Optional[List[Dict[str, Any]]] = None,
+) -> str:
+    """What changed, in one line each, then the order now. With the tray `rows` the summary lists every line
+    exactly (a Half and a Full Kacchi are two lines)."""
+    bits: List[str] = []
+    bn = lang == "bn"
+    if cleared:
+        bits.append("আপনার ট্রে খালি করা হলো।" if bn else "Done — I've cleared your order.")
+    for op in ops:
+        label = ", ".join([*([op["variant"]] if op.get("variant") else []), *(op.get("choices") or [])])
+        n = op["name"] + (f" ({label})" if label else "")
+        if op["op"] == "add" and isinstance(op.get("price"), (int, float)):
+            n += f" — {_money(op['price'])}" + ("" if op.get("quantity", 1) == 1 else " each")
+        if op["op"] == "add":
+            bits.append(f"{op['quantity']} × {n} যোগ করা হলো।" if bn else f"Added {op['quantity']} × {n}.")
+        elif op["op"] == "set":
+            bits.append(f"{n} এখন {op['quantity']}টি।" if bn else f"{n} is now {op['quantity']}.")
+        elif op["op"] == "remove":
+            bits.append(f"{n} বাদ দেওয়া হলো।" if bn else f"Removed {n}.")
+        elif op["op"] == "edit":
+            bits.append(f"{op['name']} বদলে {label or 'আগের মতো'} করা হলো।" if bn else f"Changed {op['name']} to {label or 'as before'}.")
+        elif op["op"] == "restore":
+            line = op.get("line") or {}
+            bits.append(f"{_tray.label(line)} ফিরিয়ে আনা হলো।" if bn else f"Brought back {_tray.label(line)}.")
+        elif op["op"] == "note" and op.get("removeNote"):
+            bits.append(f"{op['name']} এর নোট সরিয়ে দিলাম।" if bn else f"Removed the note on {op['name']}.")
+        elif op["op"] == "note":
+            extra = ", ".join([*(op.get("choices") or []), *([op["note"]] if op.get("note") else [])])
+            bits.append(f"{n} এর জন্য নোট রাখা হলো: {extra}।" if bn else f"Noted for {n}: {extra}.")
+    if not with_summary:
+        return " ".join(bits)
+    if rows is not None:
+        summary, total, _ = _tray.summary(rows)
+    else:
+        summary, total = _summary(index, final_qty, prices, labels)
+    if summary:
+        vat = _vat_hint(restaurant, lang)
+        bits.append(
+            f"এখন আপনার অর্ডারে: {summary} — মোট {_money(total)}{vat}। আর কিছু লাগবে, নাকি অর্ডার কনফার্ম করব?"
+            if bn
+            else f"Your order: {summary} — {_money(total)}{vat}. Anything else, or shall I confirm your order?"
+        )
+    elif not cleared:
+        bits.append("আপনার ট্রে এখন খালি।" if bn else "Your order is empty now.")
+    return " ".join(bits)
+
+
+def _final_rows(
+    cart_rows: List[Dict[str, Any]], final_qty: Dict[str, int], ops: List[Dict[str, Any]], index: MenuIndex,
+    prices: Dict[str, float],
+) -> List[Dict[str, Any]]:
+    """The order as it stands after this turn, line by line (sizes, add-ons, notes) — what the read-back says."""
+    if not ops:
+        return [r for r in cart_rows if final_qty.get(r["itemId"], 0) > 0]
+    touched = list(dict.fromkeys(o["itemId"] for o in ops))
+    rows = [dict(r) for r in cart_rows if r["itemId"] not in touched and final_qty.get(r["itemId"], 0) > 0]
+    for iid in touched:
+        q = final_qty.get(iid, 0)
+        if q <= 0:
+            continue
+        it = index.by_id.get(iid) or {}
+        prev = next((r for r in cart_rows if r["itemId"] == iid), None) or {}
+        op = next(o for o in reversed(ops) if o["itemId"] == iid)
+        rows.append({
+            "itemId": iid, "name": it.get("name") or op.get("name") or iid, "quantity": q,
+            "price": prices.get(iid, it.get("price") or 0),
+            "variation": op.get("variant") or prev.get("variation") or "",
+            "modifiers": [{"name": c} for c in op.get("choices") or []] or list(prev.get("modifiers") or []),
+            "notes": op.get("note") or prev.get("notes") or "",
+        })
+    return rows
+
+
+def _order_draft(rows: List[Dict[str, Any]], table: str, signature: str) -> Dict[str, Any]:
+    """What the server sends to POST /public/orders — the server re-prices everything."""
+    lines = []
+    for r in rows:
+        mods = [
+            {"groupId": str(m["groupId"]), "optionId": str(m["optionId"])}
+            for m in r.get("modifiers") or [] if m.get("groupId") and m.get("optionId")
         ]
-        return any(p in txt for p in patterns)
-    return False
+        line: Dict[str, Any] = {"itemId": r["itemId"], "qty": int(r["quantity"])}
+        if r.get("variation"):
+            line["variation"] = r["variation"]
+        if mods:
+            line["modifiers"] = mods
+        if r.get("notes"):
+            line["notes"] = str(r["notes"])[:200]
+        lines.append(line)
+    # expectedTotal is informational (logs / evals) — the server re-prices and its total is what the guest hears
+    total = sum(float(r.get("price") or 0) * int(r["quantity"]) for r in rows)
+    return {"table": table, "items": lines, "signature": signature, "expectedTotal": total}
 
 
-def _is_yes_like_reply(text: str) -> bool:
-    if not text:
-        return False
-    t = text.strip().lower()
-    if not t or len(t) > 32:
-        return False
+def _checkout_turn(
+    action: str, *, rows: List[Dict[str, Any]], table: Optional[str], lang: str, restaurant: Optional[Dict[str, Any]],
+    prev: Dict[str, Any], transcript: str, ops_line: str = "", eta_hint: str = "",
+) -> Tuple[Optional[str], Dict[str, Any], Dict[str, Any]]:
+    """Checkout action → (reply to speak or None to keep the model's, decision flags, new checkout state)."""
+    tbl = table or ""
+    sig = co.cart_signature(rows)
+    lead = (ops_line + " ") if ops_line else ""
+    if action == "readback":
+        text = co.readback_text(rows, tbl, lang, _vat_hint(restaurant, lang), eta_hint)
+        return lead + text, {"showCheckout": True, "checkoutStage": "readback"}, {"stage": "readback", "sig": sig, "table": tbl}
+    if action == "ask_table":
+        return lead + co.ask_table_text(lang), {"askTable": True, "checkoutStage": "table"}, {"stage": "table", "sig": "", "table": ""}
+    if action == "place":
+        text = "ঠিক আছে, অর্ডারটা দিচ্ছি…" if lang == "bn" else "Great — placing your order now…"
+        return text, {"placeOrder": True, "checkoutStage": "placing"}, {"stage": "none", "sig": sig, "table": tbl}
+    if action == "hold":
+        text = None if "?" in transcript else lead + co.held_text(lang)
+        return text, {"checkoutStage": "none"}, {"stage": "none", "sig": "", "table": tbl}
+    if action == "empty":
+        return co.empty_cart_text(lang), {"checkoutStage": "none"}, {"stage": "none", "sig": "", "table": tbl}
+    if action == "reset":
+        return None, {}, {"stage": "none", "sig": "", "table": tbl}
+    return None, {}, {**prev, "table": tbl or prev.get("table") or ""}
 
-    yes_tokens = [
-        "yes", "y", "yeah", "yep", "ok", "okay", "okk", "okey",
-        "জি", "জী", "হ্যাঁ", "হ্যা", "হ", "হুম", "ঠিক আছে",
-    ]
-    confirm_tokens = [
-        "confirm", "konfirm", "konfarm", "confam", "konfam",
-        "কনফাম", "কন্ফাম", "কনফার্ম", "কন্ফার্ম",
-    ]
 
-    if any(t == yt or t.startswith(yt) for yt in yes_tokens):
+_AMOUNT = re.compile(
+    r"(?:৳|\btk\.?|\btaka\b|\bbdt\b)\s*([0-9০-৯][0-9০-৯,]*(?:\.\d+)?)|([0-9০-৯][0-9০-৯,]*(?:\.\d+)?)\s*(?:৳|টাকা|\btaka\b|\btk\b)",
+    re.I,
+)
+
+
+_UNAVAILABLE_WORDS = re.compile(
+    r"sold out|not available|unavailable|isn'?t available|out of stock|not served|served (from|between|only)|closed"
+    r"|শেষ|পাওয়া যাচ্ছে না|পাওয়া যায় না|নেই|বন্ধ",
+    re.I,
+)
+
+# stricter: a claim that a dish can't be ordered (not "has no meat" / "মাংস নেই")
+_SAYS_UNAVAILABLE = re.compile(
+    r"sold out|not available|unavailable|isn'?t available|out of stock|can'?t be ordered|not (being )?served (now|right now|today)"
+    r"|not on (the|our) menu|(isn'?t|is not) on (the|our) menu"
+    r"|শেষ হয়ে গেছে|পাওয়া যাচ্ছে না|পাওয়া যাবে না|এখন নেই|আজ নেই|মেনুতে নেই|এখন (মেনুতে )?পাওয়া যায় না|এখন দেওয়া যাচ্ছে না",
+    re.I,
+)
+
+# any "it isn't there" wording — used only on sentences that name a dish we are ADDING (then it's a contradiction)
+_NEG_CLAIM = re.compile(
+    r"\b(not|no longer|isn'?t|aren'?t|don'?t have|unavailable|sold out|out of stock)\b"
+    r"|নেই|নাই|পাওয়া যা(চ্ছে|বে|য়) না|শেষ হয়ে|দেওয়া যাবে না|দেওয়া যাচ্ছে না",
+    re.I,
+)
+
+
+def _contradicts_adds(reply: str, adds: List[str]) -> List[str]:
+    """Dishes being added that the reply, in the same sentence, says we don't have ("X এখন উপলব্ধ নেই")."""
+    sentences = re.split(r"(?<=[.!?।])\s+|\s+(?:but|however|তবে|কিন্তু)\s+", reply or "", flags=re.I)
+    out = []
+    for name in adds:
+        core = re.sub(r"\s*\(.*?\)\s*", " ", name).strip().lower()
+        if any((name.lower() in s.lower() or (core and core in s.lower())) and _NEG_CLAIM.search(s) for s in sentences):
+            out.append(name)
+    return out
+
+
+_BUDGET = re.compile(
+    r"\bbudget\b|\b(under|below|within|less than|only have|have only|got)\s+(৳\s*)?[0-9০-৯]{2,}|[0-9০-৯]{2,}\s*(৳|taka|tk|টাকা)(র| এর)? (মধ্যে|ভিতরে|ভেতরে)|বাজেট",
+    re.I,
+)
+
+
+def _amounts(text: str) -> List[int]:
+    out = []
+    for m in _AMOUNT.finditer(text or ""):
+        raw = (m.group(1) or m.group(2) or "").translate(_BN_DIGITS).replace(",", "")
+        try:
+            out.append(int(float(raw)))
+        except ValueError:
+            pass
+    return out
+
+
+def _new_amounts(reply: str, transcript: str) -> List[int]:
+    """Amounts in the reply that the guest didn't say themselves (e.g. not just echoing their budget)."""
+    said = set(_amounts(transcript)) | {
+        int(n) for n in re.findall(r"\d+", (transcript or "").translate(_BN_DIGITS)) if len(n) < 7
+    }
+    return [a for a in _amounts(reply) if a not in said]
+
+
+def _price_slips(reply: str, index: MenuIndex, cart_rows: List[Dict[str, Any]], subtotal: float) -> List[int]:
+    """Amounts that look like a mis-quoted menu price (e.g. ৳235 for a ৳230 dish).
+
+    Totals and multiples are allowed; only near-misses of a real price are flagged, so a
+    legitimate budget sum doesn't trigger a retry."""
+    prices = set()
+    for it in index.items:
+        for p in [it.get("price"), *[v.get("price") for v in it.get("variations") or []]]:
+            if isinstance(p, (int, float)) and p > 0:
+                prices.add(int(round(p)))
+        for g in it.get("modifierGroups") or []:
+            for o in g.get("options") or []:
+                if isinstance(o.get("price"), (int, float)) and o["price"] > 0:
+                    prices.add(int(round(o["price"])))
+    allowed = set(prices) | {p * q for p in prices for q in range(2, 11)}
+    allowed |= {int(round(subtotal))} | {int(round(float(r["price"] or 0) * r["quantity"])) for r in cart_rows}
+    slips = []
+    for m in _AMOUNT.finditer(reply or ""):
+        raw = (m.group(1) or m.group(2) or "").translate(_BN_DIGITS).replace(",", "")
+        try:
+            amount = int(float(raw))
+        except ValueError:
+            continue
+        if amount in allowed or amount <= 5:
+            continue
+        if any(0 < abs(amount - p) <= max(10, p * 0.05) for p in prices):
+            slips.append(amount)
+    return slips
+
+
+def _reco_fallback(pool: List[Dict[str, Any]], lang: str, ctx: Dict[str, Any]) -> str:
+    """Safe recommendation built only from the time-/availability-checked pool."""
+    bn = lang == "bn"
+    if not pool:
+        reason = next((u.get("reason") for u in ctx.get("unavailableNow") or [] if u.get("reason")), "")
+        if bn:
+            return reason or "দুঃখিত, এই মুহূর্তে অর্ডার নেওয়া যাচ্ছে না।"
+        return reason or "Sorry, we can't take orders right now."
+    picks = [str(p.get("name")) for p in pool[:3]]  # prices are on the cards
+    listed = ", ".join(picks[:-1]) + (" or " if not bn else " অথবা ") + picks[-1] if len(picks) > 1 else picks[0]
+    period = str(ctx.get("mealPeriod") or "").split(" (")[0]
+    if bn:
+        return f"এখন{(' ' + period + ' এর জন্য') if period and 'between' not in period else ''} আপনার জন্য ভালো হবে {listed}। কোনটা দেব আপনাকে?"
+    when = f" for {period.lower()}" if period and "between" not in period else ""
+    return f"Right now{when}, I'd suggest {listed}. Would you like one of these?"
+
+
+def _reply_mentions(reply: str, name: str) -> bool:
+    r = reply.lower()
+    n = name.lower()
+    if n in r:
         return True
-
-    if any(yt in t for yt in yes_tokens) and any(ct in t for ct in confirm_tokens):
-        # e.g. "হ্যাঁ কনফার্ম করেন", "ok confirm"
-        return True
-
-    return False
+    core = re.sub(r"\s*\(.*?\)\s*", " ", n).strip()  # "Mineral Water (small)" → "mineral water"
+    return bool(core) and core in r
 
 
-# ----------------------------- Public API -----------------------------
+# --------------------------- public API ---------------------------
+
+
+def _base_meta(**kw: Any) -> Dict[str, Any]:
+    meta = {
+        "model": OPENAI_CHAT_MODEL,
+        "language": "en",
+        "intent": "chitchat",
+        "topic": "other",
+        "items": [],
+        "suggestions": [],
+        "upsell": [],
+        "decision": {"showSuggestionsModal": False, "showUpsellTray": False},
+        "cartOps": [],
+        "clearCart": False,
+        "fallback": False,
+    }
+    meta.update({k: v for k, v in kw.items() if v is not None})
+    return meta
+
+
+def _items_payload(index: MenuIndex, qty: Dict[str, int]) -> List[Dict[str, Any]]:
+    return [
+        {"itemId": iid, "name": (index.by_id.get(iid) or {}).get("name") or iid, "quantity": q, "price": (index.by_id.get(iid) or {}).get("price")}
+        for iid, q in qty.items()
+    ]
+
+
+def _suggestion_row(it: Dict[str, Any], subtitle: str = "") -> Dict[str, Any]:
+    row = {"title": it.get("name"), "itemId": str(it.get("id") or it.get("_id")), "price": it.get("price")}
+    if it.get("categoryId"):
+        row["categoryId"] = it.get("categoryId")
+    if subtitle:
+        row["subtitle"] = subtitle
+    return row
+
+
+_PRICE_OR_STOCK = re.compile(
+    r"how much|price|cost|\bdo you have\b|\bhave you got\b|available|in stock|দাম|কত|আছে|koto|dam\b|ache\b|ase\b", re.I
+)
+
+
+def _fallback_reply(
+    transcript: str,
+    lang: str,
+    index: MenuIndex,
+    orderable: Dict[str, bool],
+    picks: Optional[List[Pick]] = None,
+    ctx: Optional[Dict[str, Any]] = None,
+) -> Tuple[str, Dict[str, Any]]:
+    """No model available. Still useful, never misleading, never touches the cart:
+    recommendations come from the (model-free) engine; prices only when the guest asked about price/stock."""
+    from recommender import asks_for_recommendation  # local: keeps the import list short
+
+    if picks is not None and asks_for_recommendation(transcript):
+        text = _reco_fallback([p.item for p in picks], lang, ctx or {})
+        rows = [_suggestion_row(p.item, ", ".join(p.reasons[:1])) for p in picks[:3]]
+        return text, {
+            "intent": "suggestions" if rows else "menu", "topic": "recommendation", "suggestions": rows,
+            "decision": {"showSuggestionsModal": bool(rows), "showUpsellTray": False},
+        }
+    # "do you have desserts / pizza?" — answerable from the menu alone
+    have = [(k, [i for i in items if orderable.get(index.item_id(i), True)]) for k, items in kind_items(transcript, index)]
+    miss = missing_kinds(transcript, index)
+    if have or miss:
+        bn = lang == "bn"
+        parts = []
+        for kind, items in have:
+            listed = ", ".join(f"{i.get('name')} ({_money(i.get('price'))})" for i in items[:4])
+            if listed:
+                parts.append(f"{kind}: {listed}।" if bn else f"Yes — for {kind} we have {listed}.")
+        for kind in miss:
+            parts.append(f"দুঃখিত, আমাদের মেনুতে {kind} নেই।" if bn else f"Sorry, we don't have {kind}.")
+        if parts:
+            return " ".join(parts), {"intent": "menu", "topic": "availability"}
+    hits = find_mentions(transcript, index, limit=3)
+    if hits and _PRICE_OR_STOCK.search(transcript):
+        it = hits[0]
+        name, price = it.get("name"), _money(it.get("price"))
+        if not orderable.get(index.item_id(it), True):
+            reason = it.get("unavailableReason") or ""
+            text = reason or (f"দুঃখিত, {name} এখন পাওয়া যাচ্ছে না।" if lang == "bn" else f"Sorry, {name} isn't available right now.")
+        else:
+            text = f"{name} আছে, দাম {price}।" if lang == "bn" else f"Yes, we have {name} — it's {price}."
+        return text, {"intent": "menu", "topic": "availability", "mentionedItems": [{"itemId": index.item_id(i), "name": i.get("name")} for i in hits]}
+    text = "দুঃখিত, একটু সমস্যা হচ্ছে। আবার বলবেন কি?" if lang == "bn" else "Sorry, I'm having a little trouble. Could you say that again?"
+    return text, {"intent": "chitchat", "topic": "other"}
 
 
 async def generate_reply(
@@ -2441,531 +1718,1051 @@ async def generate_reply(
     context: Optional[Dict[str, Any]] = None,
     suggestion_candidates: Optional[List[Dict[str, Any]]] = None,
     upsell_candidates: Optional[List[Dict[str, Any]]] = None,
+    restaurant: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    transcript = _clamp(transcript or "", 2000)
+    transcript = (transcript or "").strip()[:1000]
+    ctx = dict(context or {})
+    restaurant = restaurant or ctx.get("restaurant")
+    lang = reply_language(transcript, locale)
+    ids = {"tenant": tenant, "branch": branch, "channel": channel, "conversationId": conversation_id, "userId": user_id}
 
-    ctx = context or {}
-    snapshot = ctx.get("contextSnapshot") or ctx
-    cart_items = _extract_cart_from_context(snapshot)
-
-    # Contextual + explicit confirmation
-    if cart_items and _was_last_bot_asking_confirm(history) and (
-        _is_yes_like_reply(transcript) or _is_confirm_message(transcript)
-    ):
-        lang = _resolve_lang_hint(locale, transcript)
-        reply_text = "আপনার অর্ডার কনফার্ম করা হয়েছে।" if lang == "bn" else "Your order is confirmed."
-
-        meta: Dict[str, Any] = {
-            "model": OPENAI_CHAT_MODEL,
-            "language": lang,
-            "intent": "order",
-            "lockedIntent": "order",
-            "items": cart_items,
-            "suggestions": [],
-            "upsell": [],
-            "decision": {
-                "showSuggestionsModal": False,
-                "showUpsellTray": False,
-                "openConfirmationPage": True,
-            },
-            "notes": "confirmed_via_contextual_yes_or_confirm",
-            "tenant": tenant,
-            "branch": branch,
-            "channel": channel,
-            "conversationId": conversation_id,
-            "userId": user_id,
-            "fallback": False,
-            "ctxLen": len(history or []),
-            "stateLen": len(dialog_state or {}) if isinstance(dialog_state, dict) else 0,
-            "hasCandidates": False,
-            "contextSnapshot": context or None,
-            "cartOps": [],
-            "clearCart": False,
-        }
-
-        voice_reply_text = _build_voice_reply_text(reply_text, language=lang, model_obj={})
-        if voice_reply_text:
-            meta["voiceReplyText"] = voice_reply_text
-
-        print("[brain] final replyText:", reply_text)
-        print("[brain] final decision.openConfirmationPage:", True)
-        return {"replyText": reply_text, "meta": meta}
+    index = MenuIndex((menu_snapshot or {}).get("items") or [])
+    orderable = {index.item_id(it): it.get("available") is not False for it in index.items}
+    cart_rows, subtotal = cart_lines(index, ctx.get("cartItems") or [])
+    _tray.with_refs(cart_rows)  # L1, L2 … + the storefront's line keys
+    cart_qty: Dict[str, int] = {}
+    for r in cart_rows:  # the same dish can be several lines (Half + Full) — count them all
+        cart_qty[r["itemId"]] = cart_qty.get(r["itemId"], 0) + r["quantity"]
+    # tray memory: the last change (for undo / "one more of that"), a question waiting for a yes, warnings given
+    tstate: Dict[str, Any] = dict((dialog_state or {}).get("tray") or {})
+    last_change = tstate.get("last_change") if isinstance(tstate.get("last_change"), dict) else None
+    pending = tstate.get("pending") if isinstance(tstate.get("pending"), dict) else None
+    tstate["pending"] = None  # a pending question only lives for the next turn
+    # real unit prices / size labels of the cart lines (a Half and a Full cost different amounts)
+    unit_price: Dict[str, float] = {r["itemId"]: float(r["price"] or 0) for r in cart_rows}
+    size_label: Dict[str, str] = {r["itemId"]: r["variation"] for r in cart_rows if r.get("variation")}
+    asked_confirm = last_assistant_asked_to_confirm(history)
+    # what the guest has said recently (sizes/choices said a turn ago still count: "হাফ" … "yes, order it")
+    guest_words = " ".join(
+        [str(m.get("content") or "") for m in (history or [])[-6:] if m.get("role") == "user"] + [transcript or ""]
+    )
 
     if not transcript:
-        lang = "en"
-        meta = {
-            "model": OPENAI_CHAT_MODEL,
-            "language": lang,
-            "intent": "chitchat",
-            "items": [],
-            "suggestions": [],
-            "upsell": [],
-            "decision": {
-                "showSuggestionsModal": False,
-                "showUpsellTray": False,
-            },
-            "tenant": tenant,
-            "branch": branch,
-            "channel": channel,
-            "conversationId": conversation_id,
-            "userId": user_id,
-            "fallback": True,
-            "ctxLen": len(history or []),
-            "stateLen": len(
-                dialog_state or {}
-                if isinstance(dialog_state, dict)
-                else {}
-            ),
-            "cartOps": [],
-            "clearCart": False,
-        }
-        reply_text = "Sorry, I didn’t catch that. Could you say that again?"
-        voice_reply_text = _build_voice_reply_text(
-            reply_text,
-            language=lang,
-            model_obj={},
-        )
-        if voice_reply_text:
-            meta["voiceReplyText"] = voice_reply_text
+        text = "দুঃখিত, শুনতে পাইনি। আবার বলবেন কি?" if lang == "bn" else "Sorry, I didn't catch that. Could you say it again?"
+        return {"replyText": text, "meta": _base_meta(language=lang, fallback=True, **ids)}
 
-        print("[brain] final replyText:", reply_text)
-        print("[brain] final voiceReplyText:", meta.get("voiceReplyText", ""))
-        try:
-            print(
-                "[brain] final meta.suggestions:",
-                [s.get("title") for s in meta.get("suggestions", [])],
-            )
-        except Exception:
-            print("[brain] final meta.suggestions: <error printing>")
-        return {
-            "replyText": reply_text,
-            "meta": meta,
-        }
+    # ---------------- checkout: where are we (none → table → readback), which table, what was read back
+    ck: Dict[str, Any] = dict((dialog_state or {}).get("checkout") or {})
+    stage = ck.get("stage") if ck.get("stage") in co.STAGES else "none"
+    table = co.table_from_text(transcript, expecting=stage == "table") or str(ctx.get("table") or ck.get("table") or "").strip() or None
+    sig_now = co.cart_signature(cart_rows)
 
-    # Debug: does menu_snapshot contain our keywords?
-    if menu_snapshot and menu_snapshot.get("items"):
-        for it in (menu_snapshot.get("items") or []):
-            name = (it.get("name") or "").lower()
-            if _debug_has_kw(name):
-                print(
-                    "[debug][generate_reply] menu_snapshot has:",
-                    it.get("name"),
-                    it.get("id") or it.get("_id") or it.get("itemId"),
-                )
-
-    # Decide language + locked intent up front
-    lang_hint = _resolve_lang_hint(locale, transcript)
-    locked_intent = await _decide_locked_intent(
-        transcript=transcript,
-        context=context,
-        dialog_state=dialog_state,
-    )
-
-    # Unified candidate pool: suggestions + upsell + full menu
-    unified_candidates: List[Dict[str, Any]] = (suggestion_candidates or []) + (
-        upsell_candidates or []
-    )
-    if menu_snapshot and menu_snapshot.get("items"):
-        unified_candidates += menu_snapshot.get("items") or []
-
-    print("[debug][generate_reply] unified_candidates count:", len(unified_candidates))
-    _debug_log_kw(
-        "[debug][generate_reply] unified_candidate:",
-        unified_candidates,
-    )
-
-    cand_by_id, cand_name_to_id = _build_candidate_index(
-        unified_candidates,
-        [],
-    )
-
-    # System message
-    messages: List[Dict[str, str]] = [
-        {
-            "role": "system",
-            "content": _build_system_with_lang(
-                lang_hint,
-                locked_intent,
-            ),
-        }
+    recent: List[Dict[str, Any]] = []
+    for ref in (dialog_state or {}).get("focus") or []:
+        it = index.resolve(ref.get("id") if isinstance(ref, dict) else ref, ref.get("name") if isinstance(ref, dict) else None)
+        if it and it not in recent:
+            recent.append(it)
+    # ---------------- recommendation engine: who is this guest, and should we suggest anything now?
+    kinds = ctx.get("mealKinds") or [
+        {"breakfast": "breakfast", "lunch": "lunch", "evening": "dinner", "late": "late"}.get(str(ctx.get("timeOfDay")), "lunch")
     ]
-
-    # Optional DialogState
-    state_line = _build_state_line(dialog_state)
-    if state_line:
-        messages.append(state_line)
-
-    # Recent history
-    if history:
-        for t in history[-8:]:
-            r = t.get("role")
-            c = (t.get("content") or "").strip()
-            if r in ("user", "assistant") and c:
-                messages.append({"role": r, "content": c})
-
-    # INPUT payload
-    user_payload = _build_user_input_payload(
-        transcript=transcript,
-        context=context,
-        suggestion_candidates=suggestion_candidates,
-        upsell_candidates=upsell_candidates,
-        menu_snapshot=menu_snapshot,
-        locked_intent=locked_intent,
+    rstate = RecoState.from_dict((dialog_state or {}).get("reco"))
+    profile = GuestProfile.from_dict(rstate.profile).merge(extract_prefs(transcript))
+    if rstate.last_offered and is_decline(transcript) and rstate.turn - rstate.last_offer_turn <= 1:
+        profile.declined = list(dict.fromkeys(profile.declined + rstate.last_offered))
+        rstate.declined_turn = rstate.turn
+    # "something cheaper" → a real ceiling: below the cheapest dish we just suggested
+    if _CHEAPER.search(transcript) and rstate.last_offered and rstate.turn - rstate.last_offer_turn <= 1:
+        prev = [float(index.by_id[i].get("price") or 0) for i in rstate.last_offered if i in index.by_id]
+        prev = [p for p in prev if p > 0]
+        if prev:
+            profile.max_price = int(min(prev)) - 1
+    stats = OrderStats(**(ctx.get("orderStats") or {})) if isinstance(ctx.get("orderStats"), dict) else OrderStats()
+    mentioned_now = [index.item_id(it) for it in find_mentions(transcript, index, limit=6)]
+    asked_ids = {index.item_id(it) for it in index.items if explicitly_asked(it, transcript)}
+    picks, blocked = rank(
+        index, orderable, kinds, profile, stats=stats, context_ids=list(cart_qty) + mentioned_now,
+        recent=rstate.recent, asked_for=asked_ids,
+        limit=max(8, profile.party_size + 5),  # a table of 6 needs more distinct dishes to plan with
     )
-    messages.append({"role": "user", "content": f"[INPUT]: {user_payload}"})
+    pool = [p.item for p in picks]
+    drinks_exist = any(dish_facts(it)["drink"] for it in index.items if orderable.get(index.item_id(it), True))
+    mode, mode_why = decide_mode(
+        transcript,
+        state=rstate,
+        cart_ids=list(cart_qty),
+        mentioned_ids=mentioned_now,
+        has_drinks=drinks_exist,
+        has_signature=any(is_signature(p.item) for p in picks),
+        cart_has_drink=any(dish_facts(index.by_id[i])["drink"] for i in cart_qty if i in index.by_id),
+        done_ordering=is_done_ordering(transcript),
+        confirming=stage != "none",
+    )
+    # ---- the list on the guest's screen (suggestions pop-up / the tray's picks) — "which of these…" means THESE
+    shown_ids = [str(x) for x in (ctx.get("shownItems") or []) if str(x) in index.by_id][:12]
+    shown_on_screen = bool(shown_ids)
+    if not shown_ids and rstate.last_offered and rstate.turn - rstate.last_offer_turn <= 2:
+        shown_ids = [i for i in rstate.last_offered if i in index.by_id]  # no screen info: what we last suggested
+    shown = [index.by_id[i] for i in shown_ids]
+    named_elsewhere = [it for it in find_mentions(transcript, index, limit=4) if index.item_id(it) not in shown_ids]
+    about_shown = len(shown) >= 2 and bool(_REF_LIST.search(transcript)) and not named_elsewhere and stage == "none"
+    if about_shown:
+        mode, mode_why = "compare", "guest asks about the dishes on their screen"
+    plan = build_plan(picks, profile, index, blocked) if mode == "full" else None
+    pairings: List[Tuple[Dict[str, Any], str]] = []
+    if mode in ("complement", "last_call"):
+        pairings = complements(index, picks, list(cart_qty) + mentioned_now, stats, blocked=blocked)
+        if mode == "last_call":
+            pairings = [(it, why) for it, why in pairings if dish_facts(it)["drink"]][:1]
+    just_suggested = (
+        [index.by_id[i] for i in rstate.last_offered if i in index.by_id]
+        if rstate.last_offered and rstate.turn - rstate.last_offer_turn <= 1
+        else []
+    )
+    # a group question without a head-count: recommend anyway, then ask the one thing that sharpens it
+    ask_next = ""
+    if mode == "full" and not profile.party_size and _GROUPISH.search(transcript):
+        ask_next = "আপনারা কয়জন খাবেন?" if lang == "bn" else "How many of you are eating?"
+    print(f"[brain] reco mode={mode} ({mode_why}) profile=[{profile.summary()}] picks={[p.item.get('name') for p in picks[:4]]}")
 
+    # ---------------- the tray: answered by rules, not guessed (no model call) ----------------
+    bn = lang == "bn"
+
+    def clash(it: Dict[str, Any]) -> List[str]:
+        """Safety only: the guest's allergies and diet (not budget/spice preferences)."""
+        return [v for v in violations(it, profile) if v.startswith("allergy") or v in _DIET_CLASH]
+
+    def tray_done(text: str, t_ops: List[Dict[str, Any]], t_clear: bool, after: List[Dict[str, Any]],
+                  note: str, topic_: str = "order_change") -> Dict[str, Any]:
+        rec = _tray.change_record(cart_rows, after) if (t_ops or t_clear) else None
+        if rec:
+            tstate["last_change"] = rec
+        fq: Dict[str, int] = {}
+        for r in after:
+            fq[r["itemId"]] = fq.get(r["itemId"], 0) + r["quantity"]
+        m = _base_meta(
+            language=lang, intent="order", topic=topic_, items=_items_payload(index, fq) if (t_ops or t_clear) else [],
+            cartOps=t_ops, clearCart=t_clear, notes=note, **ids,
+        )
+        m["checkout"] = ck
+        m["tray"] = tstate
+        m["cartWarnings"] = _tray.warnings(after, index.by_id, orderable, clash)
+        m["reco"], m["recoMode"], m["guards"] = rstate.to_dict(), mode, [note]
+        if bn:
+            m["voiceReplyText"] = text
+        print(f"[brain] tray: {note} → {text[:90]}")
+        return {"replyText": text, "meta": m}
+
+    said_number = _said_quantity(transcript)
+    short_no = (len(transcript.split()) <= 3 and said_number is None
+                and (co.wants_to_hold(transcript) or is_decline(transcript)))
+    # (a) the waiter asked "sure?" last turn (clear everything / 20 of something / a possible duplicate)
+    if pending and stage == "none":
+        p_ops = list(pending.get("ops") or [])
+        # "না, ২টা" / "শুধু একটা" → a correction of the number, not a no: do it with the number they said
+        if (said_number is not None and len(p_ops) == 1 and p_ops[0].get("op") in ("add", "set")
+                and len(transcript.split()) <= 5 and not find_mentions(transcript, index, limit=1)):
+            fixed_op = {**p_ops[0], "quantity": said_number}
+            it_p = index.by_id.get(str(fixed_op.get("itemId"))) or {}
+            key_p = _tray.line_key(str(fixed_op.get("itemId")), fixed_op.get("variant"),
+                                   fixed_op.get("modifiers") or _tray.resolve_choices(it_p, fixed_op.get("choices") or []))
+            existing = next((r for r in cart_rows if r["key"] == key_p), None)
+            if existing and fixed_op["op"] == "add":
+                # it was already in the tray ("আগে থেকেই 1টা আছে… মোট 2টা করব?" → "না, ৩টা") → that's the total
+                fixed_op = {"op": "set", "itemId": fixed_op["itemId"], "name": fixed_op["name"], "lineKey": key_p,
+                            "quantity": said_number}
+            if said_number > 0:
+                after = _tray.simulate(cart_rows, [fixed_op], False, index.by_id)
+                return tray_done(_cart_change_reply([fixed_op], False, index, {}, lang, restaurant, rows=after),
+                                 [fixed_op], False, after, "corrected_quantity")
+        if co.says_yes(transcript) or is_affirmative(transcript):
+            p_ops, p_clear = list(pending.get("ops") or []), bool(pending.get("clear"))
+            after = _tray.simulate(cart_rows, p_ops, p_clear, index.by_id)
+            return tray_done(_cart_change_reply(p_ops, p_clear, index, {}, lang, restaurant, rows=after), p_ops, p_clear,
+                             after, f"confirmed_{pending.get('kind')}")
+        if short_no:
+            text = "ঠিক আছে, যেমন ছিল তেমনই রাখলাম। আর কিছু লাগবে?" if bn else "Okay, I've left it as it was. Anything else?"
+            return tray_done(text, [], False, cart_rows, f"declined_{pending.get('kind')}", "other")
+        # anything else ("না, দুইটাই", a new request) → the question lapses; the words are handled normally below
+
+    # (b) undo — "আগের মতো করে দিন", "undo that"
+    if _tray.UNDO.search(transcript) and len(transcript.split()) <= 8 and stage == "none":
+        if last_change:
+            u_ops = _tray.undo_ops(last_change, cart_rows)
+            if u_ops:
+                after = _tray.simulate(cart_rows, u_ops, False, index.by_id)
+                lead = "ঠিক আছে, আগের মতো করে দিলাম। " if bn else "Done — I've put it back the way it was. "
+                return tray_done(lead + _cart_change_reply([], False, index, {}, lang, restaurant, rows=after), u_ops, False,
+                                 after, "undo")
+            text = ("ট্রেতে এর মধ্যে বদল হয়েছে, তাই আগের অবস্থায় ফেরাতে পারলাম না — কী বদলাতে চান বলুন।" if bn
+                    else "The tray has changed since, so I can't put it back automatically — tell me what to change.")
+            return tray_done(text, [], False, cart_rows, "undo_stale", "other")
+        text = ("এখনো এমন কোনো বদল করিনি যেটা ফিরিয়ে দেব। কী করতে চান বলুন।" if bn
+                else "There's nothing for me to undo yet — what would you like to change?")
+        return tray_done(text, [], False, cart_rows, "undo_nothing", "other")
+
+    # (b2) "আরেকটা দিন" / "one more" / "একটা কমান" right after a change → exactly that line, +1 / −1
+    rel = _tray.RELATIVE.match(transcript.strip())
+    if rel and stage == "none" and last_change and not find_mentions(transcript, index, limit=1):
+        keys = set(last_change.get("after_keys") or [])
+        target = [r for r in cart_rows if r["key"] in keys]
+        if len(target) == 1:
+            r0 = target[0]
+            more = bool(rel.group("more"))
+            r_op = ({"op": "add", "itemId": r0["itemId"], "name": r0["name"], "quantity": 1,
+                     "variant": r0.get("variation") or "", "choices": [m.get("name") for m in r0.get("modifiers") or []],
+                     "modifiers": list(r0.get("modifiers") or []), "price": float(r0.get("price") or 0)} if more else
+                    ({"op": "remove", "itemId": r0["itemId"], "name": r0["name"], "lineKey": r0["key"]} if r0["quantity"] <= 1 else
+                     {"op": "set", "itemId": r0["itemId"], "name": r0["name"], "lineKey": r0["key"], "quantity": r0["quantity"] - 1}))
+            if not r_op.get("variant"):
+                r_op.pop("variant", None)
+            after = _tray.simulate(cart_rows, [r_op], False, index.by_id)
+            return tray_done(_cart_change_reply([r_op], False, index, {}, lang, restaurant, rows=after), [r_op], False, after,
+                             "one_more" if more else "one_less")
+
+    # (c) "ট্রেতে কী আছে?" / "what's in my tray?" / "কতগুলো আইটেম হলো?"
+    if _tray.TRAY_QUESTION.search(transcript) and stage == "none" and not find_mentions(transcript, index, limit=1):
+        if cart_rows:
+            s_txt, s_total, s_count = _tray.summary(cart_rows)
+            vat = _vat_hint(restaurant, lang)
+            text = (f"আপনার ট্রেতে এখন {s_count}টা আইটেম: {s_txt} — মোট {_money(s_total)}{vat}। আর কিছু লাগবে, নাকি অর্ডার কনফার্ম করব?"
+                    if bn else f"You have {s_count} items: {s_txt} — {_money(s_total)}{vat}. Anything else, or shall I confirm your order?")
+        else:
+            text = "আপনার ট্রে এখনো খালি — কী দেব বলুন?" if bn else "Your tray is empty so far — what can I get you?"
+        return tray_done(text, [], False, cart_rows, "tray_review", "order_review")
+
+    # (d) wait times — "how long will it take?", "where's my food?", "what's quickest?" — answered from the
+    # real numbers (dish prep times, the live kitchen queue, the guest's own orders), never guessed by the model.
+    # Only for a plain time question: "add 2 kacchi, how long?" goes to the model with the same numbers.
+    kitchen = ctx.get("kitchen") if isinstance(ctx.get("kitchen"), dict) else None
+    cart_est = wtalk.cart_estimate(cart_rows, index.by_id, kitchen)
+    time_q, quick_q = asks_time(transcript), asks_quickest(transcript)
+    if (time_q or quick_q) and stage == "none" and len(transcript.split()) <= 16 and not _orders_now(transcript):
+        mentioned = find_mentions(transcript, index, limit=3)
+        mine = (kitchen or {}).get("myOrders") or []
+        w_text, w_note, w_rows, w_offer = "", "", [], []
+        if mine and (PLACED_Q.search(transcript) or (not mentioned and not cart_rows)):
+            w_text, w_note = wtalk.placed_order_reply(kitchen, lang) or "", "wait_placed_order"
+        elif quick_q and not mentioned:
+            foods = [it for it in index.items if orderable.get(index.item_id(it), True)
+                     and index.item_id(it) not in blocked and not dish_facts(it)["drink"]]
+            fast = wtalk.quickest(foods, kitchen)
+            if fast:
+                w_text, w_note = wtalk.quickest_reply(fast, kitchen, lang), "wait_quickest"
+                w_rows = [_suggestion_row(it, wtalk.say_minutes(m, lang)) for it, m in fast]
+                w_offer = [index.item_id(it) for it, _m in fast]
+        elif mentioned and not (cart_rows and ORDER_WORDS.search(transcript)):
+            if all(orderable.get(index.item_id(it), True) for it in mentioned):
+                qty = _said_quantity(transcript) or 1
+                offer = [it for it in mentioned if index.item_id(it) not in cart_qty]
+                w_text = wtalk.dishes_reply([(it, qty, None) for it in mentioned], kitchen, lang, offer=bool(offer))
+                w_note, w_offer = "wait_dish", [index.item_id(it) for it in offer[:1]] if len(offer) == 1 else []
+        elif cart_est and time_q:
+            w_text, w_note = wtalk.cart_reply(cart_est, kitchen, lang), "wait_cart"
+        elif time_q and not mentioned:
+            foods = [it for it in index.items if orderable.get(index.item_id(it), True) and not dish_facts(it)["drink"]]
+            w_text, w_note = wtalk.general_reply(foods, kitchen, lang), "wait_general"
+        if w_text:
+            m = _base_meta(
+                language=lang, intent="suggestions" if w_rows else "menu", topic="wait_time", suggestions=w_rows,
+                decision={"showSuggestionsModal": bool(w_rows), "showUpsellTray": False},
+                mentionedItems=[{"itemId": index.item_id(it), "name": it.get("name")} for it in mentioned], notes=w_note, **ids,
+            )
+            rstate.turn += 1
+            if w_offer:
+                rstate.last_offered, rstate.last_offer_turn = w_offer, rstate.turn
+                rstate.recent = list(dict.fromkeys(w_offer + rstate.recent))[:12]
+            rstate.profile = profile.to_dict()
+            m["checkout"], m["tray"] = ck, tstate
+            m["reco"], m["recoMode"], m["guards"] = rstate.to_dict(), mode, [w_note]
+            if bn:
+                m["voiceReplyText"] = w_text
+            print(f"[brain] wait time: {w_note} → {w_text[:90]}")
+            return {"replyText": w_text, "meta": m}
+
+    # Fast, deterministic checkout moves (no model): "yes" to the read-back, "wait", a table number,
+    # "place my order" / "that's all" with nothing else in the sentence.
+    action, why = co.decide(
+        text=transcript, stage=stage, stored_signature=str(ck.get("sig") or ""), signature_now=sig_now,
+        cart_nonempty=bool(cart_rows), table=table, llm_checkout="none", asked_to_confirm=asked_confirm,
+        cart_changed_this_turn=False, cleared=False, defer_done=mode == "last_call",
+    )
+    words = len(transcript.split())
+    plain = "?" not in transcript and not find_mentions(transcript, index, limit=1)
+    # before reading back / placing: a line that can't be ordered right now (sold out, out of hours) is sorted first
+    if action in ("readback", "place") and cart_rows:
+        gone = [w for w in _tray.warnings(cart_rows, index.by_id, orderable, lambda _it: []) if w["kind"] == "unavailable"]
+        if gone:
+            names = ", ".join(w["name"] for w in gone)
+            tstate["pending"] = {"kind": "unavailable", "clear": False,
+                                 "ops": [{"op": "remove", "itemId": w["itemId"], "name": w["name"], "lineKey": w["lineKey"]} for w in gone]}
+            ck = {**ck, "stage": "none"}
+            text = (f"অর্ডার দেওয়ার আগে একটা কথা: {names} এখন পাওয়া যাচ্ছে না ({gone[0]['reason']})। ওটা বাদ দিয়ে দেব?"
+                    if bn else f"Before I place it: {names} can't be ordered right now ({gone[0]['reason']}). Shall I remove it?")
+            return tray_done(text, [], False, cart_rows, "unavailable_before_checkout", "other")
+    if plain and (
+        action in ("place", "hold") and words <= 8
+        or action in ("readback", "ask_table") and (stage != "none" or words <= 8)
+        or action == "empty" and words <= 8
+    ):
+        text, flags, new_ck = _checkout_turn(action, rows=cart_rows, table=table, lang=lang, restaurant=restaurant,
+                                             prev=ck, transcript=transcript,
+                                             eta_hint=wtalk.eta_hint(cart_est, lang) if kitchen else "")
+        print(f"[brain] checkout fast path: {action} ({why}) table={table}")
+        text = text or co.held_text(lang)
+        meta = _base_meta(
+            language=lang, intent="order", topic="confirm_order" if action != "hold" else "order_review",
+            items=_items_payload(index, cart_qty) if action == "place" else [],
+            decision={"showSuggestionsModal": False, "showUpsellTray": False, **flags},
+            notes=f"checkout_{action}", **ids,
+        )
+        meta["checkout"] = new_ck
+        meta["tray"] = tstate
+        if action == "place":
+            meta["orderDraft"] = _order_draft(cart_rows, table or "", sig_now)
+        meta["reco"], meta["recoMode"], meta["guards"] = rstate.to_dict(), mode, []
+        if lang == "bn":
+            meta["voiceReplyText"] = text
+        return {"replyText": text, "meta": meta}
+
+    # "আপনার জন্য এটা দেব?" → "দেন" / "yes": add the ONE dish we just offered (deterministic, no model).
+    # Several offered → the model asks which; a dish needing a size or choice → the model asks first.
+    offered_one = (
+        len(rstate.last_offered) == 1 and rstate.turn - rstate.last_offer_turn <= 1 and rstate.last_offered[0] in index.by_id
+    )
+    if offered_one:
+        # "yes" only accepts a dish the waiter actually ASKED about out loud — a pairing card shown silently
+        # isn't a question the guest is answering ("সব বাতিল" … "হ্যাঁ" must not add a Beef Sizzling)
+        last_asst = next((m.get("content") or "" for m in reversed(history or []) if m.get("role") == "assistant"), "")
+        offered_name = str(index.by_id[rstate.last_offered[0]].get("name") or "")
+        offered_one = "?" in last_asst and (
+            _reply_mentions(last_asst, offered_name) or _reply_mentions(last_asst, to_bangla_script(offered_name))
+        )
+    if (
+        offered_one and stage == "none" and not asked_confirm and is_affirmative(transcript)
+        and not find_mentions(transcript, index, limit=1)
+    ):
+        it = index.by_id[rstate.last_offered[0]]
+        yes_ops, yes_problems = _validate_ops(
+            [{"op": "add", "item": index.item_id(it), "quantity": 1}], index, dict(cart_qty), orderable, None, guest_words,
+            context_ids={index.item_id(it)},  # we offered exactly this dish
+        )
+        if yes_ops and not yes_problems:
+            after = _tray.simulate(cart_rows, yes_ops, False, index.by_id)
+            text = _cart_change_reply(yes_ops, False, index, {}, lang, restaurant, rows=after)
+            print(f"[brain] yes to the offered dish → add {it.get('name')}")
+            rstate.turn += 1
+            rstate.last_offered = []
+            profile.liked = list(dict.fromkeys(profile.liked + [index.item_id(it)]))
+            rstate.profile = profile.to_dict()
+            out = tray_done(text, yes_ops, False, after, "accepted_offer")
+            out["meta"]["mentionedItems"] = [{"itemId": index.item_id(it), "name": it.get("name")}]
+            return out
+
+    def may_recommend(it: Dict[str, Any]) -> bool:
+        return index.item_id(it) not in blocked
+
+    def false_unavailable(text: str) -> List[str]:
+        """Orderable dishes the reply claims are sold out / unavailable."""
+        # clause-level, so "X is sold out, but try Y" doesn't implicate Y
+        clauses = re.split(r"(?<=[.!?।;,—])\s+|\s+(?:but|however|instead|or|তবে|কিন্তু|অথবা)\s+", text or "", flags=re.I)
+        out = []
+        for it in find_mentions(text, index, limit=8):
+            name = str(it.get("name"))
+            if orderable.get(index.item_id(it), True) and any(
+                name.lower() in c.lower() and _SAYS_UNAVAILABLE.search(c) for c in clauses
+            ):
+                out.append(name)
+        return out
+
+    missing_now = missing_kinds(transcript, index)
+
+    def odd_substitutes(o: Dict[str, Any]) -> List[str]:
+        """Asked for something we don't have (desserts) and the reply pushes unrelated food (a soup)."""
+        if not missing_now or o.get("cartOps"):
+            return []
+        text = str(o.get("replyText") or "")
+        return [
+            str(it.get("name")) for it in find_mentions(text, index, limit=6)
+            if not dish_facts(it)["drink"] and index.item_id(it) not in cart_qty
+        ]
+
+    def reco_problems(o: Dict[str, Any]) -> List[str]:
+        """Recommendation replies must name real dishes that are orderable and suit this time."""
+        is_reco = o.get("topic") == "recommendation" or o.get("intent") == "suggestions"
+        text = str(o.get("replyText") or "")
+        if not is_reco or not text:
+            return []
+        sentences = re.split(r"(?<=[.!?।])\s+", text)
+        out = []
+        for it in find_mentions(text, index, limit=8):
+            if may_recommend(it):
+                continue
+            name = str(it.get("name"))
+            flagged = any(name.lower() in s.lower() and _UNAVAILABLE_WORDS.search(s) for s in sentences)
+            if not orderable.get(index.item_id(it), True) and flagged:
+                continue  # "X is sold out, but try Y" is fine
+            out.append(f"{name} isn't right for this guest now ({', '.join(blocked.get(index.item_id(it), ['blocked']))})")
+        # no dish named: fine for a clarifying question, otherwise names were translated/transliterated
+        if pool and "?" not in text and not find_mentions(text, index, limit=1):
+            out.append("name the recommended dishes exactly as on the MENU (English names)")
+        return out
+
+    # what the last turn changed, as the model sees the tray now ("L3 1 × Spring Roll")
+    last_change_txt = ""
+    if last_change:
+        keys = set(last_change.get("after_keys") or [])
+        now_lines = [r for r in cart_rows if r["key"] in keys]
+        if now_lines:
+            last_change_txt = "; ".join(f"{r['line']} {_tray.label(r)}" for r in now_lines)
+        elif last_change.get("before"):
+            last_change_txt = "removed " + "; ".join(_tray.label(r) for r in last_change["before"])
+
+    messages: List[Dict[str, str]] = [
+        {"role": "system", "content": PLAYBOOK},
+        {"role": "system", "content": _knowledge_block(index, restaurant)},
+    ]
+    for m in (history or [])[-HISTORY_MESSAGES:]:
+        if m.get("role") in ("user", "assistant") and (m.get("content") or "").strip():
+            messages.append({"role": m["role"], "content": m["content"].strip()[:600]})
+    messages.append(
+        {
+            "role": "user",
+            "content": _turn_block(
+                transcript=transcript, lang=lang, index=index, cart_rows=cart_rows, subtotal=subtotal,
+                context=ctx, recent=recent[:4], asked_to_confirm=asked_confirm,
+                picks=picks, profile=profile, mode=mode, plan=plan, pairings=pairings,
+                any_orderable=any(orderable.values()), just_suggested=just_suggested, ask_next=ask_next,
+                missing=missing_kinds(transcript, index), asked_kinds=kind_items(transcript, index),
+                allergy_guides=[allergy_guide(index, a, orderable) for a in profile.allergies],
+                checkout_stage=stage,
+                last_change=last_change_txt,
+                tray_facts=_tray.facts(
+                    cart_rows, index.by_id, party=profile.party_size, budget=profile.budget, dish_facts=dish_facts,
+                    drinks_on_menu=drinks_exist,
+                ),
+                on_screen=shown if about_shown else None,
+                wait_facts=wtalk.facts(
+                    kitchen,
+                    cart=cart_est,
+                    mentioned=find_mentions(transcript, index, limit=3) if (time_q or quick_q) else None,
+                    fastest=wtalk.quickest(
+                        [it for it in index.items if orderable.get(index.item_id(it), True)
+                         and index.item_id(it) not in blocked and not dish_facts(it)["drink"]], kitchen,
+                    ) if (quick_q or "quick" in profile.mood) else None,
+                ) if kitchen else "",
+            ),
+        }
+    )
+
+    guards: List[str] = []  # what the safety net caught this turn — logged for reviewing real conversations
+    # dishes the conversation already pointed at (just suggested / recently discussed) — "চিকেনটা দেন" after one
+    # chicken dish was suggested is not ambiguous
+    talked_about = {index.item_id(i) for i in recent} | {index.item_id(i) for i in just_suggested}
+    # prices are spoken only when the guest is talking money (the cards show prices)
+    price_talk = bool(_BUDGET.search(transcript) or _PRICE_ASK.search(transcript))
     try:
         raw = await _call_openai(messages)
         obj = _parse_model_json(raw)
-
-        if any(_debug_has_kw(json.dumps(obj, ensure_ascii=False)) for _ in [None]):
-            print(
-                "[debug][generate_reply] model_obj:",
-                _safe_snip(json.dumps(obj, ensure_ascii=False), 800),
+        first_reply = str(obj.get("replyText") or "")
+        issues: List[str] = []
+        slips = _price_slips(first_reply, index, cart_rows, subtotal)
+        if slips:
+            issues.append(
+                ", ".join(f"৳{s}" for s in slips) + " doesn't match any MENU price — re-read the MENU and use exact prices."
             )
-
-        # Model-provided language is advisory; clamp to hint if given
-        reply_text = str(obj.get("replyText") or "").strip()
-        language = (obj.get("language") or "").strip() or _guess_lang(
-            reply_text or transcript
+        # "very popular" / "bestseller" needs evidence: real order data or the owner's own tag
+        popular_ok = any("a guest favourite" in p.reasons for p in picks) or any(
+            str(t).lower() in ("popular", "bestseller", "best seller") for it in find_mentions(first_reply, index, 6) for t in it.get("tags") or []
         )
-        if lang_hint in ("bn", "en"):
-            language = lang_hint
-
-        backend = _finalize_backend_decision(
-            transcript=transcript,
-            lang_hint=language,
-            raw_obj=obj,
-            menu_snapshot=menu_snapshot,
-            cand_by_id=cand_by_id,
-            cand_name_to_id=cand_name_to_id,
-            suggestion_candidates=suggestion_candidates,
-            upsell_candidates=upsell_candidates,
-            context=context,
-            dialog_state=dialog_state,
-            locked_intent=locked_intent,
-        )
-
-        intent = backend["intent"]
-        items = backend["items"]
-        suggestions = backend["suggestions"]
-        upsell = backend["upsell"]
-        decision = backend["decision"]
-
-        # Normalize cartOps / clearCart
-        cart_ops, clear_all_from_ops = _normalize_cart_ops(
-            obj.get("cartOps"),
-            cand_by_id=cand_by_id,
-            cand_name_to_id=cand_name_to_id,
-        )
-
-        # If it's an order with items but no cartOps → synthesize ADD ops
-        if intent == "order" and items and not cart_ops and not clear_all_from_ops:
-            synth_ops: List[Dict[str, Any]] = []
-            for it in items:
-                iid = it.get("itemId")
-                qty = int(it.get("quantity", 0) or 0)
-                if iid and qty > 0:
-                    synth_ops.append(
-                        {
-                            "op": "add",
-                            "itemId": iid,
-                            "name": it.get("name"),
-                            "quantity": qty,
-                        }
-                    )
-            if synth_ops:
-                cart_ops = synth_ops
-                print("[debug][cartOps] synthesized_from_items:", cart_ops)
-
-        clear_cart_flag = bool(obj.get("clearCart") is True or clear_all_from_ops)
-
-        # --- compute real tray from DB cartItems + this turn's ops ---
-        if intent == "order":
-            merged_qty = _merge_cart_state(
-                context or {},
-                cart_ops,
-                clear_cart_flag,
+        if _NO_INFO_TALK.search(first_reply):
+            issues.append(
+                "Don't tell the guest the menu has no information / doesn't mention it (\"তথ্য নেই\", \"উল্লেখ নেই\"). "
+                "Judge heat/taste from the kind of dish like an experienced waiter, using \"usually\" / \"সাধারণত\"."
             )
-            # override items to be the full, merged cart items
-            items = _materialize_items_from_qty(
-                merged_qty,
-                cand_by_id,
+        if _POPULARITY_CLAIM.search(first_reply) and not popular_ok:
+            issues.append("Don't call dishes popular, bestsellers or guest favourites — there is no data for that; use the listed reasons.")
+        vat = re.search(r"(\d+(?:\.\d+)?)\s*%", " ".join((restaurant or {}).get("menuNotes") or []))
+        slip_total = _total_slip(first_reply, index, float(vat.group(1)) if vat else 0.0)
+        if slip_total and not obj.get("cartOps"):
+            issues.append(
+                f"The total you stated (৳{slip_total[0]}) is wrong — the dishes you named add up to ৳{slip_total[1]}. "
+                "Recompute (or use the MEAL PLAN total)."
             )
-        else:
-            # For non-order intents, an explicit clearCart empties items
-            if clear_cart_flag:
-                items = []
-
-        # ---------- Hardcoded replyText logic (order flows first) ----------
-        is_neg = _is_negative_reply(transcript)
-        is_conf = _is_confirm_message(transcript)
-
-        if clear_cart_flag:
-            # Clear cart has highest precedence
-            if language == "bn":
-                reply_text = "আপনার ট্রে খালি করা হলো। আর কিছু নিতে চান?"
-            else:
-                reply_text = "Your tray has been cleared. Anything else?"
-
-        elif intent == "order" and language == "bn":
-            if is_conf and (items or cart_items):
-                # Confirm only if there is something to confirm
-                reply_text = "আপনার অর্ডার টি কনফার্ম করা হয়েছে।"
-                decision["openConfirmationPage"] = True
-            elif is_neg:
-                # After upsell declined etc.
-                reply_text = (
-                    "গ্রেট! সব কিছু ঠিক আছে কিনা দেখে আমাকে "
-                    "অর্ডার কনফার্ম করতে বলুন।"
+        bad_reco = reco_problems(obj)
+        if bad_reco:
+            issues.append("; ".join(bad_reco) + " — recommend from RANKED PICKS instead.")
+        wrongly_out = false_unavailable(first_reply)
+        if wrongly_out:
+            issues.append(
+                ", ".join(wrongly_out) + " IS available and can be ordered right now — don't say otherwise; "
+                "if the guest ordered it, add it."
+            )
+        # a table plan must come with its total (and the total must match the dishes — checked above)
+        if plan and price_talk and (not obj.get("cartOps") or _is_question_not_order(transcript)):
+            plan_ids = {l["itemId"] for l in plan["lines"]}
+            named_plan = [it for it in find_mentions(first_reply, index, limit=10) if index.item_id(it) in plan_ids]
+            # must SAY a total ("total / altogether / মোট …"); whether it's right is _total_slip's job above
+            if len(named_plan) >= 2 and not (_TOTAL_CUE.search(first_reply) and _amounts(first_reply)):
+                sizes = [f"{l['name']} ({l['variant']})" for l in plan["lines"] if l.get("variant")]
+                issues.append(
+                    f"You presented a meal for the table without its total: give each dish's quantity and say the total "
+                    f"(the MEAL PLAN total is ৳{plan['total']})."
+                    + (f" Use the plan's sizes ({', '.join(sizes)}) — don't ask which size; they can change it later." if sizes else "")
                 )
-            elif cart_ops or items:
-                # Use deterministic cart-op-based template
-                last_intent = _extract_last_intent(
-                    context,
-                    dialog_state,
+        if _BUDGET.search(transcript) and not obj.get("cartOps") and not _new_amounts(first_reply, transcript):
+            issues.append("The guest gave a budget: propose one concrete combination and state its total in ৳.")
+        # voice: an allergy/diet answer that reads out a long list is useless — group it
+        if obj.get("topic") == "dietary" and len({index.item_id(i) for i in find_mentions(first_reply, index, limit=30)}) > 8:
+            issues.append(
+                "Too long to say out loud: group the dishes to avoid (e.g. 'all the prawn dishes, the Special dishes') — "
+                "follow the ALLERGY GUIDE, at most ~6 dish names — then suggest 2–3 dishes they can have."
+            )
+        if _CLAIMS_CONFIRMED.search(first_reply) and not (obj.get("clearCart") and _CLAIMS_CANCELLED.search(first_reply)):
+            issues.append(
+                "You have NOT placed, taken, sent, confirmed or cancelled any order — only the system does that, "
+                "never say it did. Remove that claim and answer what the guest actually asked; if their words are "
+                "unclear, say briefly what you understood or ask them to say it again."
+            )
+        if _KITCHEN_CLAIM.search(first_reply):
+            issues.append(
+                "Don't say you sent/told/informed the kitchen — you added a note to the order. Say 'I've added a note' "
+                "('নোট যোগ করেছি')."
+            )
+        if about_shown and not obj.get("cartOps"):
+            outside = [
+                str(it.get("name")) for it in find_mentions(first_reply, index, limit=8)
+                if index.item_id(it) not in shown_ids and index.item_id(it) not in cart_qty
+            ]
+            if outside:
+                issues.append(
+                    "The guest asked about the dishes ON SCREEN (" + ", ".join(str(it.get("name")) for it in shown)
+                    + ") — answer only about those, by name; don't bring in " + ", ".join(outside) + "."
                 )
-                reply_text = _build_reply_from_cart_ops(
-                    cart_ops=cart_ops,
-                    items=items,
-                    upsell=upsell,
-                    transcript=transcript,
-                    language=language,
-                    last_intent=last_intent,
-                )
-            # else: keep whatever minimal/fallback reply_text from model
-
-        elif intent == "order":
-            # Non-Bangla order → simple deterministic behavior
-            if is_conf and (items or cart_items):
-                reply_text = "Your order is confirmed."
-                decision["openConfirmationPage"] = True
-            elif cart_ops or items:
-                last_intent = _extract_last_intent(
-                    context,
-                    dialog_state,
-                )
-                reply_text = _build_reply_from_cart_ops(
-                    cart_ops=cart_ops,
-                    items=items,
-                    upsell=upsell,
-                    transcript=transcript,
-                    language=language,
-                    last_intent=last_intent,
-                )
-            # else: keep whatever minimal/fallback reply_text from model
-
-        # Non-order intents: if model didn't give replyText, synthesize concise ones
-        if intent == "suggestions" and suggestions and not reply_text:
-            names = [s["title"] for s in suggestions if s.get("title")]
-            if names:
-                reply_text = (
-                    f"এগুলো সাজেস্ট করছি: {', '.join(names)}"
-                    if language == "bn"
-                    else "Here are some options I recommend: " + ", ".join(names)
-                )
-            else:
-                reply_text = (
-                    "এগুলো সাজেস্ট করছি:"
-                    if language == "bn"
-                    else "Here are some options I recommend:"
-                )
-
-        if intent in ("menu", "chitchat") and not reply_text:
-            reply_text = "ঠিক আছে।" if language == "bn" else "Alright."
-
-        # Canonicalize names & fix false unavailability
-        reply_text = _canonicalize_reply_text(
-            reply_text=reply_text,
-            model_items=items,
-            menu_snapshot=menu_snapshot,
+        subs = odd_substitutes(obj)
+        if subs:
+            issues.append(
+                f"The guest asked for {', '.join(missing_now)}, which this menu doesn't have — don't offer "
+                f"{', '.join(subs)} as a substitute. Say we don't have it; offer at most a drink, or ask what else they'd like."
+            )
+        # cart changes the guest didn't actually ask for (a question, a guessed size or choice) → ask instead
+        pre_ops, pre_problems = _validate_ops(
+            obj.get("cartOps"), index, dict(cart_qty), orderable, transcript, guest_words, context_ids=talked_about, rows=cart_rows
         )
-        reply_text = _fix_false_unavailability(reply_text, menu_snapshot)
-
-        meta: Dict[str, Any] = {
-            "model": OPENAI_CHAT_MODEL,
-            "language": language,
-            "intent": intent,
-            "lockedIntent": locked_intent,
-            "items": items,
-            "suggestions": suggestions,
-            "upsell": upsell,
-            "decision": decision,
-            "notes": obj.get("notes"),
-            "tenant": tenant,
-            "branch": branch,
-            "channel": channel,
-            "conversationId": conversation_id,
-            "userId": user_id,
-            "fallback": False,
-            "ctxLen": len(history or []),
-            "stateLen": len(
-                dialog_state or {}
-                if isinstance(dialog_state, dict)
-                else {}
-            ),
-            "hasCandidates": bool(cand_by_id),
-            "contextSnapshot": context or None,
-            "cartOps": cart_ops,
-            "clearCart": clear_cart_flag,
-        }
-
-        voice_reply_text = _build_voice_reply_text(
-            reply_text,
-            language=language,
-            model_obj={},
-        )
-        if voice_reply_text:
-            meta["voiceReplyText"] = voice_reply_text
-
-        if any(_debug_has_kw(i.get("name", "")) for i in items):
-            print("[debug][generate_reply] FINAL intent:", intent)
-            print("[debug][generate_reply] FINAL items:", items)
-            print("[debug][generate_reply] FINAL cartOps:", cart_ops)
-            print("[debug][generate_reply] FINAL replyText:", reply_text)
-
-        print("[brain] final replyText:", reply_text)
-        print("[brain] final voiceReplyText:", meta.get("voiceReplyText", ""))
-        try:
-            print(
-                "[brain] final meta.suggestions:",
-                [s.get("title") for s in meta.get("suggestions", [])],
+        said_missing = [n for n in _contradicts_adds(first_reply, [o["name"] for o in pre_ops if o["op"] == "add"])
+                        if n not in wrongly_out]
+        if said_missing:
+            issues.append(
+                ", ".join(said_missing) + " IS available and you are adding it — don't say it isn't available or "
+                "isn't on the menu. Just confirm what you added."
             )
-        except Exception:
-            print("[brain] final meta.suggestions: <error printing>")
-
-        return {
-            "replyText": reply_text,
-            "meta": meta,
-        }
-
-    except Exception as e:
-        lang = _guess_lang(transcript)
-        print("[debug][generate_reply] exception:", repr(e))
-
-        menu_fallback = _fallback_menu_reply(
-            transcript=transcript,
-            lang=lang,
-            locked_intent=locked_intent,
-            menu_snapshot=menu_snapshot,
-        )
-        if menu_fallback:
-            reply_text = menu_fallback["replyText"]
-            meta = {
-                "model": OPENAI_CHAT_MODEL,
-                "language": menu_fallback["language"],
-                "intent": menu_fallback["intent"],
-                "lockedIntent": locked_intent,
-                "items": menu_fallback["items"],
-                "suggestions": menu_fallback["suggestions"],
-                "upsell": menu_fallback["upsell"],
-                "decision": menu_fallback["decision"],
-                "tenant": tenant,
-                "branch": branch,
-                "channel": channel,
-                "conversationId": conversation_id,
-                "userId": user_id,
-                "error": str(e),
-                "fallback": True,
-                "ctxLen": len(history or []),
-                "stateLen": len(
-                    dialog_state or {}
-                    if isinstance(dialog_state, dict)
-                    else {}
-                ),
-                "hasCandidates": bool(
-                    menu_snapshot and menu_snapshot.get("items")
-                ),
-                "cartOps": menu_fallback["cartOps"],
-                "clearCart": menu_fallback["clearCart"],
-            }
-
-            voice_reply_text = _build_voice_reply_text(
-                reply_text,
-                language=menu_fallback["language"],
-                model_obj={},
+        must_ask = [p for p in pre_problems if any(k in p for k in _ASK_INSTEAD)]
+        if must_ask:
+            issues.append(
+                "Don't change the cart yet — " + "; ".join(must_ask) + ". Answer the question, or ask which size / "
+                "which choice (list the options with prices). Don't say anything was added."
             )
-            if voice_reply_text:
-                meta["voiceReplyText"] = voice_reply_text
-
-            print("[brain] fallback menu replyText:", reply_text)
-            print(
-                "[brain] final voiceReplyText:",
-                meta.get("voiceReplyText", ""),
-            )
+        guards += [tag for needle, tag in _GUARD_TAGS if any(needle in i for i in issues)]
+        if issues:
+            # one self-correction pass: a wrong or missing number is worse than a slightly slower answer
+            print("[brain] self-check:", issues)
+            messages += [
+                {"role": "assistant", "content": raw},
+                {"role": "user", "content": "Check your reply: " + " ".join(issues) + " Answer again (same JSON)."},
+            ]
             try:
-                print(
-                    "[brain] final meta.suggestions:",
-                    [s.get("title") for s in meta.get("suggestions", [])],
-                )
-            except Exception:
-                print("[brain] final meta.suggestions: <error printing>")
+                obj = _parse_model_json(await _call_openai(messages))
+            except Exception as e:
+                print("[brain] re-check failed, keeping first answer:", repr(e))
+    except Exception as e:
+        print("[brain] model call failed:", repr(e))
+        text, extra = _fallback_reply(transcript, lang, index, orderable, picks, ctx)
+        meta = _base_meta(language=lang, fallback=True, error=str(e), **extra, **ids)
+        # even without the model, remember what the guest told us (the rule-based reading) and what we offered
+        rstate.turn += 1
+        offered = [s["itemId"] for s in extra.get("suggestions") or []]
+        if offered:
+            rstate.last_offered, rstate.last_offer_turn = offered, rstate.turn
+            rstate.recent = list(dict.fromkeys(offered + rstate.recent))[:12]
+        rstate.profile = profile.to_dict()
+        meta["reco"], meta["recoMode"] = rstate.to_dict(), mode
+        meta["guards"] = ["model_unavailable"]
+        if lang == "bn":
+            meta["voiceReplyText"] = text
+        return {"replyText": text, "meta": meta}
 
-            return {
-                "replyText": reply_text,
-                "meta": meta,
-            }
+    print("[brain] model:", _safe_snip(obj, 900))
 
-        text = (
-            "দুঃখিত, একটু সমস্যা হচ্ছে। আবার বলবেন কি?"
-            if lang == "bn"
-            else "Sorry, I’m having trouble. Could you try once more?"
+    reply = str(obj.get("replyText") or "").strip()
+    voice = str(obj.get("voiceReplyText") or "").strip()
+    topic = obj.get("topic") if obj.get("topic") in TOPICS else "other"
+    intent = obj.get("intent") if obj.get("intent") in INTENTS else "chitchat"
+
+    # Still recommending something unavailable / out of time after the re-check → say it ourselves.
+    if reco_problems(obj) and not obj.get("cartOps"):
+        print("[brain] recommendation still invalid → deterministic recommendation")
+        guards.append("reco_replaced")
+        reply = _reco_fallback(pool, lang, ctx)
+        voice = reply if lang == "bn" else ""
+        obj["suggestions"] = [{"item": index.ref(it), "reason": ""} for it in pool[:3]]
+        topic = "recommendation"
+    elif odd_substitutes(obj):
+        # still offering soup for dessert after the re-check → a plain, honest answer (+ at most a drink)
+        guards.append("odd_substitute_replaced")
+        drinks = sorted(
+            (it for it in index.items if dish_facts(it)["drink"] and orderable.get(index.item_id(it), True)
+             and "water" not in str(it.get("name", "")).lower()),
+            key=lambda it: float(it.get("price") or 0),
         )
+        kinds = ", ".join(missing_now)
+        if lang == "bn":
+            reply = f"দুঃখিত, আমাদের মেনুতে {kinds} নেই।" + (
+                f" চাইলে একটা {drinks[0]['name']} ({_money(drinks[0].get('price'))}) নিতে পারেন, বা আর কিছু লাগবে?" if drinks else " আর কিছু লাগবে?")
+        else:
+            reply = f"Sorry, we don't have {kinds}." + (
+                f" Would you like a {drinks[0]['name']} ({_money(drinks[0].get('price'))}) instead, or anything else?" if drinks else " Can I get you anything else?")
+        voice = reply if lang == "bn" else ""
+        obj["suggestions"], topic, intent = [], "availability", "menu"
 
-        meta = {
-            "model": OPENAI_CHAT_MODEL,
-            "language": lang,
-            "intent": "chitchat",
-            "lockedIntent": locked_intent,
-            "items": [],
-            "suggestions": [],
-            "upsell": [],
-            "decision": {
-                "showSuggestionsModal": False,
-                "showUpsellTray": False,
-            },
-            "tenant": tenant,
-            "branch": branch,
-            "channel": channel,
-            "conversationId": conversation_id,
-            "userId": user_id,
-            "error": str(e),
-            "fallback": True,
-            "ctxLen": len(history or []),
-            "stateLen": len(
-                dialog_state or {}
-                if isinstance(dialog_state, dict)
-                else {}
-            ),
-            "hasCandidates": bool(
-                suggestion_candidates or upsell_candidates
-            ),
-            "cartOps": [],
-            "clearCart": False,
-        }
+    ops, problems = _validate_ops(
+        obj.get("cartOps"), index, dict(cart_qty), orderable, transcript, guest_words, context_ids=talked_about, rows=cart_rows
+    )
+    # (a line-targeted change is already exact — only item-level ops can be retargeted)
+    retargetable = [o for o in ops if o["op"] == "add" or (o["itemId"] in cart_qty and not o.get("lineKey"))]
+    fixed = _reconcile_ops_with_words(retargetable, transcript, index)
+    if fixed:
+        print("[brain] retargeted ops to what the guest said:", fixed)
+        guards.append("wrong_dish_corrected")
+        for o in list(ops):
+            if not orderable.get(o["itemId"], True) or (o["op"] != "add" and o["itemId"] not in cart_qty):
+                ops.remove(o)
+                problems.append(f"{o['name']} can't be changed that way")
+        problems.append("retargeted")  # forces the deterministic confirmation line (reply named the wrong dish)
+    clear = obj.get("clearCart") is True and bool(cart_qty)
+    if clear and not _CLEAR_CUE.search(transcript):
+        clear = False  # "suggest a smaller order instead" is not "empty my cart"
+        guards.append("clear_blocked")
 
-        voice_reply_text = _build_voice_reply_text(
-            text,
-            language=lang,
-            model_obj={},
-        )
-        if voice_reply_text:
-            meta["voiceReplyText"] = voice_reply_text
+    # ---- changes that deserve a "sure?" first (the guest's yes next turn applies them exactly)
+    sure_q = ""
+    # removing every line one by one is still "clear everything" — same confirmation
+    if (not clear and ops and len(cart_rows) > 1 and all(o["op"] == "remove" for o in ops)
+            and not _tray.simulate(cart_rows, ops, False, index.by_id)):
+        clear, ops = True, []
+    # a swap keeps the quantity: "স্প্রিং রোলের বদলে চিকেন কর্ন স্যুপ" with 2 Spring Rolls → 2 soups
+    if ops and _SWAP_CUE.search(transcript) and _said_quantity(transcript) is None:
+        gone = [o for o in ops if o["op"] == "remove" and o.get("lineKey")]
+        new = [o for o in ops if o["op"] == "add"]
+        if len(gone) == 1 and len(new) == 1 and int(new[0].get("quantity") or 1) == 1:
+            old = next((r for r in cart_rows if r["key"] == gone[0]["lineKey"]), None)
+            if old and old["quantity"] > 1:
+                new[0]["quantity"] = old["quantity"]
+                guards.append("swap_kept_quantity")
+                problems.append("quantity adjusted")  # the model's sentence said 1 → say what really happened
+    if clear and len(cart_rows) > 1:
+        # clearing a tray with several things always asks first; anything else said in the same breath
+        # ("সব বাদ দিয়ে একটা কাচ্চি দিন") happens after the yes
+        n_items = sum(r["quantity"] for r in cart_rows)
+        tstate["pending"] = {"kind": "clear", "ops": [o for o in ops if o["op"] != "remove"], "clear": True}
+        ops = []
+        sure_q = (f"আপনার ট্রেতে {n_items}টা আইটেম আছে — সবগুলো বাদ দিয়ে দেব?" if lang == "bn"
+                  else f"You have {n_items} items in your tray — shall I remove them all?")
+        clear = False
+    elif ops:
+        keys_now = {r["key"]: r for r in cart_rows}
+        asks: List[str] = []
+        for o in ops:
+            q = int(o.get("quantity") or 0)
+            if o["op"] in ("add", "set") and q >= _tray.BIG_QTY:
+                # "২০টা" can be a mishearing of "২টা" — check before adding a big number
+                asks.append(f"{q}টা {o['name']} — ঠিক শুনেছি?" if lang == "bn" else f"{q} × {o['name']} — did I hear that right?")
+            elif o["op"] == "add" and not _tray.MORE_WORDS.search(transcript):
+                it_o = index.by_id.get(o["itemId"]) or {}
+                key = _tray.line_key(o["itemId"], o.get("variant"), _tray.resolve_choices(it_o, o.get("choices") or []))
+                if key in keys_now:
+                    have = keys_now[key]["quantity"]
+                    asks.append(
+                        f"আপনার ট্রেতে আগে থেকেই {have}টা {o['name']} আছে — আরও {q}টা যোগ করে মোট {have + q}টা করব?"
+                        if lang == "bn" else
+                        f"You already have {have} × {o['name']} — add {q} more, making {have + q}?"
+                    )
+        if asks:
+            tstate["pending"] = {"kind": "confirm_change", "ops": ops, "clear": False}
+            sure_q = " ".join(asks)
+            ops = []
+    if sure_q:
+        reply = sure_q
+        voice = reply if lang == "bn" else ""
+        topic, intent = "order_change", "order"
+        obj["suggestions"] = []
+        problems = [p for p in problems if "retarget" not in p]
+        guards.append("asked_sure")
 
-        print("[brain] final replyText:", text)
-        print("[brain] final voiceReplyText:", meta.get("voiceReplyText", ""))
-        try:
-            print(
-                "[brain] final meta.suggestions:",
-                [s.get("title") for s in meta.get("suggestions", [])],
+    rows_after = _tray.simulate(cart_rows, ops, clear, index.by_id)
+    final_qty: Dict[str, int] = {}
+    for r in rows_after:
+        final_qty[r["itemId"]] = final_qty.get(r["itemId"], 0) + r["quantity"]
+    if ops or clear:
+        rec = _tray.change_record(cart_rows, rows_after)
+        if rec:
+            tstate["last_change"] = rec
+    for o in ops:
+        label = ", ".join([*([o["variant"]] if o.get("variant") else []), *(o.get("choices") or [])])
+        if label and o["op"] in ("add", "set", "note"):
+            size_label[o["itemId"]] = label
+        if isinstance(o.get("price"), (int, float)):
+            unit_price[o["itemId"]] = float(o["price"])
+    if problems:
+        print("[brain] dropped ops:", problems)
+        guards.append("cart_change_blocked")
+        # the model still claims it added something we refused → never let that reach the guest
+        asked = [p for p in problems if any(k in p for k in _ASK_INSTEAD)]
+        clar = _clarify_reply(problems, index, lang) if asked else ""
+        claims = _CLAIMS_ADDED.search(reply) or _CLAIMS_CHANGED.search(reply)
+        if not ops and not clear and clar and (claims or "?" not in reply):
+            # we need to ask (which line / which dish / which size) — say exactly that, never "done"
+            reply, voice = clar, (clar if lang == "bn" else "")
+            topic, intent = "order_change", "menu"
+            guards.append("clarify_instead_of_change")
+        elif not ops and not clear and claims:
+            reply = clar or _reco_fallback(pool, lang, ctx)
+            voice = reply if lang == "bn" else ""
+            topic, intent = ("order_change", "menu") if clar else ("recommendation", "suggestions")
+            guards.append("false_added_claim_replaced")
+
+    decision: Dict[str, Any] = {"showSuggestionsModal": False, "showUpsellTray": False}
+
+    # garbled speech the model couldn't make sense of → a polite "please say it again", nothing else
+    if obj.get("understood") is False and not ops and not clear:
+        reply = _SORRY_REPEAT["bn" if lang == "bn" else "en"]
+        voice = reply if lang == "bn" else ""
+        obj["suggestions"], topic, intent = [], "other", "chitchat"
+        guards.append("not_understood")
+
+    # ---- checkout: the model's reading of the guest + the phrase rules + the stage → one action
+    llm_ck = obj.get("checkout") if obj.get("checkout") in ("none", "start", "confirm", "cancel") else (
+        "confirm" if obj.get("confirmOrder") is True else "none"
+    )
+    rows_now = rows_after
+    action, why = co.decide(
+        text=transcript, stage=stage, stored_signature=str(ck.get("sig") or ""),
+        signature_now=co.cart_signature(rows_now), cart_nonempty=bool(rows_now), table=table, llm_checkout=llm_ck,
+        asked_to_confirm=asked_confirm, cart_changed_this_turn=bool(ops) or clear, cleared=clear,
+        defer_done=mode == "last_call",
+    )
+    if problems and action in ("place", "readback", "ask_table"):
+        # we're asking which dish / size first — the order isn't settled yet
+        action, why = ("reset" if stage != "none" else "stay"), "cart change needs a clarification first"
+    if sure_q:
+        action, why = "stay", "asked the guest to confirm a tray change first"
+    if action in ("readback", "place") and rows_now:
+        gone = [w for w in _tray.warnings(rows_now, index.by_id, orderable, lambda _it: []) if w["kind"] == "unavailable"]
+        if gone:  # sort out what can't be ordered before reading back / placing
+            names = ", ".join(w["name"] for w in gone)
+            tstate["pending"] = {"kind": "unavailable", "clear": False,
+                                 "ops": [{"op": "remove", "itemId": w["itemId"], "name": w["name"], "lineKey": w["lineKey"]} for w in gone]}
+            reply = (f"অর্ডার দেওয়ার আগে একটা কথা: {names} এখন পাওয়া যাচ্ছে না ({gone[0]['reason']})। ওটা বাদ দিয়ে দেব?"
+                     if lang == "bn" else f"Before I place it: {names} can't be ordered right now ({gone[0]['reason']}). Shall I remove it?")
+            voice = reply if lang == "bn" else ""
+            action, why = ("reset" if stage != "none" else "stay"), "a line can't be ordered now"
+            sure_q = reply
+    if llm_ck in ("start", "confirm") and action == "stay" and stage == "none":
+        guards.append("confirm_blocked")
+    ops_line = (
+        _cart_change_reply(ops, clear, index, final_qty, lang, restaurant, unit_price, size_label, with_summary=False)
+        if ops else ""
+    )
+    ck_text, ck_flags, new_ck = _checkout_turn(
+        action, rows=rows_now, table=table, lang=lang, restaurant=restaurant, prev=ck, transcript=transcript,
+        ops_line=ops_line,
+        eta_hint=wtalk.eta_hint(wtalk.cart_estimate(rows_now, index.by_id, kitchen), lang) if kitchen else "",
+    )
+    if action != "stay":
+        print(f"[brain] checkout: {action} ({why}) table={table}")
+    checkout_spoke = ck_text is not None
+    decision.update(ck_flags)
+    if checkout_spoke:
+        reply = ck_text
+        voice = reply if lang == "bn" else ""
+        intent, topic = "order", "confirm_order"
+    elif _CLAIMS_CONFIRMED.search(reply) and not (clear and _CLAIMS_CANCELLED.search(reply)):
+        # the model says the order was placed / taken / cancelled, but nothing like that happened → never say it
+        summary, total, _n = _tray.summary(rows_after)
+        vat = _vat_hint(restaurant, lang)
+        if stage == "table" and summary and not table:
+            # still waiting for the table number — ask for it again instead of pretending
+            reply = co.ask_table_text(lang)
+        elif summary:
+            reply = (f"এখন আপনার অর্ডারে: {summary} — মোট {_money(total)}{vat}। অর্ডারটা দিয়ে দেব?" if lang == "bn"
+                     else f"Your order: {summary} — {_money(total)}{vat}. Shall I confirm it?")
+        else:
+            reply = "আপনার ট্রে এখনো খালি — কী নেবেন?" if lang == "bn" else "Your order is still empty — what would you like?"
+        voice = reply if lang == "bn" else ""
+        guards.append("false_confirm_claim_replaced")
+
+    # Cart changed: the spoken reply must match what actually happened.
+    if ops or clear:
+        intent = "order"
+        consistent = bool(reply) and all(_reply_mentions(reply, op["name"]) for op in ops)
+        if checkout_spoke:
+            consistent = True  # the checkout line already says what changed and reads back the order
+        # "Would you like me to add these?" while we ARE adding them → the guest would add them twice
+        if any(op["op"] == "add" for op in ops) and _OFFERS_TO_ADD.search(reply):
+            consistent = False
+            guards.append("offer_while_adding_fixed")
+        # a size or paid add-on changes the price — the guest must hear the right one
+        for op in ops:
+            if op["op"] == "add" and isinstance(op.get("price"), (int, float)):
+                amounts = {int(round(op["price"])), int(round(op["price"] * op.get("quantity", 1)))}
+                if not (set(_amounts(reply)) & amounts):
+                    consistent = False
+        # "X isn't on the menu" while we ARE adding X → the guest hears the opposite of what happened
+        if not checkout_spoke and _contradicts_adds(reply, [op["name"] for op in ops if op["op"] == "add"]):
+            consistent = False
+            guards.append("added_but_said_unavailable")
+        if problems or not consistent:
+            reply = _cart_change_reply(ops, clear, index, final_qty, lang, restaurant, unit_price, size_label, rows=rows_after)
+            voice = reply if lang == "bn" else ""
+        elif ops and rows_after and not checkout_spoke:
+            # the tray changed → always end with "anything else, or shall I confirm the order?"
+            reply = _ask_anything_else_or_confirm(reply, lang)
+            voice = reply if lang == "bn" else voice
+    elif intent == "order" and not checkout_spoke:
+        # Order talk without changes: reviews and "that's all" keep the tray open; anything else
+        # (e.g. asking which curries) is just conversation. items[] stays empty either way.
+        if topic != "order_review" and not is_done_ordering(transcript):
+            intent = "menu"
+
+    if problems and not ops and not reply:
+        reply = "Sorry — which one did you mean?" if lang == "en" else "দুঃখিত, কোনটা বোঝালেন?"
+
+    # Suggestions (validated, orderable only)
+    suggestions: List[Dict[str, Any]] = []
+    for s in obj.get("suggestions") or []:
+        if not isinstance(s, dict):
+            continue
+        it = index.resolve(s.get("item") or s.get("itemId"), s.get("name") or s.get("title"))
+        if it and may_recommend(it) and all(x["itemId"] != index.item_id(it) for x in suggestions):
+            suggestions.append(_suggestion_row(it, str(s.get("reason") or "")[:60]))
+    suggestions = suggestions[:5]
+    if mode in ("quiet", "complement", "last_call"):
+        suggestions = []  # the policy said: no recommendation cards this turn
+    if checkout_spoke or (about_shown and shown_on_screen):
+        suggestions = []  # comparing the list on screen: that list stays — the answer is highlighted in it
+    if about_shown and not shown_on_screen and not ops and not checkout_spoke:
+        # "ভালো কোনটা হবে?" about dishes we only SAID (nothing on screen) → show them as cards, the pick first
+        picked = [i for i in _answer_items(obj, reply, index, shown_ids) if i in index.by_id]
+        order = picked + [i for i in shown_ids if i not in picked]
+        suggestions = [_suggestion_row(index.by_id[i]) for i in order if may_recommend(index.by_id[i])][:6]
+        intent = "suggestions" if suggestions else intent
+    if mode == "overview" and not ops and not checkout_spoke and len(suggestions) < 3:
+        # the tour's highlights as cards: what the reply named, topped up from the ranked picks
+        seen = {s["itemId"] for s in suggestions}
+        for it in find_mentions(reply, index, limit=6) + [p.item for p in picks]:
+            if index.item_id(it) not in seen and orderable.get(index.item_id(it), True) and may_recommend(it):
+                suggestions.append(_suggestion_row(it, ", ".join(next((p.reasons for p in picks if p.item is it), [])[:1])))
+                seen.add(index.item_id(it))
+            if len(suggestions) >= 4:
+                break
+        intent = "suggestions" if suggestions else intent
+    if not (ops or clear or checkout_spoke or about_shown or mode == "overview"):
+        if topic == "recommendation" and not suggestions:
+            # the model recommended in words only → show those dishes as cards too
+            suggestions = [_suggestion_row(it) for it in find_mentions(reply, index, limit=5) if may_recommend(it)]
+        # "what drinks / curries do you have?" — the answer is a list to pick from → show it as cards
+        if len(suggestions) < 2 and topic != "recommendation":
+            kind_ids = {index.item_id(i) for _, items in kind_items(transcript, index) for i in items}
+            named = [it for it in find_mentions(reply, index, limit=8) if orderable.get(index.item_id(it), True)]
+            listed = [it for it in named if index.item_id(it) in kind_ids] if kind_ids else (
+                named if topic in ("availability", "item_question", "price") and len(named) >= 3 else []
             )
-        except Exception:
-            print("[brain] final meta.suggestions: <error printing>")
+            if len(listed) >= 2:
+                suggestions = [_suggestion_row(it) for it in listed[:6]]
+                intent = "suggestions"
+        # the waiter recommended something → it appears as a card to tap (one dish is still a suggestion)
+        if topic == "recommendation" and suggestions:
+            intent = "suggestions"
+        elif intent == "chitchat" and topic in ("item_question", "dietary", "price", "availability", "restaurant_info", "recommendation"):
+            intent = "menu"
+    if intent == "suggestions" and not suggestions:
+        intent = "menu"
+    if intent == "suggestions":
+        decision["showSuggestionsModal"] = True
+    # only an explicit "show me the menu" opens the menu page ("menu" intent = a question about dishes)
+    if _SEE_MENU.search(transcript):
+        decision["openMenu"] = True
 
-        return {
-            "replyText": text,
-            "meta": meta,
-        }
+    # Upsell tray: only when the policy allows one pairing and food was actually added (or the last call)
+    upsell: List[Dict[str, Any]] = []
+    added_food = any(op["op"] == "add" for op in ops)
+    if not checkout_spoke and ((mode == "complement" and added_food) or mode == "last_call"):
+        order_now = list(final_qty)
+        fresh = complements(index, picks, order_now, stats, blocked=blocked) if added_food else pairings
+        upsell = [_suggestion_row(it, why) for it, why in fresh if index.item_id(it) not in final_qty][:1]
+        decision["showUpsellTray"] = bool(upsell)
+        if any(dish_facts(index.by_id[u["itemId"]])["drink"] for u in upsell if u["itemId"] in index.by_id):
+            rstate.drink_offered = True  # offered once already — no second "anything to drink?" at the end
+
+    # ---- remember what we learned and what we pitched (next turn's policy depends on it)
+    learned = _prefs_from_model(obj.get("guestPrefs"), index)
+    profile = profile.merge(learned, replace_mood=False)
+    offered: List[str] = [s["itemId"] for s in suggestions] + [u["itemId"] for u in upsell]
+    if mode in ("full", "greet", "answer", "overview") and not ops:
+        offered += [
+            index.item_id(it) for it in find_mentions(reply, index, limit=4)
+            if index.item_id(it) not in final_qty and index.item_id(it) not in mentioned_now and may_recommend(it)
+        ]
+    offered = list(dict.fromkeys(offered))
+    # the dishes of the on-screen list the answer points to — highlighted on the guest's screen
+    highlight = _answer_items(obj, reply, index, shown_ids) if about_shown else []
+    if about_shown and not ops:
+        offered = highlight or shown_ids  # "দিন" next → the one it pointed at (or asks which, if several)
+    rstate.turn += 1
+    if offered:
+        rstate.last_offered, rstate.last_offer_turn = offered, rstate.turn
+        rstate.recent = list(dict.fromkeys(offered + rstate.recent))[:12]
+    if upsell or mode == "last_call":
+        rstate.last_upsell_turn = rstate.turn
+    if mode == "last_call":
+        rstate.drink_offered = True
+    rstate.profile = profile.to_dict()
+
+    service = obj.get("serviceRequest") if isinstance(obj.get("serviceRequest"), dict) else None
+    if service and service.get("type") not in SERVICE_TYPES:
+        service = None
+
+    mentioned = []
+    for ref in obj.get("mentionedItems") or []:
+        it = index.resolve(ref)
+        if it:
+            mentioned.append({"itemId": index.item_id(it), "name": it.get("name")})
+    for op in ops:
+        if all(m["itemId"] != op["itemId"] for m in mentioned):
+            mentioned.append({"itemId": op["itemId"], "name": op["name"]})
+
+    if not reply:
+        text, _ = _fallback_reply(transcript, lang, index, orderable)
+        reply = text
+    reply = _with_plan_total(reply, plan, index, lang, restaurant) if (plan and price_talk and not ops and not clear) else reply
+    if _KITCHEN_CLAIM.search(reply):
+        reply = _fix_kitchen_claim(reply, ops, lang)
+        voice = reply if lang == "bn" else voice
+        guards.append("kitchen_claim_fixed")
+    reply = _western_prices(reply)
+
+    # the tray as a whole: a line that clashes with the guest's allergy/diet, or can't be ordered now, is said
+    # once (also for things added by tapping) and flagged on the tray screen
+    cart_warnings = _tray.warnings(rows_after, index.by_id, orderable, clash)
+    warned = set(tstate.get("warned") or [])
+    fresh = [w for w in cart_warnings if w["lineKey"] not in warned]
+    if fresh and not checkout_spoke and not sure_q:
+        w = fresh[0]
+        if w["kind"] == "unavailable":
+            tip = (f" খেয়াল করবেন: {w['name']} এখন পাওয়া যাচ্ছে না — বদলে অন্য কিছু দেব?" if lang == "bn"
+                   else f" Heads up: {w['name']} can't be ordered right now — shall I swap it for something else?")
+        else:
+            tip = (f" খেয়াল করবেন: আপনি যা বলেছেন, সেই হিসেবে {w['name']} আপনার জন্য ঠিক না-ও হতে পারে ({w['reason']}) — বদলে দেব?"
+                   if lang == "bn" else f" Heads up: {w['name']} may not suit you ({w['reason']}) — want me to swap it?")
+        reply = reply.rstrip() + tip
+        voice = (voice.rstrip() + tip) if (voice and lang == "bn") else voice
+        guards.append("tray_warning")
+    tstate["warned"] = list((warned | {w["lineKey"] for w in cart_warnings}))[-50:]
+
+    if lang == "bn" and not voice:
+        voice = reply
+
+    meta = _base_meta(
+        language=lang,
+        intent=intent,
+        topic=topic,
+        # full cart only when the UI has ops to apply (the order-intent fallback re-adds items[])
+        items=_items_payload(index, final_qty) if (ops or clear or decision.get("placeOrder")) else [],
+        suggestions=suggestions,
+        upsell=upsell,
+        decision=decision,
+        cartOps=ops,
+        clearCart=clear,
+        serviceRequest=service,
+        mentionedItems=mentioned[:6],
+        **ids,
+    )
+    meta["reco"] = rstate.to_dict()
+    meta["checkout"] = new_ck
+    meta["tray"] = tstate
+    meta["cartWarnings"] = cart_warnings
+    if about_shown:
+        meta["highlight"] = highlight
+        if shown_on_screen:  # the list stays on screen; otherwise the cards above are a new list
+            meta["onScreen"] = shown_ids
+    if decision.get("placeOrder"):
+        meta["orderDraft"] = _order_draft(rows_now, table or "", co.cart_signature(rows_now))
+    meta["guards"] = list(dict.fromkeys(guards))
+    meta["recoMode"] = mode
+    meta["guestProfile"] = profile.summary()
+    if voice and lang == "bn":
+        meta["voiceReplyText"] = voice
+    print("[brain] reply:", reply, "| intent:", intent, "| mode:", mode, "| ops:", ops, "| clear:", clear)
+    return {"replyText": reply, "meta": meta}
+
+
+_COMPARATIVE = re.compile(
+    r"সবচেয়ে|সব থেকে|সবথেকে|সবার চেয়ে|সবার থেকে|"
+    r"\b(most|least|best|cheapest|mildest|spiciest|lightest|lowest|highest)\b",
+    re.I,
+)
+
+
+def _answer_items(obj: Dict[str, Any], reply: str, index: MenuIndex, shown_ids: List[str]) -> List[str]:
+    """The dish(es) the answer PICKS (highlighted on screen) — not every dish the reply mentions.
+    The model names them in answerItems; otherwise the dish in the sentence that makes the comparison."""
+    picked = []
+    for ref in obj.get("answerItems") or []:
+        it = index.resolve(ref)
+        if it and index.item_id(it) in shown_ids and index.item_id(it) not in picked:
+            picked.append(index.item_id(it))
+    if picked:
+        return picked[:2]
+    for sentence in re.split(r"(?<=[.!?।])\s+", reply or ""):
+        if _COMPARATIVE.search(sentence):
+            hits = [index.item_id(it) for it in find_mentions(sentence, index, limit=4) if index.item_id(it) in shown_ids]
+            if hits:
+                return hits[:1]
+    return []
+
+
+def _prefs_from_model(raw: Any, index: MenuIndex) -> GuestProfile:
+    """The model's reading of the guest (validated: known enums only, dish refs → ids)."""
+    if not isinstance(raw, dict):
+        return GuestProfile()
+
+    def ints(v: Any, lo: int, hi: int) -> int:
+        try:
+            n = int(v)
+        except (TypeError, ValueError):
+            return 0
+        return n if lo <= n <= hi else 0
+
+    def refs(v: Any) -> List[str]:
+        out = []
+        for r in v if isinstance(v, list) else []:
+            it = index.resolve(r)
+            if it:
+                out.append(index.item_id(it))
+        return out
+
+    return GuestProfile(
+        diet=[d for d in raw.get("diet") or [] if d in DIETS],
+        allergies=[a for a in raw.get("allergies") or [] if a in ALLERGENS],
+        avoid=[str(a).strip().lower()[:30] for a in raw.get("avoid") or [] if str(a).strip()][:6],
+        spice=raw.get("spice") if raw.get("spice") in SPICE else "",
+        budget=ints(raw.get("budget"), 50, 1_000_000),
+        party_size=ints(raw.get("partySize"), 2, 30),  # "I'll take one" isn't a party of one
+        vegetarians_in_party=ints(raw.get("vegetariansInParty"), 1, 30),
+        kids=raw.get("kids") is True,
+        mood=[m for m in raw.get("mood") or [] if m in MOODS],
+        declined=refs(raw.get("declined")),
+        liked=refs(raw.get("liked")),
+    )
 
 
 __all__ = ["generate_reply"]

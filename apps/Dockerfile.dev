@@ -1,0 +1,25 @@
+# Dev image for the Vite frontends (braincell / tastebud).
+# Usage: build with --build-arg APP=braincell|tastebud; source is bind-mounted by docker-compose for HMR.
+FROM node:20-alpine
+ARG APP
+ENV APP=${APP}
+WORKDIR /repo
+
+RUN corepack enable && corepack prepare pnpm@9.4.0 --activate
+
+# Workspace manifests
+COPY package.json pnpm-workspace.yaml pnpm-lock.yaml tsconfig.base.json ./
+COPY packages/config/package.json ./packages/config/package.json
+COPY packages/shared/package.json ./packages/shared/package.json
+COPY apps/${APP}/package.json     ./apps/${APP}/package.json
+
+# Install the app + its local workspace deps
+RUN pnpm install --no-frozen-lockfile --filter ./apps/${APP}...
+
+# Sources (overridden by bind mounts in dev)
+COPY packages/config ./packages/config
+COPY packages/shared ./packages/shared
+COPY apps/${APP}     ./apps/${APP}
+
+WORKDIR /repo/apps/${APP}
+CMD ["pnpm", "run", "dev"]

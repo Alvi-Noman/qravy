@@ -5,10 +5,36 @@ export interface UserDTO {
     tenantId: string | null;
     isOnboarded: boolean;
 }
+export interface VariantOptionDTO {
+    name: string;
+    values: string[];
+}
 export interface VariationDTO {
     name: string;
     price?: number;
     imageUrl?: string;
+    optionValues?: string[];
+    prepMinutes?: number;
+}
+/** One choice inside an add-on group, e.g. { name: 'Extra cheese', price: 50 } */
+export interface ModifierOptionDTO {
+    id: string;
+    name: string;
+    /** Surcharge added to the item price (0 for free choices) */
+    price: number;
+}
+/**
+ * An add-on / choice group on a menu item.
+ *   min = 0            → optional add-ons ("Extras")
+ *   min = 1, max = 1   → required single choice ("Choose your side")
+ *   min = 0, max = 3   → pick up to 3
+ */
+export interface ModifierGroupDTO {
+    id: string;
+    name: string;
+    min: number;
+    max: number;
+    options: ModifierOptionDTO[];
 }
 export interface MenuItemDTO {
     id: string;
@@ -20,7 +46,26 @@ export interface MenuItemDTO {
     categoryId?: string;
     media: string[];
     variations: VariationDTO[];
+    options?: VariantOptionDTO[];
+    /** Add-on / choice groups (e.g. "Extras", "Choose a side") */
+    modifierGroups?: ModifierGroupDTO[];
+    /** Item-level serving hours (e.g. Friday special); empty/omitted = always */
+    availability?: AvailabilityWindowDTO[];
+    /** ISO time when a "sold out until tomorrow" switch turns back on (admin list) */
+    soldOutUntil?: string | null;
+    /** Switched off restaurant-wide (restaurants without branch records) */
+    offline?: boolean;
+    /** Service periods (from Settings) the item is served in */
+    servicePeriodIds?: string[];
+    /** Only sold between these dates (YYYY-MM-DD, inclusive) */
+    availableFrom?: string;
+    availableUntil?: string;
+    /** Display position within its category (ascending) */
+    sortOrder?: number;
     tags: string[];
+    /** Star-marked by the owner: highlighted on the menu and recommended first by the virtual waiter */
+    signature?: boolean;
+    prepMinutes?: number;
     restaurantId?: string;
     locationId?: string | null;
     visibility?: {
@@ -41,9 +86,42 @@ export interface MenuItemDTO {
     hidden?: boolean;
     status?: 'active' | 'hidden';
 }
+/**
+ * A time window when a category is served, e.g. Breakfast Mon–Fri 07:00–11:00.
+ * days: 0 = Sunday … 6 = Saturday. end < start means the window runs past midnight.
+ */
+export interface AvailabilityWindowDTO {
+    days: number[];
+    start: string;
+    end: string;
+}
+/** Named restaurant-wide time slot (Breakfast, Lunch…) that items/categories reference */
+export interface ServicePeriodDTO {
+    id: string;
+    name: string;
+    days: number[];
+    start: string;
+    end: string;
+}
+export interface KitchenSettingsDTO {
+    defaultPrepMinutes: number;
+    parallelOrders: number;
+}
 export interface CategoryDTO {
     id: string;
     name: string;
+    /** Shown under the section heading (e.g. "Served with rice") */
+    description?: string;
+    /** Display position (ascending) */
+    sortOrder?: number;
+    /** Serving hours; empty/omitted = always available */
+    availability?: AvailabilityWindowDTO[];
+    /** Per-branch overrides of `availability` (admin) */
+    branchAvailability?: Array<{ locationId: string; availability: AvailabilityWindowDTO[] }>;
+    /** True when `availability` above is a branch override (branch-scoped reads) */
+    availabilityOverridden?: boolean;
+    /** Service periods (from Settings) the category is served in */
+    servicePeriodIds?: string[];
     /** Baseline channel scope */
     channel?: 'dine-in' | 'online' | 'both';
     /** Optional overlays (only present for global categories) */
@@ -120,6 +198,19 @@ export interface TenantDTO {
     name: string;
     subdomain: string;
     onboardingCompleted: boolean;
+    /** Menu-wide notes shown to customers (VAT, service hours, allergen info) */
+    menuNotes?: string[];
+    /** House facts the virtual waiter may tell guests (Wi-Fi, payment methods, parking…) */
+    waiterKnowledge?: string[];
+    /** IANA time zone for all hours (e.g. "Asia/Dhaka") */
+    timezone?: string;
+    /** Restaurant opening hours; empty = always open */
+    openingHours?: AvailabilityWindowDTO[];
+    /** Daily "HH:mm" when "sold out until tomorrow" items come back */
+    dailyResetTime?: string;
+    /** Named service periods (defaults: Breakfast, Lunch, Afternoon, Dinner, Late night) */
+    servicePeriods?: ServicePeriodDTO[];
+    kitchen?: KitchenSettingsDTO;
     trialStartedAt?: string | null;
     trialEndsAt?: string | null;
     subscriptionStatus?: SubscriptionStatus;

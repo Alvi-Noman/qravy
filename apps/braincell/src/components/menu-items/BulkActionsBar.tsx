@@ -5,6 +5,7 @@ export default function BulkActionsBar({
   onSetAvailable,
   onSetUnavailable,
   onAssignCategory,
+  onSetHours,
   onDelete,
   onClear,
 }: {
@@ -12,6 +13,8 @@ export default function BulkActionsBar({
   onSetAvailable: () => void;
   onSetUnavailable: () => void;
   onAssignCategory: () => void;
+  /** Serving hours for the selected items (e.g. breakfast only) */
+  onSetHours?: () => void;
   onDelete: () => void;
   onClear: () => void;
 }) {
@@ -49,6 +52,11 @@ export default function BulkActionsBar({
         <button className={`${baseBtn} hover:bg-[#f5f5f5]`} onClick={onAssignCategory}>
           Assign Category
         </button>
+        {onSetHours && (
+          <button className={`${baseBtn} hover:bg-[#f5f5f5]`} onClick={onSetHours}>
+            Availability
+          </button>
+        )}
         <button className={deleteBtnClass} onClick={onDelete}>
           {deleteLabel}
         </button>

@@ -1,3 +1,5 @@
+import { availabilityWindowSchema } from '../validation/schemas.js';
+import { normalizeAvailability } from '../utils/availability.js';
 import type { Request, Response } from 'express';
 import { ObjectId } from 'mongodb';
 import { z } from 'zod';
@@ -26,6 +28,8 @@ const updateSchema = z.object({
   zip: z.string().trim().optional(),
   country: z.string().trim().optional(),
   disabled: z.boolean().optional(),
+  /** Branch opening hours; null → same as the restaurant */
+  openingHours: z.array(availabilityWindowSchema).max(7).nullable().optional(),
 });
 
 function getTenantId(req: Request): string {
@@ -66,6 +70,7 @@ function toDTO(doc: LocationDoc) {
     zip: doc.zip || '',
     country: doc.country || '',
     disabled: doc.disabled || false,
+    openingHours: doc.openingHours ?? null,
     createdAt: doc.createdAt.toISOString(),
     updatedAt: doc.updatedAt.toISOString(),
   };
@@ -178,11 +183,14 @@ export async function updateLocation(req: Request, res: Response) {
   if (patch.zip !== undefined) $set.zip = patch.zip || '';
   if (patch.country !== undefined) $set.country = patch.country || '';
   if (patch.disabled !== undefined) $set.disabled = patch.disabled;
+  const $unset: Record<string, ''> = {};
+  if (patch.openingHours === null) $unset.openingHours = '';
+  else if (patch.openingHours) $set.openingHours = normalizeAvailability(patch.openingHours);
 
   try {
     const doc = await col().findOneAndUpdate(
       { _id: new ObjectId(id), tenantId: new ObjectId(tenantId) },
-      { $set },
+      Object.keys($unset).length ? { $set, $unset } : { $set },
       {
         returnDocument: 'after',
         collation: { locale: 'en', strength: 2 },

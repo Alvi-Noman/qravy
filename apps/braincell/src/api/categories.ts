@@ -8,6 +8,7 @@ import type { v1 } from '../../../../packages/shared/src/types';
 
 export type Channel = 'dine-in' | 'online';
 export type Category = v1.CategoryDTO;
+export type AvailabilityWindow = v1.AvailabilityWindowDTO;
 
 /** Extra fields we rely on to enforce Advanced UI rules */
 export type CategoryDetail = Category & {
@@ -57,6 +58,9 @@ export async function createCategory(
     channel?: Channel;                // 'dine-in' | 'online' (omit => both)
     includeLocationIds?: string[];    // global: visible only at these branches
     excludeLocationIds?: string[];    // global: hide at these branches
+    description?: string;             // shown under the section heading
+    availability?: AvailabilityWindow[]; // serving hours; empty = always
+    servicePeriodIds?: string[];      // service periods from Settings
   }
 ): Promise<Category> {
   const uniq = (arr?: string[]) => Array.from(new Set((arr ?? []).filter(Boolean)));
@@ -66,6 +70,9 @@ export async function createCategory(
   // Branch scope (mutually exclusive with include/exclude seeding)
   if (opts?.locationId) body.locationId = opts.locationId;
   if (opts?.channel) body.channel = opts.channel;
+  if (opts?.description?.trim()) body.description = opts.description.trim();
+  if (opts?.availability?.length) body.availability = opts.availability;
+  if (opts?.servicePeriodIds?.length) body.servicePeriodIds = opts.servicePeriodIds;
 
   // Only seed include/exclude for GLOBAL categories
   if (!opts?.locationId) {
@@ -103,6 +110,10 @@ export async function updateCategory(
     includeLocationIds?: string[];
     excludeLocationIds?: string[];
     hardExclude?: boolean;
+    description?: string;
+    availability?: AvailabilityWindow[];
+    branchAvailability?: { locationId: string; availability: AvailabilityWindow[] | null };
+    servicePeriodIds?: string[];
   },
   c?: {
     channel?: Channel | 'both';
@@ -120,6 +131,10 @@ export async function updateCategory(
         includeLocationIds?: string[];
         excludeLocationIds?: string[];
         hardExclude?: boolean;
+        description?: string;
+        availability?: AvailabilityWindow[];
+        branchAvailability?: { locationId: string; availability: AvailabilityWindow[] | null };
+        servicePeriodIds?: string[];
       }
     | undefined;
 
@@ -154,6 +169,12 @@ export async function updateCategory(
   if (typeof opts?.hardExclude === 'boolean') {
     body.hardExclude = opts.hardExclude;
   }
+
+  // '' / [] clear the field on the server
+  if (typeof opts?.description === 'string') body.description = opts.description.trim();
+  if (Array.isArray(opts?.availability)) body.availability = opts.availability;
+  if (opts?.branchAvailability) body.branchAvailability = opts.branchAvailability;
+  if (Array.isArray(opts?.servicePeriodIds)) body.servicePeriodIds = opts.servicePeriodIds;
 
   const res = await api.post(
     `/api/v1/auth/categories/${encodeURIComponent(id)}/update`,
@@ -210,4 +231,9 @@ export async function bulkSetCategoryVisibility(
     headers: { Authorization: `Bearer ${token}` },
   });
   return res.data as BulkVisibilityResult;
+}
+
+/** Saves the display order: category ids in their new order. */
+export async function reorderCategories(ids: string[]): Promise<void> {
+  await api.post('/api/v1/auth/categories/reorder', { ids });
 }

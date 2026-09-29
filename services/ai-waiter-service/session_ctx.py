@@ -4,8 +4,8 @@ from typing import Deque, Dict, List, Tuple, Optional, Any
 import os
 import time
 
-# how many recent turns to keep verbatim
-MAX_TURNS = int(os.environ.get("SESSION_CTX_TURNS", "3"))
+# how many recent messages (user + assistant) to keep verbatim — 12 ≈ the last 6 exchanges
+MAX_TURNS = int(os.environ.get("SESSION_CTX_TURNS", "12"))
 
 # idle TTL in seconds (default: 10 minutes)
 SESSION_IDLE_TTL_SECONDS = int(os.environ.get("SESSION_IDLE_TTL_SECONDS", "600"))
@@ -27,6 +27,53 @@ SESSION_LAST_ACTIVITY: Dict[Key, float] = {}
 
 def skey(tenant: Optional[str], sid: Optional[str]) -> Key:
     return ((tenant or "unknown").strip(), (sid or "anon").strip())
+
+
+# -------- durable copy (so a restart/deploy mid-conversation loses nothing: history, checkout stage…) --------
+
+_STORE: Any = None
+
+
+def attach_store(collection: Any) -> None:
+    """A Mongo collection; every turn's history + dialog state is written through and restored on demand."""
+    global _STORE
+    _STORE = collection
+
+
+def _doc_id(key: Key) -> str:
+    return f"{key[0]}|{key[1]}"
+
+
+def _persist(key: Key) -> None:
+    if _STORE is None:
+        return
+    try:
+        from datetime import datetime
+
+        _STORE.update_one(
+            {"_id": _doc_id(key)},
+            {"$set": {"history": list(SESSION_CTX[key]), "state": SESSION_STATE.get(key, {}),
+                      "at": datetime.utcnow(), "ts": time.time()}},
+            upsert=True,
+        )
+    except Exception as e:
+        print("[session_ctx] persist failed:", e)
+
+
+def _restore(key: Key) -> None:
+    """After a restart the in-memory session is gone — bring it back if it's still fresh."""
+    if _STORE is None or key in SESSION_STATE or SESSION_CTX.get(key):
+        return
+    try:
+        doc = _STORE.find_one({"_id": _doc_id(key)})
+    except Exception as e:
+        print("[session_ctx] restore failed:", e)
+        return
+    if not doc or time.time() - float(doc.get("ts") or 0) > SESSION_IDLE_TTL_SECONDS:
+        return
+    SESSION_CTX[key].extend(doc.get("history") or [])
+    SESSION_STATE[key] = doc.get("state") or {}
+    print(f"[session_ctx] restored session {key[1][:8]}… after a restart")
 
 
 def _touch(key: Key) -> None:
@@ -68,6 +115,7 @@ def _gc_expired() -> None:
 def get_history(tenant: Optional[str], sid: Optional[str]) -> List[Dict[str, str]]:
     key = skey(tenant, sid)
     _gc_expired()
+    _restore(key)
     _touch(key)
     return list(SESSION_CTX[key])
 
@@ -93,6 +141,7 @@ def push_assistant(tenant: Optional[str], sid: Optional[str], text: str) -> None
 def get_state(tenant: Optional[str], sid: Optional[str]) -> Dict[str, Any]:
     key = skey(tenant, sid)
     _gc_expired()
+    _restore(key)
     _touch(key)
     return SESSION_STATE.get(key, {})
 
@@ -149,14 +198,30 @@ def update_state(
         # clear quantity slot for non-order intents
         unresolved = [u for u in unresolved if u != "quantity"]
 
+    # dishes the conversation is about right now (for "is it spicy?", "add two of those")
+    focus: List[Dict[str, Any]] = []
+    for it in (meta or {}).get("mentionedItems") or []:
+        if isinstance(it, dict) and it.get("itemId") and all(f["id"] != it["itemId"] for f in focus):
+            focus.append({"id": it["itemId"], "name": it.get("name")})
+    if not focus:
+        focus = list(prev.get("focus") or [])
+
     SESSION_STATE[key] = {
         "intent": intent,
         "lang": lang,
         "items": comp_items,
+        "focus": focus[:4],
         "unresolved": unresolved[:4],
+        # recommender memory: guest profile, what was pitched/declined, upsell pacing
+        "reco": (meta or {}).get("reco") or prev.get("reco") or {},
+        # checkout stage (none → table → readback), the table, and the signature of what was read back
+        "checkout": (meta or {}).get("checkout") if isinstance((meta or {}).get("checkout"), dict) else prev.get("checkout") or {},
+        # tray memory: the last change (undo, "one more of that"), a "sure?" question waiting for a yes, warnings said
+        "tray": (meta or {}).get("tray") if isinstance((meta or {}).get("tray"), dict) else prev.get("tray") or {},
     }
 
     _touch(key)
+    _persist(key)  # the turn is complete: history + state survive a restart
 
 
 # -------- Optional cart helpers (used by cart HTTP API / other services) --------

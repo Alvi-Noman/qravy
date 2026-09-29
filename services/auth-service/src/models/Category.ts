@@ -22,6 +22,20 @@ export interface CategoryDoc {
 
   name: string;
 
+  /** Shown under the section heading (e.g. "All curries served with rice") */
+  description?: string;
+  /** Display position, ascending */
+  sortOrder?: number;
+  /** Serving hours; empty/missing = always available */
+  availability?: Array<{ days: number[]; start: string; end: string }>;
+  /** Service periods from Settings this category is served in (combined with availability) */
+  servicePeriodIds?: string[];
+  /** Per-branch overrides of availability ([] = always available at that branch) */
+  branchAvailability?: Array<{
+    locationId: ObjectId;
+    availability: Array<{ days: number[]; start: string; end: string }>;
+  }>;
+
   createdAt: Date;
   updatedAt: Date;
 }

@@ -7,6 +7,10 @@ type ConversationState = {
   aiText: string;
   /** Live, word-by-word text revealed while TTS is speaking */
   aiTextLive: string;
+  /** when aiText was last set (ms) — a line from long ago isn't shown again on return */
+  aiAt: number;
+  /** aiText is a passing notice ("didn't catch that", "can't connect") — never the line you come back to */
+  aiNotice: boolean;
 
   /** Last full AI meta payload from backend (includes decision, items, etc.) */
   lastMeta: AiReplyMeta | null;
@@ -15,6 +19,8 @@ type ConversationState = {
   appendAi: (chunk: string) => void;
   /** Replace entire final text */
   setAi: (text: string) => void;
+  /** Show a passing notice (an error / "say it again") */
+  setNotice: (text: string) => void;
   /** Clear both final + live (new turn/session) */
   clearAi: () => void;
 
@@ -48,6 +54,8 @@ function createConversationStore() {
       (set, get) => ({
         aiText: "",
         aiTextLive: "",
+        aiAt: 0,
+        aiNotice: false,
         lastMeta: null,
 
         appendAi: (chunk) => {
@@ -60,7 +68,13 @@ function createConversationStore() {
 
         setAi: (text) => {
           DBG("setAi()", { text });
-          set({ aiText: (text || "").trim() });
+          const next = (text || "").trim();
+          // re-setting the same text (end of speech) keeps it a notice
+          set((s) => ({ aiText: next, aiAt: Date.now(), aiNotice: s.aiNotice && s.aiText === next }));
+        },
+
+        setNotice: (text) => {
+          set({ aiText: (text || "").trim(), aiAt: Date.now(), aiNotice: true });
         },
 
         clearAi: () => {
@@ -126,7 +140,7 @@ function createConversationStore() {
             mergedPreview: merged.slice(-120),
           });
 
-          set({ aiText: merged, aiTextLive: "" });
+          set((s) => ({ aiText: merged, aiTextLive: "", aiAt: Date.now(), aiNotice: s.aiNotice && s.aiText === merged }));
         },
 
         setMeta: (meta) => {
@@ -162,6 +176,8 @@ function createConversationStore() {
         // Persist only what should survive navigation: final text + lastMeta.
         partialize: (s) => ({
           aiText: s.aiText,
+          aiAt: s.aiAt,
+          aiNotice: s.aiNotice,
           lastMeta: s.lastMeta,
         }),
         storage: createJSONStorage(() => {

@@ -4,6 +4,8 @@ import { MongoClient } from 'mongodb';
 import logger from './utils/logger.js';
 import { ensureUserIndexes } from './utils/initDb.js';
 import { logEmailBootInfo } from './utils/email.js';
+import { failStaleImports } from './services/menuImport/pipeline.js';
+import { resumeSoldOutItems } from './controllers/menuItemsController.js';
 
 export const client = new MongoClient(env.MONGODB_URI!);
 
@@ -20,6 +22,15 @@ async function startServer() {
 
     // Ensure indexes exist for performance and reliability
     await ensureUserIndexes(client);
+
+    // "Sold out until tomorrow": switch items back on at the daily reset (checked every minute)
+    const resumeTick = () =>
+      resumeSoldOutItems().catch((e) => logger.warn(`resumeSoldOutItems: ${(e as Error).message}`));
+    await resumeTick();
+    setInterval(resumeTick, 60_000).unref();
+
+    // Menu-import jobs interrupted by a restart can never finish
+    await failStaleImports().catch((e) => logger.warn(`failStaleImports: ${(e as Error).message}`));
 
     // Listen on 0.0.0.0 for Docker compatibility
     server = app.listen(PORT, '0.0.0.0', () => {

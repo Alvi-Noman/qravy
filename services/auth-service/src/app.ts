@@ -24,6 +24,8 @@ import locationRoutes from './routes/locationRoutes.js';
 import accessRoutes from './routes/accessRoutes.js';
 import categoriesRoutes from './routes/categoriesRoutes.js';
 import publicRoutes from './routes/publicRoutes.js'; // ✅ added
+import menuImportsRoutes from './routes/menuImportsRoutes.js';
+import orderRoutes from './routes/orderRoutes.js';
 
 import logger from './utils/logger.js';
 import { responseFormatter } from './middleware/response.js';
@@ -61,6 +63,8 @@ app.get('/health', (_req: Request, res: Response) => {
 });
 
 /* ---------- Core middleware ---------- */
+// Menu-import drafts (hundreds of items) exceed the default 100kb JSON limit
+app.use('/api/v1/menu-imports', express.json({ limit: '5mb' }));
 app.use(express.json());
 app.use(cookieParser());
 app.use(
@@ -151,6 +155,8 @@ app.use('/api/v1/users', userRoutes);
 app.use('/api/v1/locations', locationRoutes);
 app.use('/api/v1/access', accessRoutes);
 app.use('/api/v1/categories', categoriesRoutes);
+app.use('/api/v1', menuImportsRoutes); // /api/v1/menu-imports
+app.use('/api/v1', orderRoutes); // /api/v1/public/orders (guests) + /api/v1/orders (staff)
 
 /**
  * Legacy aliases under /api/v1/auth

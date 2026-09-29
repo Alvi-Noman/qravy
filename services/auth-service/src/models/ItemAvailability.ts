@@ -21,6 +21,9 @@ export interface ItemAvailabilityDoc {
   // Optional: scoped delete tombstone
   removed?: boolean;
 
+  // "Sold out until tomorrow": switch back on (available:true) at this time
+  resumeAt?: Date;
+
   createdAt: Date;
   updatedAt: Date;
 }

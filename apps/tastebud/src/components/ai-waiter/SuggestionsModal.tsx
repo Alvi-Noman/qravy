@@ -17,6 +17,8 @@ type Props = {
   onClose: () => void;
   menuHrefOverride?: string;
   items?: MinimalMenuItem[];
+  /** dishes the waiter pointed at when the guest asked about this list ("which of these is less spicy?") */
+  highlightIds?: string[];
   onIntent?: (intent?: WaiterIntent, meta?: AiReplyMeta, replyText?: string) => void;
 };
 
@@ -133,8 +135,16 @@ export default function SuggestionsModal({
   onClose,
   menuHrefOverride,
   items = [],
+  highlightIds = [],
   onIntent,
 }: Props) {
+  const hl = new Set(highlightIds.map(String));
+  const cardRefs = React.useRef<Record<string, HTMLElement | null>>({});
+  React.useEffect(() => {
+    // bring the first highlighted dish into view
+    const first = highlightIds.find((id) => cardRefs.current[id]);
+    if (first) cardRefs.current[first]?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }, [highlightIds]);
   const menuHref = useMenuHref(menuHrefOverride);
   const hasAiItems = Array.isArray(items) && items.length > 0;
   const heroItem = hasAiItems ? items.find((i) => i.imageUrl) ?? items[0] : undefined;
@@ -196,16 +206,25 @@ export default function SuggestionsModal({
         <div className="px-4 pt-3 pb-24 overflow-y-auto h-full">
           {hasAiItems ? (
             <div className="grid grid-cols-1 gap-3">
-              {items.map((it, idx) => (
-                <Link
-                  key={String(it.id ?? idx)}
-                  to={menuHref}
-                  onClick={onClose}
-                  className="block"
-                >
-                  <ProductSuggestionCard item={it} />
-                </Link>
-              ))}
+              {items.map((it, idx) => {
+                const on = it.id != null && hl.has(String(it.id));
+                return (
+                  <Link
+                    key={String(it.id ?? idx)}
+                    ref={(el) => {
+                      if (it.id != null) cardRefs.current[String(it.id)] = el;
+                    }}
+                    to={menuHref}
+                    onClick={onClose}
+                    className={
+                      "relative block rounded-2xl transition-all duration-500 " +
+                      (on ? "ring-2 ring-[#FA2851]/45 shadow-md shadow-rose-100" : "")
+                    }
+                  >
+                    <ProductSuggestionCard item={it} />
+                  </Link>
+                );
+              })}
             </div>
           ) : (
             <div className="py-6 text-center text-sm text-gray-500">No suggestions available right now.</div>
@@ -213,14 +232,16 @@ export default function SuggestionsModal({
         </div>
 
         {/* GRADIENT */}
-        <div className="pointer-events-none absolute bottom-[88px] left-0 right-0 h-12 bg-gradient-to-t from-[#F8F8F8] to-transparent z-30" />
+        <div className="pointer-events-none absolute bottom-[92px] left-0 right-0 h-10 bg-gradient-to-t from-[#F8F8F8] to-transparent z-30" />
 
-        {/* FIXED MIC INPUT BAR WITH GAP */}
-        <div className="absolute bottom-0 left-0 right-0 px-4 pb-4 mb-3 bg-[#F8F8F8] border-t border-gray-200 z-40">
+        {/* MIC BAR — flush with the bottom edge, like the tray's */}
+        <div className="absolute bottom-0 left-0 right-0 px-4 pt-3 pb-[max(1.25rem,env(safe-area-inset-bottom))] bg-[#F8F8F8] border-t border-gray-200 z-40">
           <MicInputBar
             tenant={tenant}
             branch={branch}
             channel="dine-in"
+            floorGradient={false}
+            shownIds={items.map((i) => String(i.id ?? '')).filter(Boolean)}
             onAiReply={({ replyText, meta }) => {
               const intent = resolveIntent(meta as AiReplyMeta | undefined, replyText);
               onIntent?.(intent, meta as AiReplyMeta | undefined, replyText);

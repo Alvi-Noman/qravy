@@ -4,8 +4,15 @@ import { getWsURL, getStableSessionId } from "../../utils/ws";
 import { useConversationStore } from "../../state/conversation";
 import { useTTS } from "../../state/TTSProvider";
 import { getTTS } from "../../state/tts";
+import { useCart } from "../../context/CartContext";
+import { getTable } from "../../utils/table";
+import { waiterLang } from "../../utils/ui-lang";
+import { claimReveal, ownsReveal } from "../../state/reveal-owner";
 
 type Lang = "bn" | "en" | "auto";
+
+/** Safety net: how long to wait for the waiter's reply after the guest stops talking. */
+const REPLY_TIMEOUT_MS = 20_000;
 
 type Props = {
   className?: string;
@@ -17,6 +24,12 @@ type Props = {
   onAiReply?: (payload: { replyText: string; meta?: any }) => void;
   onPartial?: (text: string) => void;
   disabled?: boolean;
+  /** ids of the dishes on screen right now — "which of these…" is about them */
+  shownIds?: string[];
+  /** the soft fade over the bottom of the screen — off inside sheets that have their own background */
+  floorGradient?: boolean;
+  /** extra lift (px) for the reply bubble when something sits above the bar (e.g. a Place-order button) */
+  panelLift?: number;
 };
 
 declare global {
@@ -37,16 +50,25 @@ export default function MicInputBar({
   onAiReply,
   onPartial,
   disabled = false,
+  shownIds,
+  floorGradient = true,
+  panelLift = 0,
 }: Props) {
+  const shownRef = useRef<string[] | undefined>(shownIds);
+  shownRef.current = shownIds;
   const rootRef = useRef<HTMLDivElement | null>(null);
-  const willOwnLiveRef = useRef<boolean>(true);
 
   const [isRecording, setIsRecording] = useState(false);
+  // the same flag, but synchronous — a release that arrives before React re-renders must still stop the mic
+  const recRef = useRef(false);
+  const maxRecRef = useRef<number | null>(null); // safety cap on one recording
+  const stopRef = useRef<(() => Promise<void>) | null>(null);
   const [thinking, setThinking] = useState(false);
   const [partial, setPartial] = useState("");
 
   // Store bits
   const setAi           = useConversationStore((s) => s.setAi);
+  const setNotice       = useConversationStore((s) => s.setNotice);
   const aiLive          = useConversationStore((s) => s.aiTextLive);
   const startTtsReveal  = useConversationStore((s) => s.startTtsReveal);
   const appendTtsReveal = useConversationStore((s) => s.appendTtsReveal);
@@ -54,15 +76,15 @@ export default function MicInputBar({
 
   const tts = useTTS();
 
-  // Inside modal? then don't own the live subscription
+  // Only one component writes the spoken words into the live text; a bar inside a pop-up never does
+  // (otherwise every word shows twice). See state/reveal-owner.ts.
+  const revealIdRef = useRef(Symbol("mic-bar"));
   useEffect(() => {
-  const el = rootRef.current;
-  const inDialog = !!el?.closest('[role="dialog"]');
-  if (inDialog) return; // don't subscribe inside modals
-
-  const unsub = tts.subscribe({ /* ...same handlers... */ });
-  return unsub;
-}, [tts]);
+    const inDialog = !!rootRef.current?.closest('[role="dialog"]');
+    if (inDialog) return;
+    return claimReveal(revealIdRef.current);
+  }, []);
+  const ownsLive = () => ownsReveal(revealIdRef.current);
 
   /* ---------- Word-by-word reveal (no pre-flash) ---------- */
   const WARMUP_MS = 120;
@@ -92,11 +114,10 @@ export default function MicInputBar({
   }
 
   useEffect(() => {
-    if (!willOwnLiveRef.current) return;
-
     const unsub = tts.subscribe({
       onStart: () => {
         setThinking(false);
+        if (!ownsLive()) return;
 
         speakGenRef.current += 1;
         activeGenRef.current  = speakGenRef.current;
@@ -113,6 +134,7 @@ export default function MicInputBar({
 
       // @ts-ignore
       onWord: (w: string, offsetMs?: number) => {
+        if (!ownsLive()) return;
         if (activeGenRef.current !== speakGenRef.current) return;
 
         if (!anchorSetRef.current) {
@@ -137,7 +159,7 @@ export default function MicInputBar({
       },
 
       onEnd: () => {
-        if (!inSpeechRef.current) return;
+        if (!inSpeechRef.current || !ownsLive()) return;
         const myGen = speakGenRef.current;
         const waitMs = Math.max(0, lastDueRef.current - performance.now() + 50);
         setTimeout(() => {
@@ -162,23 +184,23 @@ export default function MicInputBar({
 
   // Tap/Hold state (single declarations)
   const HOLD_MS = 250;
+  const MAX_RECORDING_MS = 30_000;
   const holdTimerRef = useRef<number | null>(null);
   const isHoldModeRef = useRef(false);
   const pointerActiveRef = useRef(false);
   const lastDownAtRef = useRef(0);
 
-  // language: 🔒 force Bangla for this bar
-  const getGlobalLang = (): Lang => "bn";
+  // language: the guest's choice on the waiter screen (Bangla by default; "auto" → Bangla for the STT hint)
+  const getGlobalLang = (): "bn" | "en" => waiterLang();
 
-  const [currentLang, setCurrentLang] = useState<Lang>(getGlobalLang());
+  const [currentLang, setCurrentLang] = useState<"bn" | "en">(getGlobalLang());
   useEffect(() => {
-    // Always stay in Bangla; ignore global toggles
-    setCurrentLang("bn");
     if (typeof window === "undefined") return;
-    const handler = (_e: Event) => {
-      setCurrentLang("bn");
+    const handler = (e: Event) => {
+      const next = (e as CustomEvent)?.detail?.lang === "en" ? "en" : "bn";
+      setCurrentLang(next);
       if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-        wsRef.current.send(JSON.stringify({ t: "set_lang", lang: "bn" }));
+        wsRef.current.send(JSON.stringify({ t: "set_lang", lang: next }));
       }
     };
     window.addEventListener("qravy:lang", handler as EventListener);
@@ -186,10 +208,15 @@ export default function MicInputBar({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   useEffect(() => {
-    // Prop `lang` is ignored; always Bangla
-    setCurrentLang("bn");
+    setCurrentLang(getGlobalLang()); // the guest's global choice wins over the prop
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lang]);
+
+  // what the guest sees in the tray, and their table — sent with every utterance so the waiter
+  // reads back exactly this order (sizes, add-ons, notes) and knows where to bring it
+  const { items: cartItems } = useCart();
+  const cartRef = useRef(cartItems);
+  cartRef.current = cartItems;
 
   // WS & audio refs
   const wsRef = useRef<WebSocket | null>(null);
@@ -224,6 +251,22 @@ export default function MicInputBar({
     setPartial("");
   }, []);
 
+  // "Thinking…" lasts from release until ai_reply; if that never comes, recover instead of hanging
+  const awaitingRef = useRef(false);
+  const captureGenRef = useRef(0); // bumps on every press and release — a slow mic start after release is dropped
+  const watchdogRef = useRef<number | null>(null);
+  const giveUpWaiting = useCallback(() => {
+    if (watchdogRef.current) { window.clearTimeout(watchdogRef.current); watchdogRef.current = null; }
+    if (!awaitingRef.current) return;
+    awaitingRef.current = false;
+    setThinking(false);
+    try {
+      setNotice(waiterLang() === "en"
+        ? "Sorry, I didn't get that — please say it again."
+        : "দুঃখিত, বুঝতে পারিনি — আরেকবার বলবেন?");
+    } catch {}
+  }, [setAi]);
+
   // Hard reset: audio + WS + state (used on unmount / WS error)
   const hardReset = useCallback(async () => {
     try {
@@ -240,6 +283,8 @@ export default function MicInputBar({
     if (pingTimerRef.current) { window.clearInterval(pingTimerRef.current); pingTimerRef.current = null; }
     wsRef.current = null;
     try { getTTS().unduck(); } catch {}
+    if (maxRecRef.current) { window.clearTimeout(maxRecRef.current); maxRecRef.current = null; }
+    recRef.current = false;
     setIsRecording(false);
     setThinking(false);
     setPartial("");
@@ -301,21 +346,22 @@ export default function MicInputBar({
           ? new Date().getHours()
           : undefined;
 
-      // 👇 IMPORTANT: send `hello` immediately on open, always Bangla
-      const langToSend: Lang = "bn";
-
+      // 👇 IMPORTANT: send `hello` immediately on open
       const startMsg: any = {
         t: "hello",                 // 👈 changed from "start" to "hello"
         sessionId: sid,
         userId: "guest",
         rate: 16000,
         ch: 1,
-        lang: langToSend,           // <-- always "bn"
+        lang: currentLang,
         tenant: tenant ?? undefined,
         branch: branch ?? undefined,
         channel: channel ?? undefined,
         tz,
         localHour,
+        table: getTable(tenant) ?? undefined,
+        cart: cartRef.current,
+        shown: shownRef.current ?? [],
       };
       try { ws.send(JSON.stringify(startMsg)); } catch {}
 
@@ -359,6 +405,8 @@ export default function MicInputBar({
           }
 
           setThinking(false);
+          awaitingRef.current = false;
+          if (watchdogRef.current) { window.clearTimeout(watchdogRef.current); watchdogRef.current = null; }
 
           console.log("[AI RAW][MicInputBar]", { replyText, voiceText, meta });
 
@@ -377,7 +425,7 @@ export default function MicInputBar({
         }
 
         if (data.t === "ai_reply_error") {
-          setThinking(false);
+          giveUpWaiting();
           // close on error
           try {
             ws.onopen = ws.onmessage = ws.onerror = ws.onclose = null;
@@ -397,12 +445,23 @@ export default function MicInputBar({
     ws.onerror = () => {
       if (wsGenRef.current !== myGen) return;
       if (pingTimerRef.current) { window.clearInterval(pingTimerRef.current); pingTimerRef.current = null; }
+      if (watchdogRef.current) { window.clearTimeout(watchdogRef.current); watchdogRef.current = null; }
+      awaitingRef.current = false;
       hardReset();
+      // e.g. the voice service is restarting — say so instead of silently doing nothing
+      try {
+        setNotice(waiterLang() === "en"
+          ? "Can't connect right now — please try the mic again in a few seconds."
+          : "এই মুহূর্তে সংযোগ হচ্ছে না — কয়েক সেকেন্ড পরে আবার মাইক চাপুন।");
+      } catch {}
     };
 
     ws.onclose = () => {
       if (wsGenRef.current !== myGen) return;
       if (pingTimerRef.current) { window.clearInterval(pingTimerRef.current); pingTimerRef.current = null; }
+
+      // closed without a reply while showing "Thinking…" (nothing heard, server error) → recover
+      giveUpWaiting();
 
       const ac = acRef.current;
 
@@ -427,6 +486,7 @@ export default function MicInputBar({
     channel,
     currentLang,
     hardReset,
+    giveUpWaiting,
     isRecording,
     thinking,
     onAiReply,
@@ -439,8 +499,14 @@ export default function MicInputBar({
 
   // Start capture
   const start = useCallback(async () => {
-    if (disabled || isRecording) return;
+    if (disabled || recRef.current) return;
+    recRef.current = true;
     setIsRecording(true);
+    // never record forever (a lost "release" on iOS left the mic open for minutes)
+    if (maxRecRef.current) window.clearTimeout(maxRecRef.current);
+    maxRecRef.current = window.setTimeout(() => { stopRef.current?.(); }, MAX_RECORDING_MS);
+    const myCap = ++captureGenRef.current;
+    const released = () => captureGenRef.current !== myCap;
 
     try { startTtsReveal(""); finishTtsReveal(); } catch {}
     try { setAi(""); } catch {}
@@ -455,7 +521,13 @@ export default function MicInputBar({
     const ac = new AC({ sampleRate: 48000 });
     acRef.current = ac;
 
-    await ac.audioWorklet.addModule("/worklets/audio-capture.worklet.js");
+    try {
+      await ac.audioWorklet.addModule("/worklets/audio-capture.worklet.js");
+    } catch {
+      if (!released()) await hardReset(); // the worklet failed — don't sit in "recording"
+      return;
+    }
+    if (released()) return;
 
     // ensure audio context is running so worklet can process
     if (ac.state === "suspended") {
@@ -464,10 +536,29 @@ export default function MicInputBar({
       } catch {}
     }
 
-    const media = await navigator.mediaDevices.getUserMedia({
-      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-      video: false,
-    });
+    let media: MediaStream;
+    try {
+      media = await navigator.mediaDevices.getUserMedia({
+        audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+        video: false,
+      });
+    } catch {
+      // mic blocked / not allowed → say so instead of pretending to listen
+      if (!released()) {
+        await hardReset();
+        try {
+          setNotice(waiterLang() === "en"
+            ? "I can't hear you — please allow microphone access and try again."
+            : "মাইক্রোফোন চালু করা যাচ্ছে না — মাইকের অনুমতি দিয়ে আবার চেষ্টা করুন।");
+        } catch {}
+      }
+      return;
+    }
+    if (released()) {
+      // released while the browser was opening the mic → don't leave it capturing
+      try { media.getTracks().forEach((t) => t.stop()); } catch {}
+      return;
+    }
     mediaRef.current = media;
 
     const src = ac.createMediaStreamSource(media);
@@ -491,27 +582,49 @@ export default function MicInputBar({
     };
 
     src.connect(node);
-  }, [disabled, isRecording, openWebSocket, finishTtsReveal, startTtsReveal, setAi]);
+  }, [disabled, isRecording, openWebSocket, finishTtsReveal, startTtsReveal, setAi, hardReset]);
 
   // Stop capture → show Thinking immediately, keep WS to receive reply
   const stop = useCallback(async () => {
-    if (!isRecording) return;
+    if (!recRef.current) return;
+    recRef.current = false;
+    if (maxRecRef.current) { window.clearTimeout(maxRecRef.current); maxRecRef.current = null; }
     setIsRecording(false);
+    captureGenRef.current++;
 
     try { startTtsReveal(""); finishTtsReveal(); } catch {}
     setThinking(true);
     setAi("Thinking…");
+    awaitingRef.current = true;
 
     // tell server no more audio, but keep WS open for ai_reply
+    const ws = wsRef.current;
     try {
-      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-        wsRef.current.send(JSON.stringify({ t: "end" }));
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ t: "end" }));
+      } else if (ws && ws.readyState === WebSocket.CONNECTING) {
+        // a quick tap: released before the socket opened → send "end" right after the hello
+        ws.addEventListener("open", () => {
+          try { ws.send(JSON.stringify({ t: "end" })); } catch {}
+        }, { once: true });
+      } else {
+        // no socket to answer us → don't show "Thinking…" at all
+        window.setTimeout(() => giveUpWaiting(), 0);
       }
     } catch {}
+    // safety net: no reply in time (or nothing was heard) → don't hang on "Thinking…"
+    if (watchdogRef.current) window.clearTimeout(watchdogRef.current);
+    watchdogRef.current = window.setTimeout(() => {
+      try {
+        if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) ws.close();
+      } catch {}
+      giveUpWaiting();
+    }, REPLY_TIMEOUT_MS);
 
     await stopCaptureOnly();
     try { getTTS().unduck(); } catch {}
-  }, [isRecording, setAi, startTtsReveal, finishTtsReveal, stopCaptureOnly]);
+  }, [isRecording, setAi, startTtsReveal, finishTtsReveal, stopCaptureOnly, giveUpWaiting]);
+  stopRef.current = stop;
 
   // Unmount → full reset
   useEffect(() => {
@@ -524,6 +637,8 @@ export default function MicInputBar({
   const onPointerDown = useCallback(async (e: React.PointerEvent) => {
     if (disabled) return;
     e.preventDefault();
+    // keep this press's pointer on the button (a finger drifting off must still "release" here)
+    try { (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId); } catch {}
     pointerActiveRef.current = true;
     isHoldModeRef.current = false;
     lastDownAtRef.current = Date.now();
@@ -538,7 +653,7 @@ export default function MicInputBar({
     holdTimerRef.current = window.setTimeout(async () => {
       if (!pointerActiveRef.current) return;
       isHoldModeRef.current = true;
-      if (!isRecording) await start();
+      if (!recRef.current) await start();
     }, HOLD_MS);
   }, [disabled, isRecording, start, startTtsReveal, finishTtsReveal, setAi]);
 
@@ -558,7 +673,7 @@ export default function MicInputBar({
 
     const pressedFor = Date.now() - lastDownAtRef.current;
     if (pressedFor < HOLD_MS) {
-      if (isRecording) {
+      if (recRef.current) {
         await stop();
       } else {
         await start();
@@ -578,6 +693,21 @@ export default function MicInputBar({
       e.preventDefault();
       await endPressCycle();
     }
+  }, [disabled, endPressCycle]);
+
+  // iOS cancels the touch (mic permission sheet, audio-session switch, a tiny scroll) instead of lifting it:
+  // a hold ends like a release; a tap that got cancelled simply didn't happen
+  const onPointerCancel = useCallback(async () => {
+    if (disabled || !pointerActiveRef.current) return;
+    if (isHoldModeRef.current) {
+      await endPressCycle();
+      return;
+    }
+    if (holdTimerRef.current) {
+      window.clearTimeout(holdTimerRef.current);
+      holdTimerRef.current = null;
+    }
+    pointerActiveRef.current = false;
   }, [disabled, endPressCycle]);
 
   // Display logic
@@ -603,19 +733,22 @@ export default function MicInputBar({
 
   return (
     <div ref={rootRef} className={["relative w-full", className].join(" ")}>
-      {/* Soft floor gradient */}
-      <div
-        className="fixed left-0 right-0 bottom-0 h-40 bg-gradient-to-t from-[#F6F5F8]/100 from-[60%] to-[#F6F5F8]/0 to-[100%]"
-        aria-hidden="true"
-      />
+      {/* Soft floor gradient (never over buttons above the bar in a sheet) */}
+      {floorGradient && (
+        <div
+          className="pointer-events-none fixed left-0 right-0 bottom-0 h-40 bg-gradient-to-t from-[#F6F5F8]/100 from-[60%] to-[#F6F5F8]/0 to-[100%]"
+          aria-hidden="true"
+        />
+      )}
 
       <div className="relative">
         {/* EXPANDABLE AI RESPONSE PANEL (slides above the bar) */}
         <div
           className={[
-            "absolute bottom-full left-0 right-0 mb-3 transition-all duration-500 ease-out",
+            "absolute bottom-full left-0 right-0 z-[70] mb-3 transition-all duration-500 ease-out",
             showExpanded ? "opacity-100 translate-y-0 scale-100 pointer-events-auto" : "opacity-0 translate-y-4 scale-95 pointer-events-none",
           ].join(" ")}
+          style={panelLift ? { marginBottom: 12 + panelLift } : undefined}
         >
           <div className="relative">
             <div className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-violet-50 via-white to-indigo-50/50 border border-violet-200/60 shadow-xl shadow-violet-500/10 backdrop-blur-sm">
@@ -767,6 +900,8 @@ export default function MicInputBar({
               onPointerDown={onPointerDown}
               onPointerUp={onPointerUp}
               onPointerLeave={onPointerLeave}
+              onPointerCancel={onPointerCancel}
+              onContextMenu={(e) => e.preventDefault()}
               className={[
                 "relative h-12 w-12 shrink-0 rounded-full transition-all duration-200 flex items-center justify-center",
                 isRecording
@@ -774,7 +909,7 @@ export default function MicInputBar({
                   : "bg-gradient-to-br from-[#FF8EA3] via-[#FA2851] to-[#D91440] text-white hover:scale-105 active:scale-95 shadow-lg",
                 disabled ? "opacity-50 cursor-not-allowed" : "cursor-pointer",
               ].join(" ")}
-              style={{ touchAction: "manipulation" }}
+              style={{ touchAction: "none", WebkitUserSelect: "none", WebkitTouchCallout: "none" } as React.CSSProperties}
               aria-label={isRecording ? "Stop recording" : "Start recording"}
               title="Tap to toggle • Hold to talk"
             >

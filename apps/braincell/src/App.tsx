@@ -8,6 +8,7 @@ import { PermissionsProvider } from './context/PermissionsContext';
 import { ScopeProvider } from './context/ScopeContext';
 import LoadingScreen from './components/LoadingScreen';
 import { ProgressProvider } from './context/ProgressContext';
+import { OrdersLiveProvider } from './context/OrdersLiveContext';
 import { Toaster } from './components/Toaster';
 
 // IMPORTANT: import layouts synchronously to avoid first-visit layout jump
@@ -19,6 +20,8 @@ const Dashboard = lazy(() => import('./pages/Dashboard'));
 const Orders = lazy(() => import('./pages/Orders'));
 const Categories = lazy(() => import('./pages/Categories'));
 const MenuItemsPage = lazy(() => import('./pages/MenuItems'));
+const MenuImportPage = lazy(() => import('./pages/MenuImport'));
+const MenuLayoutPage = lazy(() => import('./pages/MenuLayout'));
 const LocationsPage = lazy(() => import('./pages/Locations'));
 const Login = lazy(() => import('./pages/Login'));
 const Signup = lazy(() => import('./pages/Signup'));
@@ -46,6 +49,7 @@ const SettingsPrivacy = lazy(() => import('./pages/settings/Privacy'));
 const SettingsAudit = lazy(() => import('./pages/settings/Audit'));
 const SettingsAccess = lazy(() => import('./pages/settings/RestaurantAccess')); // NEW
 const SettingsPreferences = lazy(() => import('./pages/settings/Preferences'));
+const SettingsHoursAvailability = lazy(() => import('./pages/settings/HoursAvailability'));
 
 // Plan & Billing
 const SettingsPlan = lazy(() => import('./pages/settings/Plan'));
@@ -154,6 +158,7 @@ function App() {
       <PermissionsProvider>
         <ScopeProvider>
           <ProgressProvider>
+          <OrdersLiveProvider>
             {/* No global Suspense around all Routes — avoids layout disappearing on first visit */}
             <Routes>
               {/* Dashboard shell with index route */}
@@ -196,6 +201,30 @@ function App() {
                   element={
                     <Suspense fallback={null}>
                       <MenuItemsPage />
+                    </Suspense>
+                  }
+                />
+                <Route
+                  path="/menu-layout"
+                  element={
+                    <Suspense fallback={null}>
+                      <MenuLayoutPage />
+                    </Suspense>
+                  }
+                />
+                <Route
+                  path="/menu-import"
+                  element={
+                    <Suspense fallback={null}>
+                      <MenuImportPage />
+                    </Suspense>
+                  }
+                />
+                <Route
+                  path="/menu-import/:id"
+                  element={
+                    <Suspense fallback={null}>
+                      <MenuImportPage />
                     </Suspense>
                   }
                 />
@@ -290,6 +319,15 @@ function App() {
                 />
 
                 {/* Existing settings */}
+                <Route
+                  path="availability"
+                  element={
+                    <Suspense fallback={null}>
+                      <SettingsHoursAvailability />
+                    </Suspense>
+                  }
+                />
+                <Route path="hours" element={<Navigate to="/settings/availability" replace />} />
                 <Route
                   path="operations"
                   element={
@@ -514,6 +552,7 @@ function App() {
               />
             </Routes>
             <Toaster />
+          </OrdersLiveProvider>
           </ProgressProvider>
         </ScopeProvider>
       </PermissionsProvider>

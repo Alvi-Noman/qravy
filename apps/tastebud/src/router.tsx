@@ -1,12 +1,15 @@
 // apps/tastebud/src/router.tsx
 import { lazy, Suspense } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import UndoToast from './components/ai-waiter/UndoToast';
 import { CartProvider } from './context/CartContext';
 
 const Home = lazy(() => import('./pages/Directory'));
 const Restaurant = lazy(() => import('./pages/DigitalMenu'));
 const AIWaiter = lazy(() => import('./pages/AIWaiterHome'));
 const ConfirmationPage = lazy(() => import('./pages/ConfirmationPage'));
+const CheckoutPage = lazy(() => import('./pages/CheckoutPage'));
+const OrderStatusPage = lazy(() => import('./pages/OrderStatusPage'));
 
 const hasTenantFromRuntime =
   typeof window !== 'undefined' &&
@@ -17,6 +20,8 @@ export default function AppRouter() {
   return (
     <BrowserRouter>
       <CartProvider>
+        {/* after every tray change (voice or tap): what changed + Undo */}
+        <UndoToast />
         <Suspense fallback={<div className="p-6 text-sm text-gray-500">Loading…</div>}>
           <Routes>
             {/* ================== Dev-style routes (path tenant) ==================
@@ -41,6 +46,12 @@ export default function AppRouter() {
               path="/t/:subdomain/:branchSlug/confirmation"
               element={<ConfirmationPage />}
             />
+
+            {/* Checkout (read-back + confirm) and the live order status */}
+            <Route path="/t/:subdomain/checkout" element={<CheckoutPage />} />
+            <Route path="/t/:subdomain/:branchSlug/checkout" element={<CheckoutPage />} />
+            <Route path="/t/:subdomain/order/:token" element={<OrderStatusPage />} />
+            <Route path="/t/:subdomain/:branchSlug/order/:token" element={<OrderStatusPage />} />
 
             {/* Optional helpers / legacy redirects */}
             <Route path="/t/:subdomain/online" element={<Navigate replace to="menu" />} />
@@ -70,6 +81,10 @@ export default function AppRouter() {
             {/* Confirmation (prod-style) */}
             <Route path="/confirmation" element={<ConfirmationPage />} />
             <Route path="/:branch/confirmation" element={<ConfirmationPage />} />
+            <Route path="/checkout" element={<CheckoutPage />} />
+            <Route path="/:branch/checkout" element={<CheckoutPage />} />
+            <Route path="/order/:token" element={<OrderStatusPage />} />
+            <Route path="/:branch/order/:token" element={<OrderStatusPage />} />
 
             {/* Optional helpers / legacy redirects */}
             <Route path="/dine-in" element={<Navigate replace to="/menu/dine-in" />} />

@@ -20,6 +20,7 @@ const BRANCH_BASE_CAPS: Capability[] = [
   // Orders / service requests basic ops
   'orders:read',
   'orders:update',
+  'orders:create',
   'serviceRequests:read',
   'serviceRequests:update',
 
@@ -53,6 +54,7 @@ const ROLE_CAPS: Record<Role, Capability[]> = {
     'reports:view',
     'orders:read',
     'orders:update',
+    'orders:create',
     'serviceRequests:read',
     'serviceRequests:update',
     'menuItems:read',
