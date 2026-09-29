@@ -6,7 +6,10 @@ type QueueItem = { id: string; text: string; resolve: () => void; reject: (e: an
 export type TtsEvents = {
   onStart?: (originalText: string) => void;
   onWord?: (word: string, offsetMs?: number) => void;   // ⬅️ now includes audio offset
-  onEnd?: () => void;                                    // after audio completes or is stopped
+  onEnd?: () => void;                                    // synthesis done (or stopped) — the audio may STILL be playing
+  /** The guest has finished HEARING it: played to the end, stopped, or failed. (Azure's "synthesis completed" comes
+   *  seconds earlier, while the speaker is still playing — opening the mic then cut the waiter off.) */
+  onPlaybackEnd?: () => void;
 };
 
 export type TTSPublicAPI = {
@@ -266,6 +269,7 @@ class TTSManager implements TTSPublicAPI {
 
     // Notify listeners that playback ended
     this._emitEnd();
+    this._emitPlaybackEnd();
   }
 
   pause() {
@@ -327,6 +331,17 @@ class TTSManager implements TTSPublicAPI {
   }
   private _emitEnd() {
     this.listeners.forEach(h => { h.onEnd?.(); });
+  }
+
+  // playback end: once per utterance, from the speaker's own "audio ended" — or a safety timer from the audio's
+  // length, or stop / failure (so a listener waiting for it is never stuck)
+  private playbackPending = false;
+  private playbackTimer: ReturnType<typeof setTimeout> | null = null;
+  private _emitPlaybackEnd() {
+    if (!this.playbackPending) return;
+    this.playbackPending = false;
+    if (this.playbackTimer) { clearTimeout(this.playbackTimer); this.playbackTimer = null; }
+    this.listeners.forEach(h => { h.onPlaybackEnd?.(); });
   }
 
   private async _ensureToken() {
@@ -404,6 +419,10 @@ class TTSManager implements TTSPublicAPI {
 
     // Speaker we can volume-control (volume is applied when the pipeline goes live)
     const speaker = new sdk.SpeakerAudioDestination();
+    // the moment the guest has HEARD it all (not when synthesis finished — that's seconds earlier)
+    (speaker as any).onAudioEnd = () => {
+      if (this.speaker === speaker) this._emitPlaybackEnd();
+    };
     const audioConfig = sdk.AudioConfig.fromSpeakerOutput(speaker);
 
     const synthesizer = new sdk.SpeechSynthesizer(speechConfig, audioConfig);
@@ -505,6 +524,7 @@ class TTSManager implements TTSPublicAPI {
         console.error("[TTS] could not speak this reply", e);
         // never leave the screen "speaking" forever: the reveal finishes and the text shows in full
         this._emitEnd();
+        this._emitPlaybackEnd();
         next.reject(e);
       } finally {
         this.playing = false;
@@ -537,11 +557,21 @@ class TTSManager implements TTSPublicAPI {
           // Track text for SynthesisStarted callback
           this.currentUtteranceText = input;
 
+          // a new utterance is playing — its playback end is still to come
+          this.playbackPending = true;
+          if (this.playbackTimer) { clearTimeout(this.playbackTimer); this.playbackTimer = null; }
+          const startedAt = Date.now();
+
           // 🔔 announce start for reveal
           this._emitStart(input);
 
           const onSuccess = (result: sdk.SpeechSynthesisResult) => {
             if (result.reason === sdk.ResultReason.SynthesizingAudioCompleted) {
+              // safety net: if the speaker never reports "ended", the audio's own length (100-ns ticks) + a margin
+              const durMs = typeof (result as any).audioDuration === "number" ? (result as any).audioDuration / 10000 : 0;
+              const left = Math.max(1500, startedAt + durMs + 1500 - Date.now());
+              if (this.playbackTimer) clearTimeout(this.playbackTimer);
+              this.playbackTimer = setTimeout(() => this._emitPlaybackEnd(), left);
               return resolve();
             }
 

@@ -25,6 +25,8 @@ from session_ctx import (
 # ✅ In-process brain (OpenAI) call
 from brain import generate_reply
 import checkout
+import endpointer
+import voiceprint
 from bn_translit import to_bangla_script
 
 # nothing clear was heard → ask politely, never guess
@@ -415,6 +417,7 @@ OPENAI_STT_TIMEOUT_S = float(os.environ.get("OPENAI_STT_TIMEOUT_MS", "8000")) / 
 _STT_PROMPTS: Dict[Tuple[str, str], Tuple[float, str]] = {}
 _STT_PROMPT_TTL_S = 600
 _STT_NAMES: Dict[Tuple[str, str], List[Tuple[str, str]]] = {}
+_VOICE_LEVEL: Dict[str, float] = {}  # session → the guest's speaking level (dBFS), for hands-free listen windows
 
 
 def stt_turn_hint(tenant: Optional[str], session: Optional[str], lang: Optional[str], max_chars: int = 160) -> str:
@@ -1643,6 +1646,10 @@ async def handle_conn(ws: WebSocketServerProtocol):
     closing = False
     final_sent = False
     typed_text: Optional[str] = None  # a tapped answer ({"t": "say"}) instead of speech
+    # hands-free: the server hears when the guest finished (or that nobody spoke) — see endpointer.py
+    ep: Optional[endpointer.Endpointer] = None
+    cancelled = False  # nobody spoke in a listen window / the app cancelled → no turn, no reply
+    said_hello = False  # a connection that never introduced itself gets no "please repeat" (nobody is there)
 
     def cap_buffer():
         MAX_ACCUM_BYTES = 60 * rate * 2
@@ -1746,6 +1753,50 @@ async def handle_conn(ws: WebSocketServerProtocol):
                     continue
                 all_pcm += msg
                 cap_buffer()
+                if ep is not None:
+                    try:
+                        heard = ep.push(bytes(msg))
+                    except Exception as e:
+                        print("[ai-waiter-service] endpointer failed → tap to send:", e)
+                        ep, heard = None, None
+                    if heard == "start":
+                        try:
+                            await ws.send(json.dumps({"t": "speech_start"}))
+                        except Exception:
+                            pass
+                    elif heard == "end" and ep.listen_window and voiceprint.available():
+                        # the mic reopened by itself: only THIS guest's answer counts — not the next table's
+                        same, score = await asyncio.get_event_loop().run_in_executor(
+                            None, voiceprint.same_guest, session_id, ep.speech_audio()
+                        )
+                        if same is False:
+                            print(f"[ai-waiter-service] 🗣️ listen window: a different voice (match {score:.2f}) → ignored")
+                            try:
+                                await ws.send(json.dumps({"t": "no_speech"}))
+                            except Exception:
+                                pass
+                            cancelled = True
+                            break
+                        if score is not None:
+                            print(f"[ai-waiter-service] 🗣️ listen window: the guest's voice (match {score:.2f})")
+                    if heard == "end":
+                        # they stopped talking → answer now (the app shows "Thinking…", no tap needed)
+                        print("[ai-waiter-service] 🎙️ end of speech (auto)")
+                        try:
+                            await ws.send(json.dumps({"t": "auto_end"}))
+                        except Exception:
+                            pass
+                        closing = True
+                        break
+                    elif heard == "silence":
+                        # the listen window after a question passed and nobody spoke — close quietly
+                        print("[ai-waiter-service] 🤫 nobody spoke in the listen window → closed, no reply")
+                        try:
+                            await ws.send(json.dumps({"t": "no_speech"}))
+                        except Exception:
+                            pass
+                        cancelled = True
+                        break
 
                 out = seg.push(msg)
                 if out:
@@ -1770,6 +1821,7 @@ async def handle_conn(ws: WebSocketServerProtocol):
 
             if t in ("hello", "start"):
                 msg_type = t  # for logging
+                said_hello = True
 
                 session_id = data.get("sessionId") or session_id
                 user_id = data.get("userId") or user_id
@@ -1812,6 +1864,16 @@ async def handle_conn(ws: WebSocketServerProtocol):
                 # the dishes on the guest's screen right now (suggestions pop-up / the tray's picks)
                 if isinstance(data.get("shown"), list):
                     shown_hint = [str(x) for x in data["shown"] if isinstance(x, (str, int))][:12]
+
+                # hands-free: end the turn when the guest stops talking; `listenMs` = a listen window after a
+                # question (nobody speaks → closed quietly)
+                if data.get("autoEnd") and ep is None and endpointer.available():
+                    lm = data.get("listenMs")
+                    ep = endpointer.Endpointer(
+                        rate=rate, listen_ms=int(lm) if isinstance(lm, (int, float)) and lm > 0 else None,
+                        # this guest's voice level from their last turn — the next table's talk is far quieter
+                        ref_db=_VOICE_LEVEL.get(sid_now or ""),
+                    )
 
                 # ⭐ user timezone & geo from frontend
                 tz = data.get("tz")
@@ -1860,6 +1922,11 @@ async def handle_conn(ws: WebSocketServerProtocol):
 
             # the guest TAPPED an answer ("which one?" → "2টা Beef Sizzling দিন"): the same turn as speech,
             # minus the speech recognition — the words are exactly the menu's
+            # the app stopped listening without a turn (e.g. the guest tapped away) — nothing to answer
+            if t == "cancel":
+                cancelled = True
+                break
+
             if t == "say":
                 said = re.sub(r"\s+", " ", str(data.get("text") or "")).strip()[:300]
                 if said:
@@ -1875,8 +1942,26 @@ async def handle_conn(ws: WebSocketServerProtocol):
         while not work_q.empty() and (time.monotonic() - t0) < 0.3:
             await asyncio.sleep(0.01)
 
-        # Finalize
-        if not final_sent:
+        # learn this guest's VOICE from a turn they started themselves (a tap) — never from a listen window, so a
+        # stray voice can't teach us the wrong person (voiceprint.py)
+        if ep is not None and session_id and ep.started and not ep.listen_window and not cancelled:
+            try:
+                await asyncio.get_event_loop().run_in_executor(None, voiceprint.learn, session_id, ep.speech_audio())
+            except Exception as e:
+                print("[ai-waiter-service] voiceprint learn failed:", e)
+
+        # remember how loud this guest speaks (same phone, same distance) — the bar for their next listen window
+        if ep is not None and session_id and ep.voice_level() is not None:
+            lvl = ep.voice_level()
+            old = _VOICE_LEVEL.get(session_id)
+            _VOICE_LEVEL[session_id] = lvl if old is None else (old + lvl) / 2
+            if len(_VOICE_LEVEL) > 5000:
+                _VOICE_LEVEL.pop(next(iter(_VOICE_LEVEL)))
+
+        # Finalize (not when nobody spoke in a listen window / the app cancelled — no turn, no reply)
+        if cancelled:
+            print("[ai-waiter-service] no turn (cancelled / nobody spoke)")
+        if not final_sent and not cancelled:
             last = seg.flush()
             if last:
                 all_pcm += last
@@ -2023,9 +2108,13 @@ async def handle_conn(ws: WebSocketServerProtocol):
             # Answer anyway: a silent server left the guest staring at "Thinking…".
             if not selected_text and closing and len(final_bytes) < 16000 and stt_engine not in ("no-speech", "unclear"):
                 stt_engine = "no-audio"
+                if not said_hello:
+                    # it never even said hello (a socket that died opening) — nobody to answer
+                    print("[ai-waiter-service] empty connection without a hello → no reply")
+                    cancelled = True
 
             # nothing clear was said → a polite "please say it again" (no guessing, no model call)
-            if not selected_text and stt_engine in ("no-speech", "unclear", "no-audio") and not ws.closed:
+            if not selected_text and stt_engine in ("no-speech", "unclear", "no-audio") and not ws.closed and not cancelled:
                 sorry_lang = "en" if session_lang == "en" else "bn"
                 sorry = SORRY_REPEAT[sorry_lang]
                 try:

@@ -42,6 +42,8 @@ type Props = {
   /** picks the waiter pointed at when the guest asked about them */
   highlightIds?: string[];
   onIntent?: (intent?: WaiterIntent, meta?: AiReplyMeta, replyText?: string) => void;
+  /** its own mic bar — off where a hands-free voice session runs the conversation (the waiter home) */
+  voiceBar?: boolean;
 };
 
 
@@ -64,6 +66,7 @@ export default function TrayModal({
   askTable = false,
   channel: channelProp,
   onIntent,
+  voiceBar = true,
 }: Props) {
   const { items, subtotal, removeLine, addItem, setLineQty, replaceLine, lastChange, warnings, clear } = useCart();
 
@@ -518,7 +521,7 @@ export default function TrayModal({
             <span>{placing ? tr(lang, 'অর্ডার দেওয়া হচ্ছে…', 'Placing…') : tr(lang, 'অর্ডার দিন', 'Place order')}</span>
             <span>{formatBDT(subtotal)}</span>
           </button>
-          <MicInputBar
+          {voiceBar && <MicInputBar
             tenant={tenant}
             branch={branch}
             channel={channel}
@@ -537,7 +540,7 @@ export default function TrayModal({
 
               onIntent?.(intent, m, replyText);
             }}
-          />
+          />}
         </div>
       </div>
 

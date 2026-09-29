@@ -40,6 +40,12 @@ RUN python -m pip install --upgrade pip && \
 # Time zones for opening/serving hours (zoneinfo) — separate layer keeps the cache above
 RUN pip install --no-cache-dir tzdata==2025.2
 
+# Hands-free voice matching (voiceprint.py): sherpa-onnx + the 3D-Speaker ERes2Net speaker model (Apache-2.0,
+# ~39 MB), fetched at build time. Without it the service still runs — listen windows fall back to loudness checks.
+RUN pip install --no-cache-dir --no-deps sherpa-onnx==1.13.8 sherpa-onnx-core==1.13.8 && mkdir -p /app/models && \
+    python -c "import urllib.request; urllib.request.urlretrieve('https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx', '/app/models/speaker.onnx')" \
+    || echo "speaker model not downloaded — voice matching off"
+
 COPY . .
 
 CMD ["python", "server.py"]

@@ -8,11 +8,16 @@ import { useCart } from "../../context/CartContext";
 import { getTable } from "../../utils/table";
 import { waiterLang } from "../../utils/ui-lang";
 import { claimReveal, ownsReveal } from "../../state/reveal-owner";
+import {
+  FOLLOW_UP_LISTEN_MS, PENDING_AUDIO_MAX, chooseOptionsOf, handsFreeOn, wantsFollowUp,
+} from "../../utils/handsfree";
 
 type Lang = "bn" | "en" | "auto";
 
 /** Safety net: how long to wait for the waiter's reply after the guest stops talking. */
 const REPLY_TIMEOUT_MS = 20_000;
+// Hands-free conversation (on unless the guest turned it off): the server hears when they've finished — no tap
+// to send — and the mic reopens briefly after a question. Tap / hold still work exactly as before.
 
 type Props = {
   className?: string;
@@ -63,6 +68,8 @@ export default function MicInputBar({
   const recRef = useRef(false);
   const maxRecRef = useRef<number | null>(null); // safety cap on one recording
   const stopRef = useRef<(() => Promise<void>) | null>(null);
+  const serverEndedRef = useRef<(() => void) | null>(null); // hands-free "auto_end" from the server
+  const quietCloseRef = useRef<(() => void) | null>(null);  // hands-free "no_speech" from the server
   const [thinking, setThinking] = useState(false);
   const [partial, setPartial] = useState("");
 
@@ -158,6 +165,19 @@ export default function MicInputBar({
         }
       },
 
+      // hands-free: the guest has HEARD the waiter's question (the audio really ended — not "synthesis done",
+      // seconds earlier) → listen for the answer. Only the bar that got that reply does this.
+      onPlaybackEnd: () => {
+        if (followUpRef.current) {
+          const askedAt = followUpAtRef.current;
+          followUpRef.current = false;
+          window.setTimeout(() => {
+            if (recRef.current || document.visibilityState !== "visible" || Date.now() - askedAt > 60_000) return;
+            void startRef.current?.({ listenMs: FOLLOW_UP_LISTEN_MS });
+          }, 350); // let the speaker's last syllable die away first
+        }
+      },
+
       onEnd: () => {
         if (!inSpeechRef.current || !ownsLive()) return;
         const myGen = speakGenRef.current;
@@ -225,11 +245,20 @@ export default function MicInputBar({
   // audio captured before the socket is open (the first syllable!) is kept and sent right after the hello —
   // it used to be dropped, so "দুইটা দেন" arrived as "টা দেন"
   const pendingAudioRef = useRef<ArrayBuffer[]>([]);
-  const PENDING_MAX = 250; // ≈5 s of 20 ms frames
+
   // the waiter's "which one?" answers as buttons; a tap sends the answer as the guest's words
   type Choice = { label: string; say: string; price?: number };
   const [choices, setChoices] = useState<Choice[]>([]);
+  // hands-free: what this recording asks of the server (auto end / a listen window), and a pending follow-up
+  const helloExtraRef = useRef<{ autoEnd: boolean; listenMs?: number }>({ autoEnd: false });
+  const followUpRef = useRef(false);
+  const followUpAtRef = useRef(0);
+  const followUpsRef = useRef(0); // listen windows opened in a row without a tap
+  const startRef = useRef<((opts?: { listenMs?: number }) => Promise<void>) | null>(null);
+  const [listening, setListening] = useState(false); // a follow-up listen window is open ("শুনছি…")
+  const workletLoadedRef = useRef<AudioContext | null>(null);
   const acRef = useRef<AudioContext | null>(null);
+  const persistAcRef = useRef<AudioContext | null>(null); // kept (suspended) between turns — see start()
   const nodeRef = useRef<AudioWorkletNode | null>(null);
   const srcRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const mediaRef = useRef<MediaStream | null>(null);
@@ -249,7 +278,9 @@ export default function MicInputBar({
         try { mediaRef.current.getTracks().forEach((t) => t.stop()); } catch {}
       }
       if (acRef.current) {
-        try { await acRef.current.close(); } catch {}
+        // suspended, not closed: it was started by a tap, so it may be resumed later WITHOUT one (iOS) — that is
+        // what lets the mic reopen by itself after the waiter's question
+        try { await acRef.current.suspend(); } catch {}
       }
     } catch {}
     nodeRef.current = null;
@@ -295,6 +326,7 @@ export default function MicInputBar({
     recRef.current = false;
     setIsRecording(false);
     setThinking(false);
+    setListening(false);
     setPartial("");
   }, [stopCaptureOnly]);
 
@@ -370,6 +402,9 @@ export default function MicInputBar({
         table: getTable(tenant) ?? undefined,
         cart: cartRef.current,
         shown: shownRef.current ?? [],
+        // hands-free: the server ends the turn when the guest stops talking (and closes a listen window quietly)
+        autoEnd: helloExtraRef.current.autoEnd,
+        listenMs: helloExtraRef.current.listenMs,
       };
       try { ws.send(JSON.stringify(startMsg)); } catch {}
       // …then the audio that was recorded while the socket was still connecting
@@ -402,6 +437,21 @@ export default function MicInputBar({
           return;
         }
 
+        // hands-free: the server heard the guest stop talking → it's answering (no tap needed)
+        if (data.t === "auto_end") {
+          serverEndedRef.current?.();
+          return;
+        }
+        // hands-free: a listen window passed and nobody spoke → close quietly (no reply, no "sorry")
+        if (data.t === "no_speech") {
+          quietCloseRef.current?.();
+          return;
+        }
+        if (data.t === "speech_start") {
+          setListening(false); // they're talking now — the bar shows the recording waves
+          return;
+        }
+
         if (data.t === "ai_reply_pending") {
           setThinking(true);
           setAi("Thinking…");
@@ -425,13 +475,12 @@ export default function MicInputBar({
 
           console.log("[AI RAW][MicInputBar]", { replyText, voiceText, meta });
 
-          const opts = Array.isArray(meta?.decision?.chooseOptions) ? meta.decision.chooseOptions : [];
-          setChoices(
-            opts
-              .filter((o: any) => o && typeof o.say === "string" && o.say.trim() && typeof o.label === "string")
-              .slice(0, 8)
-              .map((o: any) => ({ label: String(o.label), say: String(o.say), price: typeof o.price === "number" ? o.price : undefined })),
-          );
+          setChoices(chooseOptionsOf(meta));
+
+          // hands-free: the waiter asked something → when it finishes speaking, listen for the answer
+          // (never after "didn't catch that", at most MAX_FOLLOW_UPS in a row without a tap — see utils/handsfree)
+          followUpRef.current = wantsFollowUp(replyText, meta, followUpsRef.current);
+          followUpAtRef.current = Date.now();
 
           onAiReply?.({ replyText, meta });
 
@@ -520,9 +569,19 @@ export default function MicInputBar({
     wsPath,
   ]);
 
-  // Start capture
-  const start = useCallback(async () => {
+  // Start capture. `listenMs`: a hands-free listen window after the waiter's question (not a tap) — nobody speaks
+  // within it → closed quietly; a failure to open the mic then is silent (the guest didn't ask for it).
+  const start = useCallback(async (opts?: { listenMs?: number }) => {
     if (disabled || recRef.current) return;
+    const followUp = !!opts?.listenMs;
+    if (!followUp) {
+      followUpRef.current = false; // the guest tapped — no pending follow-up any more
+      followUpsRef.current = 0;
+    } else {
+      followUpsRef.current += 1;
+    }
+    helloExtraRef.current = { autoEnd: handsFreeOn(), listenMs: opts?.listenMs };
+    setListening(followUp);
     recRef.current = true;
     setIsRecording(true);
     // never record forever (a lost "release" on iOS left the mic open for minutes)
@@ -542,15 +601,22 @@ export default function MicInputBar({
 
     openWebSocket();
 
+    // one audio context for the whole visit (created on the first tap, suspended between turns): iOS only lets
+    // a context started by a tap be resumed later without one
     const AC = (window as any).AudioContext || (window as any).webkitAudioContext;
-    const ac = new AC({ sampleRate: 48000 });
+    const kept = persistAcRef.current;
+    const ac: AudioContext = kept && kept.state !== "closed" ? kept : new AC({ sampleRate: 48000 });
+    persistAcRef.current = ac;
     acRef.current = ac;
 
-    try {
-      await ac.audioWorklet.addModule("/worklets/audio-capture.worklet.js");
-    } catch {
-      if (!released()) await hardReset(); // the worklet failed — don't sit in "recording"
-      return;
+    if (workletLoadedRef.current !== ac) {
+      try {
+        await ac.audioWorklet.addModule("/worklets/audio-capture.worklet.js");
+        workletLoadedRef.current = ac;
+      } catch {
+        if (!released()) await hardReset(); // the worklet failed — don't sit in "recording"
+        return;
+      }
     }
     if (released()) return;
 
@@ -568,9 +634,11 @@ export default function MicInputBar({
         video: false,
       });
     } catch {
-      // mic blocked / not allowed → say so instead of pretending to listen
+      // mic blocked / not allowed → say so instead of pretending to listen (a follow-up the guest didn't ask for
+      // just doesn't happen)
       if (!released()) {
         await hardReset();
+        if (followUp) return;
         try {
           setNotice(waiterLang() === "en"
             ? "I can't hear you — please allow microphone access and try again."
@@ -604,20 +672,23 @@ export default function MicInputBar({
       const ws = wsRef.current;
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(buf);
-      } else if (ws && ws.readyState === WebSocket.CONNECTING && pendingAudioRef.current.length < PENDING_MAX) {
+      } else if (ws && ws.readyState === WebSocket.CONNECTING && pendingAudioRef.current.length < PENDING_AUDIO_MAX) {
         pendingAudioRef.current.push(buf); // sent right after the hello (see onopen)
       }
     };
 
     src.connect(node);
   }, [disabled, isRecording, openWebSocket, finishTtsReveal, startTtsReveal, setAi, hardReset]);
+  startRef.current = start;
 
-  // Stop capture → show Thinking immediately, keep WS to receive reply
-  const stop = useCallback(async () => {
+  // Stop capture → show Thinking immediately, keep WS to receive reply.
+  // `serverEnded`: the server already heard the guest finish (hands-free) — it's answering; don't send "end".
+  const stop = useCallback(async (serverEnded = false) => {
     if (!recRef.current) return;
     recRef.current = false;
     if (maxRecRef.current) { window.clearTimeout(maxRecRef.current); maxRecRef.current = null; }
     setIsRecording(false);
+    setListening(false);
     captureGenRef.current++;
 
     try { startTtsReveal(""); finishTtsReveal(); } catch {}
@@ -628,7 +699,9 @@ export default function MicInputBar({
     // tell server no more audio, but keep WS open for ai_reply
     const ws = wsRef.current;
     try {
-      if (ws && ws.readyState === WebSocket.OPEN) {
+      if (serverEnded) {
+        // the server is already finishing this turn
+      } else if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ t: "end" }));
       } else if (ws && ws.readyState === WebSocket.CONNECTING) {
         // a quick tap: released before the socket opened → send "end" right after the hello
@@ -653,6 +726,29 @@ export default function MicInputBar({
     try { getTTS().unduck(); } catch {}
   }, [isRecording, setAi, startTtsReveal, finishTtsReveal, stopCaptureOnly, giveUpWaiting]);
   stopRef.current = stop;
+  serverEndedRef.current = () => { void stop(true); };
+
+  // hands-free: nobody answered in the listen window → close quietly, as if the mic had never opened
+  const quietClose = useCallback(async () => {
+    if (!recRef.current) return;
+    recRef.current = false;
+    if (maxRecRef.current) { window.clearTimeout(maxRecRef.current); maxRecRef.current = null; }
+    setIsRecording(false);
+    setListening(false);
+    captureGenRef.current++;
+    const ws = wsRef.current;
+    try {
+      if (ws) {
+        ws.onopen = ws.onmessage = ws.onerror = ws.onclose = null;
+        if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) ws.close();
+      }
+    } catch {}
+    if (wsRef.current === ws) wsRef.current = null;
+    if (pingTimerRef.current) { window.clearInterval(pingTimerRef.current); pingTimerRef.current = null; }
+    await stopCaptureOnly();
+    try { getTTS().unduck(); } catch {}
+  }, [stopCaptureOnly]);
+  quietCloseRef.current = () => { void quietClose(); };
 
   // A tapped answer to "which one?": sent as the guest's words — no speech recognition, so nothing is misheard
   const sendSay = useCallback((text: string) => {
@@ -677,10 +773,13 @@ export default function MicInputBar({
     }, REPLY_TIMEOUT_MS);
   }, [disabled, openWebSocket, giveUpWaiting, setAi, startTtsReveal, finishTtsReveal]);
 
-  // Unmount → full reset
+  // Unmount → full reset (and the kept audio context is really closed)
   useEffect(() => {
     return () => {
+      followUpRef.current = false;
       hardReset();
+      try { void persistAcRef.current?.close(); } catch {}
+      persistAcRef.current = null;
     };
   }, [hardReset]);
 
@@ -925,7 +1024,13 @@ export default function MicInputBar({
               </div>
 
               <div className="flex-1 flex items-center min-w-0">
-                {isRecording ? (
+                {isRecording && listening ? (
+                  // hands-free: the waiter asked something and is waiting for the answer
+                  <span className="flex flex-col leading-tight">
+                    <span className="text-sm font-semibold text-white animate-pulse">Listening… just answer</span>
+                    <span className="text-[11px] text-white/80">hold the phone near your mouth</span>
+                  </span>
+                ) : isRecording ? (
                   <div className="flex items-center gap-0.5 h-5">
                     {Array.from({ length: 12 }).map((_, i) => (
                       <div

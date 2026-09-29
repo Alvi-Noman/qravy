@@ -24,6 +24,12 @@ import { getOrder, recentOrders } from '../api/orders';
 import { uiLang } from '../utils/ui-lang';
 import { useWaiterLang } from '../utils/waiter-lang';
 import LangSwitch from '../components/LangSwitch';
+import {
+  FOLLOW_UP_LISTEN_MS, PENDING_AUDIO_MAX, chooseOptionsOf, handsFreeOn, type ChooseOption,
+} from '../utils/handsfree';
+import VoiceSessionPill, { type VoiceState } from '../components/ai-waiter/VoiceSessionPill';
+import VoiceEdgeGlow from '../components/ai-waiter/VoiceEdgeGlow';
+import { earcon } from '../utils/earcon';
 
 type UIMode = 'idle' | 'thinking' | 'talking';
 
@@ -229,6 +235,7 @@ export default function AiWaiterHome() {
   }
 
   const [speaking, setSpeaking] = useState(false);
+  const ttsStartedAtRef = useRef(0); // when the waiter's voice last started (the voice session waits for it)
 
   // one writer for the live text at a time (a mic bar in a pop-up takes over while it is open)
   const revealIdRef = useRef(Symbol('waiter-home'));
@@ -239,6 +246,7 @@ export default function AiWaiterHome() {
     const un = tts.subscribe({
       onStart: (text) => {
         setSpeaking(true);
+        ttsStartedAtRef.current = Date.now();
         if (!owns()) return;
         const liveNow = (useConversationStore as any).getState?.().aiTextLive || '';
         const cont = inSpeechRef.current || !!liveNow;
@@ -295,9 +303,14 @@ export default function AiWaiterHome() {
           );
         }
       },
+      // the guest has HEARD the whole reply → now the mic may reopen (the voice session). Not on onEnd: that is
+      // "synthesis done", seconds before the speaker stops — opening the mic then cut the waiter off mid-sentence.
+      onPlaybackEnd: () => {
+        setSpeaking(false);
+        followUpTriggerRef.current?.();
+      },
       onEnd: () => {
         if (!inSpeechRef.current || !owns()) {
-          setSpeaking(false);
           return;
         }
         const myGen = speakGenRef.current;
@@ -317,7 +330,7 @@ export default function AiWaiterHome() {
           } catch {}
           inSpeechRef.current = false;
           speakGenRef.current += 1;
-          setSpeaking(false);
+          // (still "speaking" until the audio has really finished — see onPlaybackEnd)
         }, wait);
       },
     });
@@ -393,6 +406,28 @@ export default function AiWaiterHome() {
 
   const [listening, setListening] = useState(false);
   const [uiMode, setUiMode] = useState<UIMode>('idle');
+
+  // hands-free (utils/handsfree): the server ends the turn when the guest stops talking; after the waiter's
+  // question the mic reopens for a short listen window; "which one?" answers are buttons
+  // THE VOICE SESSION (hands-free, like Gemini Live): one tap starts a conversation that keeps going on every
+  // screen — after each reply the mic reopens by itself; nobody speaks for two listen windows (~16 s) → it pauses
+  // (an open mic can't sit on a restaurant table forever). The pill at the top shows it and has mute / end.
+  const [session, setSession] = useState<'off' | 'on' | 'paused'>('off');
+  const sessionRef = useRef<'off' | 'on' | 'paused'>('off');
+  sessionRef.current = session;
+  const emptyWindowsRef = useRef(0); // listen windows in a row with no answer from the guest
+  const speakingRef = useRef(false);
+  speakingRef.current = speaking;
+  const followUpRef = useRef(false); // a reply came in → listen when the waiter finishes speaking
+  const followUpAtRef = useRef(0);
+  const followUpsRef = useRef(0); // listen windows in a row without a tap
+  const [followListen, setFollowListen] = useState(false); // a listen window is open ("Listening… just answer")
+  const [choices, setChoices] = useState<ChooseOption[]>([]);
+  const pendingAudioRef = useRef<ArrayBuffer[]>([]); // audio recorded before the hello went out (first syllable)
+  const helloSentRef = useRef(false);
+  const geoRef = useRef<{ lat: number; lon: number } | null>(null); // looked up once in the background (weather hint)
+  const persistCtxRef = useRef<AudioContext | null>(null); // kept (suspended) between turns — iOS needs a tap-started one
+  const workletCtxRef = useRef<AudioContext | null>(null);
 
   // the guest's choice (top-right switch) → else the restaurant's default (admin) → else Bangla
   const [selectedLang, setSelectedLang] = useWaiterLang(resolvedSub);
@@ -517,6 +552,18 @@ export default function AiWaiterHome() {
   const [highlightIds, setHighlightIds] = useState<string[]>([]);
   // suggestions asked for while the tray is open — shown inside the tray
   const [trayPicks, setTrayPicks] = useState<{ id: string; name: string; price?: number; imageUrl?: string }[]>([]);
+
+  // the voice session runs across the sheets, so a reply must see what's open NOW (not when its socket opened)
+  const showSuggestionsRef = useRef(false);
+  const showTrayRef = useRef(false);
+  const shownIdsRef = useRef<string[]>([]); // the dishes on screen — "which of these…" is about them
+  showSuggestionsRef.current = showSuggestions;
+  showTrayRef.current = showTray;
+  shownIdsRef.current = showSuggestions
+    ? suggestedItems.map((s) => String(s.id ?? '')).filter(Boolean)
+    : showTray
+    ? trayPicks.map((p) => p.id)
+    : [];
 
   const [upsellItems, setUpsellItems] = useState<
     { itemId?: string; id?: string; title: string; price?: number }[]
@@ -651,8 +698,8 @@ export default function AiWaiterHome() {
   function handleIntentRouting(intent: WaiterIntent | undefined) {
     if (!intent) return;
 
-    // If Suggestions modal is open
-    if (showSuggestions) {
+    // If Suggestions modal is open (refs: the voice session's reply may come from an older render)
+    if (showSuggestionsRef.current) {
       if (intent === 'order') {
         openTray();
         return;
@@ -666,7 +713,7 @@ export default function AiWaiterHome() {
     }
 
     // If Tray modal is open
-    if (showTray) {
+    if (showTrayRef.current) {
       if (intent === 'suggestions') {
         openSuggestions();
         return;
@@ -693,6 +740,61 @@ export default function AiWaiterHome() {
       return;
     }
     // chitchat → no modal change
+  }
+
+  // A reply while the cards are open (the voice session talks on every screen)
+  function handleSuggestionsReply(intent?: WaiterIntent, meta?: AiReplyMeta, replyText?: string) {
+    const m = meta as AiReplyMeta | undefined;
+    if (m && storeItems && storeItems.length) {
+      try {
+        applyVoiceCartOps(m, storeItems as any[], cartFns);
+      } catch {
+        // ignore
+      }
+    }
+    if (handleCheckout(m)) return; // read-back / placed → checkout or order page
+    // "which of these is less spicy?" → the answer is highlighted in the list on screen (the list stays)
+    setHighlightIds(Array.isArray((m as any)?.highlight) ? (m as any).highlight.map(String) : []);
+    if ((m as any)?.onScreen) return;
+    // new cards from this reply ("what drinks do you have?") → show them, not the previous ones
+    if (m?.decision?.showSuggestionsModal) {
+      const fresh = buildSuggestionsFromMeta(m);
+      if (fresh?.length) setSuggestedItems(fresh);
+    }
+    const finalIntent = intent ?? resolveIntent(m, replyText);
+    handleIntentRouting(pageIntent(finalIntent, m));
+  }
+
+  // A reply while the tray is open
+  function handleTrayReply(intent?: WaiterIntent, meta?: AiReplyMeta, replyText?: string) {
+    const m = meta as AiReplyMeta | undefined;
+    if (m && storeItems && storeItems.length) {
+      try {
+        applyVoiceCartOps(m, storeItems as any[], cartFns);
+      } catch {
+        // ignore
+      }
+    }
+    if (handleCheckout(m)) return; // read-back / placed → checkout or order page
+    // "which of these is less spicy?" → the answer is highlighted in the list on screen (the list stays)
+    setHighlightIds(Array.isArray((m as any)?.highlight) ? (m as any).highlight.map(String) : []);
+    if ((m as any)?.onScreen) return;
+    // asked for ideas while in the tray → they appear IN the tray as "waiter's picks" (not tray lines);
+    // saying or tapping one flies it in. The guest stays in their tray.
+    if (m?.decision?.showSuggestionsModal) {
+      const fresh = buildSuggestionsFromMeta(m);
+      if (fresh?.length) {
+        setTrayPicks(
+          fresh
+            .filter((f) => f.id)
+            .map((f) => ({ id: String(f.id), name: String(f.name ?? ''), price: f.price, imageUrl: f.imageUrl })),
+        );
+        return;
+      }
+    }
+    const finalIntent = intent ?? resolveIntent(m, replyText);
+    if (finalIntent === 'suggestions') return; // stay in the tray
+    handleIntentRouting(pageIntent(finalIntent, m));
   }
 
   function mapUpsell(
@@ -772,16 +874,37 @@ export default function AiWaiterHome() {
     });
   }
 
-  async function startListening() {
+  // `listenMs`: a hands-free listen window after the waiter's question (the mic reopened by itself — nobody answers
+  // → the server closes it quietly). `typed`: a tapped "which one?" answer, sent as the guest's words (no mic).
+  async function startListening(opts?: { listenMs?: number; typed?: string }) {
+    const followUp = !!opts?.listenMs;
+    const typed = opts?.typed?.trim() || '';
     try {
       // any voice interaction counts as activity for welcome timer
       markWelcomeInteraction();
 
       if (listening || wsRef.current || ctxRef.current) return;
+      if (!followUp) {
+        followUpRef.current = false; // the guest acted — no pending listen window, and the count starts over
+        followUpsRef.current = 0;
+        emptyWindowsRef.current = 0;
+        // a tap starts (or resumes) the hands-free conversation
+        if (handsFreeOn()) setSession('on');
+      } else {
+        followUpsRef.current += 1;
+        earcon('listen'); // the mic reopened by itself — a soft chime says "your turn"
+      }
+      setChoices([]);
+      setFollowListen(followUp);
+      pendingAudioRef.current = [];
+      helloSentRef.current = false;
       try {
         tts.stop();
       } catch {}
 
+      let src: MediaStreamAudioSourceNode | null = null;
+      let node: AudioWorkletNode | null = null;
+      if (!typed) {
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           channelCount: 1,
@@ -792,21 +915,26 @@ export default function AiWaiterHome() {
       });
       streamRef.current = stream;
 
-      const ctx = new AudioContext({
-        sampleRate: 16000,
-        latencyHint: 'interactive',
-      });
+      // one audio context for the visit, suspended between turns: iOS lets a tap-started context be resumed
+      // later without a tap — that's what lets the mic reopen by itself after the waiter's question
+      const kept = persistCtxRef.current;
+      const ctx =
+        kept && kept.state !== 'closed' ? kept : new AudioContext({ sampleRate: 16000, latencyHint: 'interactive' });
+      persistCtxRef.current = ctx;
       ctxRef.current = ctx;
       if (ctx.state === 'suspended') {
         try {
           await ctx.resume();
         } catch {}
       }
-      await ctx.audioWorklet.addModule('/worklets/audio-capture.worklet.js');
+      if (workletCtxRef.current !== ctx) {
+        await ctx.audioWorklet.addModule('/worklets/audio-capture.worklet.js');
+        workletCtxRef.current = ctx;
+      }
 
-      const src = ctx.createMediaStreamSource(stream);
+      src = ctx.createMediaStreamSource(stream);
       sourceRef.current = src;
-      const node = new AudioWorkletNode(ctx, 'capture-processor', {
+      node = new AudioWorkletNode(ctx, 'capture-processor', {
         numberOfInputs: 1,
         numberOfOutputs: 0,
       });
@@ -843,6 +971,7 @@ export default function AiWaiterHome() {
         levelRafRef.current = requestAnimationFrame(levelLoop);
       };
       levelRafRef.current = requestAnimationFrame(levelLoop);
+      } // (no mic for a tapped answer)
 
       const ws = new WebSocket(getWsURL('/ws/voice'));
       wsRef.current = ws;
@@ -887,40 +1016,85 @@ export default function AiWaiterHome() {
                 localHour,
                 table: tableRef.current ?? undefined,
                 cart: cartItemsRef.current,
+                shown: shownIdsRef.current, // the cards / picks on screen — "which of these…" is about them
+                // hands-free: the server ends the turn when the guest stops talking / closes a quiet listen window
+                autoEnd: !typed && handsFreeOn(),
+                listenMs: opts?.listenMs,
                 ...(extra || {}),
               }),
             );
           } catch {}
+          helloSentRef.current = true;
+          if (typed) {
+            // a tapped answer: the guest's words, exactly — no speech recognition
+            try {
+              ws.send(JSON.stringify({ t: 'say', text: typed }));
+            } catch {}
+            stoppingRef.current = true; // nothing more to send; the socket closing after the reply is expected
+            setUiMode('thinking');
+            return;
+          }
+          // the audio recorded while connecting (the first syllable!) goes out right after the hello
+          const held = pendingAudioRef.current;
+          pendingAudioRef.current = [];
+          for (const buf of held) {
+            try {
+              ws.send(buf);
+            } catch {}
+          }
         };
 
-        if (navigator.geolocation) {
-          navigator.geolocation.getCurrentPosition(
-            (pos) => {
-              sendHello({
-                geo: {
-                  lat: pos.coords.latitude,
-                  lon: pos.coords.longitude,
-                },
-              });
-            },
-            () => sendHello(),
-            {
-              enableHighAccuracy: false,
-              maximumAge: 5 * 60 * 1000,
-              timeout: 1500,
-            },
-          );
-        } else {
-          sendHello();
+        // the hello goes out AT ONCE. It used to wait for the phone's location (up to 1.5 s) — the server gives up
+        // on a silent connection after 1.2 s, and answered "please repeat" to nobody. The location (a weather hint
+        // only) is looked up in the background and rides along with the NEXT turn.
+        sendHello(geoRef.current ? { geo: geoRef.current } : undefined);
+        if (navigator.geolocation && !geoRef.current) {
+          try {
+            navigator.geolocation.getCurrentPosition(
+              (pos) => {
+                geoRef.current = { lat: pos.coords.latitude, lon: pos.coords.longitude };
+              },
+              () => {},
+              { enableHighAccuracy: false, maximumAge: 5 * 60 * 1000, timeout: 5000 },
+            );
+          } catch {}
         }
 
-        setListening(true);
+        if (!typed) setListening(true);
       };
 
       ws.onmessage = (ev) => {
         if (typeof ev.data !== 'string') return;
         try {
           const msg = JSON.parse(ev.data);
+
+          // hands-free: the server heard the guest stop talking → it's answering now (no tap needed)
+          if (msg.t === 'auto_end') {
+            void stopListening({ serverEnded: true });
+            return;
+          }
+          // hands-free: the listen window passed with nobody (or someone else) speaking → close quietly
+          if (msg.t === 'no_speech') {
+            void stopListening({ quiet: true });
+            // the conversation stays open for one more window; two silent ones → it pauses (tap the pill to go on)
+            emptyWindowsRef.current += 1;
+            if (sessionRef.current === 'on') {
+              if (emptyWindowsRef.current < 2) {
+                window.setTimeout(() => {
+                  if (sessionRef.current === 'on') void startRef.current?.({ listenMs: FOLLOW_UP_LISTEN_MS });
+                }, 300);
+              } else {
+                setSession('paused');
+                earcon('pause');
+              }
+            }
+            return;
+          }
+          if (msg.t === 'speech_start') {
+            setFollowListen(false); // they're talking — the orb shows their voice
+            emptyWindowsRef.current = 0;
+            return;
+          }
 
           if (msg.t === 'stt_final') {
             finalSeenRef.current = true;
@@ -965,11 +1139,48 @@ export default function AiWaiterHome() {
             setMeta(meta ?? null);
             // the waiter's flags on the tray (sold out, allergy clash) — every reply, not only when it changes the tray
             if (Array.isArray((meta as any)?.cartWarnings)) setWarnings((meta as any).cartWarnings);
+            // "which one?" → the answers as buttons under the question
+            setChoices(chooseOptionsOf(meta));
+            // the voice session: after EVERY reply (on any screen) the mic reopens when the waiter finishes speaking —
+            // except when the order is placed or the menu page opens. "Didn't catch that" counts as an empty turn
+            // (two in a row → the session pauses, so noise can't keep it open).
+            const guards: string[] = Array.isArray((meta as any)?.guards) ? (meta as any).guards : [];
+            if (guards.some((g) => ['unclear', 'no-speech', 'no-audio', 'not_understood'].includes(g))) {
+              emptyWindowsRef.current += 1;
+            } else {
+              emptyWindowsRef.current = 0;
+            }
+            const ends = !!(meta as any)?.decision?.orderPlaced || !!(meta as any)?.decision?.openMenu;
+            if (sessionRef.current === 'on' && emptyWindowsRef.current >= 2) {
+              setSession('paused');
+              earcon('pause');
+            }
+            followUpRef.current = sessionRef.current === 'on' && emptyWindowsRef.current < 2 && !ends;
+            followUpAtRef.current = Date.now();
+            // no voice at all for this reply (nothing to say, a speech error) → still hand the turn back. Only when
+            // the voice never STARTED — never cutting the waiter off while it's still loading or speaking.
+            const repliedAt = Date.now();
+            window.setTimeout(() => {
+              if (followUpRef.current && !speakingRef.current && ttsStartedAtRef.current < repliedAt) {
+                followUpTriggerRef.current?.();
+              }
+            }, speakText ? 6000 : 400);
 
             console.log('[AI PAGE][AIWaiterHome]', { replyText, voiceText, meta });
 
             // order placed → clear the tray and open the live order page
             if (meta?.decision?.orderPlaced && handleCheckout(meta)) {
+              return;
+            }
+
+            // a sheet is open: the reply is handled the way that sheet handles it (the list stays, ideas in the
+            // tray appear as picks there…) — the voice session talks on every screen, the sheets have no mic
+            if (showSuggestionsRef.current) {
+              handleSuggestionsReply(undefined, meta, replyText);
+              return;
+            }
+            if (showTrayRef.current) {
+              handleTrayReply(undefined, meta, replyText);
               return;
             }
 
@@ -997,6 +1208,8 @@ export default function AiWaiterHome() {
 
             // read-back / which table? → the checkout page (after any change was applied)
             if (handleCheckout(meta)) {
+              // (here the read-back / "which table?" opens the tray on this screen — the session keeps listening
+              // for "হ্যাঁ" / "বারো"; a placed order ends it: `ends` above)
               return;
             }
 
@@ -1131,32 +1344,48 @@ export default function AiWaiterHome() {
         }
       };
 
-      (node.port as MessagePort).onmessage = (ev) => {
-        if (stoppingRef.current) return;
-        const msg = ev.data;
-        if (msg && msg.type === 'chunk' && msg.samples && msg.samples.buffer) {
-          const ab = msg.samples.buffer as ArrayBuffer;
-          if (ws.readyState === WebSocket.OPEN) ws.send(ab);
-        }
-      };
-
-      src.connect(node);
+      if (node && src) {
+        (node.port as MessagePort).onmessage = (ev) => {
+          if (stoppingRef.current) return;
+          const msg = ev.data;
+          if (msg && msg.type === 'chunk' && msg.samples && msg.samples.buffer) {
+            const ab = msg.samples.buffer as ArrayBuffer;
+            if (ws.readyState === WebSocket.OPEN && helloSentRef.current) {
+              ws.send(ab);
+            } else if (pendingAudioRef.current.length < PENDING_AUDIO_MAX) {
+              pendingAudioRef.current.push(ab); // sent right after the hello — the first syllable isn't lost
+            }
+          }
+        };
+        src.connect(node);
+      }
     } catch {
-      stopListening();
+      // a listen window the guest didn't ask for (mic blocked, iOS said no) just doesn't happen — quietly
+      stopListening(followUp ? { quiet: true } : undefined);
     }
   }
 
-  async function stopListening() {
+  // `serverEnded`: the server already heard the guest finish (hands-free) — don't send "end", just wait for the
+  // reply. `quiet`: nobody answered a listen window — close everything, no reply expected, no message.
+  async function stopListening(opts?: { serverEnded?: boolean; quiet?: boolean }) {
     stoppingRef.current = true;
+    setFollowListen(false);
 
     // Tell backend we're done, but don't block on replies
     try {
-      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      if (!opts?.serverEnded && !opts?.quiet && wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
         const sid = getStableSessionId();
         wsRef.current.send(JSON.stringify({ t: 'end', sid }));
       }
     } catch {
       // ignore
+    }
+    if (opts?.quiet && wsRef.current) {
+      const ws = wsRef.current;
+      wsRef.current = null;
+      try {
+        ws.close();
+      } catch {}
     }
 
     // Stop mic level loop
@@ -1195,9 +1424,10 @@ export default function AiWaiterHome() {
     } catch {}
     streamRef.current = null;
 
-    // Close AudioContext
+    // Suspend (not close) the AudioContext: it was started by a tap, so it can be resumed later without one —
+    // that's what lets the mic reopen by itself after the waiter's question (iOS)
     try {
-      await ctxRef.current?.close();
+      await ctxRef.current?.suspend();
     } catch {}
     ctxRef.current = null;
 
@@ -1217,8 +1447,85 @@ export default function AiWaiterHome() {
     } catch {}
 
     setListening(false);
-    setUiMode('idle');
+    // the server heard them finish and is answering → "Thinking…" right away (no dead moment)
+    setUiMode(opts?.serverEnded ? 'thinking' : 'idle');
   }
+
+  // hands-free: when the waiter finishes SPEAKING a question, reopen the mic for the answer (see the TTS onEnd)
+  const followUpTriggerRef = useRef<() => void>(() => {});
+  followUpTriggerRef.current = () => {
+    if (!followUpRef.current) return;
+    const askedAt = followUpAtRef.current;
+    followUpRef.current = false;
+    window.setTimeout(() => {
+      if (sessionRef.current !== 'on') return; // muted / ended meanwhile
+      if (wsRef.current || ctxRef.current) return;
+      if (document.visibilityState !== 'visible' || Date.now() - askedAt > 60_000) return;
+      void startRef.current?.({ listenMs: FOLLOW_UP_LISTEN_MS });
+    }, 350); // let the speaker's last syllable die away first
+  };
+  const startRef = useRef(startListening);
+  startRef.current = startListening;
+
+  // the pill's controls
+  function muteSession() {
+    followUpRef.current = false;
+    setSession('paused');
+    if (wsRef.current || ctxRef.current) void stopListening({ quiet: true });
+    earcon('pause');
+  }
+  function resumeSession() {
+    emptyWindowsRef.current = 0;
+    setSession('on');
+    sessionRef.current = 'on';
+    try {
+      tts.stop();
+    } catch {}
+    if (!wsRef.current && !ctxRef.current) void startListening({ listenMs: FOLLOW_UP_LISTEN_MS });
+  }
+  function endSession() {
+    followUpRef.current = false;
+    setSession('off');
+    sessionRef.current = 'off';
+    if (wsRef.current || ctxRef.current) void stopListening({ quiet: true });
+  }
+
+  // what the pill shows
+  const voiceState: VoiceState =
+    session === 'paused'
+      ? 'paused'
+      : listening
+      ? followListen
+        ? 'listening'
+        : 'hearing'
+      : uiMode === 'thinking'
+      ? 'thinking'
+      : speaking
+      ? 'speaking'
+      : 'waiting';
+
+  // safety net: the session must never sit on "এক মুহূর্ত…" — on, but nothing listening / thinking / speaking for
+  // 8 s → hand the turn back to the guest (a missed reopen can't strand them)
+  useEffect(() => {
+    if (session !== 'on' || listening || speaking || uiMode === 'thinking') return;
+    const t = window.setTimeout(() => {
+      if (sessionRef.current !== 'on' || wsRef.current || ctxRef.current || speakingRef.current) return;
+      console.warn('[voice] session idle with nothing happening → listening again');
+      void startRef.current?.({ listenMs: FOLLOW_UP_LISTEN_MS });
+    }, 8000);
+    return () => window.clearTimeout(t);
+  }, [session, listening, speaking, uiMode]);
+
+  // leaving the page: the kept audio context is really closed
+  useEffect(() => {
+    return () => {
+      followUpRef.current = false;
+      try {
+        void persistCtxRef.current?.close();
+      } catch {}
+      persistCtxRef.current = null;
+    };
+  }, []);
 
   // UI mapping
   const bg = '#FFF8FA';
@@ -1324,6 +1631,30 @@ export default function AiWaiterHome() {
         style={{ top: textTop ?? '50vh' }}
       >
         <SwipeViewport text={visibleText} showCursor={!!aiLive} />
+
+        {/* hands-free: the mic reopened by itself — the pill says so; this is the one tip that helps in a noisy room */}
+        {listening && followListen && (
+          <p className="mt-3 text-xs text-gray-500">
+            {selectedLang === 'en' ? 'Hold the phone near your mouth' : 'ফোনটা মুখের কাছে ধরে বলুন'}
+          </p>
+        )}
+
+        {/* "which one?" — the answers as buttons; one tap sends it (never misheard) */}
+        {choices.length > 0 && !listening && uiMode !== 'thinking' && (
+          <div className="mt-5 flex flex-wrap justify-center gap-2" role="group" aria-label="Choose one">
+            {choices.map((c) => (
+              <button
+                key={c.say}
+                type="button"
+                onClick={() => void startListening({ typed: c.say })}
+                className="max-w-full truncate rounded-full border border-rose-200 bg-white px-4 py-2.5 text-[15px] font-semibold text-gray-800 shadow-sm transition active:scale-95 hover:border-rose-300"
+              >
+                {c.label}
+                {typeof c.price === 'number' && <span className="ml-1.5 font-normal text-gray-500">৳{c.price}</span>}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Bottom controls */}
@@ -1471,27 +1802,8 @@ export default function AiWaiterHome() {
         }}
         items={suggestedItems}
         highlightIds={highlightIds}
-        onIntent={(intent, meta, replyText) => {
-          const m = meta as AiReplyMeta | undefined;
-          if (m && storeItems && storeItems.length) {
-            try {
-              applyVoiceCartOps(m, storeItems as any[], cartFns);
-            } catch {
-              // ignore
-            }
-          }
-          if (handleCheckout(m)) return; // read-back / placed → checkout or order page
-          // "which of these is less spicy?" → the answer is highlighted in the list on screen (the list stays)
-          setHighlightIds(Array.isArray((m as any)?.highlight) ? (m as any).highlight.map(String) : []);
-          if ((m as any)?.onScreen) return;
-          // new cards from this reply ("what drinks do you have?") → show them, not the previous ones
-          if (m?.decision?.showSuggestionsModal) {
-            const fresh = buildSuggestionsFromMeta(m);
-            if (fresh?.length) setSuggestedItems(fresh);
-          }
-          const finalIntent = intent ?? resolveIntent(m, replyText);
-          handleIntentRouting(pageIntent(finalIntent, m));
-        }}
+        voiceBar={false /* the voice session (pill at the top) talks here */}
+        onIntent={handleSuggestionsReply}
       />
       <TrayModal
         open={showTray}
@@ -1510,37 +1822,26 @@ export default function AiWaiterHome() {
             ? mapUpsell(lastMeta.upsell as any[])
             : upsellItems
         }
-        onIntent={(intent, meta, replyText) => {
-          const m = meta as AiReplyMeta | undefined;
-          if (m && storeItems && storeItems.length) {
-            try {
-              applyVoiceCartOps(m, storeItems as any[], cartFns);
-            } catch {
-              // ignore
-            }
-          }
-          if (handleCheckout(m)) return; // read-back / placed → checkout or order page
-          // "which of these is less spicy?" → the answer is highlighted in the list on screen (the list stays)
-          setHighlightIds(Array.isArray((m as any)?.highlight) ? (m as any).highlight.map(String) : []);
-          if ((m as any)?.onScreen) return;
-          // asked for ideas while in the tray → they appear IN the tray as "waiter's picks" (not tray lines);
-          // saying or tapping one flies it in. The guest stays in their tray.
-          if (m?.decision?.showSuggestionsModal) {
-            const fresh = buildSuggestionsFromMeta(m);
-            if (fresh?.length) {
-              setTrayPicks(
-                fresh
-                  .filter((f) => f.id)
-                  .map((f) => ({ id: String(f.id), name: String(f.name ?? ''), price: f.price, imageUrl: f.imageUrl })),
-              );
-              return;
-            }
-          }
-          const finalIntent = intent ?? resolveIntent(m, replyText);
-          if (finalIntent === 'suggestions') return; // stay in the tray
-          handleIntentRouting(pageIntent(finalIntent, m));
-        }}
+        voiceBar={false /* the voice session (pill at the top) talks here */}
+        onIntent={handleTrayReply}
       />
+
+      {/* THE VOICE SESSION — on every screen: the pill (what's happening + mute / end) and, while the mic is open,
+          the glowing edge. Shown during a conversation, and whenever a sheet is open (sheets have no mic of their
+          own — "tap to talk" starts the conversation from there) */}
+      {hasInteracted && (session !== 'off' || showSuggestions || showTray) && (
+        <VoiceSessionPill
+          state={session === 'off' ? 'paused' : voiceState}
+          level={listening ? micLevel : 0}
+          lang={selectedLang === 'en' ? 'en' : 'bn'}
+          onMute={muteSession}
+          onResume={session === 'off' ? () => void startListening() : resumeSession}
+          onEnd={endSession}
+          choices={showSuggestions || showTray ? choices : undefined}
+          onChoose={(say) => void startListening({ typed: say })}
+        />
+      )}
+      <VoiceEdgeGlow on={listening} level={micLevel} />
 
       {/* The guest's latest order — one tap to its live status */}
       {lastOrder && (

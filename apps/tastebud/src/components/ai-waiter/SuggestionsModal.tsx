@@ -21,6 +21,8 @@ type Props = {
   /** dishes the waiter pointed at when the guest asked about this list ("which of these is less spicy?") */
   highlightIds?: string[];
   onIntent?: (intent?: WaiterIntent, meta?: AiReplyMeta, replyText?: string) => void;
+  /** its own mic bar — off where a hands-free voice session runs the conversation (the waiter home) */
+  voiceBar?: boolean;
 };
 
 /* ---------- Helpers ---------- */
@@ -138,6 +140,7 @@ export default function SuggestionsModal({
   items = [],
   highlightIds = [],
   onIntent,
+  voiceBar = true,
 }: Props) {
   const hl = new Set(highlightIds.map(String));
   const cardRefs = React.useRef<Record<string, HTMLElement | null>>({});
@@ -237,7 +240,8 @@ export default function SuggestionsModal({
           )}
         </SheetScrollArea>
 
-        {/* MIC BAR — part of the column, never over the cards */}
+        {/* MIC BAR — part of the column, never over the cards (hidden where the voice session is hands-free) */}
+        {voiceBar ? (
         <div className="relative z-40 shrink-0 px-4 pt-3 pb-[max(1.25rem,env(safe-area-inset-bottom))] bg-[#F8F8F8] border-t border-gray-200">
           <MicInputBar
             tenant={tenant}
@@ -251,6 +255,9 @@ export default function SuggestionsModal({
             }}
           />
         </div>
+        ) : (
+          <div className="shrink-0 h-[max(1rem,env(safe-area-inset-bottom))]" />
+        )}
 
       </div>
     </div>
