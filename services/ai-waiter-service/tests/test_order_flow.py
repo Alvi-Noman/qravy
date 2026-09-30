@@ -89,7 +89,7 @@ def test_a_clean_order_needs_no_model_and_is_confirmed_short():
     assert not calls, "a clean order is added without the model"
     assert ops_of(out) == [("add", "crs", 2), ("add", "ff", 1)]
     assert out["replyText"] == ("2টা Crispy Rice Soup যোগ করলাম। 1টা French Fry যোগ করলাম। "
-                                "আর কিছু লাগবে, নাকি অর্ডার কনফার্ম করব?"), out["replyText"]
+                                "সাথে কি কোনো ড্রিংকস নিবেন?"), out["replyText"]  # (the one upsell question: no drink yet)
     assert "clean_order" in out["meta"]["guards"]
     # anything more than "these dishes, this many" → the model reads it (with all its checks)
     for said in ("ঝাল কম করে দুইটা ক্রিস্পি রাইস স্যুপ দিন",   # a note
@@ -144,6 +144,23 @@ def test_the_listening_hint_leads_with_the_dishes_just_named():
         assert server.stt_turn_hint("t1", "s1", "bn") == ""  # nothing named → nothing added
     finally:
         server.get_history = orig
+
+
+def test_a_word_we_cant_place_is_never_guessed_into_the_tray():
+    # the real turn: "না, আরেকটি ছোলাক বানাও।" → the model added another soup (it guessed what "ছোলাক" was)
+    tray = [{"itemId": "crs", "quantity": 1, "price": 300}]
+    guess = {"cartOps": [{"op": "add", "item": ref("crs"), "quantity": 1}],
+             "replyText": "আরেকটা ক্রিস্পি রাইস স্যুপ যোগ করলাম। আর কিছু লাগবে?"}
+    out, _ = run("না, আরেকটি ছোলাক বানাও।", guess, cart=tray)
+    assert ops_of(out) == [], out["meta"]["cartOps"]
+    assert out["replyText"] == "দুঃখিত, স্পষ্ট শুনতে পারিনি। আরেকবার বলবেন, প্লিজ?", out["replyText"]
+    # plain words only → "another one" means the last dish, still added
+    for said in ("আরেকটা দিন", "ওটাই আরেকটা বানিয়ে দিন প্লিজ", "same one again please"):
+        out, _ = run(said, guess, cart=tray)
+        assert ops_of(out) == [("add", "crs", 1)], (said, out["meta"]["cartOps"], out["replyText"])
+    # the dish named (or misheard close to its name) → added
+    out, _ = run("আরেকটা ক্রিস্পি রাইস স্যুপ দাও তো ভাই", guess, cart=tray)
+    assert ops_of(out) == [("add", "crs", 1)], out["meta"]["cartOps"]
 
 
 if __name__ == "__main__":

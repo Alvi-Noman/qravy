@@ -2,15 +2,10 @@
 name: Release Images
 
 on:
-  push:
-    branches: [ main ]
-    paths:
-      - "services/**"
-      - "packages/**"
-      - "pnpm-lock.yaml"
-      - "pnpm-workspace.yaml"
-      - "turbo.json"
-      - ".github/workflows/release-images.yml"
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
   workflow_dispatch: {}
 
 permissions:
@@ -25,21 +20,18 @@ jobs:
   docker_build_push:
     name: Build & Push Images
     runs-on: ubuntu-latest
+    if: (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
     permissions:
       contents: read
       packages: write
 
     env:
+      ADMIN_DOMAIN: ${{ vars.ADMIN_DOMAIN }}
+      STOREFRONT_DOMAIN: ${{ vars.STOREFRONT_DOMAIN }}
       # Optional PAT. If empty, we fall back to GITHUB_TOKEN.
       GHCR_PAT: ${{ secrets.GHCR_TOKEN }}
       # Optional explicit username for PAT mode. If empty, we default to 'alvi-noman'.
       GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
-      # Render deploy hooks (optional)
-      RENDER_HOOK_API_GATEWAY: ${{ secrets.RENDER_DEPLOY_HOOK_API_GATEWAY }}
-      RENDER_HOOK_AUTH:        ${{ secrets.RENDER_DEPLOY_HOOK_AUTH }}
-      RENDER_HOOK_UPLOAD:      ${{ secrets.RENDER_DEPLOY_HOOK_UPLOAD }}
-      RENDER_HOOK_STOREFRONT:  ${{ secrets.RENDER_DEPLOY_HOOK_STOREFRONT }}
-      RENDER_HOOK_AI_WAITER:   ${{ secrets.RENDER_DEPLOY_HOOK_AI_WAITER }}
 
     strategy:
       fail-fast: false
@@ -49,28 +41,57 @@ jobs:
             file: services/api-gateway/Dockerfile
             context: .
             image_suffix: qravy-api-gateway
+            build_args: ""
           - name: auth
             file: services/auth-service/Dockerfile
             context: .
             image_suffix: qravy-auth
+            build_args: ""
           - name: upload
             file: services/upload-service/Dockerfile
             context: .
             image_suffix: qravy-upload
+            build_args: ""
           - name: storefront-host
             file: services/storefront-host/Dockerfile
             context: .
             image_suffix: qravy-storefront-host
+            build_args: ""
           - name: ai-waiter
             file: services/ai-waiter-service/Dockerfile
             context: services/ai-waiter-service
             image_suffix: qravy-ai-waiter
+            build_args: ""
+          - name: braincell
+            file: apps/Dockerfile.prod
+            context: .
+            image_suffix: qravy-braincell
+            build_args: |
+              APP=braincell
+              VITE_API_URL=https://${{ vars.ADMIN_DOMAIN }}
+              VITE_AI_WAITER_API=/waiter
+              VITE_STOREFRONT_URL=https://${{ vars.STOREFRONT_DOMAIN }}/t/{subdomain}
+          - name: tastebud
+            file: apps/Dockerfile.prod
+            context: .
+            image_suffix: qravy-tastebud
+            build_args: |
+              APP=tastebud
+              VITE_API_URL=/api/v1
+              VITE_AI_WAITER_API=/cart-api
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Require frontend domains
+        if: matrix.service.name == 'braincell' || matrix.service.name == 'tastebud'
+        run: |
+          test -n "$ADMIN_DOMAIN"
+          test -n "$STOREFRONT_DOMAIN"
 
       - name: Vars
         id: vars
@@ -138,7 +159,9 @@ jobs:
           platforms: linux/amd64
           tags: |
             ghcr.io/${{ steps.ow.outputs.OWNER_LC }}/${{ matrix.service.image_suffix }}:prod
+            ghcr.io/${{ steps.ow.outputs.OWNER_LC }}/${{ matrix.service.image_suffix }}:sha-${{ steps.vars.outputs.SHA_FULL }}
             ghcr.io/${{ steps.ow.outputs.OWNER_LC }}/${{ matrix.service.image_suffix }}:prod-${{ steps.vars.outputs.STAMP }}-${{ steps.vars.outputs.SHA_SHORT }}
+          build-args: ${{ matrix.service.build_args }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ steps.vars.outputs.SHA_FULL }}
@@ -147,30 +170,57 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Trigger Render deploy (${{ matrix.service.name }})
-        shell: bash
+  deploy_contabo:
+    name: Deploy GHCR images to Contabo
+    needs: docker_build_push
+    if: github.event_name == 'workflow_run' && github.event.workflow_run.head_branch == 'main' || github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout deployment config
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Configure SSH
+        env:
+          CONTABO_SSH_KEY: ${{ secrets.CONTABO_SSH_KEY }}
+          CONTABO_KNOWN_HOSTS: ${{ secrets.CONTABO_KNOWN_HOSTS }}
         run: |
-          HOOK=""
-          case "${{ matrix.service.name }}" in
-            api-gateway)     HOOK="${RENDER_HOOK_API_GATEWAY}";;
-            auth)            HOOK="${RENDER_HOOK_AUTH}";;
-            upload)          HOOK="${RENDER_HOOK_UPLOAD}";;
-            storefront-host) HOOK="${RENDER_HOOK_STOREFRONT}";;
-            ai-waiter)       HOOK="${RENDER_HOOK_AI_WAITER}";;
-          esac
+          test -n "$CONTABO_SSH_KEY"
+          test -n "$CONTABO_KNOWN_HOSTS"
+          install -m 700 -d "$HOME/.ssh"
+          printf '%s\n' "$CONTABO_SSH_KEY" > "$HOME/.ssh/id_ed25519"
+          printf '%s\n' "$CONTABO_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/id_ed25519" "$HOME/.ssh/known_hosts"
 
-          if [ -z "$HOOK" ]; then
-            echo "No deploy hook configured for ${{ matrix.service.name }} — skipping."
-            exit 0
-          fi
+      - name: Upload Compose and Caddy config
+        env:
+          CONTABO_HOST: ${{ secrets.CONTABO_HOST }}
+          CONTABO_USER: ${{ secrets.CONTABO_USER }}
+          CONTABO_DEPLOY_PATH: ${{ vars.CONTABO_DEPLOY_PATH }}
+        run: |
+          test -n "$CONTABO_HOST"
+          test -n "$CONTABO_USER"
+          test -n "$CONTABO_DEPLOY_PATH"
+          SSH_TARGET="$CONTABO_USER@$CONTABO_HOST"
+          SSH_OPTS="-i $HOME/.ssh/id_ed25519 -o StrictHostKeyChecking=yes"
+          ssh $SSH_OPTS "$SSH_TARGET" "mkdir -p '$CONTABO_DEPLOY_PATH/runtime'"
+          scp $SSH_OPTS compose.production.yml Caddyfile "$SSH_TARGET:$CONTABO_DEPLOY_PATH/"
 
-          for i in 1 2 3; do
-            if curl -fsS -X POST "$HOOK"; then
-              echo "Triggered Render deploy for ${{ matrix.service.name }}"
-              exit 0
-            fi
-            echo "Retry $i..."
-            sleep 3
-          done
-          echo "Failed to trigger Render deploy via hook"
-          exit 1
+      - name: Pull and restart Contabo stack
+        env:
+          CONTABO_HOST: ${{ secrets.CONTABO_HOST }}
+          CONTABO_USER: ${{ secrets.CONTABO_USER }}
+          CONTABO_DEPLOY_PATH: ${{ vars.CONTABO_DEPLOY_PATH }}
+          GHCR_READ_USER: ${{ secrets.GHCR_READ_USER }}
+          GHCR_READ_TOKEN: ${{ secrets.GHCR_READ_TOKEN }}
+          DEPLOY_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          test -n "$GHCR_READ_USER"
+          test -n "$GHCR_READ_TOKEN"
+          SSH_TARGET="$CONTABO_USER@$CONTABO_HOST"
+          SSH_OPTS="-i $HOME/.ssh/id_ed25519 -o StrictHostKeyChecking=yes"
+          printf '%s' "$GHCR_READ_TOKEN" | ssh $SSH_OPTS "$SSH_TARGET" \
+            "docker login ghcr.io --username '$GHCR_READ_USER' --password-stdin"
+          ssh $SSH_OPTS "$SSH_TARGET" \
+            "cd '$CONTABO_DEPLOY_PATH' && IMAGE_TAG='sha-$DEPLOY_SHA' docker compose --env-file .env.production -f compose.production.yml pull && IMAGE_TAG='sha-$DEPLOY_SHA' docker compose --env-file .env.production -f compose.production.yml up -d --remove-orphans"

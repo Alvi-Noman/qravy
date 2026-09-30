@@ -299,12 +299,15 @@ def test_quiet_mode_strips_suggestions_and_decline_is_remembered():
     assert "sd" in out["meta"]["reco"]["profile"]["declined"]
 
 
-def test_complement_mode_offers_one_pairing_in_the_tray():
+def test_complement_mode_asks_once_about_drinks_or_dessert():
     add = {**TURN, "topic": "order_change", "intent": "order", "replyText": "Added 1 × Beef with Red Curry.",
            "cartOps": [{"op": "add", "item": IDX.ref(by["rc"]), "quantity": 1, "note": "", "choices": []}]}
     out, calls = _run("one beef with red curry please", [add])
-    assert "RECOMMENDATION MODE: COMPLEMENT" in calls[0][-1]["content"] and "PAIRING" in calls[0][-1]["content"]
-    assert len(out["meta"]["upsell"]) == 1 and out["meta"]["decision"]["showUpsellTray"]
+    # the model only confirms the add — the missing-item question is the upsell engine's (see test_upsell.py)
+    assert "RECOMMENDATION MODE: COMPLEMENT" in calls[0][-1]["content"] and "PAIRING" not in calls[0][-1]["content"]
+    # the one upsell question, about kinds (see test_upsell.py) — no dish pushed by name
+    assert out["replyText"].endswith("Would you like any drinks with that?"), out["replyText"]  # (no desserts on this menu)
+    assert not out["meta"]["upsell"] and out["meta"]["reco"]["upsell_asked"] is True
     assert out["meta"]["reco"]["last_upsell_turn"] == out["meta"]["reco"]["turn"]
 
 

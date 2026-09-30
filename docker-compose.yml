@@ -190,6 +190,8 @@ services:
       - OPENAI_API_KEY=${OPENAI_API_KEY:?Set OPENAI_API_KEY in your .env}
       - OPENAI_BASE=https://api.openai.com
       - OPENAI_CHAT_MODEL=gpt-4.1-mini
+      # the separate "understand first" call (intent.py): off — it added ~1.5 s to every turn (1 = on)
+      - INTENT_AI=0
       # Optional tuning (max tokens is a ceiling — Bangla replies + voice text need room)
       - BRAIN_TIMEOUT_S=12.0
       - BRAIN_MAX_TOKENS=1800

@@ -283,7 +283,7 @@ def test_invented_order_status_is_never_spoken():
         assert not brain._CLAIMS_CONFIRMED.search(fine), fine
     lie = {**TURN, "topic": "other", "language": "bn", "replyText": "আপনার অর্ডার নেওয়া হয়েছে। আর কিছু সাহায্য লাগবে?"}
     honest = {**TURN, "topic": "recommendation", "language": "bn",
-              "replyText": "আমাদের Spring Roll আর Chicken Corn Soup খুব ভালো। কোনটা নেবেন?"}
+              "replyText": "আমাদের Chicken Corn Soup আর Borhani খুব ভালো। কোনটা নেবেন?"}  # (Spring Roll is in the tray)
     seq = [lie, honest]
 
     async def fake(messages):
@@ -297,7 +297,7 @@ def test_invented_order_status_is_never_spoken():
     finally:
         brain._call_openai = orig
     assert "false_order_status_claim" in out["meta"]["guards"]
-    assert "নেওয়া হয়েছে" not in out["replyText"] and "Spring Roll" in out["replyText"]
+    assert "নেওয়া হয়েছে" not in out["replyText"] and "Chicken Corn Soup" in out["replyText"]
     # the model insists → the final net replaces it with the honest cart question
     seq2 = [lie, lie]
 

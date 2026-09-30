@@ -14,6 +14,13 @@ def save_cart(tenant: str, session_id: str, items: list):
         upsert=True
     )
 
+# same short life as the browser copy (CartContext CART_TTL_MS) — an old tray must not come back
+CART_TTL_S = 10 * 60
+
 def load_cart(tenant: str, session_id: str):
     doc = carts.find_one({"tenant": tenant, "sessionId": session_id})
-    return doc.get("items", []) if doc else []
+    if not doc:
+        return []
+    if time.time() - (doc.get("updatedAt") or 0) > CART_TTL_S:
+        return []
+    return doc.get("items", [])

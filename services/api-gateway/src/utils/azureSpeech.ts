@@ -1,6 +1,10 @@
 // services/api-gateway/src/utils/azureSpeech.ts
 
-const TEN_MIN = 10 * 60 * 1000;
+// Azure speech tokens live 10 minutes. We reuse one for at most 5, and tell the client when it really expires —
+// before, a token reused here for up to 9 min (and cached by the browser for 8 more) reached the client already
+// dead: every reply then failed silently until a page reload.
+const TOKEN_LIFE_MS = 10 * 60 * 1000;
+const REUSE_MS = 5 * 60 * 1000;
 
 let cachedToken: string | null = null;
 let cachedAt = 0;
@@ -11,13 +15,14 @@ function env(name: string, fallback?: string) {
   return v;
 }
 
-export async function getSpeechToken(): Promise<{ token: string; region: string }> {
+export async function getSpeechToken(
+  opts: { fresh?: boolean } = {},
+): Promise<{ token: string; region: string; expiresAt: number }> {
   const region = env("AZURE_SPEECH_REGION").trim();
   const key = env("AZURE_SPEECH_KEY").trim();
 
-  // reuse for ~9 minutes
-  if (cachedToken && Date.now() - cachedAt < 9 * 60 * 1000) {
-    return { token: cachedToken, region };
+  if (!opts.fresh && cachedToken && Date.now() - cachedAt < REUSE_MS) {
+    return { token: cachedToken, region, expiresAt: cachedAt + TOKEN_LIFE_MS };
   }
 
   const url = `https://${region}.api.cognitive.microsoft.com/sts/v1.0/issueToken`;
@@ -35,5 +40,5 @@ export async function getSpeechToken(): Promise<{ token: string; region: string 
   cachedToken = token;
   cachedAt = Date.now();
 
-  return { token, region };
+  return { token, region, expiresAt: cachedAt + TOKEN_LIFE_MS };
 }

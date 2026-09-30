@@ -244,6 +244,15 @@ export default function AiWaiterHome() {
   }
 
   const [speaking, setSpeaking] = useState(false);
+  // the reply is in but its voice hasn't started yet (token / synthesis, ~0.5–2 s) → still "Thinking…", never a
+  // blank "One moment" between the answer and the sound
+  const [voicePending, setVoicePending] = useState(false);
+  const voicePendingTimerRef = useRef<number | null>(null);
+  const markVoicePending = (on: boolean) => {
+    if (voicePendingTimerRef.current) window.clearTimeout(voicePendingTimerRef.current);
+    voicePendingTimerRef.current = on ? window.setTimeout(() => setVoicePending(false), 8000) : null;
+    setVoicePending(on);
+  };
   const ttsStartedAtRef = useRef(0); // when the waiter's voice last started (the voice session waits for it)
   // the welcome is being spoken → its text is revealed with the voice (see visibleText); never longer than 8 s
   const [welcomePending, setWelcomePending] = useState(false);
@@ -268,6 +277,7 @@ export default function AiWaiterHome() {
     const un = tts.subscribe({
       onStart: (text) => {
         setSpeaking(true);
+        markVoicePending(false);
         ttsStartedAtRef.current = Date.now();
         if (!owns()) return;
         const liveNow = (useConversationStore as any).getState?.().aiTextLive || '';
@@ -313,6 +323,7 @@ export default function AiWaiterHome() {
       // "synthesis done", seconds before the speaker stops — opening the mic then cut the waiter off mid-sentence.
       onPlaybackEnd: () => {
         setSpeaking(false);
+        markVoicePending(false);
         setWelcomePending(false); // (the whole welcome has been heard — its full text stays)
         followUpTriggerRef.current?.();
       },
@@ -827,6 +838,16 @@ export default function AiWaiterHome() {
     // "which of these is less spicy?" → the answer is highlighted in the list on screen (the list stays)
     setHighlightIds(Array.isArray((m as any)?.highlight) ? (m as any).highlight.map(String) : []);
     if ((m as any)?.onScreen) return;
+    // "সাথে কি A অথবা B নিতে চান?" — what the order is missing, as the waiter's picks in the tray (replacing older ones)
+    const upsellNow = Array.isArray((m as any)?.upsell) ? ((m as any).upsell as any[]) : [];
+    if (m?.decision?.showUpsellTray && upsellNow.length) {
+      setTrayPicks(
+        mapUpsell(upsellNow)
+          .filter((u) => u.id)
+          .map((u) => ({ id: String(u.id), name: u.title, price: u.price })),
+      );
+      return;
+    }
     // asked for ideas while in the tray → they appear IN the tray as "waiter's picks" (not tray lines);
     // saying or tapping one flies it in. The guest stays in their tray.
     if (m?.decision?.showSuggestionsModal) {
@@ -1175,9 +1196,12 @@ export default function AiWaiterHome() {
               try {
                 tts.stop();
               } catch {}
+              markVoicePending(true);
               try {
                 tts.speak(speakText);
-              } catch {}
+              } catch {
+                markVoicePending(false);
+              }
             }
 
             aiSeenRef.current = true;
@@ -1262,9 +1286,9 @@ export default function AiWaiterHome() {
             }
 
             if (cartChanged) {
-              if (decision?.showUpsellTray && Array.isArray(upsell) && upsell.length) {
-                setUpsellItems(mapUpsell(upsell));
-              }
+              // the missing-item offer ("সাথে কি A অথবা B…?") shows as the waiter's picks — older picks make way
+              setTrayPicks([]);
+              setUpsellItems(decision?.showUpsellTray && Array.isArray(upsell) && upsell.length ? mapUpsell(upsell) : []);
               setShowTray(true);
 
               if (!intent || intent === 'order' || intent === 'chitchat') {
@@ -1379,7 +1403,7 @@ export default function AiWaiterHome() {
         // still live: release the mic and the dead socket, otherwise every later mic press is ignored
         if (!stoppingRef.current) {
           const neverOpened = !opened;
-          void stopListening();
+          void stopListening({ quiet: true }); // no reply is coming — not "Thinking…"
           try {
             setAi(
               selectedLang === 'en'
@@ -1408,14 +1432,15 @@ export default function AiWaiterHome() {
         src.connect(node);
       }
     } catch {
-      // a listen window the guest didn't ask for (mic blocked, iOS said no) just doesn't happen — quietly
-      stopListening(followUp ? { quiet: true } : undefined);
+      // the mic couldn't open (blocked, iOS said no): nothing was sent, so no "Thinking…" — close quietly
+      stopListening({ quiet: true });
     }
   }
 
   // `serverEnded`: the server already heard the guest finish (hands-free) — don't send "end", just wait for the
   // reply. `quiet`: nobody answered a listen window — close everything, no reply expected, no message.
   async function stopListening(opts?: { serverEnded?: boolean; quiet?: boolean }) {
+    const hadSocket = !!wsRef.current; // something was being sent → a reply is on its way
     stoppingRef.current = true;
     setFollowListen(false);
 
@@ -1495,8 +1520,12 @@ export default function AiWaiterHome() {
     } catch {}
 
     setListening(false);
-    // the server heard them finish and is answering → "Thinking…" right away (no dead moment)
-    setUiMode(opts?.serverEnded ? 'thinking' : 'idle');
+    // a turn was sent (the server heard them finish, or they tapped / released to send) → "Thinking…" RIGHT AWAY,
+    // not a blank moment until the transcript comes back. (Quiet = nothing sent → idle.) If no reply ever comes,
+    // giveUpWaiting / the socket timeout bring it back to idle.
+    const replyComing = !opts?.quiet && (opts?.serverEnded || hadSocket);
+    if (replyComing) awaitingReplyRef.current = true;
+    setUiMode(replyComing ? 'thinking' : 'idle');
   }
 
   // hands-free: when the waiter finishes SPEAKING a question, reopen the mic for the answer (see the TTS onEnd)
@@ -1540,23 +1569,23 @@ export default function AiWaiterHome() {
       ? followListen
         ? 'listening'
         : 'hearing'
-      : uiMode === 'thinking'
-      ? 'thinking'
       : speaking
       ? 'speaking'
+      : uiMode === 'thinking' || voicePending
+      ? 'thinking'
       : 'waiting';
 
   // safety net: the session must never sit on "এক মুহূর্ত…" — on, but nothing listening / thinking / speaking for
   // 8 s → hand the turn back to the guest (a missed reopen can't strand them)
   useEffect(() => {
-    if (session !== 'on' || listening || speaking || uiMode === 'thinking') return;
+    if (session !== 'on' || listening || speaking || voicePending || uiMode === 'thinking') return;
     const t = window.setTimeout(() => {
       if (sessionRef.current !== 'on' || wsRef.current || ctxRef.current || speakingRef.current) return;
       console.warn('[voice] session idle with nothing happening → listening again');
       void startRef.current?.({ listenMs: FOLLOW_UP_LISTEN_MS });
     }, 8000);
     return () => window.clearTimeout(t);
-  }, [session, listening, speaking, uiMode]);
+  }, [session, listening, speaking, voicePending, uiMode]);
 
   // leaving the page: the kept audio context is really closed
   useEffect(() => {
@@ -1576,7 +1605,7 @@ export default function AiWaiterHome() {
       ? 'talking'
       : listening
       ? 'listening'
-      : uiMode === 'thinking'
+      : uiMode === 'thinking' || voicePending
       ? 'thinking'
       : 'idle';
 

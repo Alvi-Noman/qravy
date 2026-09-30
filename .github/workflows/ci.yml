@@ -36,8 +36,8 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '22'
-          cache: 'pnpm'
+          node-version: "22"
+          cache: "pnpm"
 
       # -----------------------------
       # 4. Install dependencies
@@ -62,14 +62,3 @@ jobs:
       # -----------------------------
       - name: Run Build
         run: pnpm build
-
-      # -----------------------------
-      # 8. Trigger Vercel Deploy (Option B)
-      # -----------------------------
-      - name: Trigger Vercel Deploy (Production)
-        if: github.ref == 'refs/heads/main'
-        run: |
-          echo "✅ All checks passed. Triggering Vercel deploy..."
-          curl -X POST "$VERCEL_DEPLOY_HOOK_URL"
-        env:
-          VERCEL_DEPLOY_HOOK_URL: ${{ secrets.VERCEL_DEPLOY_HOOK_URL }}

@@ -606,6 +606,13 @@ def test_asking_within_a_category_recommends_only_that_category():
     assert any(n in picks for n in ("Beef with Red Curry", "French Fry", "Onion Ring", "Chicken Cashew Nut Salad"))
 
 
+def test_a_taste_question_is_not_the_menu_tour():
+    # the real turn: "ঝাল খাবারের মধ্যে কি আছে আপনাদের?" got the "what do you have" overview (with soups!)
+    out, _ = run("ঝাল খাবারের মধ্যে কি আছে আপনাদের?", {"topic": "recommendation", "intent": "suggestions", "replyText": "…"})
+    assert "menu_overview" not in out["meta"]["guards"], out["replyText"]
+    assert "আইটেম সব আছে" not in out["replyText"], out["replyText"]
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_") and callable(fn):

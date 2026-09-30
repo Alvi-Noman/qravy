@@ -518,12 +518,12 @@ _KINDS = {
     "coffee": r"coffee|espresso|latte|cappuccino|কফি",
     # Bangla needs its own boundary: \b treats the vowel sign in "চা" as an edge, so "চারজন" (four people) looked like tea
     "tea": r"\btea\b|\bchai\b|\bcha\b|(?<![ঀ-৿])চা(?![ঀ-৿])",
-    "juice": r"juice|smoothie|lassi|milkshake|\bshake\b|জুস|লাচ্ছি",
+    "juice": r"juice|smoothie|\blassi\b|milkshake|\bshake\b|জুস|লাচ্ছি",
     # (how guests ask, how the menu lists it) — in Bangladesh "ঠান্ডা" (thanda) means a cold/soft drink
     "drinks": (
         r"\bdrinks?\b|beverages?|cold ?drinks?|soft ?drinks?|\bthanda\b|\btanda\b|ঠান্ডা|ঠাণ্ডা|কোল্ড ?ড্রিংক|সফট ?ড্রিংক|"
         r"ড্রিংক|পানীয়|কোমল পানীয়|\bcoke\b|pepsi|sprite|7 ?up|কোক|পেপসি|স্প্রাইট|সেভেন ?আপ",
-        r"drink|beverage|soda|coke|pepsi|sprite|7 ?up|fanta|mojito|lemonade|juice|lassi|shake|borhani|\bcola\b",
+        r"drink|beverage|\bsoda\b|\bcoke\b|pepsi|sprite|7 ?up|fanta|mojito|lemonade|juice|\blassi\b|\bshakes?\b|milkshake|borhani|\bcola\b|\bwater\b",
     ),
     "pizza": r"pizza|পিজা|পিজ্জা",
     "burgers": r"burger|বার্গার",

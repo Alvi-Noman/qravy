@@ -130,6 +130,8 @@ export async function updateTenant(
       country?: string;
       address?: string;
       locationMode?: 'single' | 'multiple';
+      onlineSalesEnabled?: boolean;
+      dineInEnabled?: boolean;
     };
     ownerInfo?: {
       fullName?: string;
@@ -160,4 +162,4 @@ export async function updateTenant(
     headers: { Authorization: `Bearer ${token}` },
   });
   return res.data.item as TenantDTO;
-}
+}

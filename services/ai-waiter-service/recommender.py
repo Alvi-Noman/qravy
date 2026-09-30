@@ -278,6 +278,25 @@ def _required_choice_contents(it: Dict[str, Any]) -> Tuple[set, bool]:
     return (common or set()), any_veg
 
 
+# Ready-made, bought-in things: the kitchen doesn't make them, so a waiter never praises or "recommends" them —
+# they're only ever offered plainly ("সাথে কি একটা Coke নেবেন?"). Fresh juice, lassi, borhani, shakes, coffee are made here.
+_PACKAGED = re.compile(
+    r"\b(mineral )?water\b|\bcoke\b|coca[- ]?cola|\bpepsi\b|7 ?up|seven ?up|\bsprite\b|\bfanta\b|mountain dew|\bmirinda\b|"
+    r"\bsoda\b|club soda|tonic|red ?bull|energy drink|\bspeed\b|\bmojo\b|\bclemon\b|\brc cola\b|frutika|shezan|"
+    r"soft ?drinks?|canned|\bcan\b|bottled|\bbottle\b|diet coke|coke zero|pepsi max|\bdew\b",
+    re.I,
+)
+_MADE_HERE = re.compile(r"fresh|lassi|borhani|shake|smoothie|mojito|lemonade|mocktail|coffee|latte|cappuccino|tea\b|"
+                        r"falooda|juice", re.I)
+
+
+def is_packaged(it: Dict[str, Any]) -> bool:
+    """Mineral water, Coke, 7Up, Sprite, a canned soda… (a "Fresh Lime Soda" or "Mango Lassi" is made here)."""
+    name = str(it.get("name") or "")
+    text = f"{name} {it.get('category') or ''}"
+    return bool(_PACKAGED.search(text)) and not _MADE_HERE.search(name)
+
+
 def dish_facts(it: Dict[str, Any]) -> Dict[str, Any]:
     h = item_hints(it)
     text = " ".join(str(x or "") for x in (it.get("name"), it.get("category"), it.get("description"))).lower()
@@ -302,7 +321,7 @@ def dish_facts(it: Dict[str, Any]) -> Dict[str, Any]:
         "diet": h["diet"],
         "text": text,
         "protein": protein,
-        "drink": bool(re.search(r"beverage|drink|\bwater\b|juice|lassi|shake|soda|\btea\b|coffee", kind)),
+        "drink": bool(re.search(r"beverage|drink|\bwater\b|juice|\blassi|shake|\bsoda|\btea\b|coffee", kind)),
         "rice": bool(re.search(r"rice|noodle|chow ?mein|chop ?suey|biry?ani|polao|pulao|khichuri|naan|roti|kulcha|chapati", kind)) and "soup" not in kind,
         "starter": bool(re.search(r"appeti|starter|snack|soup|salad", kind)),
         "soup": "soup" in kind,
@@ -537,9 +556,21 @@ def rank(
     asked_for: Optional[set] = None,
     limit: int = 8,
     only: Optional[set] = None,
+    exclude: Optional[set] = None,
 ) -> Tuple[List[Pick], Dict[str, List[str]]]:
     """Filtered, scored, diversified picks + {itemId: reasons excluded} for every blocked dish.
-    `only`: the guest named a kind ("soups") — pick from those dishes alone."""
+    `only`: the guest named a kind ("soups") — pick from those dishes alone.
+    `exclude`: already in the guest's tray — they chose it, so it's never "recommended" back to them (unless
+    nothing else is left to suggest: then the tray's dishes may still be named)."""
+    if exclude:
+        picks, blocked = rank(index, orderable, kinds, prof, stats=stats, context_ids=context_ids, recent=recent,
+                              asked_for=asked_for, limit=limit + len(exclude), only=only)
+        rest = [p for p in picks if index.item_id(p.item) not in exclude][:limit]
+        if rest:
+            for iid in exclude:
+                blocked.setdefault(iid, []).append("already in the guest's tray")
+            return rest, blocked
+        return picks[:limit], blocked
     stats = stats or OrderStats()
     context_ids, recent, asked_for = context_ids or [], recent or [], asked_for or set()
     blocked: Dict[str, List[str]] = {}
@@ -551,6 +582,8 @@ def rank(
         if not orderable.get(iid, True):
             blocked[iid] = ["not orderable now"]
             continue
+        if is_packaged(it) and iid not in asked_for and only is None:
+            continue  # water / Coke is never a "recommendation" (still offered plainly as a drink with the order)
         f = dish_facts(it)
         v = violations(it, prof, f)
         fits, _ = time_fit(it, kinds)
@@ -860,6 +893,8 @@ class RecoState:
     last_upsell_turn: int = -99
     declined_turn: int = -99
     drink_offered: bool = False
+    gaps_offered: List[str] = field(default_factory=list)  # the kinds asked about in THE upsell question (once a visit)
+    upsell_asked: bool = False  # "সাথে কি কোনো ড্রিংকস অথবা ডেজার্ট নিবেন?" — asked once per visit, never again
     recent: List[str] = field(default_factory=list)  # item ids pitched recently (novelty)
     profile: Dict[str, Any] = field(default_factory=dict)
 

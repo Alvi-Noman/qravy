@@ -18,6 +18,7 @@ const GATEWAY_URL = process.env.GATEWAY_URL || 'http://api-gateway:8080';
 
 // NEW: direct target for the AI Waiter WS service (Fix A)
 const AI_WAITER_URL = process.env.AI_WAITER_URL || 'http://ai-waiter-service:7071';
+const AI_WAITER_HTTP_URL = process.env.AI_WAITER_HTTP_URL || 'http://ai-waiter-service:7081';
 
 // ---- CORS allow-list
 const RAW_ORIGINS = (process.env.CORS_ORIGIN || '')
@@ -173,6 +174,15 @@ export function createApp(): Application {
     },
   });
 
+  const cartApiProxy = createProxyMiddleware({
+    target: AI_WAITER_HTTP_URL,
+    changeOrigin: true,
+    xfwd: true,
+    pathRewrite: (_path, req) =>
+      (req as Request).originalUrl.replace(/^\/cart-api(?=\/|$)/, '') || '/',
+  });
+  app.use('/cart-api', cartApiProxy);
+
   // Mount proxy at /api — upstream will receive /api/v1/... because of pathRewrite above.
   app.use('/api', apiProxy);
 
@@ -244,6 +254,7 @@ export function createApp(): Application {
             branch,
             table,
             apiBase: '/api/v1',
+            cartApiBase: '/cart-api',
           });
 
           res.setHeader('Content-Type', 'text/html; charset=utf-8');
@@ -328,6 +339,7 @@ function injectRuntime(html: string, payload: {
   branch: string | null;
   table: string | null;
   apiBase: string;
+  cartApiBase: string;
 }): string {
   // escape "<" so a crafted path can't close the script tag
   const snippet = `<script>window.__STORE__=${JSON.stringify(payload).replace(/</g, '\\u003c')};</script>`;

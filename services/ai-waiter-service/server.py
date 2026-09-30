@@ -207,6 +207,14 @@ async def writer():
 
 WRITER_TASK = None
 
+# ---------- Buzzer alert state (per-tenant) ----------
+# { tenant_subdomain: {"active": bool, "since": float | None} }
+_ALERT_STATE: Dict[str, Dict[str, Any]] = defaultdict(lambda: {"active": False, "since": None})
+
+def _set_alert(tenant: str, active: bool) -> None:
+    _ALERT_STATE[tenant]["active"] = active
+    _ALERT_STATE[tenant]["since"] = time.time() if active else None
+
 # ---------- NEW: Minimal HTTP API for cart persistence ----------
 
 def _cart_cors_headers() -> Dict[str, str]:
@@ -267,16 +275,54 @@ async def handle_cart_options(request: web.Request) -> web.StreamResponse:
     )
 
 
+# ---------- Buzzer alert HTTP handlers ----------
+
+async def handle_alert_get(request: web.Request) -> web.Response:
+    """GET /alert?tenant=<subdomain>  — polled by the ESP32 every 2 s."""
+    tenant = request.rel_url.query.get("tenant", "")
+    state = _ALERT_STATE[tenant] if tenant else {"active": False, "since": None}
+    return web.Response(
+        content_type="application/json",
+        text=json.dumps({"alert": state["active"], "since": state["since"]}),
+        headers={"Access-Control-Allow-Origin": "*"},
+    )
+
+async def handle_alert_dismiss(request: web.Request) -> web.Response:
+    """POST /alert/dismiss?tenant=<subdomain>  — called by the dashboard when employee acknowledges."""
+    tenant = request.rel_url.query.get("tenant", "")
+    if not tenant:
+        return web.Response(status=400, text=json.dumps({"ok": False, "error": "tenant required"}),
+                            content_type="application/json")
+    _set_alert(tenant, False)
+    print(f"[alert] ✅ buzzer dismissed for {tenant}")
+    return web.Response(
+        content_type="application/json",
+        text=json.dumps({"ok": True}),
+        headers={"Access-Control-Allow-Origin": "*"},
+    )
+
+async def handle_alert_options(request: web.Request) -> web.Response:
+    return web.Response(status=204, headers={
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type",
+    })
+
+
 async def start_http_server():
     app = web.Application()
 
     # CORS / preflight
     app.router.add_route("OPTIONS", "/cart/load", handle_cart_options)
     app.router.add_route("OPTIONS", "/cart/save", handle_cart_options)
+    app.router.add_route("OPTIONS", "/alert", handle_alert_options)
+    app.router.add_route("OPTIONS", "/alert/dismiss", handle_alert_options)
 
     # Actual endpoints
     app.router.add_get("/cart/load", handle_cart_load)
     app.router.add_post("/cart/save", handle_cart_save)
+    app.router.add_get("/alert", handle_alert_get)
+    app.router.add_post("/alert/dismiss", handle_alert_dismiss)
 
     runner = web.AppRunner(app)
     await runner.setup()
@@ -1422,7 +1468,11 @@ async def place_order_via_api(
     payload = data.get("data") if isinstance(data.get("data"), dict) else data
     order = (payload or {}).get("order")
     if r.status_code < 300 and isinstance(order, dict):
-        return {"ok": True, "order": order, "created": bool((payload or {}).get("created", True))}
+        created = bool((payload or {}).get("created", True))
+        if created and tenant_subdomain(tenant):
+            _set_alert(tenant_subdomain(tenant), True)
+            print(f"[alert] 🔔 new order for {tenant_subdomain(tenant)} — buzzer triggered")
+        return {"ok": True, "order": order, "created": created}
     msg = data.get("message") or f"HTTP {r.status_code}"
     details = data.get("error") if isinstance(data.get("error"), dict) else {}
     print("[ai-waiter-service] ⚠️ order rejected:", r.status_code, msg, details)

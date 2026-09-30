@@ -78,8 +78,8 @@ def test_other_phrasings_and_when_it_is_not_about_the_list():
     out, calls = run("Beef with Red Curry কি ঝাল?", [ok])
     assert "RECOMMENDATION MODE: COMPARE" not in calls[0][-1]["content"]
     # nothing on screen → nothing to compare
-    out, calls = run("কোনটা ভালো হবে?", [ok], shown=[])
-    assert "RECOMMENDATION MODE: COMPARE" not in calls[0][-1]["content"]
+    out, calls = run("কোনটা ভালো হবে?", [ok], shown=[])  # (answered by the fixed recommendation line — no model call)
+    assert not calls or "RECOMMENDATION MODE: COMPARE" not in calls[0][-1]["content"]
 
 
 if __name__ == "__main__":

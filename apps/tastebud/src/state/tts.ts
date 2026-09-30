@@ -44,7 +44,7 @@ const LS_MUTED = "tts.muted";
 const LS_VOLUME = "tts.volume"; // 0..1
 const LS_VOICE = "tts.voice";
 
-const TOKEN_REFRESH_MS = 9 * 60 * 1000; // refresh a bit before 10m
+const TOKEN_FALLBACK_LIFE_MS = 4 * 60 * 1000; // no expiry from the server → assume only 4 min left (it may be reused)
 const MIN_AUDIBLE = 0.05;               // never let live output go below 5% if not muted
 const SPARE_MAX_AGE_MS = 4 * 60 * 1000; // a pre-connected pipeline older than this is rebuilt
 
@@ -180,6 +180,8 @@ class TTSManager implements TTSPublicAPI {
   private authToken = "";
   private region = "";
   private tokenFetchedAt = 0;
+  // when the token really stops working (from the server — it may have been issued minutes before we got it)
+  private tokenExpiresAt = 0;
 
   private speechConfig: sdk.SpeechConfig | null = null;
   private speaker: sdk.SpeakerAudioDestination | null = null;
@@ -354,14 +356,20 @@ class TTSManager implements TTSPublicAPI {
     this.listeners.forEach(h => { h.onPlaybackEnd?.(); });
   }
 
-  private async _ensureToken() {
-    // Token valid?
-    if (!this.authToken || (Date.now() - this.tokenFetchedAt) > TOKEN_REFRESH_MS) {
-      const { token, region } = await this._fetchToken();
-      this.authToken = token;
-      this.region = region;
-      this.tokenFetchedAt = Date.now();
-    }
+  /** Still good for at least another minute? (by its real expiry — not by when WE happened to fetch it) */
+  private _tokenFresh(): boolean {
+    return !!this.authToken && Date.now() < this.tokenExpiresAt - 60_000;
+  }
+
+  private async _ensureToken(fresh = false) {
+    if (!fresh && this._tokenFresh()) return;
+    const { token, region, expiresAt } = await this._fetchToken(fresh);
+    this.authToken = token;
+    this.region = region;
+    this.tokenFetchedAt = Date.now();
+    // (an older gateway sends no expiry: assume the worst case it could have reused it for)
+    this.tokenExpiresAt = typeof expiresAt === "number" && expiresAt > 0 ? expiresAt : Date.now() + TOKEN_FALLBACK_LIFE_MS;
+    if (this.speechConfig) this.speechConfig.authorizationToken = token;
   }
 
   private _spareUsable(): boolean {
@@ -501,14 +509,13 @@ class TTSManager implements TTSPublicAPI {
   }
 
   private async _refreshAuthIfNeeded() {
-    if ((Date.now() - this.tokenFetchedAt) <= TOKEN_REFRESH_MS) return;
-    const { token } = await this._fetchToken();
-    this.authToken = token;
-    if (this.speechConfig) this.speechConfig.authorizationToken = token;
+    await this._ensureToken();
   }
 
-  private async _fetchToken(): Promise<{ token: string; region: string }> {
-    const res = await fetch(TOKEN_URL, { method: "GET", credentials: "omit" });
+  private async _fetchToken(fresh = false): Promise<{ token: string; region: string; expiresAt?: number }> {
+    // never from the browser's cache — a cached response once handed back an already-expired token
+    const url = fresh ? `${TOKEN_URL}${TOKEN_URL.includes("?") ? "&" : "?"}fresh=1` : TOKEN_URL;
+    const res = await fetch(url, { method: "GET", credentials: "omit", cache: "no-store" });
     if (!res.ok) throw new Error(`TTS token fetch failed: ${res.status}`);
     return res.json();
   }
@@ -528,8 +535,11 @@ class TTSManager implements TTSPublicAPI {
         } catch (first) {
           // a pre-connected (warm) pipeline can go stale, or stop() may have torn it down mid-way:
           // rebuild from scratch and try once more before giving up
-          console.warn("[TTS] retrying on a fresh pipeline", first);
+          // …with a brand-new token: an expired one is the usual reason, and retrying with it failed every reply
+          // until a page reload
+          console.warn("[TTS] retrying on a fresh pipeline with a new token", first);
           this._resetPipeline();
+          await this._ensureToken(true);
           await this._ensureReady();
           await this._speakOnce(next.text);
         }

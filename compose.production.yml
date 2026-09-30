@@ -1,0 +1,137 @@
+services:
+  caddy:
+    image: caddy:2-alpine
+    environment:
+      ADMIN_DOMAIN: ${ADMIN_DOMAIN:?Set ADMIN_DOMAIN in .env.production}
+      STOREFRONT_DOMAIN: ${STOREFRONT_DOMAIN:?Set STOREFRONT_DOMAIN in .env.production}
+      TLS_EMAIL: ${TLS_EMAIL:?Set TLS_EMAIL in .env.production}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - braincell
+      - storefront-host
+      - api-gateway
+      - ai-waiter-service
+    restart: unless-stopped
+
+  braincell:
+    image: ${IMAGE_PREFIX:?Set IMAGE_PREFIX in .env.production}/qravy-braincell:${IMAGE_TAG:-prod}
+    restart: unless-stopped
+
+  tastebud:
+    image: ${IMAGE_PREFIX:?Set IMAGE_PREFIX in .env.production}/qravy-tastebud:${IMAGE_TAG:-prod}
+    restart: unless-stopped
+
+  auth-service:
+    image: ${IMAGE_PREFIX:?Set IMAGE_PREFIX in .env.production}/qravy-auth:${IMAGE_TAG:-prod}
+    env_file:
+      - ${AUTH_ENV_FILE:-./runtime/auth-service.env}
+    environment:
+      NODE_ENV: production
+      PORT: "3001"
+      CORS_ORIGIN: https://${ADMIN_DOMAIN},https://${STOREFRONT_DOMAIN}
+      FRONTEND_URL: https://${ADMIN_DOMAIN}
+      APP_BASE_URL: https://${ADMIN_DOMAIN}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:?Set OPENAI_API_KEY in .env.production}
+      MENU_IMPORT_MODEL: gpt-4.1-mini
+    restart: unless-stopped
+
+  upload-service:
+    image: ${IMAGE_PREFIX:?Set IMAGE_PREFIX in .env.production}/qravy-upload:${IMAGE_TAG:-prod}
+    env_file:
+      - ${UPLOAD_ENV_FILE:-./runtime/upload-service.env}
+    environment:
+      NODE_ENV: production
+      PORT: "4010"
+      CORS_ORIGIN: https://${ADMIN_DOMAIN},https://${STOREFRONT_DOMAIN}
+      UPLOAD_TOKEN: ${UPLOAD_SERVICE_TOKEN:?Set UPLOAD_SERVICE_TOKEN in .env.production}
+    depends_on:
+      - auth-service
+    restart: unless-stopped
+
+  api-gateway:
+    image: ${IMAGE_PREFIX:?Set IMAGE_PREFIX in .env.production}/qravy-api-gateway:${IMAGE_TAG:-prod}
+    environment:
+      NODE_ENV: production
+      PORT: "8080"
+      HOST: 0.0.0.0
+      CORS_ORIGIN: https://${ADMIN_DOMAIN},https://${STOREFRONT_DOMAIN}
+      AUTH_SERVICE_URL: http://auth-service:3001
+      UPLOAD_SERVICE_URL: http://upload-service:4010
+      UPLOAD_SERVICE_TOKEN: ${UPLOAD_SERVICE_TOKEN:?Set UPLOAD_SERVICE_TOKEN in .env.production}
+      VOICE_WS_TARGET: http://ai-waiter-service:7071
+      AZURE_SPEECH_KEY: ${AZURE_SPEECH_KEY:?Set AZURE_SPEECH_KEY in .env.production}
+      AZURE_SPEECH_REGION: ${AZURE_SPEECH_REGION:?Set AZURE_SPEECH_REGION in .env.production}
+    depends_on:
+      - auth-service
+      - upload-service
+      - ai-waiter-service
+    restart: unless-stopped
+
+  storefront-host:
+    image: ${IMAGE_PREFIX:?Set IMAGE_PREFIX in .env.production}/qravy-storefront-host:${IMAGE_TAG:-prod}
+    env_file:
+      - ${STOREFRONT_ENV_FILE:-./runtime/storefront-host.env}
+    environment:
+      NODE_ENV: production
+      PORT: "8090"
+      HOST: 0.0.0.0
+      TASTEBUD_DEV_URL: http://tastebud:80
+      GATEWAY_URL: http://api-gateway:8080
+      AI_WAITER_URL: http://ai-waiter-service:7071
+      AI_WAITER_HTTP_URL: http://ai-waiter-service:7081
+      CORS_ORIGIN: https://${ADMIN_DOMAIN},https://${STOREFRONT_DOMAIN}
+    depends_on:
+      - tastebud
+      - api-gateway
+      - ai-waiter-service
+    restart: unless-stopped
+
+  ai-waiter-service:
+    image: ${IMAGE_PREFIX:?Set IMAGE_PREFIX in .env.production}/qravy-ai-waiter:${IMAGE_TAG:-prod}
+    env_file:
+      - ${WAITER_ENV_FILE:-./runtime/ai-waiter-service.env}
+    environment:
+      PORT: "7071"
+      CART_HTTP_PORT: "7081"
+      WHISPER_MODEL: tiny
+      WHISPER_DEVICE: cpu
+      WHISPER_COMPUTE_TYPE: int8
+      OMP_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      NUMEXPR_NUM_THREADS: "1"
+      GROQ_API_KEY: ${GROQ_API_KEY:?Set GROQ_API_KEY in .env.production}
+      GROQ_MODEL: whisper-large-v3
+      GROQ_BASE: https://api.groq.com
+      GROQ_TIMEOUT_MS: "6000"
+      OPENAI_API_KEY: ${OPENAI_API_KEY:?Set OPENAI_API_KEY in .env.production}
+      OPENAI_BASE: https://api.openai.com
+      OPENAI_STT_MODEL: gpt-4o-transcribe
+      OPENAI_CHAT_MODEL: ${OPENAI_CHAT_MODEL:-gpt-4.1-mini}
+      INTENT_AI: "0"
+      BRAIN_TIMEOUT_S: "12.0"
+      BRAIN_MAX_TOKENS: "1800"
+      BRAIN_TEMP: "0.2"
+      MONGO_DB: qravy
+      MENU_DB: authDB
+      MENU_COLLECTION: menuItems
+      NORMALIZER_FUZZY_THRESHOLD: "0.87"
+      NORMALIZER_VOCAB_MAX: "200"
+      MENU_SNAPSHOT_MAX: "120"
+      NORMALIZER_INCLUDE_ALIASES: "1"
+      STAFF_ALERTS_ENABLED: "0"
+      IDLE_FINALIZE_MS: "1200"
+      TRANSCRIPT_FLUSH_N: "1"
+      TRANSCRIPT_FLUSH_MS: "500"
+    restart: unless-stopped
+
+volumes:
+  caddy_data:
+  caddy_config:

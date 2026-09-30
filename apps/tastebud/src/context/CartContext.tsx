@@ -497,6 +497,9 @@ export function CartProvider({ children }: PropsWithChildren<{}>) {
 
         if (!cancelled && useRemote) {
           const normalized = remote.items as CartItem[];
+          // restoring the saved tray isn't a change to show / offer undo for
+          // (initialLoaded flips true below, before the change-record effect sees this render)
+          suppressRef.current = true;
           dispatch({
             type: 'HYDRATE',
             payload: normalized,

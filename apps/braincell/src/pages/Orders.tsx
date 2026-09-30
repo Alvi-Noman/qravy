@@ -6,6 +6,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { BellAlertIcon, BellSlashIcon, ArrowPathIcon, ClockIcon, PrinterIcon } from '@heroicons/react/24/outline';
 import { useTenant } from '../hooks/useTenant';
+import { useBuzzerAlert } from '../hooks/useBuzzerAlert';
 import {
   loadPrintSettings,
   printOrder,
@@ -529,6 +530,8 @@ export default function Orders() {
   const [tab, setTab] = useState<'active' | 'history'>('active');
   const [now, setNow] = useState(() => Date.now());
   const { data: tenant } = useTenant();
+  const tenantSubdomain = (tenant as { subdomain?: string } | undefined)?.subdomain;
+  const { active: buzzerActive, dismiss: dismissBuzzer } = useBuzzerAlert(tenantSubdomain);
   const [printSettings, setPrintSettings] = useState<PrintSettings>(loadPrintSettings);
   const updatePrintSettings = (s: PrintSettings) => {
     setPrintSettings(s);
@@ -634,6 +637,27 @@ export default function Orders() {
           </button>
         </div>
       </div>
+
+      {buzzerActive && (
+        <div className="flex items-center justify-between gap-4 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3">
+          <div className="flex items-center gap-3">
+            <span className="relative flex h-3 w-3">
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber-400 opacity-75" />
+              <span className="relative inline-flex h-3 w-3 rounded-full bg-amber-500" />
+            </span>
+            <span className="text-sm font-medium text-amber-800">
+              🔔 New order — counter buzzer is ringing
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={() => void dismissBuzzer()}
+            className="rounded-md bg-amber-100 px-3 py-1.5 text-sm font-medium text-amber-800 hover:bg-amber-200 active:scale-95"
+          >
+            Silence buzzer
+          </button>
+        </div>
+      )}
 
       <div className="flex gap-1 rounded-md bg-[#f1f2f4] p-1 w-fit" role="tablist">
         {(['active', 'history'] as const).map((t) => (
