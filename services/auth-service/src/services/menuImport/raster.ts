@@ -10,7 +10,6 @@
  * carries only the text that lies inside it, plus a low-res overview of the
  * whole page so the model can see which section heading a tile belongs to.
  */
-import { createRequire } from 'node:module';
 import path from 'node:path';
 import { createCanvas } from '@napi-rs/canvas';
 import * as pdfjs from 'pdfjs-dist/legacy/build/pdf.mjs';
@@ -28,11 +27,16 @@ const OVERLAP = 0.06; // of tile size, each side
 const TILE_LONG_PX = 1800; // ≈ 150–200 DPI for an A4-sized tile
 const OVERVIEW_LONG_PX = 1024;
 
-const require = createRequire(import.meta.url);
-const pdfjsRoot = path.dirname(require.resolve('pdfjs-dist/package.json'));
-// pdf.js wants "/"-terminated paths, also on Windows
-const STANDARD_FONTS = path.join(pdfjsRoot, 'standard_fonts').replace(/\\/g, '/') + '/';
-const CMAPS = path.join(pdfjsRoot, 'cmaps').replace(/\\/g, '/') + '/';
+async function getPdfjsRoot(): Promise<string> {
+  if (typeof require === 'function') {
+    return path.dirname(require.resolve('pdfjs-dist/package.json'));
+  }
+
+  const { createRequire } = await import('node:module');
+  const { pathToFileURL } = await import('node:url');
+  const localRequire = createRequire(pathToFileURL(path.join(process.cwd(), 'dummy.mjs')));
+  return path.dirname(localRequire.resolve('pdfjs-dist/package.json'));
+}
 
 export type Tile = {
   image: Buffer; // JPEG
@@ -49,10 +53,14 @@ export type RenderedPage = {
 };
 
 export async function openForRender(pdf: Buffer): Promise<PdfJsDoc> {
+  const pdfjsRoot = await getPdfjsRoot();
+  const standardFonts = path.join(pdfjsRoot, 'standard_fonts').replace(/\\/g, '/') + '/';
+  const cmaps = path.join(pdfjsRoot, 'cmaps').replace(/\\/g, '/') + '/';
+
   return pdfjs.getDocument({
     data: new Uint8Array(pdf), // copy: pdf.js detaches the buffer it is given
-    standardFontDataUrl: STANDARD_FONTS,
-    cMapUrl: CMAPS,
+    standardFontDataUrl: standardFonts,
+    cMapUrl: cmaps,
     cMapPacked: true,
     disableFontFace: true,
     verbosity: 0,
