@@ -367,7 +367,7 @@ function reducer(state: CartState, action: Action): CartState {
 /*                                 Provider                                   */
 /* -------------------------------------------------------------------------- */
 
-export function CartProvider({ children }: PropsWithChildren<{}>) {
+export function CartProvider({ children }: PropsWithChildren<object>) {
   const location = useLocation();
   const { pathname, search } = location;
 

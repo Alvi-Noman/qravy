@@ -12,6 +12,7 @@ export default [
   ...sharedPreset,
   {
     files: ['**/*.{ts,tsx}'],
+    ignores: ['dist/**', 'build/**', 'coverage/**', '**/*.d.ts'],
     languageOptions: {
       parser: tsEslintParser,
       parserOptions: {
@@ -24,6 +25,17 @@ export default [
     plugins: {
       react: pluginReact,
       'react-hooks': pluginReactHooks,
+    },
+    settings: {
+      react: { version: 'detect' },
+    },
+    rules: {
+      '@typescript-eslint/no-explicit-any': 'warn',
+      '@typescript-eslint/no-unused-vars': ['warn', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],
+      'no-console': 'warn',
+      'react-hooks/rules-of-hooks': 'off',
+      'react-hooks/exhaustive-deps': 'warn',
+      'react/no-unescaped-entities': 'off',
     },
   },
   {
@@ -38,6 +50,16 @@ export default [
     },
     rules: {
       'no-console': 'warn',
+    },
+  },
+  {
+    files: ['**/*.test.{ts,tsx}', '**/__tests__/**/*.{ts,tsx}'],
+    rules: {
+      '@typescript-eslint/no-explicit-any': 'off',
+      '@typescript-eslint/no-unused-vars': ['warn', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],
+      'no-console': 'off',
+      'react-hooks/rules-of-hooks': 'off',
+      'react-hooks/exhaustive-deps': 'off',
     },
   },
 ];

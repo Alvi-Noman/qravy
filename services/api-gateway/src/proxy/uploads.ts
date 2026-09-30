@@ -64,7 +64,7 @@ export default function registerUploadsProxy(app: Application): void {
     proxyTimeout: 5 * 60 * 1000,
     timeout: 5 * 60 * 1000,
 
-    pathRewrite: (path: string, req: Request) => {
+    pathRewrite: (path: string) => {
       // 1) AS-IS: do not touch the path
       if (base === '__AS_IS__') return path;
 

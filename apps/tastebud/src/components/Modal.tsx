@@ -120,7 +120,6 @@ function SmartImage({ src, alt, className, width, height }: SmartImageProps) {
         alt={alt}
         loading="eager"
         decoding="async"
-        // @ts-ignore
         fetchPriority="high"
         className={cx(
           'h-full w-full transition-opacity duration-200 object-cover',
@@ -199,8 +198,7 @@ export default function Modal({
       try {
         addPreloadLink(src);
       } catch {}
-      const im = new Image();
-      // @ts-ignore
+      const im = new Image() as HTMLImageElement & { fetchPriority?: string };
       im.fetchPriority = 'high';
       im.decoding = 'async';
       im.src = src;

@@ -139,7 +139,7 @@ export default function MicInputBar({
         try { setAi(""); } catch {}
       },
 
-      // @ts-ignore
+      // @ts-expect-error - the runtime TTS adapter emits a word callback that the current type surface does not declare.
       onWord: (w: string, offsetMs?: number) => {
         if (!ownsLive()) return;
         if (activeGenRef.current !== speakGenRef.current) return;
