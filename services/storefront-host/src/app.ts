@@ -62,9 +62,14 @@ export function createApp(): Application {
   const app = express();
 
   // --- COOP/COEP: enable faster audio timing & future SharedArrayBuffer ---
+  // Use "credentialless" (not "require-corp") so the Azure Speech SDK can load
+  // its audio-worklet processor scripts from Azure CDN without being blocked.
+  // Those CDN responses don't carry Cross-Origin-Resource-Policy: cross-origin,
+  // which "require-corp" would silently block, killing TTS in production.
+  // "credentialless" still achieves cross-origin isolation for high-res timers.
   app.use((req, res, next) => {
     res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
-    res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp');
+    res.setHeader('Cross-Origin-Embedder-Policy', 'credentialless');
     next();
   });
 
