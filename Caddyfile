@@ -8,6 +8,11 @@
 		reverse_proxy api-gateway:8080
 	}
 
+	@voice path /ws/voice
+	handle @voice {
+		reverse_proxy api-gateway:8080
+	}
+
 	handle_path /waiter/* {
 		reverse_proxy ai-waiter-service:7081
 	}
@@ -23,5 +28,10 @@
 }
 
 {$STOREFRONT_DOMAIN} {
+	@voice path /ws/voice
+	handle @voice {
+		reverse_proxy api-gateway:8080
+	}
+
 	reverse_proxy storefront-host:8090
 }
