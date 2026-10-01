@@ -7,6 +7,7 @@ import type { ClientRequest, IncomingMessage, ServerResponse } from 'http';
 import https from 'https';
 
 const PORT = Number(process.env.PORT || 8090);
+const STOREFRONT_DOMAIN = (process.env.STOREFRONT_DOMAIN || '').toLowerCase();
 
 // IMPORTANT:
 // - No localhost fallback here. In dev, set TASTEBUD_DEV_URL explicitly
@@ -272,6 +273,8 @@ export function createApp(): Application {
 function resolveTenantFromHost(hostHeader: string | undefined): string | null {
   const host = hostHeader || '';
   const hostname = (host.split(':')[0] ?? '').toLowerCase();
+
+  if (STOREFRONT_DOMAIN && hostname === STOREFRONT_DOMAIN) return null;
 
   const roots = ['onqravy.com', 'qravy.com'];
   for (const root of roots) {
