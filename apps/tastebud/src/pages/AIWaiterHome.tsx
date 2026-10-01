@@ -52,7 +52,13 @@ function welcomeText(lang: 'bn' | 'en', restaurant?: string | null): string {
   if (lang === 'en') {
     return `${name ? `Welcome to ${name}!` : 'Welcome!'} I'm Pixie, your virtual waiter. Ask me anything about the menu, or tell me what you'd like to order.`;
   }
-  return name ? WELCOME_BN.replace('স্বাগতম! আমি', `${name}-এ স্বাগতম, আমি`) : WELCOME_BN;
+  if (!name) return WELCOME_BN;
+
+  const isBurgerHouse = /^burger[\s-]+house$/i.test(name);
+  const banglaGreeting = isBurgerHouse
+    ? 'বার্গার হাউসে স্বাগতম'
+    : `${name}-এ স্বাগতম`;
+  return WELCOME_BN.replace('স্বাগতম! আমি', `${banglaGreeting}, আমি`);
 }
 
 // 🔒 Welcome overlay persistence
