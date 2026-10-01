@@ -1197,11 +1197,13 @@ export default function AiWaiterHome() {
                 tts.stop();
               } catch {}
               markVoicePending(true);
-              try {
-                tts.speak(speakText);
-              } catch {
+              tts.speak(speakText).catch((err) => {
+                console.warn('[AIWaiterHome] TTS speak failed, showing text directly:', err);
                 markVoicePending(false);
-              }
+                setAi(speakText);
+              });
+            } else if (replyText) {
+              setAi(replyText);
             }
 
             aiSeenRef.current = true;
@@ -1683,9 +1685,9 @@ export default function AiWaiterHome() {
     try {
       tts.stop();
     } catch {}
-    try {
-      tts.speak(WELCOME_TEXT);
-    } catch {}
+    tts.speak(WELCOME_TEXT).catch(() => {
+      setWelcomePending(false);
+    });
   };
 
   return (

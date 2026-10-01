@@ -517,6 +517,10 @@ class TTSManager implements TTSPublicAPI {
     const url = fresh ? `${TOKEN_URL}${TOKEN_URL.includes("?") ? "&" : "?"}fresh=1` : TOKEN_URL;
     const res = await fetch(url, { method: "GET", credentials: "omit", cache: "no-store" });
     if (!res.ok) throw new Error(`TTS token fetch failed: ${res.status}`);
+    const ct = res.headers.get("content-type") || "";
+    if (ct && !ct.includes("application/json")) {
+      throw new Error(`TTS token fetch failed: expected JSON from ${url} but got ${ct}`);
+    }
     return res.json();
   }
 

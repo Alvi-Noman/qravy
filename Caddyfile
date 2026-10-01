@@ -22,6 +22,11 @@
 		reverse_proxy upload-service:4010
 	}
 
+	@azure path /azure/*
+	handle @azure {
+		reverse_proxy api-gateway:8080
+	}
+
 	handle {
 		reverse_proxy braincell:80
 	}
@@ -30,6 +35,11 @@
 {$STOREFRONT_DOMAIN} {
 	@voice path /ws/voice
 	handle @voice {
+		reverse_proxy api-gateway:8080
+	}
+
+	@azure path /azure/*
+	handle @azure {
 		reverse_proxy api-gateway:8080
 	}
 

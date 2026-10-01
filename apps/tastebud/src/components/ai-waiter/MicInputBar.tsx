@@ -466,7 +466,12 @@ export default function MicInputBar({
           const speakText = voiceText || replyText;
 
           if (speakText && shouldSpeakOnce(speakText)) {
-            try { tts.speak(speakText); } catch {}
+            tts.speak(speakText).catch((err) => {
+              console.warn("[MicInputBar] TTS speak failed, showing text directly:", err);
+              setAi(speakText);
+            });
+          } else if (replyText) {
+            setAi(replyText);
           }
 
           setThinking(false);

@@ -187,6 +187,17 @@ export function createApp(): Application {
   // Mount proxy at /api — upstream will receive /api/v1/... because of pathRewrite above.
   app.use('/api', apiProxy);
 
+  /* ========================= Azure Speech proxy -> Gateway ========================= */
+  const azureProxy = createProxyMiddleware({
+    target: GATEWAY_URL,
+    changeOrigin: true,
+    xfwd: true,
+    ws: false,
+    secure: false,
+    agent: isHttpsGateway ? new https.Agent({ rejectUnauthorized: false }) : undefined,
+  });
+  app.use('/azure', azureProxy);
+
   /* ========================= WS proxy -> AI Waiter (voice) ========================= */
   const isHttpsAi = AI_WAITER_URL.startsWith('https://');
   const voiceWsProxy = createProxyMiddleware({

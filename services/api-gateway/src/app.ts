@@ -112,6 +112,7 @@ app.options('*', cors(corsOptions));
 
 // ── Azure Speech: secure token relay ───────────────────────────────────────────
 app.use('/azure', azureRouter); // ← ADDED
+app.use('/api/azure', azureRouter);
 
 /* >>> MOUNT UPLOADS PROXY BEFORE BODY PARSERS <<< */
 registerUploadsProxy(app);
