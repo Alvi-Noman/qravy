@@ -178,7 +178,7 @@ def watch_forever(coll, outdir: str, mark_value: str, *, interval: float):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--mongo", default=os.environ.get("MONGO_URI", "mongodb://localhost:27017"))
-    ap.add_argument("--db", default="qravy")
+    ap.add_argument("--db", default=os.environ.get("MONGO_DB", "qravy"))
     ap.add_argument("--coll", default="transcripts")
     ap.add_argument("--outdir", default="fine_tuning")
     ap.add_argument("--batch", type=int, default=100)

@@ -1,6 +1,6 @@
 # Deploying QRavy to Contabo
 
-This production stack runs both frontends and the backend in Docker. GitHub Actions builds and publishes images to GHCR after CI passes on `main`, then sends only the Compose/Caddy config to Contabo and deploys the exact commit-tagged images. The application source stays in GitHub; it is not copied to the VPS. Caddy is the only container published to the internet and provides HTTPS. MongoDB remains external; use MongoDB Atlas and allowlist the VPS IP.
+This production stack runs both frontends and the backend in Docker. GitHub Actions builds and publishes images to GHCR after CI passes on `main`, then sends the Compose/Caddy config and transcript exporter script to Contabo and deploys the exact commit-tagged images. The application source stays in GitHub; it is not copied to the VPS. Caddy is the only container published to the internet and provides HTTPS. MongoDB remains external; use MongoDB Atlas and allowlist the VPS IP.
 
 ## Prepare the VPS
 
@@ -71,8 +71,10 @@ IMAGE_TAG=prod docker compose --env-file .env.production -f compose.production.y
 Check logs with:
 
 ```sh
-docker compose --env-file .env.production -f compose.production.yml logs -f caddy api-gateway storefront-host ai-waiter-service
+docker compose --env-file .env.production -f compose.production.yml logs -f caddy api-gateway storefront-host ai-waiter-service transcripts-exporter
 ```
+
+Live production review files are written on the VPS under `/opt/qravy/fine_tuning/review_transcripts-YYYYMMDD.jsonl`.
 
 Visit the Braincell hostname and storefront hostname. Restaurant menus use `/t/<restaurant-subdomain>/menu` or `/t/<restaurant-subdomain>/menu/dine-in`. Caddy obtains and renews HTTPS certificates automatically after DNS resolves and ports 80/443 are reachable.
 
@@ -80,4 +82,4 @@ Visit the Braincell hostname and storefront hostname. Restaurant menus use `/t/<
 
 Every successful `main` push deploys automatically. To roll back, set `IMAGE_TAG` to a previously published `sha-<commit>` tag and restart the Compose stack.
 
-Back up MongoDB Atlas and the Docker volume `caddy_data`. The development transcript-exporter sidecar is intentionally not included in the production stack.
+Back up MongoDB Atlas, the Docker volume `caddy_data`, and `/opt/qravy/fine_tuning` if you need to retain exported review files.

@@ -204,8 +204,9 @@ jobs:
           test -n "$CONTABO_DEPLOY_PATH"
           SSH_TARGET="$CONTABO_USER@$CONTABO_HOST"
           SSH_OPTS="-i $HOME/.ssh/id_ed25519 -o StrictHostKeyChecking=yes"
-          ssh $SSH_OPTS "$SSH_TARGET" "mkdir -p '$CONTABO_DEPLOY_PATH/runtime'"
+          ssh $SSH_OPTS "$SSH_TARGET" "mkdir -p '$CONTABO_DEPLOY_PATH/runtime' '$CONTABO_DEPLOY_PATH/fine_tuning'"
           scp $SSH_OPTS compose.production.yml Caddyfile "$SSH_TARGET:$CONTABO_DEPLOY_PATH/"
+          scp $SSH_OPTS fine_tuning/export_transcripts.py "$SSH_TARGET:$CONTABO_DEPLOY_PATH/fine_tuning/"
 
       - name: Pull and restart Contabo stack
         env:

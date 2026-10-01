@@ -133,6 +133,22 @@ services:
       TRANSCRIPT_FLUSH_MS: "500"
     restart: unless-stopped
 
+  transcripts-exporter:
+    image: python:3.11-slim
+    working_dir: /app
+    env_file:
+      - ${WAITER_ENV_FILE:-./runtime/ai-waiter-service.env}
+    environment:
+      PYTHONUNBUFFERED: "1"
+    command:
+      - bash
+      - -lc
+      - pip install --no-cache-dir 'pymongo[srv]' && python /app/export_transcripts.py --watch --outdir /output
+    volumes:
+      - ./fine_tuning/export_transcripts.py:/app/export_transcripts.py:ro
+      - ./fine_tuning:/output
+    restart: unless-stopped
+
 volumes:
   caddy_data:
   caddy_config:
