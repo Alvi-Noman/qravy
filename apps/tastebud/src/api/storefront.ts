@@ -15,7 +15,7 @@ const api = axios.create({
 // Dedicated base for cart API (ai-waiter-service)
 const CART_API_BASE =
   (typeof window !== 'undefined' && (window as any).__STORE__?.cartApiBase) ||
-  'http://localhost:7081';
+  (import.meta.env.DEV ? 'http://localhost:7081' : '/cart-api');
 
 export type Channel = 'dine-in' | 'online';
 

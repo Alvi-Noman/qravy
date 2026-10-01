@@ -12,6 +12,11 @@
 		reverse_proxy ai-waiter-service:7081
 	}
 
+	@images path /i/*
+	handle @images {
+		reverse_proxy upload-service:4010
+	}
+
 	handle {
 		reverse_proxy braincell:80
 	}

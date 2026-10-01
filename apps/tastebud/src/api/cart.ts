@@ -1,4 +1,6 @@
-const API_BASE = import.meta.env.VITE_AI_WAITER_API || "http://localhost:7081";
+const API_BASE =
+  import.meta.env.VITE_AI_WAITER_API ||
+  (import.meta.env.DEV ? "http://localhost:7081" : "/cart-api");
 
 export async function loadCart(tenant: string, sessionId: string) {
   const res = await fetch(`${API_BASE}/cart/load?tenant=${tenant}&sessionId=${sessionId}`);

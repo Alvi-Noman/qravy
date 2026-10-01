@@ -14,8 +14,7 @@ import axios, {
 
 const API_BASE_URL =
   (import.meta.env.VITE_API_URL as string | undefined) ||
-  // safe fallback to your public gateway (change to https://api.qravy.com when you move)
-  'https://qravy-api-gateway.onrender.com';
+  (typeof window !== 'undefined' ? window.location.origin : '');
 
 const REFRESH_URL = '/api/v1/auth/refresh-token';
 

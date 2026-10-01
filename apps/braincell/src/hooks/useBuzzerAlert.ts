@@ -7,7 +7,9 @@
  */
 import { useCallback, useEffect, useState } from 'react';
 
-const WAITER_API = import.meta.env.VITE_AI_WAITER_API ?? 'http://localhost:7081';
+const WAITER_API =
+  import.meta.env.VITE_AI_WAITER_API ??
+  (import.meta.env.DEV ? 'http://localhost:7081' : '/waiter');
 const POLL_MS = 2_000;
 
 export function useBuzzerAlert(tenantSubdomain: string | undefined) {

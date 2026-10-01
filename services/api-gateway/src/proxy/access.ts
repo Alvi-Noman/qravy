@@ -14,7 +14,6 @@ export default function registerAccessProxy(app: Application) {
     changeOrigin: true,
     xfwd: true,
     ws: false,
-    cookieDomainRewrite: 'localhost',
 
     onProxyReq: (proxyReq: ClientRequest, req: Request & { body?: unknown }) => {
       const method = (req.method || 'GET').toUpperCase();

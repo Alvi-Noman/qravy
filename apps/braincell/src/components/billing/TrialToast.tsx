@@ -38,8 +38,7 @@ export default function TrialToast({
   }, [daysLeft, hoursLeft]);
 
   const handleAddBilling = () => {
-    // Absolute URL (subscribe step)
-    window.location.href = 'http://localhost:5173/settings/plan/select?step=subscribe';
+    window.location.href = '/settings/plan/select?step=subscribe';
   };
 
   const handleChangePlan = () => {
