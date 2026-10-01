@@ -223,4 +223,4 @@ jobs:
           printf '%s' "$GHCR_READ_TOKEN" | ssh $SSH_OPTS "$SSH_TARGET" \
             "docker login ghcr.io --username '$GHCR_READ_USER' --password-stdin"
           ssh $SSH_OPTS "$SSH_TARGET" \
-            "cd '$CONTABO_DEPLOY_PATH' && IMAGE_TAG='sha-$DEPLOY_SHA' docker compose --env-file .env.production -f compose.production.yml pull && IMAGE_TAG='sha-$DEPLOY_SHA' docker compose --env-file .env.production -f compose.production.yml up -d --remove-orphans"
+            "cd '$CONTABO_DEPLOY_PATH' && IMAGE_TAG='sha-$DEPLOY_SHA' docker compose --env-file .env.production -f compose.production.yml pull && IMAGE_TAG='sha-$DEPLOY_SHA' docker compose --env-file .env.production -f compose.production.yml up -d --remove-orphans && docker compose --env-file .env.production -f compose.production.yml restart caddy"
