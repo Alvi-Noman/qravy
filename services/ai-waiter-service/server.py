@@ -301,6 +301,19 @@ async def handle_alert_dismiss(request: web.Request) -> web.Response:
         headers={"Access-Control-Allow-Origin": "*"},
     )
 
+async def handle_alert_trigger(request: web.Request) -> web.Response:
+    """POST /internal/alert/trigger — called by auth-service for every new order."""
+    try:
+        data = await request.json()
+    except Exception:
+        return web.json_response({"ok": False, "error": "invalid JSON"}, status=400)
+    tenant = str(data.get("tenant") or "").strip()
+    if not tenant:
+        return web.json_response({"ok": False, "error": "tenant required"}, status=400)
+    _set_alert(tenant, True)
+    print(f"[alert] 🔔 new order for {tenant} — buzzer triggered")
+    return web.json_response({"ok": True})
+
 async def handle_alert_options(request: web.Request) -> web.Response:
     return web.Response(status=204, headers={
         "Access-Control-Allow-Origin": "*",
@@ -323,6 +336,7 @@ async def start_http_server():
     app.router.add_post("/cart/save", handle_cart_save)
     app.router.add_get("/alert", handle_alert_get)
     app.router.add_post("/alert/dismiss", handle_alert_dismiss)
+    app.router.add_post("/internal/alert/trigger", handle_alert_trigger)
 
     runner = web.AppRunner(app)
     await runner.setup()
@@ -1469,9 +1483,6 @@ async def place_order_via_api(
     order = (payload or {}).get("order")
     if r.status_code < 300 and isinstance(order, dict):
         created = bool((payload or {}).get("created", True))
-        if created and tenant_subdomain(tenant):
-            _set_alert(tenant_subdomain(tenant), True)
-            print(f"[alert] 🔔 new order for {tenant_subdomain(tenant)} — buzzer triggered")
         return {"ok": True, "order": order, "created": created}
     msg = data.get("message") or f"HTTP {r.status_code}"
     details = data.get("error") if isinstance(data.get("error"), dict) else {}

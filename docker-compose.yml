@@ -10,6 +10,7 @@ services:
     environment:
       NODE_ENV: development
       PORT: "3001"
+      AI_WAITER_HTTP_URL: http://ai-waiter-service:7081
       CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:5501}
       FRONTEND_URL: ${FRONTEND_URL:-http://localhost:5501}
       # AI menu import (PDF/photos) — same key as the AI waiter, from the root .env
@@ -23,6 +24,8 @@ services:
       - 1.1.1.1
     restart: unless-stopped
     command: ["pnpm", "run", "dev"]
+    depends_on:
+      - ai-waiter-service
 
   upload-service:
     build:

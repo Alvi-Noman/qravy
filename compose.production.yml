@@ -35,11 +35,14 @@ services:
     environment:
       NODE_ENV: production
       PORT: "3001"
+      AI_WAITER_HTTP_URL: http://ai-waiter-service:7081
       CORS_ORIGIN: https://${ADMIN_DOMAIN},https://${STOREFRONT_DOMAIN}
       FRONTEND_URL: https://${ADMIN_DOMAIN}
       APP_BASE_URL: https://${ADMIN_DOMAIN}
       OPENAI_API_KEY: ${OPENAI_API_KEY:?Set OPENAI_API_KEY in .env.production}
       MENU_IMPORT_MODEL: gpt-4.1-mini
+    depends_on:
+      - ai-waiter-service
     restart: unless-stopped
 
   upload-service:

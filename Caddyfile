@@ -13,6 +13,11 @@
 		reverse_proxy api-gateway:8080
 	}
 
+	@alertTrigger path /waiter/internal/alert/trigger
+	handle @alertTrigger {
+		respond "Not Found" 404
+	}
+
 	handle_path /waiter/* {
 		reverse_proxy ai-waiter-service:7081
 	}

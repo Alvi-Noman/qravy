@@ -208,7 +208,7 @@ export async function createOrderCore(input: {
   const tenant = await client
     .db('authDB')
     .collection('tenants')
-    .findOne({ _id: input.tenantOid }, { projection: { timezone: 1, kitchen: 1 } });
+    .findOne({ _id: input.tenantOid }, { projection: { timezone: 1, kitchen: 1, subdomain: 1 } });
   const kitchen = kitchenSettings(tenant as { kitchen?: Partial<KitchenSettings> } | null);
   const lines = await priceLines({
     tenantOid: input.tenantOid,
@@ -262,6 +262,22 @@ export async function createOrderCore(input: {
   }
 
   publishTenant(input.tenantOid.toHexString(), { type: 'order.created', order: toAdminOrder(doc) });
+  const tenantSubdomain = tenant?.subdomain;
+  if (typeof tenantSubdomain === 'string' && tenantSubdomain) {
+    const waiterUrl = process.env.AI_WAITER_HTTP_URL || 'http://ai-waiter-service:7081';
+    void fetch(`${waiterUrl.replace(/\/$/, '')}/internal/alert/trigger`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tenant: tenantSubdomain }),
+      signal: AbortSignal.timeout(1500),
+    })
+      .then((response) => {
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      })
+      .catch((error: unknown) => {
+        console.warn(`[orders] could not trigger buzzer for ${tenantSubdomain}:`, error);
+      });
+  }
   return { order: doc, created: true };
 }
 
