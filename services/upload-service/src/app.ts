@@ -105,7 +105,7 @@ function auth(req: express.Request, res: express.Response, next: express.NextFun
 app.get('/health', (_req, res) => res.json({ ok: true }));
 
 // ----- Upload endpoint -----
-app.post('/api/uploads/images', auth, async (req, res) => {
+app.post(['/images', '/api/uploads/images'], auth, async (req, res) => {
   try {
     const form = formidable({
       multiples: false,
