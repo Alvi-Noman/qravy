@@ -78,27 +78,20 @@ export function getWsURL(path: string): string {
 /**
  * Collect user environment context:
  * - Timezone
- * - Optional geolocation (lat/lon)
+ * - Geolocation disabled: customers arrive via QR code; table/restaurant
+ *   are already known from the URL. No location prompt needed.
  */
 export async function getUserContext(): Promise<{
   tz: string;
   geo?: { lat: number; lon: number };
 }> {
   const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
-  let geo;
-  try {
-    const pos = await new Promise<GeolocationPosition>((resolve, reject) =>
-      navigator.geolocation.getCurrentPosition(resolve, reject, {
-        enableHighAccuracy: false,
-        timeout: 3000,
-      })
-    );
-    geo = {
-      lat: pos.coords.latitude,
-      lon: pos.coords.longitude,
-    };
-  } catch {
-    geo = undefined;
-  }
-  return { tz, geo };
+  // -- Geolocation removed --
+  // const pos = await new Promise<GeolocationPosition>((resolve, reject) =>
+  //   navigator.geolocation.getCurrentPosition(resolve, reject, {
+  //     enableHighAccuracy: false,
+  //     timeout: 3000,
+  //   })
+  // );
+  return { tz };
 }

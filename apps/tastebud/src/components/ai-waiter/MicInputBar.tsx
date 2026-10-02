@@ -171,10 +171,8 @@ export default function MicInputBar({
         if (followUpRef.current) {
           const askedAt = followUpAtRef.current;
           followUpRef.current = false;
-          window.setTimeout(() => {
-            if (recRef.current || document.visibilityState !== "visible" || Date.now() - askedAt > 60_000) return;
-            void startRef.current?.({ listenMs: FOLLOW_UP_LISTEN_MS });
-          }, 350); // let the speaker's last syllable die away first
+          if (recRef.current || document.visibilityState !== "visible" || Date.now() - askedAt > 60_000) return;
+          void startRef.current?.({ listenMs: FOLLOW_UP_LISTEN_MS });
         }
       },
 
