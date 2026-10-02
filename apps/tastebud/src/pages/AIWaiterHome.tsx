@@ -1667,40 +1667,6 @@ export default function AiWaiterHome() {
       ? aiLive || ''
       : (aiLive || aiFinal || WELCOME_TEXT) ?? '';
 
-  useEffect(() => {
-    let rafId = 0;
-    const placeText = () => {
-      if (!orbRef.current || !micBtnRef.current || !textWrapRef.current) return;
-
-      const orbRect = orbRef.current.getBoundingClientRect();
-      const micRect = micBtnRef.current.getBoundingClientRect();
-      const scrollY =
-        window.scrollY || document.documentElement.scrollTop || 0;
-
-      const orbContainerSize = orbRect.height;
-      const actualCircleSize = orbContainerSize * 0.44;
-      const circlePadding = (orbContainerSize - actualCircleSize) / 2;
-
-      const orbBottomY = orbRect.top + scrollY + circlePadding + actualCircleSize;
-      const micTopY = micRect.top + scrollY;
-      const midY = (orbBottomY + micTopY) / 2;
-
-      const textH = textWrapRef.current.offsetHeight || 0;
-      const top = midY - textH / 2;
-
-      setTextTop(top);
-    };
-    rafId = requestAnimationFrame(placeText);
-    window.addEventListener('resize', placeText);
-    const ro = new ResizeObserver(placeText);
-    if (textWrapRef.current) ro.observe(textWrapRef.current);
-    return () => {
-      cancelAnimationFrame(rafId);
-      window.removeEventListener('resize', placeText);
-      ro.disconnect();
-    };
-  }, [visibleText]);
-
   // ✅ First-tap handler: unlock audio + speak welcome, only when overlay shows
   const handleFirstTap = () => {
     if (hasInteracted) return;
@@ -1718,7 +1684,7 @@ export default function AiWaiterHome() {
 
   return (
     <div
-      className="min-h-screen relative overflow-hidden flex flex-col items-center justify-between px-6"
+      className="min-h-screen relative overflow-hidden flex flex-col items-center justify-between px-6 pb-28 pt-8"
       style={{
         fontFamily: `'Noto Sans Bengali', 'Inter', system-ui, sans-serif`,
         background: bg,
@@ -1733,46 +1699,41 @@ export default function AiWaiterHome() {
         <LangSwitch value={selectedLang} onChange={setSelectedLang} />
       </div>
 
-      {/* ORB */}
-      <div
-        ref={orbRef}
-        className="absolute left-1/2 -translate-x-1/2 z-0 pointer-events-none"
-        style={{ top: '0px' }}
-      >
-        <VoiceOrb mode={orbMode} size={orbSize} level={listening ? micLevel : 0} />
-      </div>
+      {/* Main Content Area (Vertically Centered in Screen) */}
+      <div className="flex-1 flex flex-col items-center justify-center w-full max-w-[900px] z-10 text-center my-auto py-6">
+        {/* ORB */}
+        <div className="flex items-center justify-center shrink-0 mb-4 md:mb-6 pointer-events-none">
+          <VoiceOrb mode={orbMode} size={orbSize} level={listening ? micLevel : 0} />
+        </div>
 
-      {/* Text */}
-      <div
-        ref={textWrapRef}
-        className="absolute left-1/2 -translate-x-1/2 z-10 w-full max-w-[900px] px-6 text-center pointer-events-auto"
-        style={{ top: textTop ?? '50vh' }}
-      >
-        <SwipeViewport text={visibleText} showCursor={!!aiLive} />
+        {/* Text */}
+        <div className="w-full text-center pointer-events-auto">
+          <SwipeViewport text={visibleText} showCursor={!!aiLive} />
 
-        {/* hands-free: the mic reopened by itself — the pill says so; this is the one tip that helps in a noisy room */}
-        {listening && followListen && (
-          <p className="mt-3 text-xs text-gray-500">
-            {selectedLang === 'en' ? 'Hold the phone near your mouth' : 'ফোনটা মুখের কাছে ধরে বলুন'}
-          </p>
-        )}
+          {/* hands-free: the mic reopened by itself — the pill says so; this is the one tip that helps in a noisy room */}
+          {listening && followListen && (
+            <p className="mt-3 text-xs text-gray-500">
+              {selectedLang === 'en' ? 'Hold the phone near your mouth' : 'ফোনটা মুখের কাছে ধরে বলুন'}
+            </p>
+          )}
 
-        {/* "which one?" — the answers as buttons; one tap sends it (never misheard) */}
-        {choices.length > 0 && !listening && uiMode !== 'thinking' && (
-          <div className="mt-5 flex flex-wrap justify-center gap-2" role="group" aria-label="Choose one">
-            {choices.map((c) => (
-              <button
-                key={c.say}
-                type="button"
-                onClick={() => void startListening({ typed: c.say })}
-                className="max-w-full truncate rounded-full border border-rose-200 bg-white px-4 py-2.5 text-[15px] font-semibold text-gray-800 shadow-sm transition active:scale-95 hover:border-rose-300"
-              >
-                {c.label}
-                {typeof c.price === 'number' && <span className="ml-1.5 font-normal text-gray-500">৳{c.price}</span>}
-              </button>
-            ))}
-          </div>
-        )}
+          {/* "which one?" — the answers as buttons; one tap sends it (never misheard) */}
+          {choices.length > 0 && !listening && uiMode !== 'thinking' && (
+            <div className="mt-5 flex flex-wrap justify-center gap-2" role="group" aria-label="Choose one">
+              {choices.map((c) => (
+                <button
+                  key={c.say}
+                  type="button"
+                  onClick={() => void startListening({ typed: c.say })}
+                  className="max-w-full truncate rounded-full border border-rose-200 bg-white px-4 py-2.5 text-[15px] font-semibold text-gray-800 shadow-sm transition active:scale-95 hover:border-rose-300"
+                >
+                  {c.label}
+                  {typeof c.price === 'number' && <span className="ml-1.5 font-normal text-gray-500">৳{c.price}</span>}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Bottom controls */}
