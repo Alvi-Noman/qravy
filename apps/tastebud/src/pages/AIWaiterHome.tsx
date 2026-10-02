@@ -128,10 +128,10 @@ function SwipeViewport({ text, showCursor }: { text: string; showCursor: boolean
   };
 
   return (
-    <div className="w-full max-w-[420px] md:max-w-[760px] lg:max-w-[900px] mx-auto">
+    <div className="w-full max-w-[340px] sm:max-w-[420px] md:max-w-[760px] lg:max-w-[900px] mx-auto">
       <p
         ref={measureRef}
-        className="text-[30px] md:text-[40px] leading-[1.6] font-medium opacity-0 absolute"
+        className="text-[19px] sm:text-[24px] md:text-[38px] lg:text-[40px] leading-[1.5] md:leading-[1.6] font-medium opacity-0 absolute"
       >
         A
       </p>
@@ -149,7 +149,7 @@ function SwipeViewport({ text, showCursor }: { text: string; showCursor: boolean
       >
         <p
           ref={contentRef}
-          className="text-[30px] md:text-[40px] leading-[1.6] font-medium text-[#2D2D2D] whitespace-pre-wrap text-center"
+          className="text-[19px] sm:text-[24px] md:text-[38px] lg:text-[40px] leading-[1.5] md:leading-[1.6] font-medium text-[#2D2D2D] whitespace-pre-wrap text-center"
           style={{
             transform: `translateY(-${offset}px)`,
             willChange: 'transform',
@@ -1627,7 +1627,17 @@ export default function AiWaiterHome() {
       ? 'thinking'
       : 'idle';
 
-  const ORB_SIZE = 480;
+  const [orbSize, setOrbSize] = useState(() =>
+    typeof window !== 'undefined' && window.innerWidth < 768 ? 280 : 480
+  );
+
+  useEffect(() => {
+    const handleResize = () => {
+      setOrbSize(window.innerWidth < 768 ? 280 : 480);
+    };
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
 
   // the waiter's presence at the top of the sheets: live orb · "AI Assistant" · what it's doing (tap = pause/resume)
   const assistantHeader = hasInteracted ? (
@@ -1729,7 +1739,7 @@ export default function AiWaiterHome() {
         className="absolute left-1/2 -translate-x-1/2 z-0 pointer-events-none"
         style={{ top: '0px' }}
       >
-        <VoiceOrb mode={orbMode} size={ORB_SIZE} level={listening ? micLevel : 0} />
+        <VoiceOrb mode={orbMode} size={orbSize} level={listening ? micLevel : 0} />
       </div>
 
       {/* Text */}
