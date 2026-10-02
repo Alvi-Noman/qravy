@@ -1119,21 +1119,21 @@ export default function AiWaiterHome() {
           }
         };
 
-        // the hello goes out AT ONCE. It used to wait for the phone's location (up to 1.5 s) — the server gives up
-        // on a silent connection after 1.2 s, and answered "please repeat" to nobody. The location (a weather hint
-        // only) is looked up in the background and rides along with the NEXT turn.
-        sendHello(geoRef.current ? { geo: geoRef.current } : undefined);
-        if (navigator.geolocation && !geoRef.current) {
-          try {
-            navigator.geolocation.getCurrentPosition(
-              (pos) => {
-                geoRef.current = { lat: pos.coords.latitude, lon: pos.coords.longitude };
-              },
-              () => {},
-              { enableHighAccuracy: false, maximumAge: 5 * 60 * 1000, timeout: 5000 },
-            );
-          } catch {}
-        }
+        // Geolocation disabled: customers arrive via QR code (?table=N), so the
+        // restaurant + table are already known from the URL. No location prompt needed.
+        sendHello(undefined);
+        // -- Geolocation removed --
+        // if (navigator.geolocation && !geoRef.current) {
+        //   try {
+        //     navigator.geolocation.getCurrentPosition(
+        //       (pos) => {
+        //         geoRef.current = { lat: pos.coords.latitude, lon: pos.coords.longitude };
+        //       },
+        //       () => {},
+        //       { enableHighAccuracy: false, maximumAge: 5 * 60 * 1000, timeout: 5000 },
+        //     );
+        //   } catch {}
+        // }
 
         if (!typed) setListening(true);
       };
@@ -1542,12 +1542,10 @@ export default function AiWaiterHome() {
     if (!followUpRef.current) return;
     const askedAt = followUpAtRef.current;
     followUpRef.current = false;
-    window.setTimeout(() => {
-      if (sessionRef.current !== 'on') return; // muted / ended meanwhile
-      if (wsRef.current || ctxRef.current) return;
-      if (document.visibilityState !== 'visible' || Date.now() - askedAt > 60_000) return;
-      void startRef.current?.({ listenMs: FOLLOW_UP_LISTEN_MS });
-    }, 350); // let the speaker's last syllable die away first
+    if (sessionRef.current !== 'on') return; // muted / ended meanwhile
+    if (wsRef.current || ctxRef.current) return;
+    if (document.visibilityState !== 'visible' || Date.now() - askedAt > 60_000) return;
+    void startRef.current?.({ listenMs: FOLLOW_UP_LISTEN_MS });
   };
   const startRef = useRef(startListening);
   startRef.current = startListening;
