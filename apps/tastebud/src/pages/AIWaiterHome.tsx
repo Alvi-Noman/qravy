@@ -324,6 +324,14 @@ export default function AiWaiterHome() {
       onPlaybackStart: () => {
         if (!owns()) return;
         anchorRevealRef.current();
+        if (sessionRef.current === 'on' && (!streamRef.current || !streamRef.current.active)) {
+          navigator.mediaDevices.getUserMedia({
+            audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+          }).then((s) => {
+            if (sessionRef.current === 'on') streamRef.current = s;
+            else s.getTracks().forEach((t) => t.stop());
+          }).catch(() => {});
+        }
       },
       // the guest has HEARD the whole reply → now the mic may reopen (the voice session). Not on onEnd: that is
       // "synthesis done", seconds before the speaker stops — opening the mic then cut the waiter off mid-sentence.
@@ -959,6 +967,7 @@ export default function AiWaiterHome() {
       markWelcomeInteraction();
 
       if (listening || wsRef.current || ctxRef.current) return;
+      if (!typed) setListening(true);
       if (!followUp) {
         followUpRef.current = false; // the guest acted — no pending listen window, and the count starts over
         followUpsRef.current = 0;
@@ -980,15 +989,18 @@ export default function AiWaiterHome() {
       let src: MediaStreamAudioSourceNode | null = null;
       let node: AudioWorkletNode | null = null;
       if (!typed) {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          channelCount: 1,
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        },
-      });
-      streamRef.current = stream;
+        let stream = streamRef.current;
+        if (!stream || !stream.active) {
+          stream = await navigator.mediaDevices.getUserMedia({
+            audio: {
+              channelCount: 1,
+              echoCancellation: true,
+              noiseSuppression: true,
+              autoGainControl: true,
+            },
+          });
+          streamRef.current = stream;
+        }
 
       // one audio context for the visit, suspended between turns: iOS lets a tap-started context be resumed
       // later without a tap — that's what lets the mic reopen by itself after the waiter's question
