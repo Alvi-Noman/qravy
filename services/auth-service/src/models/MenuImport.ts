@@ -15,6 +15,9 @@ export interface MenuImportDoc {
   /** Branch the import targets (null → global items). */
   locationId: ObjectId | null;
 
+  /** Started from the public quick demo (no account) */
+  demo?: boolean;
+
   fileName: string;
   /** What was uploaded; pageCount = number of photos for 'photos' */
   sourceType?: 'pdf' | 'photos';

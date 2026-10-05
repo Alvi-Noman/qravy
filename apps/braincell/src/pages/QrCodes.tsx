@@ -22,22 +22,13 @@ import {
 import { useAuthContext } from '../context/AuthContext';
 import { useTenant } from '../hooks/useTenant';
 import { updateTenant } from '../api/tenant';
+import { onlineUrl, storefrontBase, tableUrl } from '../utils/storefront';
 import { toastError, toastSuccess } from '../components/Toaster';
 
 const MAX_TABLES = 500;
 const VALID_TABLE = /^[A-Za-z0-9-]{1,12}$/;
 
-/** Guest app base URL for a restaurant. Override with VITE_STOREFRONT_URL, e.g. "https://{subdomain}.qravy.com". */
-export function storefrontBase(subdomain: string): string {
-  const env = (import.meta.env.VITE_STOREFRONT_URL as string | undefined)?.trim();
-  const template =
-    env || (import.meta.env.DEV ? 'http://localhost:3007/t/{subdomain}' : 'https://{subdomain}.qravy.com');
-  return template.replace('{subdomain}', encodeURIComponent(subdomain)).replace(/\/$/, '');
-}
-
-export const tableUrl = (base: string, table: string, key?: string) =>
-  `${base}/dine-in?table=${encodeURIComponent(table)}${key ? `&k=${encodeURIComponent(key)}` : ''}`;
-export const onlineUrl = (base: string) => base;
+export { storefrontBase, tableUrl, onlineUrl };
 
 /** "12, 13-20, Patio-1" → ["12", "13", …, "20", "PATIO-1"]. Pure-number ranges expand; anything else is a name. */
 export function parseTableInput(raw: string): { tables: string[]; invalid: string[] } {

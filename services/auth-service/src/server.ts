@@ -7,6 +7,7 @@ import { logEmailBootInfo } from './utils/email.js';
 import { failStaleImports } from './services/menuImport/pipeline.js';
 import { resumeSoldOutItems } from './controllers/menuItemsController.js';
 import { startOrderAutoAccept } from './services/orders/autoAccept.js';
+import { startQuickDemoCleanup } from './services/quickDemo.js';
 
 export const client = new MongoClient(env.MONGODB_URI!);
 
@@ -35,6 +36,9 @@ async function startServer() {
 
     // Menu-import jobs interrupted by a restart can never finish
     await failStaleImports().catch((e) => logger.warn(`failStaleImports: ${(e as Error).message}`));
+
+    // Quick-demo restaurants are deleted 24 h after they were made
+    startQuickDemoCleanup();
 
     // Listen on 0.0.0.0 for Docker compatibility
     server = app.listen(PORT, '0.0.0.0', () => {

@@ -33,6 +33,7 @@ const Onboarding = lazy(() => import('./pages/Onboarding'));
 const ManageCategories = lazy(() => import('./pages/ManageCategories'));
 const SelectLocation = lazy(() => import('./pages/SelectLocation')); // ADD
 const QrCodesPage = lazy(() => import('./pages/QrCodes'));
+const QuickDemoPage = lazy(() => import('./pages/QuickDemo'));
 
 // Settings pages
 const SettingsOverview = lazy(() => import('./pages/settings/index'));
@@ -481,6 +482,19 @@ function App() {
               <Route path="/dashboard/categories/manage" element={<Navigate to="/categories/manage" replace />} />
               <Route path="/dashboard/locations" element={<Navigate to="/locations" replace />} />
               <Route path="/dashboard/settings" element={<Navigate to="/settings" replace />} />
+
+              {/* Quick demo: menu photos → live storefront, no login (shown to restaurants in person) */}
+              {['/quick-demo', '/quick-demo/:key'].map((path) => (
+                <Route
+                  key={path}
+                  path={path}
+                  element={
+                    <Suspense fallback={<LoadingScreen />}>
+                      <QuickDemoPage />
+                    </Suspense>
+                  }
+                />
+              ))}
 
               {/* Auth + public routes */}
               <Route

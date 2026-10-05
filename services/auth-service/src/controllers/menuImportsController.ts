@@ -94,6 +94,70 @@ async function findJob(req: Request): Promise<MenuImportDoc | null> {
   return importsCol().findOne({ _id: new ObjectId(id), tenantId: new ObjectId(req.user.tenantId) });
 }
 
+export type ParsedMenuUploads =
+  | { ok: true; source: ImportSource; pageCount: number; fileName: string }
+  | { ok: false; status: number; message: string };
+
+/** Validates the uploaded PDF / photos (multer "file" + "files") into an import source. */
+export async function readMenuUploads(req: Request): Promise<ParsedMenuUploads> {
+  // Accept "file" (single) and "files" (multiple), in the order given
+  const fields = (req.files ?? {}) as Record<string, Express.Multer.File[]>;
+  const uploads = [...(fields.file ?? []), ...(fields.files ?? [])].filter((f) => f.buffer?.length);
+  if (!uploads.length) return { ok: false, status: 400, message: 'Please attach a menu PDF or photos.' };
+
+  const isPdf = (f: Express.Multer.File) => f.buffer.subarray(0, 5).toString('latin1') === '%PDF-';
+  const pdfs = uploads.filter(isPdf);
+
+  let source: ImportSource;
+  let pageCount: number;
+  let fileName: string;
+
+  if (pdfs.length) {
+    if (uploads.length > 1) {
+      return { ok: false, status: 400, message: 'Upload one PDF on its own, or photos without a PDF.' };
+    }
+    const file = pdfs[0];
+    try {
+      pageCount = (await loadPdf(file.buffer)).getPageCount();
+    } catch {
+      return { ok: false, status: 400, message: 'This PDF could not be opened. It may be corrupted or password-protected.' };
+    }
+    if (pageCount < 1) return { ok: false, status: 400, message: 'This PDF has no pages.' };
+    if (pageCount > MAX_PDF_PAGES) {
+      return { ok: false, status: 400, message: `This PDF has ${pageCount} pages. The maximum is ${MAX_PDF_PAGES}.` };
+    }
+    source = { kind: 'pdf', pdf: file.buffer };
+    fileName = (file.originalname || 'menu.pdf').slice(0, 200);
+  } else {
+    if (uploads.length > MAX_PHOTOS) {
+      return { ok: false, status: 400, message: `Upload at most ${MAX_PHOTOS} photos at a time.` };
+    }
+    for (const [i, f] of uploads.entries()) {
+      const label = f.originalname || `Photo ${i + 1}`;
+      const kind = sniffPhoto(f.buffer);
+      if (kind === 'heic') {
+        return { ok: false, status: 415, message: `"${label}" is an iPhone HEIC photo. Please upload it as JPG (in iPhone Settings → Camera → Formats → Most Compatible).` };
+      }
+      if (!kind) return { ok: false, status: 415, message: `"${label}" is not a supported file. Use a PDF, JPG, PNG or WebP.` };
+      if (f.buffer.length > MAX_PHOTO_MB * 1024 * 1024) {
+        return { ok: false, status: 413, message: `"${label}" is too large (max ${MAX_PHOTO_MB} MB per photo).` };
+      }
+      try {
+        await inspectPhoto(f.buffer);
+      } catch {
+        return { ok: false, status: 400, message: `"${label}" could not be opened. It may be damaged.` };
+      }
+    }
+    source = { kind: 'photos', photos: uploads.map((f) => f.buffer) };
+    pageCount = uploads.length;
+    fileName =
+      uploads.length === 1
+        ? (uploads[0].originalname || 'Menu photo').slice(0, 200)
+        : `${uploads.length} menu photos`;
+  }
+  return { ok: true, source, pageCount, fileName };
+}
+
 export async function createMenuImport(req: Request, res: Response, next: NextFunction) {
   try {
     if (!guardWrite(req, res)) return;
@@ -101,61 +165,9 @@ export async function createMenuImport(req: Request, res: Response, next: NextFu
       return res.fail(503, 'AI menu import is not configured on this server (missing OPENAI_API_KEY).');
     }
 
-    // Accept "file" (single) and "files" (multiple), in the order given
-    const fields = (req.files ?? {}) as Record<string, Express.Multer.File[]>;
-    const uploads = [...(fields.file ?? []), ...(fields.files ?? [])].filter((f) => f.buffer?.length);
-    if (!uploads.length) return res.fail(400, 'Please attach a menu PDF or photos.');
-
-    const isPdf = (f: Express.Multer.File) => f.buffer.subarray(0, 5).toString('latin1') === '%PDF-';
-    const pdfs = uploads.filter(isPdf);
-
-    let source: ImportSource;
-    let pageCount: number;
-    let fileName: string;
-
-    if (pdfs.length) {
-      if (uploads.length > 1) {
-        return res.fail(400, 'Upload one PDF on its own, or photos without a PDF.');
-      }
-      const file = pdfs[0];
-      try {
-        pageCount = (await loadPdf(file.buffer)).getPageCount();
-      } catch {
-        return res.fail(400, 'This PDF could not be opened. It may be corrupted or password-protected.');
-      }
-      if (pageCount < 1) return res.fail(400, 'This PDF has no pages.');
-      if (pageCount > MAX_PDF_PAGES) {
-        return res.fail(400, `This PDF has ${pageCount} pages. The maximum is ${MAX_PDF_PAGES}.`);
-      }
-      source = { kind: 'pdf', pdf: file.buffer };
-      fileName = (file.originalname || 'menu.pdf').slice(0, 200);
-    } else {
-      if (uploads.length > MAX_PHOTOS) {
-        return res.fail(400, `Upload at most ${MAX_PHOTOS} photos at a time.`);
-      }
-      for (const [i, f] of uploads.entries()) {
-        const label = f.originalname || `Photo ${i + 1}`;
-        const kind = sniffPhoto(f.buffer);
-        if (kind === 'heic') {
-          return res.fail(415, `"${label}" is an iPhone HEIC photo. Please upload it as JPG (in iPhone Settings → Camera → Formats → Most Compatible).`);
-        }
-        if (!kind) return res.fail(415, `"${label}" is not a supported file. Use a PDF, JPG, PNG or WebP.`);
-        if (f.buffer.length > MAX_PHOTO_MB * 1024 * 1024) {
-          return res.fail(413, `"${label}" is too large (max ${MAX_PHOTO_MB} MB per photo).`);
-        }
-        try {
-          await inspectPhoto(f.buffer);
-        } catch {
-          return res.fail(400, `"${label}" could not be opened. It may be damaged.`);
-        }
-      }
-      source = { kind: 'photos', photos: uploads.map((f) => f.buffer) };
-      pageCount = uploads.length;
-      fileName =
-        uploads.length === 1
-          ? (uploads[0].originalname || 'Menu photo').slice(0, 200)
-          : `${uploads.length} menu photos`;
-    }
+    const parsed = await readMenuUploads(req);
+    if (!parsed.ok) return res.fail(parsed.status, parsed.message);
+    const { source, pageCount, fileName } = parsed;
 
     const tenantOid = new ObjectId(req.user!.tenantId!);
 

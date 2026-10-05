@@ -171,6 +171,8 @@ export default function MenuFileDropzone({
   initialFiles?: File[];
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
+  // Phones: opens the camera straight away (one photo per tap)
+  const cameraRef = useRef<HTMLInputElement>(null);
   const [over, setOver] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [converting, setConverting] = useState(false);
@@ -274,6 +276,15 @@ export default function MenuFileDropzone({
       <button
         type="button"
         disabled={disabled || converting}
+        onClick={() => cameraRef.current?.click()}
+        className="mb-3 flex w-full items-center justify-center gap-2 rounded-xl bg-[#2e2e30] px-5 py-4 text-base font-semibold text-white active:opacity-90 disabled:opacity-50 sm:hidden"
+      >
+        <CameraIcon className="h-6 w-6" />
+        {photos.length ? 'Take another photo' : 'Take a photo of the menu'}
+      </button>
+      <button
+        type="button"
+        disabled={disabled || converting}
         onClick={() => inputRef.current?.click()}
         onDragOver={(e) => {
           e.preventDefault();
@@ -286,24 +297,31 @@ export default function MenuFileDropzone({
           if (!disabled) void pick(e.dataTransfer.files);
         }}
         className={`flex w-full flex-col items-center justify-center rounded-xl border-2 border-dashed px-6 text-center transition-colors ${
-          photos.length ? 'py-6' : 'py-14'
+          photos.length ? 'py-5 sm:py-6' : 'py-8 sm:py-14'
         } ${over ? 'border-[#2e2e30] bg-[#f3f3f3]' : 'border-[#dbdbdb] bg-[#fcfcfc] hover:bg-[#f6f6f6]'} ${
           disabled || converting ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'
         }`}
       >
-        <div className="mb-3 flex items-center gap-2 text-slate-500">
+        <div className="mb-3 hidden items-center gap-2 text-slate-500 sm:flex">
           <DocumentArrowUpIcon className="h-9 w-9" />
           <CameraIcon className="h-9 w-9" />
         </div>
+        <DocumentArrowUpIcon className="mb-2 h-7 w-7 text-slate-500 sm:hidden" />
         <span className="text-base font-semibold text-[#2e2e30]">
-          {converting
-            ? 'Preparing iPhone photos…'
-            : photos.length
-              ? 'Add more photos'
-              : 'Drop your menu PDF or photos here'}
+          {converting ? (
+            'Preparing iPhone photos…'
+          ) : photos.length ? (
+            'Add more photos'
+          ) : (
+            <>
+              <span className="hidden sm:inline">Drop your menu PDF or photos here</span>
+              <span className="sm:hidden">Choose photos or a PDF</span>
+            </>
+          )}
         </span>
         <span className="mt-1 text-sm text-[#6b6b70]">
-          or click to browse · one PDF (up to {MAX_PDF_MB} MB) or up to {MAX_PHOTOS} photos (JPG, PNG, iPhone)
+          <span className="hidden sm:inline">or click to browse · </span>one PDF (up to {MAX_PDF_MB} MB) or up to{' '}
+          {MAX_PHOTOS} photos (JPG, PNG, iPhone)
         </span>
       </button>
       <input
@@ -311,6 +329,17 @@ export default function MenuFileDropzone({
         type="file"
         multiple
         accept={ACCEPT}
+        className="hidden"
+        onChange={(e) => {
+          void pick(e.target.files);
+          e.target.value = '';
+        }}
+      />
+      <input
+        ref={cameraRef}
+        type="file"
+        accept="image/*"
+        capture="environment"
         className="hidden"
         onChange={(e) => {
           void pick(e.target.files);
@@ -363,14 +392,14 @@ export default function MenuFileDropzone({
               ) : null}
             </DragOverlay>
           </DndContext>
-          <div className="mt-4 flex items-center justify-end gap-3">
+          <div className="mt-4 flex flex-col-reverse items-stretch gap-3 sm:flex-row sm:items-center sm:justify-end">
             <button
               type="button"
               onClick={() => {
                 photos.forEach((p) => URL.revokeObjectURL(p.url));
                 setPhotos([]);
               }}
-              className="text-sm text-[#6b6b70] underline-offset-2 hover:text-[#2e2e30] hover:underline"
+              className="py-2 text-sm text-[#6b6b70] underline-offset-2 hover:text-[#2e2e30] hover:underline sm:py-0"
             >
               Clear
             </button>
@@ -378,7 +407,7 @@ export default function MenuFileDropzone({
               type="button"
               disabled={disabled || converting}
               onClick={() => onSubmit(photos.map((p) => p.file))}
-              className="rounded-md bg-[#2e2e30] px-5 py-2.5 text-sm font-medium text-white hover:opacity-90 disabled:opacity-40"
+              className="rounded-xl bg-[#2e2e30] px-5 py-4 text-base font-semibold text-white hover:opacity-90 disabled:opacity-40 sm:rounded-md sm:py-2.5 sm:text-sm sm:font-medium"
             >
               Read menu ({photos.length} photo{photos.length === 1 ? '' : 's'})
             </button>
