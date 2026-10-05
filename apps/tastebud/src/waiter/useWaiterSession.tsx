@@ -186,6 +186,17 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
       onPlaybackStart: () => {
         if (!owns()) return;
         anchorRevealRef.current();
+        // the conversation is on: get the mic ready while the waiter speaks, so it opens at once for the answer
+        // (no "one moment" while the phone wakes the microphone)
+        if (sessionRef.current === 'on' && (!streamRef.current || !streamRef.current.active)) {
+          navigator.mediaDevices
+            .getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true } })
+            .then((st) => {
+              if (sessionRef.current === 'on' && !streamRef.current?.active) streamRef.current = st;
+              else st.getTracks().forEach((t) => t.stop());
+            })
+            .catch(() => {});
+        }
       },
       // the guest has HEARD the whole reply → now the mic may reopen (the voice session). Not on onEnd: that is
       // "synthesis done", seconds before the speaker stops — opening the mic then cut the waiter off mid-sentence.
@@ -302,6 +313,14 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
   const [session, setSession] = useState<'off' | 'on' | 'paused'>('off');
   const sessionRef = useRef<'off' | 'on' | 'paused'>('off');
   sessionRef.current = session;
+  // the conversation stopped (paused / ended) with the mic warmed up for an answer that won't come → let it go
+  useEffect(() => {
+    if (session === 'on' || wsRef.current || ctxRef.current) return;
+    try {
+      streamRef.current?.getTracks().forEach((t) => t.stop());
+    } catch {}
+    streamRef.current = null;
+  }, [session]);
   const emptyWindowsRef = useRef(0); // listen windows in a row with no answer from the guest
   const speakingRef = useRef(false);
   speakingRef.current = speaking;
@@ -740,6 +759,7 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
       if (wsRef.current && wsRef.current.readyState >= WebSocket.CLOSING) wsRef.current = null;
       if ((listening && !opts?.afterStop) || wsRef.current || ctxRef.current) return;
       silentReplyRef.current = !!(typed && opts?.silent);
+      if (!typed) setListening(true); // "Listening" at once — not a blank moment while the mic starts
       if (!followUp) {
         followUpRef.current = false; // the guest acted — no pending listen window, and the count starts over
         followUpsRef.current = 0;
@@ -761,15 +781,19 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
       let src: MediaStreamAudioSourceNode | null = null;
       let node: AudioWorkletNode | null = null;
       if (!typed) {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          channelCount: 1,
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        },
-      });
-      streamRef.current = stream;
+      // the mic warmed up while the waiter spoke (see onPlaybackStart), else opened now
+      let stream = streamRef.current;
+      if (!stream || !stream.active) {
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            channelCount: 1,
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          },
+        });
+        streamRef.current = stream;
+      }
 
       // one audio context for the visit, suspended between turns: iOS lets a tap-started context be resumed
       // later without a tap — that's what lets the mic reopen by itself after the waiter's question
@@ -1349,12 +1373,11 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
     if (!followUpRef.current) return;
     const askedAt = followUpAtRef.current;
     followUpRef.current = false;
-    window.setTimeout(() => {
-      if (sessionRef.current !== 'on') return; // muted / ended meanwhile
-      if (wsRef.current || ctxRef.current) return;
-      if (document.visibilityState !== 'visible' || Date.now() - askedAt > 60_000) return;
-      void startRef.current?.({ listenMs: FOLLOW_UP_LISTEN_MS });
-    }, 350); // let the speaker's last syllable die away first
+    // straight away: the playback has really ended (a delay here clipped the guest's first words and flickered)
+    if (sessionRef.current !== 'on') return; // muted / ended meanwhile
+    if (wsRef.current || ctxRef.current) return;
+    if (document.visibilityState !== 'visible' || Date.now() - askedAt > 60_000) return;
+    void startRef.current?.({ listenMs: FOLLOW_UP_LISTEN_MS });
   };
   const startRef = useRef(startListening);
   startRef.current = startListening;

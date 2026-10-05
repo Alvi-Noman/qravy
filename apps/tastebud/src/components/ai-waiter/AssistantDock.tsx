@@ -3,8 +3,8 @@
 // edge, and the home screen's orb travels down into it — shrinking as it goes — to settle on its top edge. What the
 // waiter says plays as subtitles inside (scroll them to read back). HOLD the orb to talk.
 import React from 'react';
-import { createPortal } from 'react-dom';
 import TenminOrb from './TenminOrb';
+import { ballOf, flyOrb, settle, type Flight } from './orbFlight';
 import ScrollText from './ScrollText';
 import { useIsMobile } from '../../hooks/useIsMobile';
 import type { ChooseOption } from '../../utils/handsfree';
@@ -33,10 +33,6 @@ const ORB_DESKTOP = 116;
 const ORB_MOBILE = 92;
 const BALL = 0.76;
 
-const FLIGHT_MS = 1100; // the home orb's trip down into the dock — slow enough to follow with the eye
-const easeInOut = (t: number) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
-const easeOut = (t: number) => 1 - Math.pow(1 - t, 3);
-
 const LINES = 3; // subtitle box height, in lines (fixed, so the dock never changes height)
 const LEADING = 1.5;
 
@@ -45,32 +41,63 @@ export default function AssistantDock({ mode, status, subtitle, orbProps, origin
   const ORB = useIsMobile() ? ORB_MOBILE : ORB_DESKTOP;
   const orbRef = React.useRef<HTMLButtonElement | null>(null);
 
-  // the home orb comes down: a copy of it — same size, same place, above everything (the sheet would clip it) —
-  // glides down into the dock, shrinking as it goes, following where the dock's orb really is on every frame; on
-  // landing it hands over to the dock's orb, which settles with a little bounce. One orb, travelling.
-  const [flight, setFlight] = React.useState<DOMRect | null>(null);
+  // ONE orb, travelling (orbFlight): when the sheet opens, the home orb glides down into the dock (shrinking as it
+  // goes) and becomes this orb; when the sheet closes, this orb glides back up and becomes the home orb again.
+  const [inFlight, setInFlight] = React.useState(false);
+  const modeRef = React.useRef(mode);
+  modeRef.current = mode;
   React.useLayoutEffect(() => {
     const btn = orbRef.current;
-    if (!btn?.animate) return;
-    const from = originRef?.current?.getBoundingClientRect();
-    const reduce = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
-    if (!from?.width || reduce) {
-      btn.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 250, fill: 'both' });
-      return;
+    const origin = originRef?.current ?? null;
+    const reduce = !!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    const home = () => (origin?.isConnected && origin.getBoundingClientRect().width ? origin.getBoundingClientRect() : null);
+    const dockBall = () => (orbRef.current?.isConnected ? ballOf(orbRef.current.getBoundingClientRect(), BALL) : null);
+
+    let down: Flight | null = null;
+    const start = home();
+    if (!btn || !start || reduce) {
+      btn?.animate?.([{ opacity: 0 }, { opacity: 1 }], { duration: 250, fill: 'both' });
+    } else {
+      setInFlight(true);
+      down = flyOrb({
+        from: ballOf(start),
+        to: dockBall,
+        mode: modeRef.current,
+        onLanded: () => {
+          down = null;
+          setInFlight(false);
+          settle(orbRef.current, 'translate(-50%, 0)');
+        },
+      });
     }
-    setFlight(from);
+
+    return () => {
+      // where this orb is as the sheet closes (still on screen at this moment) — or the copy, mid-way down
+      const from = down ? down.now() : btn?.isConnected ? ballOf(btn.getBoundingClientRect(), BALL) : null;
+      down?.cancel();
+      if (!from || !origin || reduce) return;
+      requestAnimationFrame(() => {
+        // (React's dev double-mount "unmounts" without removing anything — only a real close flies home)
+        if (btn?.isConnected) return;
+        if (!home()) return; // left the home screen altogether
+        const prev = origin.style.opacity;
+        origin.style.opacity = '0'; // the copy is the home orb until it lands
+        const restore = () => {
+          origin.style.opacity = prev;
+        };
+        flyOrb({
+          from,
+          to: () => (home() ? ballOf(origin.getBoundingClientRect()) : null),
+          mode: modeRef.current,
+          onLanded: () => {
+            restore();
+            settle(origin);
+          },
+        });
+        window.setTimeout(restore, 1600); // never leave the home orb invisible (the page changed mid-flight)
+      });
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-  const landed = React.useCallback(() => {
-    setFlight(null);
-    orbRef.current?.animate?.(
-      [
-        { transform: 'translate(-50%, 0) scale(1.1)' },
-        { transform: 'translate(-50%, 0) scale(0.97)', offset: 0.6 },
-        { transform: 'translate(-50%, 0) scale(1)' },
-      ],
-      { duration: 380, easing: 'ease-out' },
-    );
   }, []);
 
   const answers =
@@ -136,74 +163,12 @@ export default function AssistantDock({ mode, status, subtitle, orbProps, origin
           width: ORB,
           height: ORB,
           transform: 'translate(-50%, 0)',
-          opacity: flight ? 0 : 1, // (the travelling copy is it, until it lands)
+          opacity: inFlight ? 0 : 1, // (the travelling copy is it, until it lands)
           WebkitTapHighlightColor: 'transparent',
         }}
       >
         <TenminOrb mode={mode} size={ORB} />
       </button>
-      {flight && <OrbFlight from={flight} targetRef={orbRef} mode={mode} onLanded={landed} />}
     </div>
-  );
-}
-
-/** The home orb on its way down: drawn above the page at the home orb's exact size and place, it moves (and
- *  shrinks) toward the dock's orb, re-measured every frame — the sheet may still be settling. */
-function OrbFlight({
-  from,
-  targetRef,
-  mode,
-  onLanded,
-}: {
-  from: DOMRect;
-  targetRef: React.RefObject<HTMLElement | null>;
-  mode: OrbMode;
-  onLanded: () => void;
-}) {
-  const size = Math.round(from.width / BALL); // the home orb's own size (its ball is `from`)
-  const elRef = React.useRef<HTMLDivElement | null>(null);
-  React.useLayoutEffect(() => {
-    const el = elRef.current;
-    if (!el) return;
-    const fx = from.left + from.width / 2;
-    const fy = from.top + from.height / 2;
-    const t0 = performance.now();
-    let raf = 0;
-    const frame = (now: number) => {
-      const t = Math.min(1, (now - t0) / FLIGHT_MS);
-      const to = targetRef.current?.getBoundingClientRect();
-      const tx = to ? to.left + to.width / 2 : fx;
-      const ty = to ? to.top + to.height / 2 : fy;
-      const endScale = to?.width ? to.width / size : 1;
-      const m = easeInOut(t); // the path: eases out of the home spot, glides, eases into the dock
-      const k = 1 + (endScale - 1) * easeOut(t); // shrinks early, so it reads as going down and away
-      el.style.transform = `translate(${fx + (tx - fx) * m - size / 2}px, ${fy + (ty - fy) * m - size / 2}px) scale(${k})`;
-      if (t < 1) raf = requestAnimationFrame(frame);
-      else onLanded();
-    };
-    frame(t0);
-    return () => cancelAnimationFrame(raf);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-  return createPortal(
-    <div
-      ref={elRef}
-      aria-hidden
-      className="pointer-events-none"
-      style={{
-        position: 'fixed',
-        left: 0,
-        top: 0,
-        width: size,
-        height: size,
-        zIndex: 300, // above the sheets (z-100)
-        transformOrigin: '50% 50%',
-        willChange: 'transform',
-        filter: 'drop-shadow(0 14px 28px rgba(250, 40, 81, 0.25))',
-      }}
-    >
-      <TenminOrb mode={mode} size={size} />
-    </div>,
-    document.body,
   );
 }
