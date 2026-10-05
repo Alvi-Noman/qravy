@@ -845,7 +845,7 @@ _ASKS = re.compile(
 )
 _DECLINE = re.compile(
     r"^(no|nope|nah|no thanks?|no thank you|not now|maybe later|i'?m good|i'?m fine|not really|something else|anything else\?)\b|"
-    r"^না\b|^না লাগবে না|^লাগবে না|^থাক|^না থাক|^না ধন্যবাদ|^lagbe na|^na\b",
+    r"^না(?![\w\u0980-\u09FF])|^না লাগবে না|^লাগবে না|^থাক|^না থাক|^না ধন্যবাদ|^lagbe na|^na\b",
     re.I,
 )
 _ALTERNATIVE = re.compile(
@@ -888,7 +888,7 @@ def asks_overview(text: str) -> bool:
     return bool(_OVERVIEW.search(t)) and not _MINE.search(t)
 
 
-_GREET = re.compile(r"^(hi|hello|hey|salam|assalam|as-salamu|good (morning|afternoon|evening)|আসসালামু|হ্যালো|নমস্কার)\b", re.I)
+_GREET = re.compile(r"^(hi|hello|hey|salam|assalam|as-salamu|good (morning|afternoon|evening)|আসসালামু|হ্যালো|নমস্কার)(?![\w\u0980-\u09FF])", re.I)
 
 
 @dataclass

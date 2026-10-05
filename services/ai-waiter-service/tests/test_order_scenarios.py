@@ -557,3 +557,49 @@ def test_yes_with_a_dish_named_in_bangla_is_that_dish_not_the_offer():
     g.say("একটা ক্লাসিক স্ম্যাশ বার্গার দেন", [add("smash")])
     out = g.say("হ্যাঁ, অনিয়ন রিংস দেন", [add("or")])
     assert "or" in [a[0] for a in adds(out)], out["meta"]["cartOps"]
+
+
+def test_a_question_while_the_size_is_asked_is_not_the_answer():
+    # "6 or 10 pcs, which spice?" → "দশ মিনিট লাগবে?" was taken as "10 pcs"; "স্পাইসি কোনটা বেশি জনপ্রিয়?" got a list
+    # of unrelated dishes — both are questions for the AI, with the open question in view
+    g = Guest()
+    first = g.say("একটা হট উইংস দেন", [add("hw")])
+    assert "10 pcs" in first["replyText"], first["replyText"]
+    state, history = g.state, list(g.history)
+    for said in ("দশ মিনিট লাগবে?", "স্পাইসি কোনটা বেশি জনপ্রিয়?"):
+        g.state, g.history = state, list(history)
+        out = g.say(said, reply="MODEL")
+        assert not adds(out) and "options_answered" not in out["meta"]["guards"], (said, out["meta"]["cartOps"])
+        assert "reco_general" not in out["meta"]["guards"], (said, out["replyText"])
+    g.state, g.history = state, list(history)
+    out = g.say("দশ পিস স্পাইসি")  # the real answer still works
+    assert adds(out) == [("hw", 1, "10 pcs", ("Spicy",))], out["meta"]["cartOps"]
+
+
+def _which_of_these(said):
+    async def fake(messages):  # the AI names a dish that is NOT on screen → the answer is replaced
+        return json.dumps({**TURN, "topic": "recommendation", "intent": "suggestions", "replyText": "Chocolate Brownie।",
+                           "suggestions": [{"item": IDX.ref(IDX.by_id["brownie"]), "reason": ""}]})
+
+    async def none(*a, **k):
+        return None
+
+    orig = brain._call_openai, brain._understand
+    brain._call_openai, brain._understand = fake, none
+    try:
+        return asyncio.run(brain.generate_reply(
+            said, menu_snapshot={"items": ITEMS}, locale="bn", conversation_id="w", lock_language=True,
+            context={"cartItems": [], "mealKinds": ["dinner"], "shownItems": ["hw", "ccb", "fc"]}))["replyText"]
+    finally:
+        brain._call_openai, brain._understand = orig
+
+
+def test_which_of_these_is_answered_on_what_was_asked():
+    # it once answered "সবচেয়ে সস্তা কোনটা?" with "এগুলোর মধ্যে Hot Wings সবচেয়ে ভালো হবে" (Fried Chicken ৳280 is cheapest)
+    assert "Fried Chicken" in _which_of_these("এগুলোর মধ্যে সবচেয়ে সস্তা কোনটা?") and "৳280" in _which_of_these("এগুলোর মধ্যে সবচেয়ে সস্তা কোনটা?")
+    mild = _which_of_these("এগুলোর মধ্যে কোনটা সবচেয়ে কম ঝাল?")  # Hot Wings is the spicy one; the other two tie
+    assert "Hot Wings" not in mild and "Crispy Chicken Burger" in mild and "Fried Chicken" in mild, mild
+    assert "Hot Wings" in _which_of_these("এগুলোর মধ্যে সবচেয়ে ঝাল কোনটা?")
+    assert "ভালো হবে" in _which_of_these("এগুলোর মধ্যে কোনটা ভালো হবে?")
+    unclear = _which_of_these("এগুলোর মধ্যে কোনটায় বেশি খাবার থাকে?")  # no fact to answer it from → never invented
+    assert "ভালো হবে" not in unclear and "কোনটার কথা জানতে চান" in unclear, unclear
