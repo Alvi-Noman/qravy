@@ -17,6 +17,8 @@ export type TtsEvents = {
 
 export type TTSPublicAPI = {
   speak: (text: string) => Promise<void>;
+  /** Call INSIDE a tap ("Get started", holding the orb): unlocks sound on iPhones (see sharedAudio below). */
+  unlock: () => void;
   /** Get a connected speech pipeline ready in the background (call while the waiter is thinking). */
   warm: () => void;
   /** Fetch the speech token ahead of time (safe before any tap — no audio is set up). */
@@ -38,6 +40,102 @@ export type TTSPublicAPI = {
 };
 
 const TOKEN_URL = import.meta.env.VITE_SPEECH_TOKEN_URL || "/azure/speech-token";
+
+// ---------- iPhone (every iPhone browser — Safari, Chrome, …: all are WebKit): why the waiter was silent ----------
+// iPhones have no MediaSource, so the Speech SDK's SpeakerAudioDestination takes its fallback path: it collects the
+// whole reply and plays it only when the speaker is CLOSED — which happens when the synthesizer is disposed, never at
+// the end of a reply (the pipeline is kept for the next one). So the audio was made and never played. And when it
+// does call play(), that's long after the guest's tap, on a brand-new <audio> — which iOS refuses anyway.
+// The fix, on iPhones only: no SDK speaker. Each reply is synthesized to memory (the words' timings still arrive) and
+// played on ONE <audio> that the guest's tap unlocked (unlockAudioOutput); its playing / ended events drive the
+// reveal and the mic, like the SDK's onAudioStart / onAudioEnd do elsewhere. (Desktop, Android: the SDK, untouched.)
+const NEEDS_SHARED_AUDIO = typeof window !== "undefined" && typeof (window as any).MediaSource === "undefined";
+const SILENT_WAV = "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=";
+let sharedAudio: HTMLAudioElement | null = null;
+
+function sharedAudioEl(): HTMLAudioElement {
+  if (!sharedAudio) {
+    sharedAudio = new Audio();
+    sharedAudio.setAttribute("playsinline", "");
+    (sharedAudio as any).playsInline = true;
+    sharedAudio.preload = "auto";
+  }
+  return sharedAudio;
+}
+
+function unlockAudioOutput(): void {
+  if (!NEEDS_SHARED_AUDIO) return;
+  try {
+    const el = sharedAudioEl();
+    if (!el.paused) return; // already playing the waiter — it's unlocked
+    el.src = SILENT_WAV;
+    el.play()?.catch(() => {});
+  } catch {
+    /* no audio element here */
+  }
+}
+
+/** The iPhone speaker: plays a finished reply (MP3 bytes) on the tap-unlocked <audio>. Same shape as the parts of
+ *  SpeakerAudioDestination this file uses (pause / resume / close / volume / onAudioStart / onAudioEnd). */
+class SharedAudioSpeaker {
+  onAudioStart: ((s: any) => void) | null = null;
+  onAudioEnd: ((s: any) => void) | null = null;
+  private url: string | null = null;
+  private closed = false;
+  private mine = false; // the shared <audio> is playing THIS speaker's reply
+
+  set volume(v: number) {
+    try { sharedAudioEl().volume = Math.max(0, Math.min(1, v / 100)); } catch {}
+  }
+  get volume() {
+    return Math.round((sharedAudio?.volume ?? 1) * 100);
+  }
+
+  play(mp3: ArrayBuffer) {
+    if (this.closed || !mp3?.byteLength) {
+      this.onAudioEnd?.(this);
+      return;
+    }
+    const el = sharedAudioEl();
+    if (this.url) URL.revokeObjectURL(this.url);
+    this.url = URL.createObjectURL(new Blob([mp3], { type: "audio/mpeg" }));
+    this.mine = true;
+    el.onplaying = () => {
+      el.onplaying = null;
+      if (this.mine) this.onAudioStart?.(this);
+    };
+    el.onended = () => this.finish();
+    el.src = this.url;
+    el.play()?.catch((e) => {
+      console.warn("[TTS] playback was blocked by the browser", e);
+      this.finish();
+    });
+  }
+
+  private finish() {
+    if (!this.mine) return;
+    this.mine = false;
+    this.onAudioEnd?.(this);
+  }
+
+  pause() {
+    if (this.mine) {
+      try { sharedAudio?.pause(); } catch {}
+    }
+  }
+  resume() {
+    if (this.mine) sharedAudio?.play()?.catch(() => {});
+  }
+  close() {
+    this.closed = true;
+    if (this.mine) {
+      this.mine = false;
+      try { sharedAudio?.pause(); } catch {}
+    }
+    if (this.url) URL.revokeObjectURL(this.url);
+    this.url = null;
+  }
+}
 const DEFAULT_VOICE = import.meta.env.VITE_AZURE_SPEECH_VOICE || "bn-BD-PradeepNeural";
 
 const LS_MUTED = "tts.muted";
@@ -50,8 +148,8 @@ const SPARE_MAX_AGE_MS = 4 * 60 * 1000; // a pre-connected pipeline older than t
 
 type Pipeline = {
   speechConfig: sdk.SpeechConfig;
-  speaker: sdk.SpeakerAudioDestination;
-  audioConfig: sdk.AudioConfig;
+  speaker: sdk.SpeakerAudioDestination | SharedAudioSpeaker;
+  audioConfig: sdk.AudioConfig | null; // null on iPhones: the reply is synthesized to memory (SharedAudioSpeaker)
   synthesizer: sdk.SpeechSynthesizer;
   voice: string;
   builtAt: number;
@@ -184,7 +282,7 @@ class TTSManager implements TTSPublicAPI {
   private tokenExpiresAt = 0;
 
   private speechConfig: sdk.SpeechConfig | null = null;
-  private speaker: sdk.SpeakerAudioDestination | null = null;
+  private speaker: sdk.SpeakerAudioDestination | SharedAudioSpeaker | null = null;
   private audioConfig: sdk.AudioConfig | null = null;
   private synthesizer: sdk.SpeechSynthesizer | null = null;
 
@@ -239,6 +337,8 @@ class TTSManager implements TTSPublicAPI {
     try { localStorage.setItem(LS_VOICE, this.voice); } catch {}
     if (this.speechConfig) this.speechConfig.speechSynthesisVoiceName = this.voice;
   }
+
+  unlock = () => unlockAudioOutput();
 
   async speak(text: string): Promise<void> {
     const clean = (text ?? "").trim();
@@ -436,7 +536,9 @@ class TTSManager implements TTSPublicAPI {
     } catch {}
 
     // Speaker we can volume-control (volume is applied when the pipeline goes live)
-    const speaker = new sdk.SpeakerAudioDestination();
+    const speaker: sdk.SpeakerAudioDestination | SharedAudioSpeaker = NEEDS_SHARED_AUDIO
+      ? new SharedAudioSpeaker()
+      : new sdk.SpeakerAudioDestination();
     // the moment the guest has HEARD it all (not when synthesis finished — that's seconds earlier)
     (speaker as any).onAudioEnd = () => {
       if (this.speaker === speaker) this._emitPlaybackEnd();
@@ -445,9 +547,9 @@ class TTSManager implements TTSPublicAPI {
     (speaker as any).onAudioStart = () => {
       if (this.speaker === speaker) this.listeners.forEach((h) => { h.onPlaybackStart?.(); });
     };
-    const audioConfig = sdk.AudioConfig.fromSpeakerOutput(speaker);
+    const audioConfig = speaker instanceof SharedAudioSpeaker ? null : sdk.AudioConfig.fromSpeakerOutput(speaker);
 
-    const synthesizer = new sdk.SpeechSynthesizer(speechConfig, audioConfig);
+    const synthesizer = new sdk.SpeechSynthesizer(speechConfig, audioConfig as any);
 
     // ✅ Attach both PascalCase and camelCase handlers for SDK compatibility
     try {
@@ -597,7 +699,11 @@ class TTSManager implements TTSPublicAPI {
             if (result.reason === sdk.ResultReason.SynthesizingAudioCompleted) {
               // safety net: if the speaker never reports "ended", the audio's own length (100-ns ticks) + a margin
               const durMs = typeof (result as any).audioDuration === "number" ? (result as any).audioDuration / 10000 : 0;
-              const left = Math.max(1500, startedAt + durMs + 1500 - Date.now());
+              // iPhones: the whole reply is here now — play it on the tap-unlocked <audio>. It starts NOW (not at the
+              // synthesis start), so the safety net counts from now.
+              const shared = this.speaker instanceof SharedAudioSpeaker ? this.speaker : null;
+              if (shared) shared.play(result.audioData);
+              const left = shared ? durMs + 3000 : Math.max(1500, startedAt + durMs + 1500 - Date.now());
               if (this.playbackTimer) clearTimeout(this.playbackTimer);
               this.playbackTimer = setTimeout(() => this._emitPlaybackEnd(), left);
               return resolve();

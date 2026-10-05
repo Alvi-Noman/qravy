@@ -6,6 +6,7 @@ import { ensureUserIndexes } from './utils/initDb.js';
 import { logEmailBootInfo } from './utils/email.js';
 import { failStaleImports } from './services/menuImport/pipeline.js';
 import { resumeSoldOutItems } from './controllers/menuItemsController.js';
+import { startOrderAutoAccept } from './services/orders/autoAccept.js';
 
 export const client = new MongoClient(env.MONGODB_URI!);
 
@@ -28,6 +29,9 @@ async function startServer() {
       resumeSoldOutItems().catch((e) => logger.warn(`resumeSoldOutItems: ${(e as Error).message}`));
     await resumeTick();
     setInterval(resumeTick, 60_000).unref();
+
+    // TEMPORARY (until 2026-10-07 18:50 UTC): orders not accepted by staff within 10 s are accepted automatically
+    startOrderAutoAccept();
 
     // Menu-import jobs interrupted by a restart can never finish
     await failStaleImports().catch((e) => logger.warn(`failStaleImports: ${(e as Error).message}`));

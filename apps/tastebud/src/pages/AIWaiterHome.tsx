@@ -288,7 +288,11 @@ export default function AiWaiterHome() {
   const handleFirstTap = () => {
     if (hasInteracted) return;
     setHasInteracted(true);
+    // FIRST, inside the tap: unlock sound (iPhones play nothing that a tap didn't start — state/tts.ts)
+    tts.unlock();
     markWelcomeInteraction();
+    // the browser's microphone popup comes NOW (on "Get started"), never in the middle of the first hold-to-talk
+    void w.askMicAccess();
     // the welcome's words appear AS they're spoken (not all at once, then the voice a second later)
     setWelcomePending(true);
     try {

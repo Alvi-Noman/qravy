@@ -141,3 +141,58 @@ if __name__ == "__main__":
         if name.startswith("test_") and callable(fn):
             fn()
             print("ok", name)
+
+
+# ---------------------------------------------------------------- the rules never overrule the AI on a look-alike
+def _ref(i):
+    return brain.MenuIndex(ITEMS).ref(next(it for it in ITEMS if it["id"] == i))
+
+
+def test_what_is_in_a_dish_is_a_dish_question_not_the_menu_page():
+    # the real turn: "মিনি স্লাইডার ট্রিও এর মধ্যে কি কি আছে?" opened the menu ("কি কি আছে" looked like "what do you have")
+    out, calls = run("ক্রিস্পি রাইস স্যুপ এর মধ্যে কি কি আছে?", reading("dish_question"),
+                     model={"topic": "item_question", "replyText": "Crispy Rice Soup-এ মুচমুচে রাইস আর সবজি থাকে।"})
+    assert calls and not out["meta"]["decision"].get("openMenu"), out["replyText"]
+    # no reading at all → the dish named (in Bangla) still keeps it off the menu page
+    out, calls = run("ক্রিস্পি রাইস স্যুপ এর মধ্যে কি কি আছে?", None,
+                     model={"topic": "item_question", "replyText": "Crispy Rice Soup-এ মুচমুচে রাইস আর সবজি থাকে।"})
+    assert calls and not out["meta"]["decision"].get("openMenu"), out["replyText"]
+    # …and the general question still opens it
+    out, _ = run("কি আছে তোমাদের মেনুতে?", reading("menu_overview"))
+    assert out["meta"]["decision"].get("openMenu"), out["replyText"]
+
+
+def test_what_goes_with_a_dish_keeps_the_ais_suggestions():
+    # the real turn: "ক্লাসিক ফ্রাইজের সাথে কী খাওয়া যেতে পারে?" → everything cut but "কোনটা অর্ডার করবেন?"
+    answer = "French Fry-এর সাথে Chicken Fried Rice অথবা Chicken Chili Onion খুব ভালো যায়। কোনটা দেব?"
+    out, _ = run("ফ্রেঞ্চ ফ্রাইয়ের সাথে কী খাওয়া যেতে পারে?", reading("recommend"),
+                 model={"topic": "recommendation", "replyText": answer})
+    assert "Chicken Fried Rice" in out["replyText"] and "stayed_on_asked_dish" not in out["meta"]["guards"], out["replyText"]
+    # the same without a reading — the words "সাথে … খাওয়া যেতে পারে" ask for other dishes
+    out, _ = run("ফ্রেঞ্চ ফ্রাইয়ের সাথে কী খাওয়া যেতে পারে?", None,
+                 model={"topic": "recommendation", "replyText": answer})
+    assert "Chicken Fried Rice" in out["replyText"], out["replyText"]
+
+
+def test_a_plain_question_about_a_dish_still_drops_an_unasked_pitch():
+    out, _ = run("ক্রিস্পি রাইস স্যুপ কেমন?", reading("dish_question"),
+                 model={"topic": "item_question",
+                        "replyText": "Crispy Rice Soup হালকা আর মুচমুচে। Chicken Sizzling ট্রাই করতে চান?"})
+    assert "Sizzling" not in out["replyText"] and out["replyText"].endswith("এটা দেব?"), out["replyText"]
+
+
+def test_no_and_ask_for_something_else_gets_suggestions():
+    # "না, অন্য কিছু সাজেস্ট করেন" starts with "না" — it once counted as a plain no: suggestions removed, "ঠিক আছে।"
+    out, _ = run("না, অন্য কিছু সাজেস্ট করেন", reading("recommend"),
+                 model={"topic": "recommendation", "replyText": "Chicken Sizzling অথবা Beef with Red Curry নিতে পারেন।",
+                        "suggestions": [{"item": _ref("csz"), "reason": ""}, {"item": _ref("brc"), "reason": ""}]})
+    assert "Sizzling" in out["replyText"] and "no_pitch_after_no" not in out["meta"]["guards"], out["replyText"]
+
+
+def test_an_order_with_a_question_keeps_the_answer():
+    # "একটা চিকেন সিজলিং দিন, সাথে কী ভালো যাবে?" — the answer about what goes with it is not a "pitch" to cut
+    out, _ = run("একটা চিকেন সিজলিং দিন, সাথে কী ভালো যাবে?", reading("order"),
+                 model={"topic": "order_change", "intent": "order",
+                        "replyText": "Chicken Sizzling যোগ করলাম। সাথে Chicken Fried Rice খুব ভালো যায়।",
+                        "cartOps": [{"op": "add", "item": _ref("csz"), "quantity": 1}]})
+    assert "Chicken Fried Rice" in out["replyText"] and "model_pitch_removed" not in out["meta"]["guards"], out["replyText"]
