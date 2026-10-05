@@ -14,7 +14,10 @@ permissions:
 
 concurrency:
   group: release-${{ github.ref }}
-  cancel-in-progress: true
+  # A newer release WAITS for the running one (never cancels it): when CI runs finished out of order, a release
+  # that was about to be skipped (its CI failed) cancelled the real deploy — nothing reached the server. Waiting
+  # runs still collapse to the newest one, so the latest main is what ends up deployed.
+  cancel-in-progress: false
 
 jobs:
   docker_build_push:
