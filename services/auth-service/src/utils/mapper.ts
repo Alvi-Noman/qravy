@@ -156,6 +156,7 @@ export function toTenantDTO(doc: TenantDoc): v1.TenantDTO {
     menuNotes: doc.menuNotes ?? [],
     waiterKnowledge: doc.waiterKnowledge ?? [],
     waiterLanguage: doc.waiterLanguage === 'en' ? 'en' : 'bn',
+    logoUrl: doc.logoUrl ?? null,
     timezone: doc.timezone ?? DEFAULT_TIMEZONE,
     openingHours: doc.openingHours ?? [],
     dailyResetTime: doc.dailyResetTime ?? DEFAULT_RESET_TIME,

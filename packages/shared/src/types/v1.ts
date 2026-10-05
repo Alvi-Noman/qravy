@@ -258,6 +258,8 @@ export interface TenantDTO {
   waiterKnowledge?: string[];
   /** Language the virtual waiter speaks by default; guests can switch it on the storefront */
   waiterLanguage?: WaiterLanguage;
+  /** The restaurant's logo (Settings → Branding); shown on the guest app's start screen */
+  logoUrl?: string | null;
   /** IANA time zone for all hours (e.g. "Asia/Dhaka") */
   timezone?: string;
   /** Restaurant opening hours; empty = always open */

@@ -709,6 +709,7 @@ export async function updateMyTenant(req: Request, res: Response, next: NextFunc
       update.waiterKnowledge = parsed.waiterKnowledge.map((n) => n.trim()).filter(Boolean);
     }
     if (parsed.waiterLanguage) update.waiterLanguage = parsed.waiterLanguage;
+    if (parsed.logoUrl !== undefined) update.logoUrl = parsed.logoUrl || null;
     if (parsed.timezone) update.timezone = parsed.timezone;
     if (parsed.openingHours) update.openingHours = normalizeAvailability(parsed.openingHours);
     if (parsed.dailyResetTime) update.dailyResetTime = parsed.dailyResetTime;

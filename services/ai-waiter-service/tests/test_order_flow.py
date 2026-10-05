@@ -88,8 +88,9 @@ def test_a_clean_order_needs_no_model_and_is_confirmed_short():
     out, calls = run("দুইটা ক্রিস্পি রাইস স্যুপ আর একটা ফ্রেঞ্চ ফ্রাই দিন")
     assert not calls, "a clean order is added without the model"
     assert ops_of(out) == [("add", "crs", 2), ("add", "ff", 1)]
-    assert out["replyText"] == ("2টা Crispy Rice Soup যোগ করলাম। 1টা French Fry যোগ করলাম। "
-                                "আর কিছু লাগবে, নাকি অর্ডার কনফার্ম করব?"), out["replyText"]  # (only water to drink here: never upsold)
+    # (starters only → the main course is offered; only water to drink here: never upsold)
+    assert out["replyText"].startswith("2টা Crispy Rice Soup যোগ করলাম। 1টা French Fry যোগ করলাম। "), out["replyText"]
+    assert out["meta"]["upsellOffer"]["type"] == "main" and "মেইন কোর্সে" in out["replyText"], out["replyText"]
     assert "clean_order" in out["meta"]["guards"]
     # anything more than "these dishes, this many" → the model reads it (with all its checks)
     for said in ("ঝাল কম করে দুইটা ক্রিস্পি রাইস স্যুপ দিন",   # a note

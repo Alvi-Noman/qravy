@@ -3886,13 +3886,21 @@ async def _reply(
             print(f"[brain] wait time: {w_note} → {w_text[:90]}")
             return {"replyText": w_text, "meta": m}
 
-    # (e) "মেনুতে কি কি আছে?" / "show me the menu" / "what do you have?" → open the menu itself and ask what they'd
-    # like — never read the menu out (a specific kind, "কি কি স্যুপ আছে?", is a list of cards from the model instead)
+    # (e) ANY general "what do you have?" — "কি আছে তোমাদের মেনুতে?", "তোমাদের কি কি আছে?", "show me the menu",
+    # "what can I get?" → open the menu itself: "এই যে আমাদের মেনু — দেখে বলুন… নাকি আমি কিছু সাজেস্ট করব?" — never
+    # read the menu out. Something more specific still goes to the model: a kind ("কি কি স্যুপ আছে?"), a pick ("ভালো
+    # কী আছে?"), a dish named, what's new, a taste / diet / budget.
     if (
-        stage == "none" and (_SEE_MENU.search(transcript) or (asks_overview(transcript) and _MENU_WORD.search(transcript)))
-        and means("see_menu", "menu_overview") and not _WANTS_A_PICK.search(transcript) and not kind_items(transcript, index)
+        stage == "none"
+        and (_SEE_MENU.search(transcript) or asks_overview(transcript)
+             or (understood is not None and u_intent in ("see_menu", "menu_overview")))
+        and not _WANTS_A_PICK.search(transcript)
+        and not kind_scope and not kind_items(transcript, index) and not missing_kinds(transcript, index)
         and not find_mentions(transcript, index, limit=1) and not _orders_now(transcript)
         and not _ABOUT_MINE.search(transcript)
+        and not re.search(r"নতুন|\bnew\b|\bnotun\b", transcript, re.I)
+        and not reco_format.taste_asked(transcript)
+        and extract_prefs(transcript).summary() == "nothing specific yet"
     ):
         text = ("এই যে আমাদের মেনু — দেখে বলুন, কোনটা অর্ডার করতে চান? নাকি আমি কিছু সাজেস্ট করব?" if bn
                 else "Here's our menu — have a look and tell me what you'd like to order. Or shall I suggest something?")
@@ -3927,46 +3935,6 @@ async def _reply(
             m["voiceReplyText"] = small
         print(f"[brain] small talk → {small}")
         return {"replyText": small, "meta": m}
-
-    # (f) "কি কি আছে আপনাদের?" / "what do you have?" — a general question about the menu gets a fixed answer (no
-    # model): the kind of food + the kinds of dishes, then three to try, which are also the cards —
-    # "আমাদের চাইনিজ আইটেম সব আছে — স্যুপ, ফ্রাইড রাইস, …। স্পেশাল কিছু খেতে চাইলে A, B অথবা C ট্রাই করতে পারেন।"
-    # The three are the ranked picks (already fitted to the time of day, availability and this guest), star-marked
-    # (signature) dishes first. Anything more specific still goes to the model: a kind ("স্যুপের মধ্যে কী আছে?"),
-    # a pick ("ভালো কী আছে?"), what's new, a group / budget / diet, or a dish named.
-    if (
-        stage == "none"
-        # the reading decides it's the general "what do you have?" (no reading → the word pattern)
-        and (asks_overview(transcript) if understood is None else u_intent == "menu_overview")
-        and not _WANTS_A_PICK.search(transcript)
-        and not kind_scope and not kind_items(transcript, index) and not missing_kinds(transcript, index)
-        and not find_mentions(transcript, index, limit=1)
-        and not _orders_now(transcript) and not _ABOUT_MINE.search(transcript)
-        and not re.search(r"নতুন|\bnew\b|\bnotun\b", transcript, re.I)
-        and not reco_format.taste_asked(transcript)  # "ঝাল খাবারের মধ্যে কি আছে?" → the spicy dishes, not the tour
-        and extract_prefs(transcript).summary() == "nothing specific yet"
-    ):
-        avail = [it for it in index.items if orderable.get(index.item_id(it), True)]
-        cuisine, kinds_said = menu_profile.glance_parts(index.items, lang, available=avail)
-        trio = sorted([p for p in picks if orderable.get(index.item_id(p.item), True)],
-                      key=lambda p: not is_signature(p.item))[:3]  # stable: star-marked first, ranking kept
-        spoken = [re.sub(r"\s*\(.*?\)", "", str(p.item.get("name") or "")).strip() for p in trio]
-        text = menu_profile.overview_text(cuisine, kinds_said, spoken, lang)
-        rows = [_suggestion_row(p.item, ", ".join(p.reasons[:1])) for p in trio]
-        m = _base_meta(language=lang, intent="suggestions" if rows else "menu", topic="recommendation", suggestions=rows,
-                       decision={"showSuggestionsModal": bool(rows), "showUpsellTray": False}, notes="menu_overview", **ids)
-        rstate.turn += 1
-        if rows:
-            rstate.last_offered, rstate.last_offer_turn = [r["itemId"] for r in rows], rstate.turn
-            rstate.recent = list(dict.fromkeys(rstate.last_offered + rstate.recent))[:12]
-        rstate.profile = profile.to_dict()
-        m["checkout"], m["tray"] = ck, tstate
-        m["reco"], m["recoMode"], m["guards"] = rstate.to_dict(), "overview", ["menu_overview"]
-        if bn:
-            m["voiceReplyText"] = re.sub("|".join(re.escape(n) for n in spoken if n) or r"(?!)",
-                                         lambda mm: to_bangla_script(mm.group(0)), text)
-        print(f"[brain] menu overview → {text}")
-        return {"replyText": text, "meta": m}
 
     # (g) a plain recommendation request gets the waiter's fixed shape (reco_format), filled with the ranked picks:
     #   a KIND  — "ঝাল কিছু আছে?", "স্যুপের মধ্যে ভালো কোনটা?", "স্পেশাল কী আছে?", "ভালো কি আছে?"

@@ -7,7 +7,7 @@ import { createRoot } from 'react-dom/client';
 import TenminOrb, { type OrbMode } from './TenminOrb';
 
 export const ORB_BALL = 0.76; // the ball is this share of a TenminOrb's box
-export const FLIGHT_MS = 1100; // slow enough to follow with the eye
+export const FLIGHT_MS = 350; // very fast — a quick swoop down into the dock
 
 /** Where an orb's ball is: its centre and diameter, in viewport pixels. */
 export type Ball = { cx: number; cy: number; d: number };
@@ -111,6 +111,6 @@ export function settle(el: HTMLElement | null | undefined, baseTransform = '') {
       { transform: `${baseTransform} scale(0.97)`, offset: 0.6 },
       { transform: `${baseTransform} scale(1)` },
     ],
-    { duration: 380, easing: 'ease-out' },
+    { duration: 220, easing: 'ease-out' },
   );
 }

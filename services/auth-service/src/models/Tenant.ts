@@ -15,6 +15,8 @@ export interface TenantDoc {
 
   /** Language the virtual waiter speaks by default (guests can switch on the storefront); missing = 'bn' */
   waiterLanguage?: 'bn' | 'en';
+  /** The restaurant's logo (uploaded in Settings → Branding); the guest app's start screen shows it */
+  logoUrl?: string | null;
 
   /** IANA time zone used for all hours (default Asia/Dhaka) */
   timezone?: string;

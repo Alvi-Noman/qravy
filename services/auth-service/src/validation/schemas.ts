@@ -467,6 +467,8 @@ export const tenantUpdateSchema = z
       .array(z.string().trim().regex(/^#?[A-Za-z0-9-]{1,12}$/, 'Table names: letters, numbers and dashes (max 12)'))
       .max(500)
       .optional(),
+    // The restaurant's logo (an uploaded image's URL) — the guest app's start screen shows it; null removes it
+    logoUrl: z.string().trim().url('Logo must be an image link').max(1000).nullable().optional(),
   })
   .superRefine((data, ctx) => {
     if (data.restaurantInfo) {

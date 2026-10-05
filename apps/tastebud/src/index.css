@@ -22,6 +22,14 @@
 }
 
 /* the "Hold to Talk" pill under the orb (keeps its -50% centering while it moves) */
+/* the AI waiter's start screen: the logo, the name and the table fade up into place */
+@keyframes qv-start-kf {
+  from { opacity: 0; transform: translateY(8px) scale(0.98); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+.qv-start-in { animation: qv-start-kf 420ms cubic-bezier(.2,.8,.2,1) both; }
+@media (prefers-reduced-motion: reduce) { .qv-start-in { animation: none; } }
+
 @keyframes qv-pill-in {
   from { opacity: 0; transform: translateX(-50%) translateY(6px) scale(0.96); }
   to   { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); }

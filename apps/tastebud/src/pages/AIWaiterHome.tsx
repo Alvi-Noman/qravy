@@ -15,7 +15,8 @@ import { useTenantInfo } from '../utils/waiter-lang';
 import LangSwitch from '../components/LangSwitch';
 import ScrollText from '../components/ai-waiter/ScrollText';
 import { useIsMobile } from '../hooks/useIsMobile';
-import { withTable } from '../utils/table';
+import { useTable, withTable } from '../utils/table';
+import StartScreen from '../components/ai-waiter/StartScreen';
 import { useWaiterSession, markWelcomeInteraction, WELCOME_INTERACT_KEY, WELCOME_INACTIVITY_MS } from '../waiter/useWaiterSession';
 import WaiterSheets from '../waiter/WaiterSheets';
 
@@ -142,6 +143,7 @@ export default function AiWaiterHome() {
     holdHintText, showHoldPill, choices, suggestedItems, showSuggestions, showTray, setShowTray, openSuggestions, goMenu,
   } = w;
   const tenantInfo = useTenantInfo(resolvedSub);
+  const [tableNo] = useTable(resolvedSub);
   const WELCOME_TEXT = welcomeText(selectedLang === 'en' ? 'en' : 'bn', tenantInfo?.name);
   const { items: cartItems } = useCart();
 
@@ -220,6 +222,22 @@ export default function AiWaiterHome() {
 
   const orbRef = useRef<HTMLDivElement | null>(null);
   const bottomBarRef = useRef<HTMLDivElement | null>(null);
+  // the tray button sits just above the bottom tiles (on a phone they span the width — it covered "AI suggestions")
+  const [trayFabBottom, setTrayFabBottom] = useState<number | undefined>(undefined);
+  useEffect(() => {
+    const place = () => {
+      const bar = bottomBarRef.current?.getBoundingClientRect();
+      if (bar?.height) setTrayFabBottom(Math.round(window.innerHeight - bar.top + 16));
+    };
+    place();
+    window.addEventListener('resize', place);
+    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(place) : null;
+    if (bottomBarRef.current) ro?.observe(bottomBarRef.current);
+    return () => {
+      window.removeEventListener('resize', place);
+      ro?.disconnect();
+    };
+  }, []);
   const textWrapRef = useRef<HTMLDivElement | null>(null);
   const [textTop, setTextTop] = useState<number | null>(null);
 
@@ -436,26 +454,18 @@ export default function AiWaiterHome() {
       <CartFab
         trayOpen={showTray}
         onOpenTray={() => setShowTray(true)}
+        bottom={trayFabBottom}
       />
 
-      {/* ✅ Glass overlay asking for tap to start (unlocks audio) */}
+      {/* the start screen: logo + name, "Get started" (its tap unlocks the voice, then the welcome is spoken) */}
       {!hasInteracted && (
-        <button
-          type="button"
-          onPointerDown={handleFirstTap}
-          className="fixed inset-0 z-[1500] flex flex-col items-center justify-center px-6"
-          style={{
-            background: 'rgba(255, 255, 255, 0.45)',
-            backdropFilter: 'blur(18px)',
-            WebkitBackdropFilter: 'blur(18px)',
-          }}
-        >
-          <div className="max-w-[420px] text-center">
-            <p className="text-[28px] md:text-[34px] font-semibold text-[#1F1F1F] mb-3">
-              {selectedLang === 'en' ? 'Tap anywhere to start' : 'শুরু করতে যে কোনো জায়গায় ট্যাপ করুন'}
-            </p>
-          </div>
-        </button>
+        <StartScreen
+          name={tenantInfo?.name}
+          logoUrl={tenantInfo?.logoUrl}
+          table={resolvedChannel === 'dine-in' ? tableNo : null}
+          lang={selectedLang === 'en' ? 'en' : 'bn'}
+          onStart={handleFirstTap}
+        />
       )}
     </div>
   );

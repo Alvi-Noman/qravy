@@ -56,12 +56,12 @@ def test_the_meaning_picks_the_shape():
     # the real turn: "ঝাল খাবারের মধ্যে কি আছে আপনাদের?" got the whole-menu tour; the reading says: spicy dishes
     out, calls = run("ঝাল খাবারের মধ্যে কি আছে আপনাদের?", reading("recommend", taste="spicy"))
     assert out["replyText"].startswith("ঝাল আইটেমের মধ্যে") and not calls, out["replyText"]
-    # words no pattern knows, but the meaning is "what do you have?" → the tour
+    # words no pattern knows, but the meaning is "what do you have?" → the menu page
     out, calls = run("আপনারা এখানে কী কী রান্না করেন বলেন তো", reading("menu_overview"))
-    assert "menu_overview" in out["meta"]["guards"] and not calls, out["replyText"]
-    # "কি কি আছে" but about a KIND → that kind, never the tour
+    assert "open_menu" in out["meta"]["guards"] and not calls, out["replyText"]
+    # "কি কি আছে" but about a KIND → that kind, never the whole menu
     out, _ = run("কি কি আছে আপনাদের স্যুপে?", reading("recommend", kind="soup"))
-    assert "menu_overview" not in out["meta"]["guards"], out["replyText"]
+    assert "open_menu" not in out["meta"]["guards"], out["replyText"]
     assert {s["itemId"] for s in out["meta"]["suggestions"]} <= {"crs", "hss", "tts"}, out["meta"]["suggestions"]
     # the kind only the reading caught ("ঠান্ডা কিছু কী আছে" = drinks) → the drinks, plainly (Coke is ready-made)
     out, _ = run("ঠান্ডা কী কী পাওয়া যাবে", reading("recommend", kind="drinks"))
@@ -74,7 +74,7 @@ def test_the_meaning_keeps_shortcuts_from_misfiring():
         {"name": "Chicken Sizzling", "qty": 1, "size": "", "change": "add"}]),
         model={"topic": "order_change", "intent": "order", "replyText": "Chicken Sizzling যোগ করলাম।",
                "cartOps": [{"op": "add", "item": brain.MenuIndex(ITEMS).ref(ITEMS[6]), "quantity": 1}]})
-    assert "menu_overview" not in out["meta"]["guards"] and calls, out["replyText"]
+    assert "open_menu" not in out["meta"]["guards"] and calls, out["replyText"]
     assert [o["itemId"] for o in out["meta"]["cartOps"]] == ["csz"]
     # small-talk words, but the meaning is an order → no small-talk reply
     out, calls = run("হ্যালো ভাই, দুইটা ফ্রেঞ্চ ফ্রাই দেন", reading("order"))
@@ -96,7 +96,7 @@ def test_the_model_sees_the_reading():
 
 def test_no_reading_means_the_old_behaviour():
     out, _ = run("কি কি আছে আপনাদের?", None)
-    assert "menu_overview" in out["meta"]["guards"], out["replyText"]
+    assert "open_menu" in out["meta"]["guards"], out["replyText"]
 
 
 def test_the_reading_is_cleaned_and_its_failures_are_harmless():
