@@ -539,3 +539,21 @@ def test_asking_for_something_less_spicy_still_gets_the_alternative():
         TURN.clear()
         TURN.update(saved)
     assert "Chicken Tenders" in out["replyText"] and "stayed_on_asked_dish" not in out["meta"]["guards"]
+
+
+def test_one_more_naming_another_dish_in_bangla_is_that_dish():
+    # "আরেকটা অনিয়ন রিংস দিন" right after a Coke was added — once read as "one more Coke" (the dish name, said in
+    # Bangla, wasn't seen)
+    g = Guest()
+    g.say("একটা কোক দেন", [add("coke")])
+    out = g.say("আরেকটা অনিয়ন রিংস দিন", [add("or")])
+    assert [a[0] for a in adds(out)] == ["or"], out["meta"]["cartOps"]
+    assert not any(o["itemId"] == "coke" for o in out["meta"]["cartOps"]), out["meta"]["cartOps"]
+
+
+def test_yes_with_a_dish_named_in_bangla_is_that_dish_not_the_offer():
+    # after an offer of something else, "হ্যাঁ, অনিয়ন রিংস দেন" once counted as a bare "yes" to the offer
+    g = Guest()
+    g.say("একটা ক্লাসিক স্ম্যাশ বার্গার দেন", [add("smash")])
+    out = g.say("হ্যাঁ, অনিয়ন রিংস দেন", [add("or")])
+    assert "or" in [a[0] for a in adds(out)], out["meta"]["cartOps"]

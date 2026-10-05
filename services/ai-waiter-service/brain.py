@@ -2420,7 +2420,7 @@ def _reconcile_ops_with_words(ops: List[Dict[str, Any]], transcript: str, index:
     "Chicken with Red Curry" added) → retarget the op to what the guest actually said. Returns fixes."""
     from rapidfuzz import fuzz
 
-    named = find_mentions(transcript, index, limit=6)
+    named = _dishes_named(transcript, index, limit=6)
     if not named:
         return []
     named_ids = {index.item_id(i) for i in named}
@@ -2601,7 +2601,9 @@ _PAIR_CUE = re.compile(
 # the guest is asking for another dish (or one that suits a need) — an alternative is the answer, not a pitch
 _WANTS_OTHER = re.compile(
     r"ঝাল|spic|\bhot\b|অ্যালার্জ|এলার্জ|allerg|নিরামিষ|ভেজ|\bveg|হালাল|halal|বাজেট|budget|সস্তা|cheap|দাম|price|"
-    r"অন্য|বদলে|instead|other|alternative|মতো|মত\b|similar|like it|আর কী|আর কি|ছাড়া|without|কম\s|less|বেশি|more",
+    r"অন্য|বদলে|instead|other|alternative|মতো|মত\b|similar|like it|আর কী|আর কি|ছাড়া|without|কম\s|less|বেশি|more|"
+    # something to go WITH it — "ক্লাসিক ফ্রাইজের সাথে কী খাওয়া যেতে পারে?" asks for other dishes
+    r"সাথে|সঙ্গে|\bwith\b|\bpair|goes? well|মিলিয়ে|\bshathe\b|\bsathe\b",
     re.I,
 )
 
@@ -2971,7 +2973,7 @@ def _fallback_reply(
             parts.append(f"দুঃখিত, আমাদের মেনুতে {kind} নেই।" if bn else f"Sorry, we don't have {kind}.")
         if parts:
             return " ".join(parts), {"intent": "menu", "topic": "availability"}
-    hits = find_mentions(transcript, index, limit=3)
+    hits = _dishes_named(transcript, index, limit=3)
     if hits and _PRICE_OR_STOCK.search(transcript):
         it = hits[0]
         name, price = it.get("name"), _money(it.get("price"))
@@ -3479,7 +3481,7 @@ async def _reply(
         if prev:
             profile.max_price = int(min(prev)) - 1
     stats = OrderStats(**(ctx.get("orderStats") or {})) if isinstance(ctx.get("orderStats"), dict) else OrderStats()
-    mentioned_now = [index.item_id(it) for it in find_mentions(transcript, index, limit=6)]
+    mentioned_now = [index.item_id(it) for it in _dishes_named(transcript, index, limit=6)]
     asked_ids = {index.item_id(it) for it in index.items if explicitly_asked(it, transcript)}
     # "স্যুপের মধ্যে কী ভালো?" → the picks are soups only (not one soup + two dinner dishes)
     kind_scope = _named_kind_ids(transcript, index)
@@ -3524,7 +3526,7 @@ async def _reply(
         print(f"[brain] 'these' = what was just recommended {just_said}, not the screen's {shown_ids}")
         shown_ids, shown_on_screen = just_said[:12], False  # (→ they become the cards on screen, the pick first)
     shown = [index.by_id[i] for i in shown_ids]
-    named_elsewhere = [it for it in find_mentions(transcript, index, limit=4) if index.item_id(it) not in shown_ids]
+    named_elsewhere = [it for it in _dishes_named(transcript, index, limit=4) if index.item_id(it) not in shown_ids]
     about_shown = len(shown) >= 2 and bool(_REF_LIST.search(transcript)) and not named_elsewhere and stage == "none"
     if about_shown:
         mode, mode_why = "compare", "guest asks about the dishes on their screen"
@@ -3662,7 +3664,7 @@ async def _reply(
         o_info = offer_pending.get("offer") or {}
         o_ops = [dict(x) for x in offer_pending.get("ops") or []]
         o_ids = {str(i) for i in o_info.get("item_ids") or []}
-        named_other = [it for it in find_mentions(transcript, index, limit=3) if index.item_id(it) not in o_ids]
+        named_other = [it for it in _dishes_named(transcript, index, limit=3) if index.item_id(it) not in o_ids]
         o_close = (("তাহলে অর্ডারটা কনফার্ম করব?" if bn else "Shall I confirm your order then?")
                    if o_info.get("moment") == "wrap_up"
                    else ("আর কিছু লাগবে, নাকি অর্ডার কনফার্ম করব?" if bn else "Anything else, or shall I confirm your order?"))
@@ -3760,7 +3762,7 @@ async def _reply(
         p_ops = list(pending.get("ops") or [])
         # "না, ২টা" / "শুধু একটা" → a correction of the number, not a no: do it with the number they said
         if (said_number is not None and len(p_ops) == 1 and p_ops[0].get("op") in ("add", "set")
-                and len(transcript.split()) <= 5 and not find_mentions(transcript, index, limit=1)):
+                and len(transcript.split()) <= 5 and not _dishes_named(transcript, index, limit=1)):
             fixed_op = {**p_ops[0], "quantity": said_number}
             it_p = index.by_id.get(str(fixed_op.get("itemId"))) or {}
             key_p = _tray.line_key(str(fixed_op.get("itemId")), fixed_op.get("variant"),
@@ -3808,7 +3810,7 @@ async def _reply(
 
     # (b2) "আরেকটা দিন" / "one more" / "একটা কমান" right after a change → exactly that line, +1 / −1
     rel = _tray.RELATIVE.match(transcript.strip())
-    if rel and stage == "none" and last_change and not find_mentions(transcript, index, limit=1):
+    if rel and stage == "none" and last_change and not _dishes_named(transcript, index, limit=1):
         keys = set(last_change.get("after_keys") or [])
         target = [r for r in cart_rows if r["key"] in keys]
         if len(target) == 1:
@@ -3826,7 +3828,7 @@ async def _reply(
                              "one_more" if more else "one_less")
 
     # (c) "ট্রেতে কী আছে?" / "what's in my tray?" / "কতগুলো আইটেম হলো?"
-    if _tray.TRAY_QUESTION.search(transcript) and stage == "none" and not find_mentions(transcript, index, limit=1):
+    if _tray.TRAY_QUESTION.search(transcript) and stage == "none" and not _dishes_named(transcript, index, limit=1):
         if cart_rows:
             s_txt, s_total, s_count = _tray.summary(cart_rows)
             vat = _vat_hint(restaurant, lang)
@@ -3892,11 +3894,13 @@ async def _reply(
     # কী আছে?"), a dish named, what's new, a taste / diet / budget.
     if (
         stage == "none"
-        and (_SEE_MENU.search(transcript) or asks_overview(transcript)
-             or (understood is not None and u_intent in ("see_menu", "menu_overview")))
+        # the AI's reading decides ("মিনি স্লাইডার ট্রিও এর মধ্যে কি কি আছে?" is a dish question, though it has "কি কি
+        # আছে"); the word patterns only when there's no reading
+        and (u_intent in ("see_menu", "menu_overview") if understood is not None
+             else bool(_SEE_MENU.search(transcript) or asks_overview(transcript)))
         and not _WANTS_A_PICK.search(transcript)
         and not kind_scope and not kind_items(transcript, index) and not missing_kinds(transcript, index)
-        and not find_mentions(transcript, index, limit=1) and not _orders_now(transcript)
+        and not _dishes_named(transcript, index, limit=1) and not _orders_now(transcript)
         and not _ABOUT_MINE.search(transcript)
         and not re.search(r"নতুন|\bnew\b|\bnotun\b", transcript, re.I)
         and not reco_format.taste_asked(transcript)
@@ -3983,7 +3987,7 @@ async def _reply(
     if (stage == "none" and not carry_options and len(either) >= 2 and last_waiter.rstrip().endswith("?")
             and re.search(r"অথবা|নাকি|\bor\b", last_waiter.split("।")[-1], re.I)
             and (is_affirmative(transcript) or _YES_START.search(transcript)) and len(transcript.split()) <= 4
-            and not find_mentions(transcript, index, limit=1) and said_number is None):
+            and not _dishes_named(transcript, index, limit=1) and said_number is None):
         names = [str(it.get("name")) for it in either[:4]]
         text = (f"কোনটা দেব — {' নাকি '.join(names)}?" if bn else f"Which one would you like — {' or '.join(names)}?")
         res = tray_done(text, [], False, cart_rows, "which_one_of_the_offer", "order_change")
@@ -4031,7 +4035,7 @@ async def _reply(
     # we asked "which table?" and heard no number ("মারুক") → ask again, keep waiting — never let the model make
     # a table out of it ("টেবিল মারুক…"). A real question at this point ("what's the wifi?") is still answered.
     if (stage == "table" and action == "stay" and not table and words <= 4 and "?" not in transcript
-            and not find_mentions(transcript, index, limit=1) and not co.wants_to_hold(transcript)):
+            and not _dishes_named(transcript, index, limit=1) and not co.wants_to_hold(transcript)):
         text = co.table_again_text(lang)
         m = _base_meta(language=lang, intent="order", topic="confirm_order",
                        decision={"showSuggestionsModal": False, "showUpsellTray": False, "askTable": True,
@@ -4117,7 +4121,7 @@ async def _reply(
         )
     if (
         offered_one and stage == "none" and not asked_confirm and is_affirmative(transcript)
-        and not find_mentions(transcript, index, limit=1)
+        and not _dishes_named(transcript, index, limit=1)
     ):
         it = index.by_id[rstate.last_offered[0]]
         yes_ops, yes_problems = _validate_ops(
@@ -4478,7 +4482,7 @@ async def _reply(
         problems.append("retargeted")  # forces the deterministic confirmation line (reply named the wrong dish)
     # a bare "হ্যাঁ, দেন" adds only what the waiter actually offered in its last line (or just before) — never a dish
     # nobody mentioned ("আপনার অর্ডার পাঠানো হয়েছে" → "হ্যাঁ, দেন" once added a Masala Chicken)
-    if is_affirmative(transcript) and not find_mentions(transcript, index, limit=1):
+    if is_affirmative(transcript) and not _dishes_named(transcript, index, limit=1):
         spoken_of = {index.item_id(it) for it in find_mentions(last_waiter, index, limit=8)} | set(rstate.last_offered)
         guessed = [o for o in ops if o["op"] == "add" and o["itemId"] not in spoken_of]
         if guessed:
@@ -4791,8 +4795,14 @@ async def _reply(
     # Cart changed: the spoken reply must match what actually happened.
     if ops or clear:
         intent = "order"
-        if not checkout_spoke:
-            cut = _strip_pitches(reply, {o["itemId"] for o in ops} | set(final_qty), index)
+        # (not when they ASKED in the same breath — "একটা বার্গার দিন, সাথে কী ভালো যাবে?" — and never the dishes they
+        # named: "…আর ফ্রাইজ কেমন?" is answered)
+        asked_too = bool(_WANTS_A_PICK.search(transcript)
+                         or re.search(r"সাথে|সঙ্গে|\bwith\b|সাজেস্ট|suggest|recommend", transcript, re.I)
+                         or (understood is not None and u_intent in ("recommend", "dish_question")))
+        if not checkout_spoke and not asked_too:
+            named_ids = {index.item_id(i) for i in _dishes_named(transcript, index, limit=6)}
+            cut = _strip_pitches(reply, {o["itemId"] for o in ops} | set(final_qty) | named_ids, index)
             if cut != reply:
                 print("[brain] model pitch cut:", reply[:120])
                 reply, voice = cut, (cut if lang == "bn" else voice)
@@ -4848,8 +4858,17 @@ async def _reply(
     suggestions = suggestions[:5]
     if ops or clear:
         suggestions = []  # A: a cart change brings no cards — only the offer engine's one offer (meta.upsell)
-    if not (ops or clear) and (short_no or upsell_engine._NO.search(transcript) or is_decline(transcript)
-                               or _CLARIFY_ASK.search(last_waiter or "")):
+    # …unless they're ASKING for dishes: "না, অন্য কিছু সাজেস্ট করেন", "something else?", or the AI reads it that way
+    asks_for_dishes = bool(
+        _WANTS_A_PICK.search(transcript)
+        or re.search(r"অন্য|বদলে|সাজেস্ট|রেকমেন্ড|something else|anything else|\bother\b|instead|suggest|recommend",
+                     transcript, re.I)
+        or (understood is not None and u_intent in ("recommend", "menu_overview", "dish_question", "order"))
+    )
+    if not (ops or clear) and not asks_for_dishes and (
+            short_no or upsell_engine._NO.search(transcript) or is_decline(transcript)
+            # after "what do you mean?": only a short reply (a clarifying sentence is a real request)
+            or (_CLARIFY_ASK.search(last_waiter or "") and len(transcript.split()) <= 3)):
         # a "no" (or the turn after a misunderstanding) is never answered with a new dish to try: no cards, no pitch
         # (it once got "…না হলে হট উইংস-ও নিতে পারেন" + three cards after "বললাম যে না থাক")
         suggestions = []
@@ -4864,11 +4883,16 @@ async def _reply(
     # It once ended "…হট উইংস ট্রাই করতে চান?" — Hot Wings cards, and a "হ্যাঁ" would have added Hot Wings, not the Tower.
     asked_dish = _dishes_named(transcript, index, limit=2) if not (ops or clear or checkout_spoke or about_shown) else []
     if (len(asked_dish) == 1 and mode != "overview" and not _WANTS_OTHER.search(transcript)
+            and not _WANTS_A_PICK.search(transcript) and topic != "recommendation"
+            # the AI's reading agrees it's a question ABOUT the dish (no reading → the words decide)
+            and (understood is None or u_intent in ("dish_question", "availability"))
             and orderable.get(index.item_id(asked_dish[0]), True)
             and not [v for v in violations(asked_dish[0], profile) if v.startswith("allergy") or v in _DIET_CLASH]):
         keep = set(cart_qty) | {index.item_id(asked_dish[0])}
         cut = _strip_pitches(reply, keep, index)
-        if cut != reply and cut:
+        # only a trim: what stays must still be the answer about the dish — never an empty "কোনটা অর্ডার করবেন?"
+        still_about_it = any(index.item_id(i) == index.item_id(asked_dish[0]) for i in _dishes_named(cut, index, limit=4))
+        if cut != reply and cut and still_about_it:
             in_tray = index.item_id(asked_dish[0]) in cart_qty
             ask = ((" আর কিছু লাগবে?" if in_tray else " এটা দেব?") if lang == "bn"
                    else (" Anything else?" if in_tray else " Shall I add it?"))

@@ -4,7 +4,7 @@
 // details steps). Every page with the waiter (AIWaiterHome, DigitalMenu …) uses this hook + <WaiterSheets/> /
 // <WaiterDock/>, so the waiter behaves the same everywhere. Change the waiter's behaviour HERE — never in a page.
 // (Moved verbatim from AIWaiterHome, which was the reference behaviour.)
-import React, { useRef, useState, useEffect } from 'react';
+import React, { useCallback, useRef, useState, useEffect } from 'react';
 import { getWsURL, getStableSessionId } from '../utils/ws';
 import type { WaiterIntent, AiReplyMeta } from '../types/waiter-intents';
 import { normalizeIntent, localHeuristicIntent } from '../utils/intent-routing';
@@ -38,6 +38,7 @@ type UIMode = 'idle' | 'thinking' | 'talking';
 
 // 🔒 Welcome overlay persistence (the home screen's "tap to start"): any talk to the waiter counts as activity
 export const WELCOME_INTERACT_KEY = 'qravy:aiwaiter:lastInteractionAt';
+const IS_IPHONE = typeof navigator !== 'undefined' && /iPhone|iPod/.test(navigator.userAgent || '');
 export const WELCOME_INACTIVITY_MS = 10 * 60 * 1000; // 10 minutes
 
 export function markWelcomeInteraction() {
@@ -188,7 +189,8 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
         anchorRevealRef.current();
         // the conversation is on: get the mic ready while the waiter speaks, so it opens at once for the answer
         // (no "one moment" while the phone wakes the microphone)
-        if (sessionRef.current === 'on' && (!streamRef.current || !streamRef.current.active)) {
+        // (not on iPhones: an open mic moves the waiter's voice to the quiet earpiece mid-sentence)
+        if (sessionRef.current === 'on' && !IS_IPHONE && (!streamRef.current || !streamRef.current.active)) {
           navigator.mediaDevices
             .getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true } })
             .then((st) => {
@@ -750,6 +752,8 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
   async function startListening(opts?: { listenMs?: number; typed?: string; afterStop?: boolean; silent?: boolean }) {
     const followUp = !!opts?.listenMs;
     const typed = opts?.typed?.trim() || '';
+    // inside the guest's tap (hold / pill): unlock sound — on the menu page this is the first tap (iPhone, tts.ts)
+    if (!followUp) tts.unlock();
     try {
       // any voice interaction counts as activity for welcome timer
       markWelcomeInteraction();
@@ -1367,6 +1371,25 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
     setUiMode(replyComing ? 'thinking' : 'idle');
   }
 
+  // "Get started": ask for the microphone NOW, so the browser's permission popup never interrupts the first
+  // hold-to-talk. Already allowed → nothing (no mic light). Allowed now → released at once (it opens again on hold).
+  const askMicAccess = useCallback(async () => {
+    try {
+      const st = await (navigator as any).permissions?.query?.({ name: 'microphone' });
+      if (st?.state === 'granted') return;
+    } catch {
+      /* the Permissions API doesn't know "microphone" here (older Safari) — just ask */
+    }
+    try {
+      const s = await navigator.mediaDevices.getUserMedia({
+        audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      });
+      s.getTracks().forEach((t) => t.stop());
+    } catch {
+      /* declined or no mic — holding the orb asks again / falls back to typing */
+    }
+  }, []);
+
   // hands-free: when the waiter finishes SPEAKING a question, reopen the mic for the answer (see the TTS onEnd)
   const followUpTriggerRef = useRef<() => void>(() => {});
   followUpTriggerRef.current = () => {
@@ -1502,7 +1525,7 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
     aiLive, aiFinal, aiAt, uiMode, speaking, voicePending, welcomePending, setWelcomePending, listening, holding, micLevel,
     session, voiceState, followListen, orbMode,
     // the mic
-    startListening, stopListening, sendTyped, orbPressProps, orbBallRef, holdHint, holdHintText, showHoldPill,
+    startListening, stopListening, sendTyped, askMicAccess, orbPressProps, orbBallRef, holdHint, holdHintText, showHoldPill,
     // what's on screen
     choices, pickOptions, offerItemIds, suggestedItems, highlightIds, setHighlightIds, trayPicks, setTrayPicks,
     upsellItems, trayAskTable, setTrayAskTable, showSuggestions, setShowSuggestions, showTray, setShowTray,
