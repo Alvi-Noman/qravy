@@ -17,13 +17,16 @@ import { getStableSessionId } from '../../utils/ws';
 import { tr, uiLang } from '../../utils/ui-lang';
 import { useCart, cartLineKey, type CartItem, type CartWarning } from '../../context/CartContext';
 import WaitEstimateLine from '../WaitEstimateLine';
-import SheetScrollArea, { SHEET_HEIGHT, useBodyScrollLock } from '../SheetScroll';
+import SheetScrollArea, { useBodyScrollLock } from '../SheetScroll';
+import PopupHeader, { POPUP_PAGE_CLASS } from './PopupHeader';
 import { useCartWait } from '../../utils/wait-time';
 import { usePublicMenu } from '../../hooks/usePublicMenu';
 import { isAvailableAt } from '../../utils/availability';
 import LineEditor from './LineEditor';
 import { TrayPicks, FlightLayer, type TrayPick, type Flight } from './TrayPicks';
 import MicInputBar from './MicInputBar';
+import OptionPicker from './OptionPicker';
+import type { PickOption } from '../../utils/handsfree';
 import type { AiReplyMeta, WaiterIntent } from '../../types/waiter-intents';
 import { normalizeIntent, localHeuristicIntent } from '../../utils/intent-routing';
 
@@ -44,8 +47,14 @@ type Props = {
   onIntent?: (intent?: WaiterIntent, meta?: AiReplyMeta, replyText?: string) => void;
   /** its own mic bar — off where a hands-free voice session runs the conversation (the waiter home) */
   voiceBar?: boolean;
-  /** the waiter's presence (AssistantHeader) at the top of the sheet, left-aligned */
+  /** the waiter's presence (AssistantDock) at the bottom of the page */
   assistant?: React.ReactNode;
+  /** dishes the waiter is holding until their size / choices are picked — shown at the top of the tray */
+  pickOptions?: PickOption[];
+  /** a tapped pick, sent as the guest's words (same path as saying it) */
+  onPickAnswer?: (say: string) => void;
+  /** the dish the waiter just offered (its card is among the picks): a tap on it is "yes" to the offer */
+  offerItemIds?: string[];
 };
 
 
@@ -70,6 +79,9 @@ export default function TrayModal({
   onIntent,
   voiceBar = true,
   assistant,
+  pickOptions = [],
+  onPickAnswer,
+  offerItemIds = [],
 }: Props) {
   const { items, subtotal, removeLine, addItem, setLineQty, replaceLine, lastChange, warnings, clear } = useCart();
 
@@ -268,6 +280,11 @@ export default function TrayModal({
   const landFlight = React.useCallback((id: number) => setFlights((f) => f.filter((x) => x.id !== id)), []);
 
   const addPick = (p: TrayPick) => {
+    if (onPickAnswer && offerItemIds.includes(p.id)) {
+      // the waiter's offer: "yes" adds exactly what was offered (its size too), and counts as a yes
+      onPickAnswer(lang === 'en' ? 'yes' : 'হ্যাঁ');
+      return;
+    }
     const m = menuById.get(p.id);
     const needsChoice =
       (Array.isArray(m?.variations) && m.variations.filter((v: any) => v?.name).length > 1) ||
@@ -301,13 +318,14 @@ export default function TrayModal({
 
 
   const hasItems = items.length > 0;
-  const effectiveOpen = open && hasItems;
+  const waiting = pickOptions.length > 0 && !!onPickAnswer; // a dish waiting for its size / choice
+  const effectiveOpen = open && (hasItems || waiting);
   // "Ready in about N min" — only asked while the tray is open
   const wait = useCartWait({ subdomain: placeSub, branch: placeBranch, items: effectiveOpen ? items : [] });
 
   React.useEffect(() => {
-    if (open && !hasItems) onClose?.();
-  }, [open, hasItems, onClose]);
+    if (open && !hasItems && !waiting) onClose?.();
+  }, [open, hasItems, waiting, onClose]);
   useBodyScrollLock(effectiveOpen);
 
   React.useEffect(() => {
@@ -325,52 +343,29 @@ export default function TrayModal({
   const branch = placeBranch ?? undefined;
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center">
-      <div
-        className="absolute inset-0 bg-black/40 backdrop-blur-[1.5px]"
-        onClick={onClose}
-      />
-
-      <div
-        className={
-          `relative z-[101] flex w-full flex-col sm:max-w-md rounded-t-[26px] sm:rounded-3xl bg-[#F8F8F8] ${SHEET_HEIGHT} overflow-hidden sm:shadow-2xl ` +
-          "transform transition-all duration-300 ease-out " +
-          (open ? "translate-y-0 opacity-100" : "translate-y-full opacity-0")
-        }
-      >
-        <div className="shrink-0 z-20 px-4 pt-3 pb-2 border-b border-gray-100 bg-[#F8F8F8] rounded-t-[26px]">
-          <div className="relative flex flex-col items-center">
-            <div className="mb-2 h-1 w-12 rounded-full bg-gray-300" />
-            {assistant ? (
-              // the waiter's presence (orb · AI Assistant · status) left-aligned; the tray's title under it
-              <div className="w-full pr-10">
-                {assistant}
-                <h2 className="mt-2 text-left text-[15px] font-semibold text-gray-900">
-                  Your Tray <span className="font-normal text-gray-500">· {items.reduce((n, i) => n + i.qty, 0)}</span>
-                </h2>
-              </div>
-            ) : (
-            <h2 className="text-[15px] font-semibold text-gray-900">
+    <div className="fixed inset-0 z-[100] flex justify-center bg-white">
+      <div className={POPUP_PAGE_CLASS}>
+        <PopupHeader
+          title={
+            <>
               Your Tray <span className="font-normal text-gray-500">· {items.reduce((n, i) => n + i.qty, 0)}</span>
-            </h2>
-            )}
-
-            <button
-              onClick={onClose}
-              className="absolute right-0 top-0 h-8 w-8 grid place-items-center rounded-full hover:bg-gray-100 active:scale-95"
-            >
-              <svg width="16" height="16" viewBox="0 0 24 24">
-                <path
-                  fill="currentColor"
-                  d="M18.3 5.71a1 1 0 0 0-1.41 0L12 10.59 7.11 5.7a1 1 0 0 0-1.41 1.41L10.59 12l-4.9 4.89a1 1 0 1 0 1.41 1.41L12 13.41l4.89 4.9a1 1 0 0 0 1.41-1.41L13.41 12l4.9-4.89a1 1 0 0 0-.01-1.4Z"
-                />
-              </svg>
-            </button>
-          </div>
-        </div>
+            </>
+          }
+          onClose={onClose}
+        />
 
         {/* the list scrolls on its own; the footer below is part of the column, so nothing hides behind it */}
-        <SheetScrollArea ref={scrollRef} className="px-4 pt-3 pb-4" moreHint={items.length > 3 ? tr(lang, 'আরও আছে', 'More below') : undefined}>
+        <SheetScrollArea ref={scrollRef} className="px-4 pt-2 pb-4" fadeFrom="#FFFFFF" moreHint={items.length > 3 ? tr(lang, 'আরও আছে', 'More below') : undefined}>
+          {waiting && (
+            <div className="mb-3">
+              <OptionPicker
+                picks={pickOptions}
+                lang={lang}
+                imageFor={(id) => menuById.get(id)?.imageUrl}
+                onAnswer={(say) => onPickAnswer?.(say)}
+              />
+            </div>
+          )}
           <div className="space-y-3">
             {items.map((it) => {
               const key = cartLineKey(it);
@@ -518,7 +513,13 @@ export default function TrayModal({
         </SheetScrollArea>
 
         {/* BOTTOM BAR: place the order + the mic — always visible, never over the list */}
-        <div className="relative z-40 shrink-0 border-t border-gray-200 bg-[#F8F8F8] px-4 pt-3 pb-[max(1.25rem,env(safe-area-inset-bottom))] space-y-3">
+        <div
+          className={
+            "relative z-40 shrink-0 border-t border-gray-100 bg-white px-4 pt-3 space-y-3 " +
+            // the waiter's dock below handles the safe area
+            (assistant ? "pb-3" : "pb-[max(1.25rem,env(safe-area-inset-bottom))]")
+          }
+        >
           {placeError && (
             <div role="alert" className="rounded-xl bg-red-50 px-3 py-2 text-[12px] text-red-700">
               {placeError}
@@ -528,7 +529,7 @@ export default function TrayModal({
           <button
             type="button"
             onClick={placeNow}
-            disabled={placing}
+            disabled={placing || !hasItems}
             className="relative z-[60] flex w-full items-center justify-between rounded-2xl bg-[#FA2851] px-4 py-3.5 text-white font-semibold shadow-lg shadow-rose-200 active:scale-[0.99] disabled:opacity-70"
           >
             <span>{placing ? tr(lang, 'অর্ডার দেওয়া হচ্ছে…', 'Placing…') : tr(lang, 'অর্ডার দিন', 'Place order')}</span>
@@ -555,6 +556,9 @@ export default function TrayModal({
             }}
           />}
         </div>
+
+        {/* the waiter's dock (where the hands-free session runs) */}
+        {!voiceBar && assistant}
       </div>
 
       <LineEditor

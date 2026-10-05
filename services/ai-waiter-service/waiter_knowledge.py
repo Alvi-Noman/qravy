@@ -103,7 +103,11 @@ _CONTAINS = [
     (r"\bfish sauce\b", "fish sauce"),
     (r"cashew|peanut|almond|walnut|pistachio|hazelnut|\bnuts?\b", "nuts"),
     (r"\beggs?\b", "egg"),
-    (r"\b(cheese|cream|butter|milk|paneer|yogh?urt|lassi|shake|ghee)\b", "dairy"),
+    # (a milkshake, a brownie, a sundae are dairy too — "\bshake\b" never matched "milkshake". A dish is a "Shake",
+    # its category "Shakes & Drinks" says nothing about a lemonade; a fish / crab / rice cake isn't a sweet cake)
+    (r"\b(chees\w*|cream\w*|butter\w*|milk\w*|paneer|yogh?urt|lassi|\w*shake|ghee|ice ?cream|sundaes?|brownies?|"
+     r"cheesecakes?|cupcakes?|pancakes?|kulfi|firni|phirni|payesh|kheer|custard|pudding|latte|cappuccino|mocha|frappe|"
+     r"falooda|rasmalai|misti ?doi|doi)\b|(?<!fish )(?<!crab )(?<!rice )(?<!potato )\bcakes?\b", "dairy"),
     (r"\bmushrooms?\b", "mushroom"),
     (r"\b(noodles?|chow ?mein|won ?thon|wonton|spring roll|chop ?suey|bread|bun|pasta|naan|paratha)\b", "wheat"),
     # house-style conventions (hints, not facts)
@@ -705,7 +709,9 @@ def is_done_ordering(text: str) -> bool:
     return bool(
         re.search(
             r"^(no|nope|nah|no thanks?|no thank you)( that'?s (all|it)| nothing else| i'?m good| thanks?)?$"
-            r"|that'?s (all|it)|nothing (else|more)|i'?m (good|done)|all good|আর কিছু (লাগবে|চাই) না|আর না|এতটুকুই|এটুকুই|এই (যথেষ্ট|হবে)|^না$|^না লাগবে না$|^লাগবে না$|^না থাক$",
+            r"|that'?s (all|it)|nothing (else|more)|i'?m (good|done)|all good|আর কিছু (লাগবে|চাই) না|আর না|এতটুকুই|এটুকুই|এই (যথেষ্ট|হবে)|^না$|^না লাগবে না$|^লাগবে না$|^না থাক$"
+            # "কিছু লাগবে না" (with food in the tray: that's all — the caller sends an empty tray elsewhere), Banglish
+            r"|(^|\s)কিছু (লাগবে|চাই) ?না|আর কিছু না|\b(aro|ar|r) kichu (lagbe|chai) ?na\b|\bkichu (lagbe|chai) ?na\b|\bebar hobe\b|\bei hobe\b",
             t,
         )
     )

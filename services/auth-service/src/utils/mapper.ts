@@ -161,6 +161,7 @@ export function toTenantDTO(doc: TenantDoc): v1.TenantDTO {
     dailyResetTime: doc.dailyResetTime ?? DEFAULT_RESET_TIME,
     kitchen: kitchenSettings(doc),
     tables: doc.tables ?? [],
+    tableKeys: doc.tableKeys ?? {},
     servicePeriods: tenantServicePeriods(doc),
 
     // trial info

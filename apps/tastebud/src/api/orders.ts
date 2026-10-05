@@ -1,6 +1,7 @@
 // apps/tastebud/src/api/orders.ts
 // Guest ordering: place a dine-in (table) or online (pickup / delivery) order and follow its status live.
 import type { CartItem } from '../context/CartContext';
+import { getTableKey } from '../utils/table';
 
 const API_BASE: string =
   (import.meta.env.VITE_API_URL as string | undefined) ||
@@ -130,7 +131,8 @@ export async function placeOrder(
             ...(body.fulfillment === 'delivery' ? { address: (body.customer.address ?? '').trim() } : {}),
           },
         }
-      : { channel: 'dine-in', table: body.table };
+      : // the table's QR key (&k=) goes along: the restaurant then knows the guest really scanned that table
+        { channel: 'dine-in', table: body.table, tableKey: getTableKey(body.subdomain, body.table) ?? undefined };
   const res = await fetch(`${API_BASE}/public/orders`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Accept: 'application/json' },

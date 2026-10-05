@@ -6,7 +6,6 @@ import {
   useSearchParams,
   Link,
   Navigate,
-  useNavigate,
 } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import Fuzzysort from 'fuzzysort';
@@ -17,18 +16,15 @@ import CategoryList from '../components/CategoryList';
 import SearchBar from '../components/SearchBar';
 import RestaurantSkeleton from '../components/RestaurantSkeleton';
 import { FulfillmentToggle } from '../components/OnlineOrderDetails';
-import { useFulfillment, useStoreChannels } from '../utils/order-mode';
-import { useWaiterLang } from '../utils/waiter-lang';
+import { useFulfillment, useOrderChannel } from '../utils/order-mode';
 import LangSwitch from '../components/LangSwitch';
-import MicInputBar from '../components/ai-waiter/MicInputBar';
-import SuggestionsModal from '../components/ai-waiter/SuggestionsModal';
-import TrayModal from '../components/ai-waiter/CartModal';
 import CartFab from '../components/ai-waiter/CartFab';
-import { useCart } from '../context/CartContext';
-import type { AiReplyMeta, WaiterIntent } from '../types/waiter-intents';
-import { normalizeIntent, localHeuristicIntent } from '../utils/intent-routing';
-import { usePublicMenu } from '../hooks/usePublicMenu';
-import { applyVoiceCartOps } from '../utils/voice-cart';
+import { withTable } from '../utils/table';
+import { storeBasePath } from '../utils/checkout-flow';
+// THE WAITER — the same one as on the home screen (src/waiter): its voice session, how its replies are handled,
+// its sheets and its dock. Never handle waiter replies in this page: change src/waiter and both pages follow.
+import { useWaiterSession } from '../waiter/useWaiterSession';
+import WaiterSheets, { WaiterDock } from '../waiter/WaiterSheets';
 import {
   closedNote as closedNoteFor,
   formatAvailability,
@@ -74,18 +70,12 @@ function SectionHeader({
   );
 }
 
-function resolveChannelFromPath(pathname: string): Channel {
-  const p = pathname.toLowerCase();
-  return p.startsWith('/dine-in') || p.includes('/dine-in') ? 'dine-in' : 'online';
-}
-
 function useRuntimeRoute() {
   const { subdomain, branchSlug, branch } = useParams<{
     subdomain?: string;
     branchSlug?: string;
     branch?: string;
   }>();
-  const location = useLocation();
   const [search] = useSearchParams();
 
   const sd =
@@ -100,37 +90,21 @@ function useRuntimeRoute() {
     search.get('branch') ??
     (typeof window !== 'undefined' ? (window as any).__STORE__?.branch ?? null : null);
 
-  const channelFromPath = resolveChannelFromPath(location.pathname);
-  const ch =
-    (search.get('channel') as Channel | null) ??
-    (typeof window !== 'undefined'
-      ? ((window as any).__STORE__?.channel as Channel | null) ?? null
-      : null) ??
-    channelFromPath;
-
-  return { subdomain: sd, branchSlug: branchValue ?? undefined, channel: ch as Channel };
+  return { subdomain: sd, branchSlug: branchValue ?? undefined };
 }
 
 /* ========================================================================== */
 
 export default function DigitalMenu() {
-  const { subdomain, branchSlug, channel: routeChannel } = useRuntimeRoute();
-  // /menu is the online shop; fall back to dine-in when the restaurant doesn't sell online
-  const storeChannels = useStoreChannels(subdomain);
-  const channel: Channel = routeChannel === 'online' && !storeChannels.online ? 'dine-in' : routeChannel;
+  const { subdomain, branchSlug } = useRuntimeRoute();
+  // the same rule as every other page: the link decides ("…/dine-in/menu?table=12" = dine-in, "…/menu" = online)
+  const channel: Channel = useOrderChannel(subdomain);
   const [fulfillment, setFulfillment] = useFulfillment(subdomain);
-  // the virtual waiter's language: the guest's switch → the restaurant's default → Bangla
-  const [effectiveLang, setWaiterLang] = useWaiterLang(subdomain);
   const location = useLocation();
-  const navigate = useNavigate();
-  const { addItem, setQty, updateQty, removeItem, setNotes, clear } = useCart();
 
   if (!subdomain) return <Navigate to="/t/demo/menu" replace />;
 
   const normalizedBranch = branchSlug || undefined;
-
-  /** Full menu for voice cart ops (shared catalog) */
-  const { items: fullMenuItems = [] } = usePublicMenu(subdomain, normalizedBranch, channel);
 
   /** TENANT INFO (optional) */
   const { data: tenant } = useQuery({
@@ -146,7 +120,7 @@ export default function DigitalMenu() {
     refetchOnWindowFocus: false,
   });
 
-  /** MENU (for visible grid; can be same as fullMenuItems but kept separate for now) */
+  /** MENU (the visible grid) */
   const menuKey = ['publicMenu', { subdomain, branchSlug: normalizedBranch, channel }];
   const {
     data: items = [],
@@ -401,19 +375,8 @@ export default function DigitalMenu() {
     return m;
   }, [sections]);
 
-  const isDevPath = location.pathname.startsWith('/t/');
-  const backHref = isDevPath
-    ? normalizedBranch
-      ? `/t/${subdomain}/${normalizedBranch}`
-      : `/t/${subdomain}`
-    : normalizedBranch
-    ? `/${normalizedBranch}`
-    : `/`;
-
-  const confirmationHref =
-    normalizedBranch
-      ? `/t/${subdomain}/${normalizedBranch}/confirmation`
-      : `/t/${subdomain}/confirmation`;
+  // back to the waiter on the same side ("…/dine-in?table=12" or the online shop)
+  const backHref = withTable(storeBasePath(subdomain, normalizedBranch) || '/', subdomain);
 
   const showSkeleton = isMenuLoading || isCatLoading;
 
@@ -478,255 +441,10 @@ export default function DigitalMenu() {
     return () => obs.disconnect();
   }, [pageStep, totalItemsInView, visibleCount]);
 
-  /* ===================== AI Waiter: intent → modals ======================= */
-
-  type SuggestedItem = {
-    id?: string;
-    name?: string;
-    price?: number;
-    imageUrl?: string;
-  };
-
-  const [showSuggestions, setShowSuggestions] = React.useState(false);
-  const [showTray, setShowTray] = React.useState(false);
-  const [suggestedItems, setSuggestedItems] = React.useState<SuggestedItem[]>([]);
-  const [upsellItems, setUpsellItems] = React.useState<
-    { itemId?: string; id?: string; title: string; price?: number }[]
-  >([]);
-
-  // store latest AI reply meta
-  const [aiReplyMeta, setAiReplyMeta] = React.useState<AiReplyMeta | null>(null);
-
-  const openSuggestions = () => {
-    setShowTray(false);
-    setShowSuggestions(true);
-  };
-
-  const openTray = () => {
-    setShowSuggestions(false);
-    setShowTray(true);
-  };
-
-  const resolveMenuItem = (id?: string, name?: string) => {
-    const src = (items as any[]) || [];
-    if (!src.length) return undefined as any;
-
-    if (id) {
-      const hit = src.find((m) => String(m.id) === String(id));
-      if (hit) return hit;
-    }
-    if (name) {
-      const lc = String(name).toLowerCase();
-      const hit = src.find((m) => String(m.name || '').toLowerCase() === lc);
-      if (hit) return hit;
-    }
-    return undefined as any;
-  };
-
-  const buildSuggestionsFromMeta = (meta?: AiReplyMeta): SuggestedItem[] => {
-    if (!meta) return [];
-    const out: SuggestedItem[] = [];
-
-    const metaSuggestions = Array.isArray(meta.suggestions) ? meta.suggestions : [];
-    for (const s of metaSuggestions as any[]) {
-      const itemId = s.itemId || s.id;
-      const src = resolveMenuItem(itemId, s.title || s.name);
-      if (src) {
-        out.push({
-          id: String(src.id),
-          name: src.name,
-          price: typeof src.price === 'number' ? src.price : undefined,
-          imageUrl: src.imageUrl ?? src.image ?? undefined,
-        });
-      }
-    }
-
-    const metaItems = Array.isArray(meta.items) ? meta.items : [];
-    for (const it of metaItems as any[]) {
-      const itemId = it.itemId || it.id;
-      const src = resolveMenuItem(itemId, it.name);
-      if (src) {
-        out.push({
-          id: String(src.id),
-          name: src.name,
-          price: typeof src.price === 'number' ? src.price : undefined,
-          imageUrl: src.imageUrl ?? src.image ?? undefined,
-        });
-      }
-    }
-
-    const seen = new Set<string>();
-    return out.filter((x) => {
-      const key = `${x.id ?? ''}|${(x.name ?? '').toLowerCase()}`;
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
-  };
-
-  const buildSuggestionsFromReplyText = (replyText: string): SuggestedItem[] => {
-    if (!replyText || !items || !items.length) return [];
-    const lc = replyText.toLowerCase();
-    const hits: SuggestedItem[] = [];
-
-    for (const s of items as any[]) {
-      const name = (s?.name ?? '').toString();
-      if (!name) continue;
-
-      const nameHit = lc.includes(name.toLowerCase());
-      const aliases: string[] = Array.isArray(s?.aliases) ? s.aliases : [];
-      const aliasHit = aliases.some((a) => lc.includes(String(a).toLowerCase()));
-
-      if (nameHit || aliasHit) {
-        hits.push({
-          id: String(s.id),
-          name: s.name,
-          price: typeof s.price === 'number' ? s.price : undefined,
-          imageUrl: s.imageUrl ?? s.image ?? undefined,
-        });
-      }
-    }
-
-    const seen = new Set<string>();
-    return hits.filter((x) => {
-      const key = `${x.id ?? ''}|${(x.name ?? '').toLowerCase()}`;
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
-  };
-
-  const resolveIntent = (meta?: AiReplyMeta, replyText?: string): WaiterIntent => {
-    if (meta?.intent) return normalizeIntent(meta.intent);
-    if (Array.isArray(meta?.items) && meta.items.length) return 'order';
-    return localHeuristicIntent(replyText || '');
-  };
-
-  // Central router:
-  // - main MicInputBar
-  // - SuggestionsModal.onIntent
-  // - TrayModal.onIntent
-  const handleIntent = (
-    rawIntent: WaiterIntent | undefined,
-    meta?: AiReplyMeta,
-    replyText?: string,
-  ) => {
-    const intent = rawIntent ?? resolveIntent(meta, replyText);
-    const decision = (meta?.decision || {}) as any;
-
-    // 🔁 Global confirmation redirect: if backend says so, go straight to confirmation page
-    if (decision?.openConfirmationPage) {
-      navigate(confirmationHref);
-      return;
-    }
-
-    const hasCartOps = Array.isArray(meta?.cartOps) && meta!.cartOps.length > 0;
-    const didClear = !!meta?.clearCart;
-
-    const menuSource =
-      (fullMenuItems && fullMenuItems.length ? fullMenuItems : items) as any[];
-
-    // 1) Apply voice cart ops (single source of truth for cart mutations)
-    if (meta && (hasCartOps || didClear)) {
-      try {
-        applyVoiceCartOps(meta, menuSource, {
-          addItem,
-          setQty,
-          updateQty,
-          removeItem,
-          setNotes,
-          clear,
-        });
-      } catch {
-        // ignore bad ops
-      }
-
-      const upsell = (meta.upsell || (meta as any).Upsell || []) as any[];
-
-      if (decision?.showUpsellTray && Array.isArray(upsell) && upsell.length) {
-        setUpsellItems(
-          upsell.map((u: any) => ({
-            id: u.itemId || u.id,
-            itemId: u.itemId || u.id,
-            title: String(u.title || u.name || ''),
-            price: typeof u.price === 'number' ? u.price : undefined,
-          })),
-        );
-      }
-
-      // If AI touched cart, default to showing tray unless it clearly wanted suggestions/menu.
-      if (!intent || intent === 'order' || intent === 'chitchat') {
-        openTray();
-      }
-    }
-
-    // 2) Suggestions intent
-    if (intent === 'suggestions') {
-      let mapped = buildSuggestionsFromMeta(meta);
-
-      if ((!mapped || !mapped.length) && replyText) {
-        mapped = buildSuggestionsFromReplyText(replyText);
-      }
-
-      if ((!mapped || !mapped.length) && items && items.length) {
-        mapped = (items as any[])
-          .slice(0, Math.min(8, (items as any[]).length))
-          .map((it: any) => ({
-            id: String(it.id),
-            name: it.name,
-            price: typeof it.price === 'number' ? it.price : undefined,
-            imageUrl: it.imageUrl ?? it.image ?? undefined,
-          }));
-      }
-
-      setSuggestedItems(mapped);
-      openSuggestions();
-      return;
-    }
-
-    // 3) Order intent (fallback when no cartOps were emitted)
-    if (intent === 'order') {
-      if (!hasCartOps && meta) {
-        const orderItems = Array.isArray(meta.items) ? (meta.items as any[]) : [];
-
-        for (const it of orderItems) {
-          const src = resolveMenuItem(it.itemId, it.name);
-          if (!src) continue;
-
-          const qty = Math.max(1, Number(it.quantity ?? 1));
-          const price =
-            (typeof (src as any).price === 'number' ? (src as any).price : undefined) ??
-            (typeof it.price === 'number' ? it.price : 0);
-
-          addItem({
-            id: String((src as any).id),
-            name: (src as any).name ?? it.name ?? '',
-            price,
-            qty,
-          });
-        }
-
-        const upsell = (meta.upsell || (meta as any).Upsell || []) as any[];
-
-        if (decision?.showUpsellTray && Array.isArray(upsell) && upsell.length) {
-          setUpsellItems(
-            upsell.map((u: any) => ({
-              id: u.itemId || u.id,
-              itemId: u.itemId || u.id,
-              title: String(u.title || u.name || ''),
-              price: typeof u.price === 'number' ? u.price : undefined,
-            })),
-          );
-        }
-      }
-
-      openTray();
-      return;
-    }
-
-    // 4) intent === 'menu' → we're already here
-    // 5) intent === 'chitchat' → no modal change
-  };
+  /* ===================== AI Waiter (shared with the home screen) ====================== */
+  // the same voice session and reply handling as AIWaiterHome: cart changes, the option picker, offers, suggestion
+  // cards, answer pills, the read-back / table / details steps. "Show me the menu" → we're already here.
+  const w = useWaiterSession({ subdomain, branch: normalizedBranch, channel, onOpenMenu: () => {} });
 
   /* ============================== Rendering =============================== */
 
@@ -740,13 +458,6 @@ export default function DigitalMenu() {
     ((typeof window !== 'undefined'
       ? (window as any).__STORE__?.branch
       : undefined) || undefined);
-
-  // Log what modals will see (non-JSX, avoids ReactNode issues)
-  console.log('[MODAL PROPS]', {
-    source: 'DigitalMenu',
-    suggestions: aiReplyMeta?.suggestions || [],
-    upsell: aiReplyMeta?.upsell || [],
-  });
 
   return (
     <div
@@ -784,12 +495,12 @@ export default function DigitalMenu() {
             <h1 className="pointer-events-none absolute left-1/2 -translate-x-1/2 text-[22px] sm:text-[24px] font-semibold text-gray-900">
               Menu
             </h1>
-            <LangSwitch value={effectiveLang} onChange={setWaiterLang} />
+            <LangSwitch value={w.selectedLang} onChange={w.setSelectedLang} />
           </div>
         </div>
       </div>
 
-      <div className="mx-auto max-w-6xl px-4 py-4 pb-28">
+      <div className="mx-auto max-w-6xl px-4 py-4 pb-60">
         {/* Closed banner (opening hours, restaurant time zone) */}
         {!restaurantOpen && (
           <div
@@ -995,52 +706,16 @@ export default function DigitalMenu() {
         ) : null}
       </div>
 
-      {/* Modals driven by AI Waiter intents (backend-driven meta) */}
-      <SuggestionsModal
-        open={showSuggestions}
-        onClose={() => setShowSuggestions(false)}
-        items={suggestedItems}
-        onIntent={(intent, meta, replyText) => {
-          const m = (meta as AiReplyMeta | undefined) ?? aiReplyMeta ?? undefined;
-          console.log('[AI PAGE][SuggestionsModal.onIntent]', { intent, meta: m, replyText });
-          handleIntent(intent, m, replyText);
-        }}
-      />
-      <TrayModal
-        open={showTray}
-        channel={channel}
-        onClose={() => setShowTray(false)}
-        upsellItems={upsellItems}
-        onIntent={(intent, meta, replyText) => {
-          const m = (meta as AiReplyMeta | undefined) ?? aiReplyMeta ?? undefined;
-          console.log('[AI PAGE][TrayModal.onIntent]', { intent, meta: m, replyText });
-          handleIntent(intent, m, replyText);
-        }}
-      />
+      {/* the waiter's sheets (suggestions, the tray with its picker) — the same as on the home screen */}
+      <WaiterSheets w={w} />
 
       {/* Floating minimized cart button (only when tray is closed & cart has items) */}
-      <CartFab
-        trayOpen={showTray}
-        onOpenTray={() => setShowTray(true)}
-      />
+      <CartFab trayOpen={w.showTray} onOpenTray={() => w.setShowTray(true)} bottom={210} />
 
-      {/* Sticky mic bar (bottom) */}
-      <div className="sticky bottom-0 inset-x-0 z-40">
-        <div className="mx-auto max-w-6xl px-4 pb-4">
-          <div className="rounded-[999px] bg-white shadow-[0_12px_32px_rgba(250,40,81,0.08)] border border-gray-100 p-2">
-            <MicInputBar
-              tenant={tenantSlug}
-              branch={branchHint}
-              channel={channel}
-              lang={effectiveLang}
-              onAiReply={({ replyText, meta }) => {
-                const m = meta as AiReplyMeta | undefined;
-                console.log('[AI PAGE]', { replyText, meta: m });
-                setAiReplyMeta(m ?? null);
-                handleIntent(undefined, m, replyText);
-              }}
-            />
-          </div>
+      {/* the waiter at the bottom: hold the orb to talk; what it says, and the answer pills */}
+      <div className="fixed inset-x-0 bottom-0 z-40">
+        <div className="mx-auto max-w-2xl">
+          <WaiterDock w={w} originFromOrb={false} />
         </div>
       </div>
     </div>

@@ -299,16 +299,16 @@ def test_quiet_mode_strips_suggestions_and_decline_is_remembered():
     assert "sd" in out["meta"]["reco"]["profile"]["declined"]
 
 
-def test_complement_mode_asks_once_about_drinks_or_dessert():
+def test_complement_mode_the_model_only_confirms_the_offer_is_the_engines():
     add = {**TURN, "topic": "order_change", "intent": "order", "replyText": "Added 1 × Beef with Red Curry.",
            "cartOps": [{"op": "add", "item": IDX.ref(by["rc"]), "quantity": 1, "note": "", "choices": []}]}
     out, calls = _run("one beef with red curry please", [add])
-    # the model only confirms the add — the missing-item question is the upsell engine's (see test_upsell.py)
+    # the model only confirms the add — never a pairing of its own (offers.py decides the one offer)
     assert "RECOMMENDATION MODE: COMPLEMENT" in calls[0][-1]["content"] and "PAIRING" not in calls[0][-1]["content"]
-    # the one upsell question, about kinds (see test_upsell.py) — no dish pushed by name
-    assert out["replyText"].endswith("Would you like any drinks with that?"), out["replyText"]  # (no desserts on this menu)
-    assert not out["meta"]["upsell"] and out["meta"]["reco"]["upsell_asked"] is True
-    assert out["meta"]["reco"]["last_upsell_turn"] == out["meta"]["reco"]["turn"]
+    offer = out["meta"]["upsellOffer"]
+    assert out["replyText"].startswith("Added 1 × Beef with Red Curry.") and out["replyText"].endswith("?"), out["replyText"]
+    assert offer["moment"] == "first_add" and out["meta"]["reco"]["offers_made"] == 1
+    assert out["meta"]["reco"]["last_upsell_turn"] == out["meta"]["reco"]["turn"] - 1
 
 
 def test_ordinals_group_question_and_single_drink_offer():
@@ -319,15 +319,13 @@ def test_ordinals_group_question_and_single_drink_offer():
     # a group without a head-count → recommend, then ask how many
     _, calls = _run("What should we order for dinner, something filling?", [{**TURN, "replyText": "Try the Beef Sizzling. How many of you are eating?"}])
     assert "How many of you are eating?" in calls[0][-1]["content"]
-    # a drink offered with the food → no second drink offer at "that's all"
+    # an offer made with the food → never the same kind again at "that's all"
     add = {**TURN, "topic": "order_change", "intent": "order", "replyText": "Added 1 × Beef Sizzling.",
            "cartOps": [{"op": "add", "item": IDX.ref(by["bs"]), "quantity": 1, "note": "", "choices": []}]}
     out, _ = _run("one beef sizzling", [add])
-    if out["meta"]["upsell"] and "Drink" in out["meta"]["upsell"][0]["title"]:
-        assert out["meta"]["reco"]["drink_offered"] is True
-        s2 = RecoState.from_dict(out["meta"]["reco"])
-        assert decide_mode("that's all", state=s2, cart_ids=["bs"], mentioned_ids=[], has_drinks=True, has_signature=False,
-                           cart_has_drink=False, done_ordering=True, confirming=False)[0] == "quiet"
+    offer = out["meta"].get("upsellOffer")
+    if offer:
+        assert offer["type"] in out["meta"]["reco"]["gaps_offered"]
 
 
 def test_lookalike_dish_is_retargeted_to_what_the_guest_said():

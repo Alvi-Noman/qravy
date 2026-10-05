@@ -25,6 +25,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 const OrdersActivity = lazy(() => import('../components/Dashboard/OrdersActivity'));
 const WaiterCalls = lazy(() => import('../components/Dashboard/WaiterCalls'));
 const ChannelAvailability = lazy(() => import('../components/Dashboard/ChannelAvailability'));
+const UpsellStats = lazy(() => import('../components/Dashboard/UpsellStats'));
 
 /** Menu setup: upload a PDF or photos (real AI import), or build the menu manually. */
 function OnboardingPanel() {
@@ -356,6 +357,13 @@ export default function Dashboard(): JSX.Element {
         <section>
           <Suspense fallback={<SkeletonBox />}>
             <ChannelAvailability dineIn={stats.dineIn} online={stats.online} />
+          </Suspense>
+        </section>
+
+        {/* The AI waiter's offers: take rate, extra revenue, A/B arms */}
+        <section>
+          <Suspense fallback={<SkeletonBox />}>
+            <UpsellStats tenantSubdomain={(tenant as { subdomain?: string }).subdomain} />
           </Suspense>
         </section>
       </div>

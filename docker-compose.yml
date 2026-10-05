@@ -11,6 +11,8 @@ services:
       NODE_ENV: development
       PORT: "3001"
       AI_WAITER_HTTP_URL: http://ai-waiter-service:7081
+      # the key that lets only auth-service set a restaurant's buzzer off (root .env)
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY:?Set INTERNAL_API_KEY in the root .env}
       CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:5501}
       FRONTEND_URL: ${FRONTEND_URL:-http://localhost:5501}
       # AI menu import (PDF/photos) — same key as the AI waiter, from the root .env
@@ -203,6 +205,12 @@ services:
       # tells guests staff were notified. Keep 0 until a staff screen reads that collection.
       - STAFF_ALERTS_ENABLED=0
 
+      # === Who may call the restaurant's own endpoints ===
+      # staff logins (upsell stats, silencing the buzzer) are checked with auth-service;
+      # only auth-service (with this key) may set the buzzer off
+      - AUTH_SERVICE_URL=http://auth-service:3001
+      - INTERNAL_API_KEY=${INTERNAL_API_KEY:?Set INTERNAL_API_KEY in the root .env}
+
       # === Idle finalize + batching ===
       - IDLE_FINALIZE_MS=1200
       - TRANSCRIPT_FLUSH_N=1
@@ -224,8 +232,9 @@ services:
                 . services/ai-waiter-service/.env;
                 set +a;
                 pip install --no-cache-dir 'pymongo[srv]' &&
-                python fine_tuning/export_transcripts.py --watch
-                --mongo \"$MONGO_URI\" --db \"$MONGO_DB\" --coll transcripts"
+                python fine_tuning/export_transcripts.py --watch"
+    # (no --mongo/--db flags: Compose would fill them from the ROOT .env — Atlas, empty db — not the waiter's .env;
+    #  the script reads MONGO_URI / MONGO_DB from the environment sourced above)
     env_file:
       - ./services/ai-waiter-service/.env
     environment:

@@ -4,6 +4,7 @@ import { Routes, Route, Navigate, useParams } from "react-router-dom";
 import Home from "./pages/Directory";
 import Restaurant from "./pages/DigitalMenu";
 import AIWaiter from "./pages/AIWaiterHome";
+import TenminOrbDemo from "./pages/TenminOrbDemo";
 
 function RedirectToTenant() {
   const { subdomain } = useParams();
@@ -19,6 +20,9 @@ export default function App() {
   return (
     <Suspense fallback={<div className="p-6 text-sm text-gray-500">Loading…</div>}>
       <Routes>
+        {/* Demo page */}
+        <Route path="/demo/tenmin-orb" element={<TenminOrbDemo />} />
+
         {/* Generic homepage */}
         <Route path="/" element={hasTenantFromRuntime ? <AIWaiter /> : <Home />} />
 

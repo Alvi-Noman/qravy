@@ -13,6 +13,7 @@ import React, {
 import { useLocation } from 'react-router-dom';
 import { loadCart as apiLoadCart, saveCart as apiSaveCart } from '../api/cart';
 import { getStableSessionId } from '../utils/ws';
+import { isDineInPath } from '../utils/table';
 
 /* -------------------------------------------------------------------------- */
 /*                                Type Definitions                            */
@@ -203,12 +204,7 @@ function deriveBranch(pathname: string, search: string): string | null {
 }
 
 function deriveChannel(pathname: string): Channel {
-  if (
-    /^\/t\/[^/]+\/dine-in/.test(pathname) ||
-    /^\/t\/[^/]+\/branch\/[^/]+\/dine-in/.test(pathname)
-  ) {
-    return 'dine-in';
-  }
+  if (isDineInPath(pathname)) return 'dine-in'; // "…/dine-in?table=12" — the table's side of the site
   if (typeof window !== 'undefined') {
     return (window as any).__STORE__?.channel === 'dine-in' ? 'dine-in' : 'online';
   }

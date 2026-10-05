@@ -38,6 +38,8 @@ interface AuthContextType {
   logout: () => Promise<void>;
   refreshToken: () => Promise<void>;
   reloadUser: () => Promise<void>;
+  /** the current access token right now (also just after refreshToken(), before a re-render) */
+  getToken: () => string | null;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -159,6 +161,8 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     [setToken]
   );
 
+  const getToken = useCallback(() => tokenRef.current, []);
+
   /** Logout and clear */
   const logout = useCallback(async (): Promise<void> => {
     setToken(null);
@@ -182,7 +186,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
 
   return (
     <AuthContext.Provider
-      value={{ user, token, loading, session, login, logout, refreshToken, reloadUser }}
+      value={{ user, token, loading, session, login, logout, refreshToken, reloadUser, getToken }}
     >
       {children}
     </AuthContext.Provider>

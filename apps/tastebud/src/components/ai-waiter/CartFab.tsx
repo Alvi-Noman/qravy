@@ -11,9 +11,11 @@ type CartFabProps = {
   trayOpen: boolean;
   /** Called when user taps the FAB (should open TrayModal). */
   onOpenTray: () => void;
+  /** distance from the screen's bottom (e.g. above the waiter's dock on the menu page); default 20px */
+  bottom?: number;
 };
 
-export default function CartFab({ trayOpen, onOpenTray }: CartFabProps) {
+export default function CartFab({ trayOpen, onOpenTray, bottom }: CartFabProps) {
   const { items, subtotal } = useCart();
   const location = useLocation();
 
@@ -28,6 +30,7 @@ export default function CartFab({ trayOpen, onOpenTray }: CartFabProps) {
   return (
     <button
       onClick={onOpenTray}
+      style={bottom !== undefined ? { bottom } : undefined}
       className="
         fixed bottom-5 right-5 z-[95]
         flex items-center gap-2

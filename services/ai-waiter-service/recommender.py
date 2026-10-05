@@ -118,7 +118,7 @@ _ALLERGEN_WORDS = [
     (r"shrimp|prawn|shellfish|crab|lobster|squid|চিংড়ি|chingri", "shellfish"),
     (r"\bfish\b|মাছ|\bmach\b|\bmaach\b", "fish"),
     (r"\beggs?\b|ডিম|\bdim\b", "egg"),
-    (r"dairy|milk|lactose|cheese|দুধ", "dairy"),
+    (r"dairy|milk|lactose|cheese|দুধ|ডেইরি|ডেয়ারি|ল্যাক্টোজ", "dairy"),
     (r"gluten|wheat|celiac|coeliac|গম", "gluten"),
     (r"mushroom", "mushroom"),
     (r"sesame|তিল", "sesame"),
@@ -893,8 +893,10 @@ class RecoState:
     last_upsell_turn: int = -99
     declined_turn: int = -99
     drink_offered: bool = False
-    gaps_offered: List[str] = field(default_factory=list)  # the kinds asked about in THE upsell question (once a visit)
+    gaps_offered: List[str] = field(default_factory=list)  # the offer types made this visit (offers.py — never twice)
     upsell_asked: bool = False  # "সাথে কি কোনো ড্রিংকস অথবা ডেজার্ট নিবেন?" — asked once per visit, never again
+    offers_made: int = 0  # the offer engine's offers this visit (offers.MAX_OFFERS)
+    offer_declines: int = 0  # "no"s to them (offers.MAX_DECLINES → no more this visit)
     recent: List[str] = field(default_factory=list)  # item ids pitched recently (novelty)
     profile: Dict[str, Any] = field(default_factory=dict)
 

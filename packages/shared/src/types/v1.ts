@@ -268,8 +268,10 @@ export interface TenantDTO {
   servicePeriods?: ServicePeriodDTO[];
   /** Wait-time estimation: default minutes per dish and orders the kitchen cooks at once */
   kitchen?: KitchenSettingsDTO;
-  /** Dine-in table labels; each gets a QR code (menu URL with ?table=) */
+  /** Dine-in table labels; each gets a QR code ("/dine-in?table=<label>&k=<key>") */
   tables?: string[];
+  /** Each table's secret QR key (staff only — never on the public tenant info) */
+  tableKeys?: Record<string, string>;
 
   // Trial info (ISO strings)
   trialStartedAt?: string | null;
