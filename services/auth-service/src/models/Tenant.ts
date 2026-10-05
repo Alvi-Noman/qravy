@@ -33,6 +33,19 @@ export interface TenantDoc {
   /** Each table's secret QR key (utils/tableKeys): "/dine-in?table=12&k=<key>" proves the guest scanned that table */
   tableKeys?: Record<string, string>;
 
+  /**
+   * Set only on a quick-demo restaurant (/quick-demo, no account): created from photos of a real menu to show the
+   * owner a live storefront. ownerId is a placeholder with no user. Everything is deleted after expiresAt.
+   */
+  demo?: {
+    /** Secret in the demo page's URL; the only way to read or name this demo */
+    key: string;
+    importId: ObjectId;
+    /** The restaurant name was typed in (until then the menu is read but not built) */
+    named: boolean;
+    expiresAt: Date;
+  };
+
   ownerInfo?: {
     fullName: string;
     phone: string;

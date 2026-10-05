@@ -447,6 +447,9 @@ export async function ensureUserIndexes(client: MongoClient): Promise<void> {
   logger.info('Ensured unique index on tenants.subdomain');
   await tenants.createIndex({ ownerId: 1, createdAt: -1 });
   logger.info('Ensured index on tenants.ownerId,createdAt');
+  // Quick-demo restaurants: looked up by their secret key, swept when expired
+  await tenants.createIndex({ 'demo.key': 1 }, { unique: true, sparse: true, name: 'ux_tenants_demo_key' });
+  await tenants.createIndex({ 'demo.expiresAt': 1 }, { sparse: true, name: 'ix_tenants_demo_expires' });
 
   const memberships = db.collection('memberships');
   await memberships.createIndex({ tenantId: 1, userId: 1 }, { unique: true, name: 'ux_tenant_user' });

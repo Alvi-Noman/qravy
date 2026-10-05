@@ -26,6 +26,7 @@ import categoriesRoutes from './routes/categoriesRoutes.js';
 import publicRoutes from './routes/publicRoutes.js'; // ✅ added
 import menuImportsRoutes from './routes/menuImportsRoutes.js';
 import orderRoutes from './routes/orderRoutes.js';
+import quickDemoRoutes from './routes/quickDemoRoutes.js';
 
 import logger from './utils/logger.js';
 import { responseFormatter } from './middleware/response.js';
@@ -157,6 +158,7 @@ app.use('/api/v1/access', accessRoutes);
 app.use('/api/v1/categories', categoriesRoutes);
 app.use('/api/v1', menuImportsRoutes); // /api/v1/menu-imports
 app.use('/api/v1', orderRoutes); // /api/v1/public/orders (guests) + /api/v1/orders (staff)
+app.use('/api/v1', quickDemoRoutes); // /api/v1/public/quick-demo (no account)
 
 /**
  * Legacy aliases under /api/v1/auth
