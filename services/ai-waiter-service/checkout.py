@@ -133,7 +133,7 @@ def says_yes(text: str) -> bool:
     if not t or "?" in t or wants_to_hold(t):
         return False
     return is_affirmative(t) or is_explicit_confirm(t) or bool(
-        re.match(r"^\s*(yes|yeah|yep|sure|ok(ay)?|go ahead|place it|send it|please do|do it|হ্যাঁ|হ্যা|জি|জ্বি|ঠিক আছে|দিন|দিয়ে দিন|হ্যাঁ দিন)\b", t, re.I)
+        re.match(r"^\s*(yes|yeah|yep|sure|ok(ay)?|go ahead|place it|send it|please do|do it|হ্যাঁ|হ্যা|জি|জ্বি|ঠিক আছে|দিন|দিয়ে দিন|হ্যাঁ দিন)(?![\w\u0980-\u09FF])", t, re.I)
     )
 
 

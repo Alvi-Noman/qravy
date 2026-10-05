@@ -2149,6 +2149,8 @@ _ORDERS_NOW = re.compile(
 # "লাগবে" is also the verb of the time question itself: "কতক্ষণ লাগবে?" = how long will it take (not "I need")
 _TIME_TAKES = re.compile(
     r"(কতক্ষণ|কতক্ষন|কত সময়|কত সময়|কত মিনিট|সময়|সময়|দেরি|দেরী)\s*(লাগবে|লাগে)|"
+    # "দশ মিনিট লাগবে?", "১৫ মিনিটে হবে?", "10 minutes?" — a number of minutes is a time, never a size or a count
+    r"(মিনিট|মিনিটে|ঘণ্টা|ঘন্টা|ঘণ্টায়)\s*(লাগবে|লাগে|হবে|পাব|পাবো|আসবে|দেবেন)|\b\d+\s*(min|mins|minutes?|hours?)\b|"
     r"\b(koto ?khon|koto (shomoy|somoy|minute)|shomoy|somoy)\s+lag(b)?e\b",
     re.I,
 )
@@ -2156,11 +2158,13 @@ _TIME_TAKES = re.compile(
 
 def _orders_now(transcript: str) -> bool:
     return bool(_ORDERS_NOW.search(_TIME_TAKES.sub(" ", transcript or "")))
-_QUESTION = re.compile(r"\?|^\s*(what|which|how|is|are|do|does|can|could|any|should|where|when)\b|কি\b|কী\b|কোন", re.I)
+_QUESTION = re.compile(r"\?|^\s*(what|which|how|is|are|do|does|can|could|any|should|where|when)\b|(?<![\u0980-\u09FF])(কি|কী)(?![\w\u0980-\u09FF])|কোন", re.I)
 
 
 def _is_question_not_order(transcript: str) -> bool:
     t = (transcript or "").strip()
+    if _TIME_TAKES.search(t):
+        return True  # "দশ মিনিট লাগবে?" — "লাগবে" here is time, not an order
     return bool(_QUESTION.search(t)) and not _ORDER_CUE.search(t)
 
 
@@ -2606,6 +2610,35 @@ _WANTS_OTHER = re.compile(
     r"সাথে|সঙ্গে|\bwith\b|\bpair|goes? well|মিলিয়ে|\bshathe\b|\bsathe\b",
     re.I,
 )
+
+
+# "which of these…?" — what the guest compares them ON (the facts we can answer it from)
+_CMP_MILD = re.compile(r"কম ঝাল|ঝাল কম|ঝাল ছাড়া|ঝাল নেই|ঝাল নাই|\bmild|least spicy|not spicy|less spicy|kom jhal", re.I)
+_CMP_HOT = re.compile(r"বেশি ঝাল|ঝাল বেশি|সবচেয়ে ঝাল|সব থেকে ঝাল|spiciest|most spicy|hottest|beshi jhal", re.I)
+_CMP_CHEAP = re.compile(r"সস্তা|কম দাম|দাম কম|কমদামি|cheap|least expensive|lowest price|affordable|kom dam|shosta|sosta", re.I)
+_CMP_PRICEY = re.compile(r"দামি|বেশি দাম|দাম বেশি|expensive|priciest|beshi dam", re.I)
+_CMP_BEST = re.compile(r"কোনটা (নেব|নিব|দেব|নেওয়া)|কোনটা নিলে|which (one )?(should|would)|which is better|better", re.I)
+
+
+def _compare_criterion(transcript: str) -> Optional[str]:
+    t = transcript or ""
+    if _CMP_MILD.search(t):
+        return "mild"
+    if _CMP_HOT.search(t):
+        return "hot"
+    if _CMP_CHEAP.search(t):
+        return "cheap"
+    if _CMP_PRICEY.search(t):
+        return "pricey"
+    if _WANTS_A_PICK.search(t) or _CMP_BEST.search(t):
+        return "best"
+    return None
+
+
+def _lowest_price(it: Dict[str, Any]) -> float:
+    """What the dish costs at its smallest size (the price a guest compares)."""
+    sizes = [float(v.get("price") or 0) for v in it.get("variations") or [] if v.get("price") is not None]
+    return min(sizes) if sizes else float(it.get("price") or 0)
 
 
 def _strip_pitches(reply: str, keep_ids: set, index: MenuIndex) -> str:
@@ -3718,7 +3751,11 @@ async def _reply(
                     + (_options_question(keep, index, lang) if keep else ("আর কিছু লাগবে?" if bn else "Anything else?")))
             return tray_done(text.strip(), [], False, cart_rows, "declined_options", "other")
         progress = False
-        if held and not _is_question_not_order(transcript):
+        # the AI's reading: a question about time / the menu / the choice itself is not the answer
+        not_an_answer = understood is not None and u_intent in (
+            "wait_time", "recommend", "menu_overview", "see_menu", "dish_question", "small_talk", "service",
+            "tray_review", "checkout")
+        if held and not not_an_answer and not _is_question_not_order(transcript):
             # the parts that name ANOTHER dish are a new order (read below, as usual) — the rest answers the held ones
             heard = transcript
             if others:
@@ -3946,7 +3983,9 @@ async def _reply(
     #   WHO     — "বাচ্চাদের জন্য কী ভালো?" → "আপনার বাচ্চাদের জন্য A, B অথবা C নিতে পারেন, এছাড়াও D কিংবা E-ও…"
     # The dishes respect the time of day, availability and the guest (the ranking); star-marked ones lead only when
     # they are among them. Anything more (a budget, a head-count, an allergy, a dish named, "which of these") → model.
-    fixed = _fixed_reco(
+    # (not while the waiter's own question is open — "স্পাইসি কোনটা বেশি জনপ্রিয়?" after "6 or 10 pcs, which spice?"
+    # is about THAT choice: the AI answers it, with the question in view — never a list of other dishes)
+    fixed = None if tstate.get("pending") else _fixed_reco(
         transcript, index=index, orderable=orderable, kinds=kinds, profile=profile, stats=stats, rstate=rstate,
         kind_scope=kind_scope, lang=lang, stage=stage, mode=mode, about_shown=about_shown,
         cart_ids=list(cart_qty) + mentioned_now, in_tray=in_tray, understood=understood,
@@ -4424,16 +4463,50 @@ async def _reply(
     if (reco_problems(obj) or off_list) and not obj.get("cartOps") and about_shown and shown:
         # "which of these?" — the answer is always ONE of these (never a fresh, generic recommendation): the one the
         # ranking likes best for this guest and the time, else the first
-        print("[brain] 'which of these' answer still invalid → the best of the list")
+        # …answering what they ASKED: cheapest / priciest from the prices, mildest / hottest from the heat, "best" from
+        # the ranking — and when we can't tell from the facts, no invented answer: the list, and "which one?"
+        # (it once said "এগুলোর মধ্যে Hot Wings সবচেয়ে ভালো হবে" to "সবচেয়ে সস্তা কোনটা?")
         guards.append("compare_answer_replaced")
-        rank_of = {index.item_id(p.item): n for n, p in enumerate(picks)}
-        best = min(shown, key=lambda it: rank_of.get(index.item_id(it), 99))
-        why = next((", ".join(p.reasons[:1]) for p in picks if p.item is best), "")
-        name = re.sub(r"\s*\(.*?\)", "", str(best.get("name") or "")).strip()
-        reply = (f"এগুলোর মধ্যে {name} সবচেয়ে ভালো হবে। দেব?" if lang == "bn"
-                 else f"Of these, I'd go for the {name}" + (f" — {why}" if why else "") + ". Shall I add it?")
+        crit = _compare_criterion(transcript)
+        clean = lambda it: re.sub(r"\s*\(.*?\)", "", str(it.get("name") or "")).strip()  # noqa: E731
+        pick_it: Optional[Dict[str, Any]] = None
+        tied_refs: List[Any] = []  # equal heat: all of them are the answer
+        if crit in ("cheap", "pricey"):
+            prices = [(_lowest_price(it), it) for it in shown]
+            pick_it = (min if crit == "cheap" else max)(prices, key=lambda x: x[0])[1]
+            p = _money(_lowest_price(pick_it))
+            reply = (f"এগুলোর মধ্যে সবচেয়ে {'কম' if crit == 'cheap' else 'বেশি'} দামের {clean(pick_it)} — {p}। দেব?"
+                     if lang == "bn" else
+                     f"Of these, the {clean(pick_it)} is the {'most affordable' if crit == 'cheap' else 'priciest'} ({p}). Shall I add it?")
+        elif crit in ("mild", "hot"):
+            heat = {"spicy": 3, "likely spicy": 2, "": 1, "likely mild": 0}
+            scored = [(heat.get(dish_facts(it).get("heat") or "", 1), it) for it in shown]
+            if len({s for s, _ in scored}) > 1:
+                edge = (min if crit == "mild" else max)(s for s, _ in scored)
+                tied = [it for s, it in scored if s == edge]  # equal heat → name them all, never pick one at random
+                pick_it = tied[0]
+                if len(tied) == 1:
+                    reply = (f"এগুলোর মধ্যে {clean(pick_it)} সবচেয়ে {'কম' if crit == 'mild' else 'বেশি'} ঝাল। দেব?" if lang == "bn"
+                             else f"Of these, the {clean(pick_it)} is the {'mildest' if crit == 'mild' else 'spiciest'}. Shall I add it?")
+                else:
+                    both = (" আর " if lang == "bn" else " and ").join(clean(it) for it in tied[:3])
+                    reply = (f"এগুলোর মধ্যে {both} {'কম' if crit == 'mild' else 'বেশি'} ঝাল — কোনটা দেব?" if lang == "bn"
+                             else f"Of these, the {both} are the {'mildest' if crit == 'mild' else 'spiciest'} — which one shall I add?")
+                    tied_refs = [index.ref(it) for it in tied]
+        elif crit == "best":
+            rank_of = {index.item_id(p.item): n for n, p in enumerate(picks)}
+            pick_it = min(shown, key=lambda it: rank_of.get(index.item_id(it), 99))
+            why = next((", ".join(p.reasons[:1]) for p in picks if p.item is pick_it), "")
+            reply = (f"এগুলোর মধ্যে {clean(pick_it)} সবচেয়ে ভালো হবে। দেব?" if lang == "bn"
+                     else f"Of these, I'd go for the {clean(pick_it)}" + (f" — {why}" if why else "") + ". Shall I add it?")
+        if pick_it is None:
+            names = [clean(it) for it in shown[:4]]
+            listed = (", ".join(names[:-1]) + (" আর " if lang == "bn" else " and ") + names[-1]) if len(names) > 1 else names[0]
+            reply = (f"এখানে আছে {listed} — কোনটার কথা জানতে চান?" if lang == "bn"
+                     else f"On your screen: {listed} — which one would you like to know about?")
+        print(f"[brain] 'which of these' answer invalid → answered from the facts ({crit or 'unclear'})")
         voice = reply if lang == "bn" else ""
-        obj["answerItems"], obj["suggestions"] = [index.ref(best)], []
+        obj["answerItems"], obj["suggestions"] = (tied_refs or ([index.ref(pick_it)] if pick_it is not None else [])), []
         topic, intent = "menu_question", "menu"
     elif reco_problems(obj) and not obj.get("cartOps"):
         print("[brain] recommendation still invalid → deterministic recommendation")
@@ -4861,8 +4934,8 @@ async def _reply(
     # …unless they're ASKING for dishes: "না, অন্য কিছু সাজেস্ট করেন", "something else?", or the AI reads it that way
     asks_for_dishes = bool(
         _WANTS_A_PICK.search(transcript)
-        or re.search(r"অন্য|বদলে|সাজেস্ট|রেকমেন্ড|something else|anything else|\bother\b|instead|suggest|recommend",
-                     transcript, re.I)
+        or re.search(r"অন্য|আলাদা|ভিন্ন|বদলে|সাজেস্ট|রেকমেন্ড|something else|anything else|\bother\b|different|instead|"
+                     r"suggest|recommend|\b(onno|alada|vinno)\b", transcript, re.I)
         or (understood is not None and u_intent in ("recommend", "menu_overview", "dish_question", "order"))
     )
     if not (ops or clear) and not asks_for_dishes and (

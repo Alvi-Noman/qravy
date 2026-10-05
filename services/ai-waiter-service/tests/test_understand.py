@@ -182,11 +182,30 @@ def test_a_plain_question_about_a_dish_still_drops_an_unasked_pitch():
 
 
 def test_no_and_ask_for_something_else_gets_suggestions():
-    # "না, অন্য কিছু সাজেস্ট করেন" starts with "না" — it once counted as a plain no: suggestions removed, "ঠিক আছে।"
-    out, _ = run("না, অন্য কিছু সাজেস্ট করেন", reading("recommend"),
-                 model={"topic": "recommendation", "replyText": "Chicken Sizzling অথবা Beef with Red Curry নিতে পারেন।",
-                        "suggestions": [{"item": _ref("csz"), "reason": ""}, {"item": _ref("brc"), "reason": ""}]})
-    assert "Sizzling" in out["replyText"] and "no_pitch_after_no" not in out["meta"]["guards"], out["replyText"]
+    # "no, suggest something else" starts with "no" — it counted as a plain no: suggestions removed, "ঠিক আছে।"
+    answer = {"topic": "recommendation", "replyText": "Chicken Sizzling অথবা Beef with Red Curry নিতে পারেন।",
+              "suggestions": [{"item": _ref("csz"), "reason": ""}, {"item": _ref("brc"), "reason": ""}]}
+    for said in ("no, suggest something else", "something else please", "na, onno kichu suggest koren",
+                 "না, অন্য কিছু সাজেস্ট করেন", "না, ঠিক আছে, আলাদা কিছু।"):
+        for meaning in (None, reading("recommend")):
+            out, _ = run(said, meaning, model=answer)
+            assert "Sizzling" in out["replyText"] and "no_pitch_after_no" not in out["meta"]["guards"], (said, out["replyText"])
+    # a plain no still gets no new dish
+    out, _ = run("না থাক", None, model=answer)
+    assert "Sizzling" not in out["replyText"], out["replyText"]
+
+
+def test_bangla_word_ends_are_seen():
+    # Python's \b fails after Bangla vowel signs (া ি ে ু ো): "না" was never a no, "নাস্তায় কী আছে?" WAS one,
+    # "এটা কি ঝাল" wasn't a question while "কিছু দেন" was, and "আসসালামু আলাইকুম" / "হ্যালো" weren't greetings
+    import recommender
+    import checkout
+    assert recommender.is_decline("না") and recommender.is_decline("না, লাগবে না")
+    assert not recommender.is_decline("নাস্তায় কী আছে?") and not recommender.is_decline("নাম কি এটার?")
+    assert brain._QUESTION.search("এটা কি ঝাল") and not brain._QUESTION.search("কিছু দেন")
+    assert recommender._GREET.search("আসসালামু আলাইকুম") and recommender._GREET.search("হ্যালো")
+    assert recommender._GREET.search("hello there") and not recommender._GREET.search("hellooo")
+    assert checkout.says_yes("ঠিক আছে") and checkout.says_yes("হ্যাঁ দিন")
 
 
 def test_an_order_with_a_question_keeps_the_answer():
