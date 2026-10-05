@@ -31,8 +31,8 @@ async function startServer() {
     await resumeTick();
     setInterval(resumeTick, 60_000).unref();
 
-    // TEMPORARY (until 2026-10-07 18:50 UTC): orders not accepted by staff within 10 s are accepted automatically
-    startOrderAutoAccept();
+    // TEMPORARY (48 h from its first start here): orders not accepted by staff within 10 s are accepted automatically
+    await startOrderAutoAccept();
 
     // Menu-import jobs interrupted by a restart can never finish
     await failStaleImports().catch((e) => logger.warn(`failStaleImports: ${(e as Error).message}`));
