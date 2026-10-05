@@ -265,22 +265,54 @@ async function buildIfReady(tenant: TenantDoc, job: MenuImportDoc | null): Promi
   return claimed;
 }
 
-/** Deletes expired demo restaurants and everything that belongs to them. */
+/**
+ * Is this restaurant ONLY a quick demo — safe to delete? Every check must pass, or nothing is deleted:
+ *   - the whole demo marking that only /quick-demo writes: its secret key, its menu-reading job, its expiry (past);
+ *   - no real people: the owner is a placeholder id with NO user account (every real restaurant is owned by a real
+ *     user), and no member is a real user (a demo that someone made real has staff).
+ * (Exported for the tests.)
+ */
+export async function isDisposableDemo(t: Pick<TenantDoc, '_id' | 'ownerId' | 'demo'>, now = new Date()): Promise<boolean> {
+  const demo = t.demo;
+  if (!t._id || !t.ownerId || !demo) return false;
+  if (typeof demo.key !== 'string' || !demo.key || !demo.importId) return false;
+  if (!(demo.expiresAt instanceof Date) || demo.expiresAt > now) return false;
+  const users = db().collection('users');
+  if (await users.findOne({ _id: t.ownerId }, { projection: { _id: 1 } })) return false;
+  const memberIds = (
+    await db().collection('memberships').find({ tenantId: t._id }, { projection: { userId: 1 } }).toArray()
+  )
+    .map((m) => m.userId)
+    .filter(Boolean);
+  if (memberIds.length && (await users.findOne({ _id: { $in: memberIds } }, { projection: { _id: 1 } }))) return false;
+  return true;
+}
+
+/** Deletes expired demo restaurants and everything that belongs to them — never a real restaurant (isDisposableDemo). */
 export async function deleteExpiredDemos(): Promise<number> {
+  const now = new Date();
   const expired = await tenantsCol()
-    .find({ 'demo.expiresAt': { $lte: new Date() } }, { projection: { _id: 1, ownerId: 1 } })
+    .find(
+      { 'demo.expiresAt': { $lte: now }, 'demo.key': { $type: 'string' }, 'demo.importId': { $exists: true } },
+      { projection: { _id: 1, ownerId: 1, demo: 1, name: 1 } }
+    )
     .limit(200)
     .toArray();
+  let deleted = 0;
   for (const t of expired) {
+    if (!(await isDisposableDemo(t, now))) {
+      logger.warn(`[quickDemo] NOT deleting ${t._id} ("${t.name}"): it has demo markings but doesn't look like only a demo`);
+      continue;
+    }
     for (const name of TENANT_COLLECTIONS) {
       await db().collection(name).deleteMany({ tenantId: t._id });
     }
-    // (guard: with ignoreUndefined, a missing ownerId would make this filter {} — every audit in the database)
-    if (t.ownerId) await db().collection('audits').deleteMany({ userId: t.ownerId });
-    await tenantsCol().deleteOne({ _id: t._id, demo: { $exists: true } });
+    await db().collection('audits').deleteMany({ userId: t.ownerId }); // the placeholder owner (checked: not a user)
+    await tenantsCol().deleteOne({ _id: t._id, 'demo.key': t.demo!.key }); // the same demo, still
+    deleted++;
   }
-  if (expired.length) logger.info(`[quickDemo] deleted ${expired.length} expired demo restaurant(s)`);
-  return expired.length;
+  if (deleted) logger.info(`[quickDemo] deleted ${deleted} expired demo restaurant(s)`);
+  return deleted;
 }
 
 /** Sweeps expired demos now and every 10 minutes. */
