@@ -196,8 +196,12 @@ def main():
         print("[export_transcripts] version:", SCRIPT_VERSION)
         sys.exit(0)
 
-    client = MongoClient(args.mongo)
-    coll = client[args.db][args.coll]
+    # values sourced from a Windows-edited .env end in "\r" — "qravy\r" is a different (empty) database, and nothing
+    # was ever exported
+    mongo_uri, db_name, coll_name = args.mongo.strip(), args.db.strip(), args.coll.strip()
+    print(f"[export_transcripts] db={db_name!r} coll={coll_name!r} -> {os.path.abspath(args.outdir)}")
+    client = MongoClient(mongo_uri)
+    coll = client[db_name][coll_name]
 
     if args.once:
         export_once(coll, args.outdir, args.mark, args.batch, force=args.force, lastN=args.lastN)

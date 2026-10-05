@@ -1,4 +1,4 @@
-import asyncio, json, os, time, re, io, wave
+import asyncio, json, os, time, re, io, wave, hashlib, hmac
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo  # ✅ stdlib tz support
 import numpy as np
@@ -50,6 +50,7 @@ from stt import stt_np_float32
 
 # ✅ Cart persistence helper
 from cart_store import save_cart, load_cart
+import upsell_stats
 from availability import (
     DEFAULT_PERIODS,
     DEFAULT_TZ,
@@ -91,11 +92,6 @@ COLL = DB.transcripts
 
 # menu collection handle
 ITEMS = _CLIENT[MENU_DB_NAME][MENU_COLL]
-
-# Weather API (tiny helper; safe no-op on failure)
-WEATHER_API_BASE = os.environ.get(
-    "WEATHER_API_BASE", "https://api.open-meteo.com/v1/forecast"
-)
 
 # Early health check with retries
 def ping_mongo_with_retries(client, attempts=6, delay_s=5):
@@ -275,6 +271,67 @@ async def handle_cart_options(request: web.Request) -> web.StreamResponse:
     )
 
 
+# ---------- Who may call the restaurant's own endpoints ----------
+# Staff (the admin dashboard): their login token, checked by auth-service — which restaurant is it? (/tenants/me,
+# cached a minute per token). The ESP32's poll (GET /alert) stays open: it only says "a new order came in".
+# auth-service → us (a new order → buzz): the shared INTERNAL_API_KEY.
+AUTH_SERVICE_URL = os.environ.get("AUTH_SERVICE_URL", "http://auth-service:3001").rstrip("/")
+INTERNAL_API_KEY = os.environ.get("INTERNAL_API_KEY", "")
+_STAFF_CACHE: Dict[str, Tuple[float, Optional[str]]] = {}
+_CORS = {"Access-Control-Allow-Origin": "*"}
+
+
+class AuthUnavailable(Exception):
+    pass
+
+
+async def staff_subdomain(request: web.Request) -> Optional[str]:
+    """The restaurant (subdomain) of the logged-in staff member calling, or None (no / bad / expired token).
+    Raises AuthUnavailable when auth-service can't be asked."""
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer ") or len(auth) < 20:
+        return None
+    key = hashlib.sha256(auth.encode()).hexdigest()
+    now = time.monotonic()
+    hit = _STAFF_CACHE.get(key)
+    if hit and hit[0] > now:
+        return hit[1]
+    headers = {"Authorization": auth}
+    if request.headers.get("x-tenant-id"):
+        headers["x-tenant-id"] = request.headers["x-tenant-id"]
+    try:
+        async with httpx.AsyncClient(timeout=4.0) as client:
+            r = await client.get(f"{AUTH_SERVICE_URL}/api/v1/auth/tenants/me", headers=headers)
+    except Exception as e:
+        print("[auth] tenants/me failed:", repr(e))
+        raise AuthUnavailable() from e
+    if r.status_code >= 500:
+        raise AuthUnavailable()
+    sub: Optional[str] = None
+    if r.status_code == 200:
+        try:
+            sub = str(((r.json() or {}).get("item") or {}).get("subdomain") or "") or None
+        except Exception:
+            sub = None
+    if len(_STAFF_CACHE) > 2000:
+        _STAFF_CACHE.clear()
+    _STAFF_CACHE[key] = (now + (60 if sub else 10), sub)
+    return sub
+
+
+async def require_staff_of(request: web.Request, tenant: str) -> Optional[web.Response]:
+    """None when the caller is logged-in staff of `tenant`; otherwise the error response to send."""
+    try:
+        sub = await staff_subdomain(request)
+    except AuthUnavailable:
+        return web.json_response({"ok": False, "error": "auth unavailable"}, status=503, headers=_CORS)
+    if not sub:
+        return web.json_response({"ok": False, "error": "login required"}, status=401, headers=_CORS)
+    if sub != tenant:
+        return web.json_response({"ok": False, "error": "not your restaurant"}, status=403, headers=_CORS)
+    return None
+
+
 # ---------- Buzzer alert HTTP handlers ----------
 
 async def handle_alert_get(request: web.Request) -> web.Response:
@@ -288,11 +345,15 @@ async def handle_alert_get(request: web.Request) -> web.Response:
     )
 
 async def handle_alert_dismiss(request: web.Request) -> web.Response:
-    """POST /alert/dismiss?tenant=<subdomain>  — called by the dashboard when employee acknowledges."""
+    """POST /alert/dismiss?tenant=<subdomain>  — called by the dashboard when employee acknowledges (staff only:
+    anyone else could silence a restaurant's buzzer)."""
     tenant = request.rel_url.query.get("tenant", "")
     if not tenant:
         return web.Response(status=400, text=json.dumps({"ok": False, "error": "tenant required"}),
-                            content_type="application/json")
+                            content_type="application/json", headers=_CORS)
+    denied = await require_staff_of(request, tenant)
+    if denied is not None:  # (an aiohttp Response is a mapping — an empty one is falsy)
+        return denied
     _set_alert(tenant, False)
     print(f"[alert] ✅ buzzer dismissed for {tenant}")
     return web.Response(
@@ -302,7 +363,12 @@ async def handle_alert_dismiss(request: web.Request) -> web.Response:
     )
 
 async def handle_alert_trigger(request: web.Request) -> web.Response:
-    """POST /internal/alert/trigger — called by auth-service for every new order."""
+    """POST /internal/alert/trigger — called by auth-service for every new order (with the INTERNAL_API_KEY)."""
+    if not INTERNAL_API_KEY:
+        print("[alert] ⚠️ INTERNAL_API_KEY not set — refusing /internal/alert/trigger")
+        return web.json_response({"ok": False, "error": "not configured"}, status=503)
+    if not hmac.compare_digest(request.headers.get("X-Internal-Key", ""), INTERNAL_API_KEY):
+        return web.json_response({"ok": False, "error": "forbidden"}, status=403)
     try:
         data = await request.json()
     except Exception:
@@ -314,11 +380,33 @@ async def handle_alert_trigger(request: web.Request) -> web.Response:
     print(f"[alert] 🔔 new order for {tenant} — buzzer triggered")
     return web.json_response({"ok": True})
 
+async def handle_upsell_stats(request: web.Request) -> web.Response:
+    """GET /upsell/stats?tenant=<subdomain>&days=7 — the admin's "Upsell this week" card (upsell_stats.stats).
+    Staff of that restaurant only (its revenue)."""
+    tenant = request.rel_url.query.get("tenant", "").strip()
+    cors = _CORS
+    if not tenant:
+        return web.json_response({"ok": False, "error": "tenant required"}, status=400, headers=cors)
+    denied = await require_staff_of(request, tenant)
+    if denied is not None:  # (an aiohttp Response is a mapping — an empty one is falsy)
+        return denied
+    try:
+        days = max(1, min(90, int(request.rel_url.query.get("days", "7"))))
+    except ValueError:
+        days = 7
+    try:
+        data = await asyncio.to_thread(upsell_stats.stats, DB, tenant, days)
+    except Exception as e:
+        print("[upsell-stats] stats failed:", repr(e))
+        return web.json_response({"ok": False, "error": "stats unavailable"}, status=500, headers=cors)
+    return web.json_response({"ok": True, "stats": data}, headers=cors)
+
+
 async def handle_alert_options(request: web.Request) -> web.Response:
     return web.Response(status=204, headers={
         "Access-Control-Allow-Origin": "*",
         "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type",
+        "Access-Control-Allow-Headers": "Content-Type, Authorization, x-tenant-id",
     })
 
 
@@ -330,6 +418,7 @@ async def start_http_server():
     app.router.add_route("OPTIONS", "/cart/save", handle_cart_options)
     app.router.add_route("OPTIONS", "/alert", handle_alert_options)
     app.router.add_route("OPTIONS", "/alert/dismiss", handle_alert_options)
+    app.router.add_route("OPTIONS", "/upsell/stats", handle_alert_options)
 
     # Actual endpoints
     app.router.add_get("/cart/load", handle_cart_load)
@@ -337,6 +426,7 @@ async def start_http_server():
     app.router.add_get("/alert", handle_alert_get)
     app.router.add_post("/alert/dismiss", handle_alert_dismiss)
     app.router.add_post("/internal/alert/trigger", handle_alert_trigger)
+    app.router.add_get("/upsell/stats", handle_upsell_stats)
 
     runner = web.AppRunner(app)
     await runner.setup()
@@ -726,57 +816,6 @@ def _time_of_day_for_tz(tz: Optional[str], local_hour: Optional[int] = None) -> 
     return "late"
 
 
-_WEATHER_CACHE: Dict[Tuple[float, float], Tuple[float, str]] = {}
-WEATHER_TTL_S = 15 * 60
-
-
-async def fetch_weather_bucket(lat: float, lon: float) -> Optional[str]:
-    """
-    Tiny helper: classify current temp into a climate bucket.
-    Uses Open-Meteo-style API; safe no-op on failure.
-    Cached per ~1 km cell — weather barely moves in minutes, so a turn shouldn't wait on the API.
-    """
-    key = (round(lat, 2), round(lon, 2))
-    hit = _WEATHER_CACHE.get(key)
-    if hit and time.monotonic() - hit[0] < WEATHER_TTL_S:
-        return hit[1]
-    bucket = await _fetch_weather_bucket(lat, lon)
-    if bucket is not None:
-        _WEATHER_CACHE[key] = (time.monotonic(), bucket)
-    return bucket
-
-
-async def _fetch_weather_bucket(lat: float, lon: float) -> Optional[str]:
-    try:
-        params = {
-            "latitude": lat,
-            "longitude": lon,
-            "current": "temperature_2m",
-        }
-        async with httpx.AsyncClient(timeout=2.5) as client:
-            r = await client.get(WEATHER_API_BASE, params=params)
-        r.raise_for_status()
-        data = r.json()
-        cur = data.get("current") or {}
-        temp = cur.get("temperature_2m")
-        if temp is None:
-            return None
-
-        # Buckets tuned roughly for BD-style weather; per-tenant tuning later.
-        if temp >= 35:
-            return "very-hot"
-        if temp >= 30:
-            return "hot"
-        if temp >= 24:
-            return "warm"
-        if temp >= 18:
-            return "mild"
-        return "cool"
-    except Exception as e:
-        print("[ai-waiter-service] weather fetch failed:", e)
-        return None
-
-
 # ---------- Tenant resolver ----------
 
 def _to_object_id_maybe(x: Optional[str]) -> Optional[ObjectId]:
@@ -1072,7 +1111,6 @@ def build_runtime_context(
     lang_hint: Optional[str],
     dialog_state: Optional[Dict[str, Any]],
     user_tz: Optional[str] = None,
-    climate_bucket: Optional[str] = None,
     user_local_hour: Optional[int] = None,
 ) -> Dict[str, Any]:
     ch = _normalize_channel(channel) or "dine-in"
@@ -1087,9 +1125,6 @@ def build_runtime_context(
         "branch": branch,
         "languageHint": lang,
     }
-
-    if climate_bucket:
-        ctx["climate"] = climate_bucket  # e.g. hot / warm / mild / cool / very-hot
 
     if dialog_state and isinstance(dialog_state, dict):
         last_intent = dialog_state.get("last_intent") or dialog_state.get("intent")
@@ -1465,6 +1500,7 @@ async def place_order_via_api(
     body: Dict[str, Any] = {
         "subdomain": tenant_subdomain(tenant),
         "table": draft.get("table"),
+        "tableKey": draft.get("tableKey"),
         "items": draft.get("items") or [],
         "sessionId": session_id,
         "source": "ai-waiter",
@@ -1504,16 +1540,17 @@ async def run_text_turn(
     cart_items: Optional[List[Dict[str, Any]]] = None,
     user_tz: Optional[str] = None,
     user_local_hour: Optional[int] = None,
-    climate_bucket: Optional[str] = None,
     now: Optional[datetime] = None,
     table: Optional[str] = None,
+    table_key: Optional[str] = None,
     place_order=None,
     shown: Optional[List[str]] = None,
     lock_language: bool = False,
 ) -> Dict[str, Any]:
     """
     `now` (UTC) overrides the clock — used by the eval to simulate breakfast/dinner/closed hours.
-    `table` comes from the storefront (?table=12). `place_order` overrides the order placer (evals never
+    `table` comes from the storefront (?table=12), `table_key` from its QR code (&k=…) — it goes with the order so
+    the restaurant knows the guest really scanned that table. `place_order` overrides the order placer (evals never
     create real orders). `lock_language`: always reply in `locale` (the language chosen on the storefront —
     the restaurant's default or the guest's switch) instead of mirroring what the guest spoke.
     Snapshot the live menu, normalise the transcript, build context and ask the brain.
@@ -1540,7 +1577,6 @@ async def run_text_turn(
         lang_hint=lang,
         dialog_state=dialog_state,
         user_tz=user_tz or profile.get("tz"),
-        climate_bucket=climate_bucket,
         user_local_hour=user_local_hour,
     )
     if profile.get("tz"):
@@ -1611,6 +1647,9 @@ async def run_text_turn(
     decision = meta.setdefault("decision", {})
     draft = meta.pop("orderDraft", None)
     if decision.get("placeOrder") and draft:
+        # the table's QR key goes with the order — only for the table it belongs to (not one the guest said instead)
+        if table_key and table and str(draft.get("table") or "").strip().lstrip("#").upper() == str(table).strip().lstrip("#").upper():
+            draft["tableKey"] = table_key
         placer = place_order or place_order_via_api
         res = await placer(tenant=tenant, branch=branch, session_id=session_id, draft=draft)
         lang_out = meta.get("language") or lang
@@ -1647,6 +1686,8 @@ async def run_text_turn(
         voice_src = reply_text
         reply_text = to_bangla_script(reply_text, drop_code_letter=drop)
         meta["voiceReplyText"] = to_bangla_script(voice_src, spoken=True, drop_code_letter=drop)
+    # H: the waiter's offers and what became of them, for the restaurant's upsell stats (never breaks a reply)
+    upsell_stats.record(DB, tenant=tenant, branch=branch, session=session_id, meta=meta)
     # the guest profile (allergies, diet…) stays in server memory — not sent to the browser or logged
     meta.pop("reco", None)
     meta.pop("guestProfile", None)
@@ -1683,14 +1724,14 @@ async def handle_conn(ws: WebSocketServerProtocol):
     branch_hint: Optional[str] = None
     channel_hint: Optional[str] = None
     table_hint: Optional[str] = None
+    table_key_hint: Optional[str] = None
     cart_hint: Optional[List[Dict[str, Any]]] = None  # None → the saved cart (load_cart)
     shown_hint: List[str] = []  # ids of the dishes on the guest's screen ("which of these…")
 
     last_detected_lang = None
 
-    # ⭐ NEW: user TZ, GEO, localHour (from frontend "hello")
+    # user TZ, localHour (from frontend "hello") — no location: the guest never gets a permission popup
     user_tz: Optional[str] = None
-    user_geo: Optional[Dict[str, float]] = None
     user_local_hour: Optional[int] = None
 
     if isinstance(session_lang, str) and session_lang.strip().lower() == "auto":
@@ -1920,6 +1961,8 @@ async def handle_conn(ws: WebSocketServerProtocol):
                 # the guest's table (?table=12) and the cart exactly as the guest sees it (sizes, add-ons)
                 if isinstance(data.get("table"), (str, int)) and str(data.get("table")).strip():
                     table_hint = str(data.get("table")).strip()[:12]
+                if isinstance(data.get("tableKey"), str) and data.get("tableKey").strip():
+                    table_key_hint = data.get("tableKey").strip()[:40]
                 if isinstance(data.get("cart"), list):
                     cart_hint = [c for c in data["cart"] if isinstance(c, dict)][:100]
                 # the dishes on the guest's screen right now (suggestions pop-up / the tray's picks)
@@ -1936,17 +1979,10 @@ async def handle_conn(ws: WebSocketServerProtocol):
                         ref_db=_VOICE_LEVEL.get(sid_now or ""),
                     )
 
-                # ⭐ user timezone & geo from frontend
+                # ⭐ user timezone from frontend
                 tz = data.get("tz")
                 if isinstance(tz, str) and tz:
                     user_tz = tz
-
-                geo = data.get("geo")
-                if isinstance(geo, dict):
-                    lat = geo.get("lat")
-                    lon = geo.get("lon")
-                    if isinstance(lat, (int, float)) and isinstance(lon, (int, float)):
-                        user_geo = {"lat": float(lat), "lon": float(lon)}
 
                 # ⭐ localHour snapshot from frontend
                 lh = data.get("localHour")
@@ -1962,7 +1998,7 @@ async def handle_conn(ws: WebSocketServerProtocol):
                 print(
                     f"[ai-waiter-service] context: tenant={tenant_hint} "
                     f"branch={branch_hint} channel={channel_hint} tz={user_tz} "
-                    f"geo={user_geo} localHour={user_local_hour}"
+                    f"localHour={user_local_hour}"
                 )
                 continue
 
@@ -2195,10 +2231,6 @@ async def handle_conn(ws: WebSocketServerProtocol):
                 except Exception:
                     pass
 
-                climate_bucket = None
-                if user_geo:
-                    climate_bucket = await fetch_weather_bucket(user_geo["lat"], user_geo["lon"])
-                t_weather = time.monotonic()
 
                 turn: Dict[str, Any] = {"replyText": "", "meta": {}, "textNorm": selected_text, "normChanges": []}
                 try:
@@ -2212,9 +2244,9 @@ async def handle_conn(ws: WebSocketServerProtocol):
                         locale=(session_lang or "bn"),
                         user_tz=user_tz,
                         user_local_hour=user_local_hour,
-                        climate_bucket=climate_bucket,
                         cart_items=cart_hint,
                         table=table_hint,
+                        table_key=table_key_hint,
                         shown=shown_hint,
                         # the storefront's language (restaurant default or the guest's switch) decides the reply
                         lock_language=session_lang in ("bn", "en"),
@@ -2232,7 +2264,7 @@ async def handle_conn(ws: WebSocketServerProtocol):
                     tm = turn.get("timingMs") or {}
                     print(
                         f"[timing] stt={int((t_stt - t_turn) * 1000)}ms ({stt_engine}) "
-                        f"weather={int((t_weather - t_stt) * 1000)}ms prep={tm.get('prep')}ms brain={tm.get('brain')}ms "
+                        f"prep={tm.get('prep')}ms brain={tm.get('brain')}ms "
                         f"post={tm.get('post')}ms total={int((time.monotonic() - t_turn) * 1000)}ms"
                     )
                 except Exception as e:

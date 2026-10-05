@@ -28,6 +28,8 @@ export interface TenantDoc {
   kitchen?: { defaultPrepMinutes?: number; parallelOrders?: number };
   /** Dine-in table labels ("1", "A4", "PATIO-2"); each gets a QR code that opens the menu with ?table= */
   tables?: string[];
+  /** Each table's secret QR key (utils/tableKeys): "/dine-in?table=12&k=<key>" proves the guest scanned that table */
+  tableKeys?: Record<string, string>;
 
   ownerInfo?: {
     fullName: string;

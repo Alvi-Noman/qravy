@@ -1,4 +1,5 @@
-"""The upsell: ONE question per visit, about kinds ("সাথে কি কোনো ড্রিংকস অথবা ডেজার্ট নিবেন?"), then the guest leads."""
+"""What part of a meal each dish plays (upsell.dish_roles — the offer engine's map of a meal, offers.py), and the offer
+engine on a curry menu: one offer for the meal's biggest gap, never a chain, never the same kind twice."""
 import asyncio
 import json
 import os
@@ -85,7 +86,7 @@ def run(text, state=None, cart=(), model=None, history=None):
     brain._call_openai = fake
     try:
         out = asyncio.run(brain.generate_reply(
-            text, menu_snapshot={"items": ITEMS}, locale="bn", history=history, dialog_state={"reco": state} if state else None,
+            text, menu_snapshot={"items": ITEMS}, locale="bn", history=history, dialog_state=state,
             context={"cartItems": [dict(c) for c in cart], "mealKinds": ["dinner"], "table": "12"}))
     finally:
         brain._call_openai = orig
@@ -97,51 +98,38 @@ def add(i):
             "replyText": f"{BY[i]['name']} যোগ করলাম। আর কিছু লাগবে?"}
 
 
-def test_asked_once_about_kinds_never_a_chain():
+def state_of(out):
+    return {"reco": out["meta"]["reco"], "tray": out["meta"]["tray"]}
+
+
+def test_one_offer_for_the_biggest_gap_never_a_chain():
+    # a curry with nothing to eat it with → the rice (with its price) instead of "anything else?" — no kinds question
     out = run("একটা বিফ উইথ রেড কারি দিন", model=add("brc"))
-    assert out["replyText"].endswith("সাথে কি কোনো ড্রিংকস অথবা ডেজার্ট নিবেন?"), out["replyText"]
-    assert "আর কিছু লাগবে" not in out["replyText"] and not out["meta"]["upsell"]  # no dish pushed by name
-    state = out["meta"]["reco"]
-    assert state["upsell_asked"] is True
-    # the next add: the plain question — never a second pitch
-    out2 = run("একটা চিকেন ফ্রাইড রাইস দিন", state=state, model=add("cfr"), cart=[{"itemId": "brc", "quantity": 1, "price": 420}])
-    assert out2["replyText"].endswith("আর কিছু লাগবে, নাকি অর্ডার কনফার্ম করব?"), out2["replyText"]
-    # a drink already in the tray → dessert only
-    out3 = run("একটা বিফ উইথ রেড কারি দিন", model=add("brc"), cart=[{"itemId": "coke", "quantity": 1, "price": 60}])
-    assert out3["replyText"].endswith("সাথে কি কোনো ডেজার্ট নিবেন?"), out3["replyText"]
-    # nothing missing → the plain question
-    cart = [{"itemId": i, "quantity": 1, "price": BY[i]["price"]} for i in ("coke", "firni")]
-    out4 = run("একটা বিফ উইথ রেড কারি দিন", model=add("brc"), cart=cart)
-    assert out4["replyText"].endswith("আর কিছু লাগবে, নাকি অর্ডার কনফার্ম করব?"), out4["replyText"]
-
-
-def test_the_guest_leads_after_the_question():
-    first = run("একটা বিফ উইথ রেড কারি দিন", model=add("brc"))
-    state = first["meta"]["reco"]
-    history = [{"role": "user", "content": "একটা বিফ উইথ রেড কারি দিন"}, {"role": "assistant", "content": first["replyText"]}]
+    reply = out["replyText"]
+    assert out["meta"]["upsellOffer"]["type"] == "rice" and "Fried Rice" in reply and "(৳" in reply, reply
+    assert reply.endswith("দেব?") and "আর কিছু লাগবে" not in reply and "ড্রিংকস অথবা ডেজার্ট" not in reply, reply
+    # "হ্যাঁ, দুইটা" → two of what was offered, exactly
     cart = [{"itemId": "brc", "quantity": 1, "price": 420}]
-    silent = {"replyText": "ঠিক আছে।"}
+    yes = run("হ্যাঁ, দুইটা দেন", state=state_of(out), cart=cart)
+    rice = out["meta"]["upsellOffer"]["item_ids"][0]
+    assert [(o["itemId"], o["quantity"]) for o in yes["meta"]["cartOps"]] == [(rice, 2)], yes["replyText"]
+    # a drink added next → nothing to build on: the plain question, never a chain of pitches
+    cart = cart + [{"itemId": rice, "quantity": 2, "price": BY[rice]["price"]}]
+    out2 = run("একটা ম্যাঙ্গো লাচ্ছি দিন", state=state_of(yes), cart=cart, model=add("lassi"))
+    assert out2["replyText"].endswith("আর কিছু লাগবে, নাকি অর্ডার কনফার্ম করব?"), out2["replyText"]
+    assert not out2["meta"].get("upsellOffer")
 
-    # "হ্যাঁ" → what we have, both kinds, as cards — never "confirm the order"
-    out = run("হ্যাঁ", state=state, cart=cart, history=history, model=silent)
-    assert out["replyText"].startswith("ড্রিংকসের মধ্যে আছে") and "ডেজার্টের মধ্যে আছে" in out["replyText"], out["replyText"]
-    assert out["replyText"].endswith("কোনটা দেব?") and out["meta"]["suggestions"], out["replyText"]
-    assert (out["meta"].get("checkout") or {}).get("stage") in (None, "none")
-    # "ড্রিংকসের মধ্যে কি কি আছে?" → the drinks only
-    out = run("ড্রিংকসের মধ্যে কি কি আছে?", state=state, cart=cart, history=history, model=silent)
-    assert out["replyText"].startswith("ড্রিংকসের মধ্যে আছে") and "ডেজার্ট" not in out["replyText"], out["replyText"]
-    # "ডেজার্ট" → the desserts
-    out = run("ডেজার্ট", state=state, cart=cart, history=history, model=silent)
-    assert out["replyText"].startswith("ডেজার্টের মধ্যে আছে"), out["replyText"]
-    # "না" → shall I confirm? (and nothing more is pushed)
-    out = run("না", state=state, cart=cart, history=history, model=silent)
-    assert out["replyText"] == "ঠিক আছে! তাহলে অর্ডারটা কনফার্ম করব?", out["replyText"]
-    # a dish named → just the usual order flow
-    out = run("একটা ম্যাঙ্গো লাচ্ছি দিন", state=state, cart=cart, history=history, model=add("lassi"))
-    assert [o["itemId"] for o in out["meta"]["cartOps"]] == ["lassi"], out["replyText"]
-    # "না, কনফার্ম করুন" → straight to the read-back
-    out = run("না, কনফার্ম করুন", state=state, cart=cart, history=history, model=silent)
-    assert out["meta"]["checkout"]["stage"] == "readback", out["replyText"]
+
+def test_the_end_of_the_meal_and_nothing_missing():
+    cart = [{"itemId": i, "quantity": 1, "price": BY[i]["price"]} for i in ("brc", "cfr", "lassi")]
+    end = run("এই হবে, আর কিছু না", cart=cart, model={"replyText": "ঠিক আছে।"})
+    offer = end["meta"]["upsellOffer"]
+    assert offer["type"] == "dessert" and offer["moment"] == "wrap_up", end["replyText"]
+    assert BY[offer["item_ids"][0]]["name"] in end["replyText"] and "(৳" in end["replyText"], end["replyText"]
+    # everything there → no offer at all
+    full = cart + [{"itemId": "firni", "quantity": 1, "price": 120}]
+    out = run("এই হবে, আর কিছু না", cart=full, model={"replyText": "ঠিক আছে।"})
+    assert not out["meta"].get("upsellOffer"), out["replyText"]
 
 
 def test_suggestions_never_repeat_what_is_in_the_tray():

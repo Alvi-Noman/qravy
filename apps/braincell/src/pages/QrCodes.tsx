@@ -1,8 +1,9 @@
 /**
  * QR Codes: every code a guest can scan, in one place.
- *   - Online storefront: opens the online menu ({storefront}/menu)
- *   - One per dine-in table: opens the virtual waiter with ?table=<name>, which the guest app remembers
- *     and attaches to the order (apps/tastebud/src/utils/table.ts)
+ *   - Online storefront: {storefront} — the online shop (pickup / delivery, name / phone / address)
+ *   - One per dine-in table: {storefront}/dine-in?table=<name>&k=<key> — the virtual waiter for that table; the order
+ *     goes to it (apps/tastebud/src/utils/table.ts). The key is the table's secret (made when the table is saved): an
+ *     order without it (a typed table number) reaches the staff marked "table not verified".
  * Table names are saved on the tenant; codes can be downloaded as PNG or printed as a sheet.
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -34,8 +35,9 @@ export function storefrontBase(subdomain: string): string {
   return template.replace('{subdomain}', encodeURIComponent(subdomain)).replace(/\/$/, '');
 }
 
-export const tableUrl = (base: string, table: string) => `${base}/?table=${encodeURIComponent(table)}`;
-export const onlineUrl = (base: string) => `${base}/menu`;
+export const tableUrl = (base: string, table: string, key?: string) =>
+  `${base}/dine-in?table=${encodeURIComponent(table)}${key ? `&k=${encodeURIComponent(key)}` : ''}`;
+export const onlineUrl = (base: string) => base;
 
 /** "12, 13-20, Patio-1" → ["12", "13", …, "20", "PATIO-1"]. Pure-number ranges expand; anything else is a name. */
 export function parseTableInput(raw: string): { tables: string[]; invalid: string[] } {
@@ -229,6 +231,7 @@ export default function QrCodesPage(): JSX.Element {
   const online = tenant?.restaurantInfo?.onlineSalesEnabled !== false;
   const base = tenant?.subdomain ? storefrontBase(tenant.subdomain) : '';
   const restaurant = tenant?.name ?? '';
+  const keys = tenant?.tableKeys ?? {}; // each table's secret, part of its QR code (made when tables are saved)
 
   const addTables = () => {
     const { tables: parsed, invalid } = parseTableInput(input);
@@ -259,9 +262,9 @@ export default function QrCodesPage(): JSX.Element {
   };
 
   const printItems = [
-    ...(online && base ? [{ title: 'Order online', subtitle: 'Scan to see our menu', url: onlineUrl(base) }] : []),
+    ...(online && base ? [{ title: 'Order online', subtitle: 'Scan to order for pickup or delivery', url: onlineUrl(base) }] : []),
     ...(dineIn && base
-      ? savedTables.map((t) => ({ title: `Table ${t}`, subtitle: 'Scan to order', url: tableUrl(base, t) }))
+      ? savedTables.map((t) => ({ title: `Table ${t}`, subtitle: 'Scan to order', url: tableUrl(base, t, keys[t]) }))
       : []),
   ];
 
@@ -303,7 +306,7 @@ export default function QrCodesPage(): JSX.Element {
           <div className="mt-3 grid grid-cols-[repeat(auto-fill,minmax(210px,1fr))] gap-3">
             <QrCard
               title="Order online"
-              subtitle="Scan to see our menu"
+              subtitle="Scan to order for pickup or delivery"
               url={onlineUrl(base)}
               filename={`${tenant.subdomain}-online-qr.png`}
             />
@@ -387,8 +390,8 @@ export default function QrCodesPage(): JSX.Element {
                   <QrCard
                     key={t}
                     title={`Table ${t}`}
-                    subtitle="Scan to order"
-                    url={tableUrl(base, t)}
+                    subtitle={keys[t] ? 'Scan to order' : 'Save to finish this code'}
+                    url={tableUrl(base, t, keys[t])}
                     filename={`${tenant.subdomain}-table-${t}-qr.png`}
                     onRemove={() => setTables((prev) => prev.filter((x) => x !== t))}
                   />

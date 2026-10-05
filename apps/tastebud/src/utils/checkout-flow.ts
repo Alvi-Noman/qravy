@@ -7,18 +7,21 @@ import { useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useCart } from '../context/CartContext';
 import { rememberOrder } from '../api/orders';
+import { isDineInPath } from './table';
 
 function storeHint(k: 'subdomain' | 'branch'): string | null {
   return typeof window !== 'undefined' ? ((window as any).__STORE__?.[k] ?? null) : null;
 }
 
-/** Base path for this restaurant: "/t/<sub>(/<branch>)" in dev, "" (or "/<branch>") on its own host. */
+/** Base path for this restaurant: "/t/<sub>(/<branch>)" in dev, "" (or "/<branch>") on its own host — plus
+ *  "/dine-in" when the guest is on the table side ("/t/<sub>/dine-in"), so every link stays on that side. */
 export function storeBasePath(sub?: string | null, branch?: string | null): string {
-  const onTenantHost =
-    typeof window !== 'undefined' && !window.location.pathname.startsWith('/t/') && !!storeHint('subdomain');
+  const pathname = typeof window !== 'undefined' ? window.location.pathname : '';
+  const onTenantHost = !!pathname && !pathname.startsWith('/t/') && !!storeHint('subdomain');
   const b = branch ? `/${encodeURIComponent(branch)}` : '';
-  if (onTenantHost) return b;
-  return `/t/${encodeURIComponent(sub || storeHint('subdomain') || 'demo')}${b}`;
+  const side = isDineInPath(pathname) ? '/dine-in' : '';
+  if (onTenantHost) return `${b}${side}`;
+  return `/t/${encodeURIComponent(sub || storeHint('subdomain') || 'demo')}${b}${side}`;
 }
 
 export const checkoutPath = (sub?: string | null, branch?: string | null) =>

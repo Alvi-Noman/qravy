@@ -2,18 +2,19 @@
  * useBuzzerAlert — polls the ai-waiter-service /alert endpoint every 2 s.
  * Returns whether the counter buzzer is currently active and a dismiss fn.
  *
- * The ESP32 on the counter also polls the same endpoint; calling dismiss()
- * POSTs to /alert/dismiss so the device goes quiet and the banner clears.
+ * The ESP32 on the counter also polls the same endpoint (no login — it only says "a new order came in"); calling
+ * dismiss() POSTs to /alert/dismiss with the staff login (nobody else may silence it) so the device goes quiet and
+ * the banner clears.
  */
 import { useCallback, useEffect, useState } from 'react';
+import { useAuthContext } from '../context/AuthContext';
+import { WAITER_API, waiterFetch } from '../api/waiter';
 
-const WAITER_API =
-  import.meta.env.VITE_AI_WAITER_API ??
-  (import.meta.env.DEV ? 'http://localhost:7081' : '/waiter');
 const POLL_MS = 2_000;
 
 export function useBuzzerAlert(tenantSubdomain: string | undefined) {
   const [active, setActive] = useState(false);
+  const { getToken, refreshToken } = useAuthContext();
 
   useEffect(() => {
     if (!tenantSubdomain) return;
@@ -42,15 +43,16 @@ export function useBuzzerAlert(tenantSubdomain: string | undefined) {
   const dismiss = useCallback(async () => {
     if (!tenantSubdomain) return;
     try {
-      await fetch(
-        `${WAITER_API}/alert/dismiss?tenant=${encodeURIComponent(tenantSubdomain)}`,
+      const res = await waiterFetch(
+        `/alert/dismiss?tenant=${encodeURIComponent(tenantSubdomain)}`,
         { method: 'POST' },
+        { getToken, refreshToken },
       );
-      setActive(false);
+      if (res.ok) setActive(false);
     } catch {
       // best-effort
     }
-  }, [tenantSubdomain]);
+  }, [tenantSubdomain, getToken, refreshToken]);
 
   return { active, dismiss };
 }

@@ -39,6 +39,7 @@ export async function placePublicOrder(req: Request, res: Response, next: NextFu
       branch?: string | null;
       channel?: 'dine-in' | 'online';
       table?: string | null;
+      tableKey?: string | null;
       fulfillment?: 'pickup' | 'delivery' | null;
       customer?: { name?: string; phone?: string; address?: string | null } | null;
       items: Array<{ itemId: string; qty: number; variation?: string | null; modifiers?: any[]; notes?: string | null }>;
@@ -69,6 +70,7 @@ export async function placePublicOrder(req: Request, res: Response, next: NextFu
       branch: b.branch ?? null,
       channel: b.channel,
       table: b.table,
+      tableKey: b.tableKey,
       fulfillment: b.fulfillment,
       customer: b.customer ? { ...b.customer, address: b.customer.address ?? undefined } : null,
       lines: b.items,

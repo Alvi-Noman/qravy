@@ -5,9 +5,11 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useCart, cartLineKey } from '../context/CartContext';
-import MicInputBar from '../components/ai-waiter/MicInputBar';
+// THE WAITER — the same one as on the home screen and the menu page (src/waiter); never handle its replies here
+import { useWaiterSession } from '../waiter/useWaiterSession';
+import WaiterSheets, { WaiterDock } from '../waiter/WaiterSheets';
 import { OrderApiError, cartIdempotencyKey, placeOrder, rememberOrder } from '../api/orders';
-import { normalizeTable, useTable } from '../utils/table';
+import { normalizeTable, useTable, withTable } from '../utils/table';
 import {
   missingContactField,
   useFulfillment,
@@ -16,11 +18,9 @@ import {
   type GuestContact,
 } from '../utils/order-mode';
 import OnlineOrderDetails, { CONTACT_MESSAGES } from '../components/OnlineOrderDetails';
-import { orderPath, storeBasePath, useCheckoutFlow } from '../utils/checkout-flow';
+import { orderPath, storeBasePath } from '../utils/checkout-flow';
 import { getStableSessionId } from '../utils/ws';
 import { money, tr, uiLang } from '../utils/ui-lang';
-import { usePublicMenu } from '../hooks/usePublicMenu';
-import { applyVoiceCartOps } from '../utils/voice-cart';
 import WaitEstimateLine from '../components/WaitEstimateLine';
 import { useCartWait } from '../utils/wait-time';
 
@@ -32,17 +32,9 @@ export default function CheckoutPage() {
 
   const lang = uiLang();
   const navigate = useNavigate();
-  const {
-    items, subtotal, count, setLineQty, removeLine, clear, addItem, setQty, updateQty, removeItem, setNotes,
-    setLineNotes, replaceLine, setWarnings,
-  } = useCart();
-  const cartFns = {
-    addItem, setQty, updateQty, removeItem, setNotes, clear,
-    items, setLineQty, removeLine, setLineNotes, replaceLine, setWarnings,
-  };
+  const { items, subtotal, count, setLineQty, removeLine, clear } = useCart();
   const channel = useOrderChannel(sub);
   const online = channel === 'online';
-  const { items: storeItems } = usePublicMenu(sub ?? undefined, branch ?? undefined, channel);
   const wait = useCartWait({ subdomain: sub, branch, items });
   const [table, saveTable] = useTable(sub);
   const [fulfillment, setFulfillment] = useFulfillment(sub);
@@ -53,7 +45,18 @@ export default function CheckoutPage() {
   const [orderNotes, setOrderNotes] = useState('');
   const [placing, setPlacing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const handleCheckout = useCheckoutFlow(sub, branch);
+  // the waiter (shared): cart changes, the picker, offers… all as on the other pages. Its read-back / "which table?" /
+  // contact-details steps point at THIS page's fields (it is the checkout) instead of opening the tray.
+  const w = useWaiterSession({
+    subdomain: sub ?? 'demo',
+    branch: branch ?? undefined,
+    channel,
+    onCheckoutStep: (askTable) => {
+      if (!askTable) return;
+      if (online) setContactFocus(missingContactField(fulfillment, contact));
+      else setEditingTable(true);
+    },
+  });
 
   useEffect(() => {
     if (table) {
@@ -63,7 +66,7 @@ export default function CheckoutPage() {
   }, [table]);
 
   const effectiveTable = editingTable ? normalizeTable(tableDraft) : table;
-  const backHref = storeBasePath(sub, branch) || '/';
+  const backHref = withTable(storeBasePath(sub, branch) || '/', sub); // (the table stays on the link)
 
   const lines = useMemo(
     () =>
@@ -140,7 +143,7 @@ export default function CheckoutPage() {
         </div>
       </header>
 
-      <main className="max-w-2xl w-full mx-auto px-4 pb-44 flex-1">
+      <main className="max-w-2xl w-full mx-auto px-4 pb-80 flex-1">
         {!items.length ? (
           <div className="mt-10 rounded-2xl bg-white p-8 text-center shadow-sm">
             <p className="text-gray-700 mb-4">{tr(lang, 'আপনার ট্রে খালি।', 'Your tray is empty.')}</p>
@@ -270,7 +273,7 @@ export default function CheckoutPage() {
       </main>
 
       {items.length > 0 && (
-        <div className="fixed bottom-0 inset-x-0 z-40 bg-[#F6F5F8]/95 backdrop-blur pb-4 pt-3">
+        <div className="fixed bottom-0 inset-x-0 z-40 bg-[#F6F5F8]/95 backdrop-blur pt-3">
           <div className="mx-auto max-w-2xl px-4 space-y-3">
             <button
               type="button"
@@ -282,28 +285,16 @@ export default function CheckoutPage() {
                 ? tr(lang, 'অর্ডার দেওয়া হচ্ছে…', 'Placing order…')
                 : tr(lang, `অর্ডার দিন · ${money(subtotal)}`, `Place order · ${money(subtotal)}`)}
             </button>
-            <MicInputBar
-              tenant={sub}
-              branch={branch}
-              channel={channel}
-              floorGradient={false}
-              panelLift={64}
-              onAiReply={({ meta }) => {
-                if (Array.isArray(meta?.cartWarnings)) setWarnings(meta.cartWarnings);
-                // "make it two" / "add a Borhani" during the read-back → change the cart, then follow the step
-                if (meta && storeItems.length && (meta.clearCart || meta.cartOps?.length)) {
-                  try {
-                    applyVoiceCartOps(meta, storeItems as any[], cartFns);
-                  } catch {
-                    /* malformed ops */
-                  }
-                }
-                handleCheckout(meta);
-              }}
-            />
+          </div>
+          {/* the waiter: hold the orb to talk; what it says, and the answer pills */}
+          <div className="mx-auto mt-3 max-w-2xl">
+            <WaiterDock w={w} originFromOrb={false} />
           </div>
         </div>
       )}
+
+      {/* the waiter's sheets (suggestions, the tray with its picker) — the same as on the other pages */}
+      <WaiterSheets w={w} />
     </div>
   );
 }

@@ -89,16 +89,18 @@ def test_a_clean_order_needs_no_model_and_is_confirmed_short():
     assert not calls, "a clean order is added without the model"
     assert ops_of(out) == [("add", "crs", 2), ("add", "ff", 1)]
     assert out["replyText"] == ("2টা Crispy Rice Soup যোগ করলাম। 1টা French Fry যোগ করলাম। "
-                                "সাথে কি কোনো ড্রিংকস নিবেন?"), out["replyText"]  # (the one upsell question: no drink yet)
+                                "আর কিছু লাগবে, নাকি অর্ডার কনফার্ম করব?"), out["replyText"]  # (only water to drink here: never upsold)
     assert "clean_order" in out["meta"]["guards"]
     # anything more than "these dishes, this many" → the model reads it (with all its checks)
     for said in ("ঝাল কম করে দুইটা ক্রিস্পি রাইস স্যুপ দিন",   # a note
                  "দুইটা স্যুপ দিন",                          # which soup?
-                 "একটা কাচ্চি বিরিয়ানি দেন",                   # a size to pick
                  "ক্রিস্পি রাইস স্যুপ কেমন?",                  # a question
                  "ভাইস ঠিক স্যুপ দুইটা দেন"):                 # a word we can't place
         _, calls = run(said, {"replyText": "…"})
         assert calls, said
+    # a size to pick → no model either: it's held and asked about (Half or Full?), never guessed
+    out, calls = run("একটা কাচ্চি বিরিয়ানি দেন", {"replyText": "…"})
+    assert not calls and ops_of(out) == [] and "Half" in out["replyText"] and "Full" in out["replyText"], out["replyText"]
     # already in the tray → the model (it asks "add more, making 3?")
     _, calls = run("দুইটা ক্রিস্পি রাইস স্যুপ দিন", {"replyText": "…"}, cart=[{"itemId": "crs", "quantity": 1, "price": 300}])
     assert calls

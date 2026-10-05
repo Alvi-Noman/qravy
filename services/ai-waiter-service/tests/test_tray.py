@@ -136,12 +136,13 @@ def test_big_quantity_duplicates_and_clear_ask_first():
     # "আরেকটা" is clear → no question
     out, _ = run("আরেকটা স্প্রিং রোল দিন", cart, model={**TURN, "cartOps": [op("add", "sr", q=1)], "replyText": "…"})
     assert out["meta"]["cartOps"][0]["op"] == "add"
-    # clearing a full tray asks first; yes clears
+    # clearing the tray always asks first (with yes / no buttons); yes clears
     out, _ = run("সব বাতিল করে দিন", KACCHI_TWO, model={**TURN, "clearCart": True, "replyText": "বাতিল করলাম।"})
     assert out["meta"]["clearCart"] is False and "সবগুলো বাদ" in out["replyText"]
+    assert len(out["meta"]["decision"]["chooseOptions"]) == 2
     out2, _ = run("হ্যাঁ", KACCHI_TWO, state={"tray": out["meta"]["tray"]})
     assert out2["meta"]["clearCart"] is True
-    # … and even that can be undone
+    # … and it can be undone
     out3, _ = run("আগের মতো করে দিন", [], state={"tray": out2["meta"]["tray"]})
     assert len([o for o in out3["meta"]["cartOps"] if o["op"] == "restore"]) == 3
 
@@ -186,11 +187,11 @@ def test_eval_findings_are_fixed():
     out, _ = run("স্প্রিং রোল দিন", cart, model={**TURN, "cartOps": [op("add", "sr", q=1)], "replyText": "…"})
     out2, _ = run("না, মোট ৩টা", cart, state={"tray": out["meta"]["tray"]})
     assert [(o["op"], o["quantity"]) for o in out2["meta"]["cartOps"]] == [("set", 3)]
-    # removing every line one by one = clear everything → asks first
+    # each dish named to go (even if that empties the tray) → just done: exactly what they asked, no "delete all?"
     two = [{"itemId": "sr", "quantity": 1, "price": 230}, {"itemId": "pf", "quantity": 2, "price": 320}]
-    out, _ = run("সব বাতিল করে দিন", two,
+    out, _ = run("স্প্রিং রোল আর প্রন ফ্রাইড রাইস বাদ দিন", two,
                  model={**TURN, "cartOps": [op("remove", "sr", line="L1"), op("remove", "pf", line="L2")], "replyText": "খালি করলাম।"})
-    assert out["meta"]["cartOps"] == [] and "সবগুলো বাদ" in out["replyText"]
+    assert [o["op"] for o in out["meta"]["cartOps"]] == ["remove", "remove"] and "সবগুলো বাদ" not in out["replyText"]
     # "চারজন" is not "চা" (tea)
     from waiter_knowledge import missing_kinds
 

@@ -74,6 +74,8 @@ function toPublicTenantItem(tenant: TenantDoc, fallbackSub: string) {
       dineIn: tenant.restaurantInfo?.dineInEnabled !== false,
       online: tenant.restaurantInfo?.onlineSalesEnabled !== false,
     },
+    // The dine-in tables (the ones with QR codes) — the guest app checks a typed table number against them
+    tables: Array.isArray(tenant.tables) ? tenant.tables : [],
   };
 }
 

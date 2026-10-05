@@ -518,6 +518,7 @@ export const publicOrderCreateSchema = z.object({
   branch: z.string().trim().max(80).nullable().optional(),
   channel: z.enum(['dine-in', 'online']).optional(),
   table: z.string().trim().max(20).nullable().optional(),
+  tableKey: z.string().trim().max(40).nullable().optional(),
   fulfillment: z.enum(['pickup', 'delivery']).nullable().optional(),
   customer: z
     .object({

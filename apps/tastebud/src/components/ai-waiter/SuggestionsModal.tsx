@@ -2,8 +2,10 @@
 import React from 'react';
 import { Link, useLocation, useParams, useSearchParams } from 'react-router-dom';
 import MicInputBar from './MicInputBar';
-import SheetScrollArea, { SHEET_HEIGHT, ScrollLock } from '../SheetScroll';
+import SheetScrollArea, { ScrollLock } from '../SheetScroll';
+import PopupHeader, { POPUP_PAGE_CLASS } from './PopupHeader';
 import type { AiReplyMeta, WaiterIntent } from '../../types/waiter-intents';
+import { isDineInPath, withTable } from '../../utils/table';
 import { normalizeIntent, localHeuristicIntent } from '../../utils/intent-routing';
 
 type MinimalMenuItem = {
@@ -23,7 +25,7 @@ type Props = {
   onIntent?: (intent?: WaiterIntent, meta?: AiReplyMeta, replyText?: string) => void;
   /** its own mic bar — off where a hands-free voice session runs the conversation (the waiter home) */
   voiceBar?: boolean;
-  /** the waiter's presence (AssistantHeader) at the top of the sheet, left-aligned */
+  /** the waiter's presence (AssistantDock) at the bottom of the page */
   assistant?: React.ReactNode;
 };
 
@@ -60,10 +62,12 @@ function useMenuHref(menuHrefOverride?: string) {
     /\/t\/[^/]+/.test(location.pathname) ||
     (sd && location.pathname.startsWith('/t/'));
 
+  // the menu on the guest's side of the site ("…/dine-in/menu?table=12" or the online "…/menu")
+  const side = isDineInPath(location.pathname) ? '/dine-in' : '';
   if (isDevTenantPath || subdomain) {
-    return br ? `/t/${sd}/${br}/menu` : `/t/${sd}/menu`;
+    return withTable(br ? `/t/${sd}/${br}${side}/menu` : `/t/${sd}${side}/menu`, sd);
   }
-  return '/menu';
+  return withTable(`${br ? `/${br}` : ''}${side}/menu`, sd);
 }
 
 function resolveIntent(meta?: AiReplyMeta, replyText?: string): WaiterIntent {
@@ -154,9 +158,6 @@ export default function SuggestionsModal({
   }, [highlightIds]);
   const menuHref = useMenuHref(menuHrefOverride);
   const hasAiItems = Array.isArray(items) && items.length > 0;
-  const heroItem = hasAiItems ? items.find((i) => i.imageUrl) ?? items[0] : undefined;
-  const heroImage = heroItem?.imageUrl;
-  const heroName = heroItem?.name;
 
   // the restaurant from the link (/t/<subdomain>/…) like the home screen, then the global store value
   const params = useParams<{ subdomain?: string; branchSlug?: string; branch?: string }>();
@@ -174,57 +175,15 @@ export default function SuggestionsModal({
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center">
+    <div className="fixed inset-0 z-[100] flex justify-center bg-white">
       <ScrollLock />
-      <div className="absolute inset-0 bg-black/40 backdrop-blur-[1.5px]" onClick={onClose} />
 
-      {/* SLIDE-UP SHEET: header · scrolling cards · mic, as a column */}
-      <div
-        className={
-          `relative z-[101] flex w-full flex-col sm:max-w-2xl rounded-t-[26px] sm:rounded-3xl bg-[#F8F8F8] ${SHEET_HEIGHT} overflow-hidden sm:shadow-2xl ` +
-          "transform transition-all duration-300 ease-out " +
-          (open ? "translate-y-0 opacity-100" : "translate-y-full opacity-0")
-        }
-      >
-        
-        {/* HEADER */}
-        <div className="shrink-0 z-20 px-4 pt-3 pb-2 border-b border-gray-100 bg-[#F8F8F8] rounded-t-[26px]">
-          <div className="relative flex flex-col items-center">
-            <div className="mb-2 h-1 w-12 rounded-full bg-gray-300" />
-
-            {assistant ? (
-              // the waiter's presence (orb · AI Assistant · status) left-aligned; the list's title under it
-              <div className="w-full pr-10">
-                {assistant}
-                <h2 className="mt-2 text-left text-[15px] font-semibold text-gray-900">AI Suggestions</h2>
-              </div>
-            ) : (
-              <>
-                {heroImage && (
-                  <div className="mb-2 h-10 w-10 rounded-full overflow-hidden border border-white/70 shadow-sm">
-                    <img src={heroImage} alt={heroName ?? 'Item'} className="h-full w-full object-cover" />
-                  </div>
-                )}
-                <h2 className="text-[15px] font-semibold text-gray-900">AI Suggestions</h2>
-              </>
-            )}
-
-            <button
-              onClick={onClose}
-              className="absolute right-0 top-0 h-8 w-8 grid place-items-center rounded-full hover:bg-gray-100 active:scale-95"
-            >
-              <svg width="16" height="16" viewBox="0 0 24 24">
-                <path
-                  fill="currentColor"
-                  d="M18.3 5.71a1 1 0 0 0-1.41 0L12 10.59 7.11 5.7a1 1 0 0 0-1.41 1.41L10.59 12l-4.9 4.89a1 1 0 1 0 1.41 1.41L12 13.41l4.89 4.9a1 1 0 0 0 1.41-1.41L13.41 12l4.9-4.89a1 1 0 0 0-.01-1.4Z"
-                />
-              </svg>
-            </button>
-          </div>
-        </div>
+      {/* FULL-SCREEN PAGE: title · scrolling cards · the waiter's dock (or the mic), as a column */}
+      <div className={POPUP_PAGE_CLASS}>
+        <PopupHeader title="AI Suggestions" onClose={onClose} />
 
         {/* SCROLL AREA */}
-        <SheetScrollArea className="px-4 pt-3 pb-4" moreHint={items.length > 2 ? 'More below' : undefined}>
+        <SheetScrollArea className="px-4 pt-2 pb-4" fadeFrom="#FFFFFF" moreHint={items.length > 2 ? 'More below' : undefined}>
           {hasAiItems ? (
             <div className="grid grid-cols-1 gap-3">
               {items.map((it, idx) => {
@@ -252,9 +211,9 @@ export default function SuggestionsModal({
           )}
         </SheetScrollArea>
 
-        {/* MIC BAR — part of the column, never over the cards (hidden where the voice session is hands-free) */}
+        {/* MIC BAR — part of the column, never over the cards; where the hands-free session runs, the waiter's dock */}
         {voiceBar ? (
-        <div className="relative z-40 shrink-0 px-4 pt-3 pb-[max(1.25rem,env(safe-area-inset-bottom))] bg-[#F8F8F8] border-t border-gray-200">
+        <div className="relative z-40 shrink-0 px-4 pt-3 pb-[max(1.25rem,env(safe-area-inset-bottom))] bg-white border-t border-gray-100">
           <MicInputBar
             tenant={tenant}
             branch={branch}
@@ -267,6 +226,8 @@ export default function SuggestionsModal({
             }}
           />
         </div>
+        ) : assistant ? (
+          assistant
         ) : (
           <div className="shrink-0 h-[max(1rem,env(safe-area-inset-bottom))]" />
         )}

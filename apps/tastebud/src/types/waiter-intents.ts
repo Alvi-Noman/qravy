@@ -124,6 +124,8 @@ export type AiDecision = {
   askDetails?: boolean;
   /** the answers to the waiter's "which one?" as buttons — a tap sends `say` as the guest's next words */
   chooseOptions?: { label: string; say: string; itemId?: string; price?: number }[];
+  /** dishes ordered without their size / required choice — held by the waiter, picked in the tray (tap or voice) */
+  pickOptions?: import('../utils/handsfree').PickOption[];
   /** The order was really placed (meta.order has token + orderNumber) */
   orderPlaced?: boolean;
   /** Placing failed (the reply says why) */

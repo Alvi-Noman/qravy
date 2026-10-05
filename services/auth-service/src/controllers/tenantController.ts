@@ -10,6 +10,7 @@ import { auditLog } from '../utils/audit.js';
 import { toTenantDTO } from '../utils/mapper.js';
 import { normalizeAvailability, normalizeServicePeriods } from '../utils/availability.js';
 import { kitchenSettings } from '../services/orders/waitTime.js';
+import { missingTableKeys, tableKeysFor } from '../utils/tableKeys.js';
 import type { v1 } from '@qravy/shared';
 import { restaurantOnboardingSchema, tenantUpdateSchema } from '../validation/schemas.js';
 
@@ -243,6 +244,10 @@ export async function getMyTenant(req: Request, res: Response, next: NextFunctio
     if (!tenant.trialStartedAt) updates.trialStartedAt = start;
     if (!tenant.trialEndsAt) updates.trialEndsAt = addDays(start, DEFAULT_TRIAL_DAYS);
     if (!tenant.subscriptionStatus) updates.subscriptionStatus = 'none';
+    // tables saved before QR keys existed get theirs (the QR codes page shows the keyed links)
+    if (missingTableKeys(tenant.tables, tenant.tableKeys)) {
+      updates.tableKeys = tableKeysFor(tenant.tables ?? [], tenant.tableKeys);
+    }
     if (tenant.payment && typeof tenant.hasCardOnFile === 'undefined') {
       updates.hasCardOnFile = hasPaymentOnFile(tenant.payment);
     }
@@ -711,6 +716,7 @@ export async function updateMyTenant(req: Request, res: Response, next: NextFunc
     if (parsed.kitchen) update.kitchen = kitchenSettings({ kitchen: parsed.kitchen });
     if (parsed.tables) {
       update.tables = [...new Set(parsed.tables.map((t) => t.trim().replace(/^#/, '').toUpperCase()))];
+      update.tableKeys = tableKeysFor(update.tables, tenant.tableKeys);
     }
 
     if (parsed.ownerInfo) {

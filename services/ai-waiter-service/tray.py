@@ -197,7 +197,39 @@ RELATIVE = re.compile(
     re.I,
 )
 
-MORE_WORDS = re.compile(r"\b(more|another|extra|again|also|plus|one more|additional)\b|আরো|আরও|আরেক|বাড়িয়ে|এক্সট্রা|আবার", re.I)
+# "আরও ৪টা দেন" / "aro 4 ta den" / "4 more" — on top of what's in the tray. ("extra" is not here: "এক্সট্রা হট",
+# "extra cheese" are choices; a sentence-initial "আর একটা" is "one more", a mid-sentence one is just "and")
+MORE_WORDS = re.compile(
+    r"\b(more|another|again|also|plus|additional|aro|aaro|arro|arekta|arekti|areta|arokta|abar|bariye|barie)\b|"
+    r"^\s*(ar|and)\s+(ekta|ek|\d+)|আরো|আরও|আরেক|বাড়িয়ে|বাড়িয়ে|আবার|^\s*আর\s+(এক|দুই|দু|তিন|চার|পাঁচ|[০-৯\d])",
+    re.I,
+)
+# "মোট ৪টা" / "total 4" / "make it 4" / "ডাবল করে দিন" — always the total, even with "আরও" in the sentence
+TOTAL_WORDS = re.compile(
+    r"মোট|সব মিলিয়ে|সবমিলিয়ে|সব মিলিয়ে|টোটাল|শুধু|কেবল|এখন \S+(টা|টি)|ডাবল|দ্বিগুণ|দ্বিগুন|তিনগুণ|"
+    r"\b(mot|motr|total|totally|shob miliye|sob miliye|shudhu|sudhu|only|just|in all|altogether|make it|change (it )?to|"
+    r"double|triple)\b",
+    re.I,
+)
+# "৪টা করেন" / "4 ta koren" / "করে দিন" — the total too, unless "আরও" says on top ("আরেকটা বানিয়ে দিন" = one more).
+# "একটা বার্গার অর্ডার করেন" / "যোগ করেন" is just ordering (never a total).
+TOTAL_WEAK = re.compile(
+    r"(?<!অর্ডার )(?<!যোগ )কর(ে দিন|ে দেন|ে দাও|েন|ুন)(?![ঀ-৿])|(?<!অর্ডার )(?<!যোগ )বানিয়ে দি|(?<!অর্ডার )(?<!যোগ )বানিয়ে দি|"
+    r"\b(ta|ti|to)\s+(\w+\s+){0,3}(?<!order )(?<!jog )(koren|korun|koro|kore din|kore den|kore dao|kore dien)\b",
+    re.I,
+)
+
+
+def qty_intent(text: str) -> Optional[str]:
+    """"more" (on top of the tray), "total" (what the tray should hold), or None — not said, so ask."""
+    t = text or ""
+    if TOTAL_WORDS.search(t):
+        return "total"  # ("আরও দুইটা দিয়ে মোট চারটা করেন" — the total is the clearer of the two)
+    if MORE_WORDS.search(t):
+        return "more"
+    if TOTAL_WEAK.search(t):
+        return "total"
+    return None
 
 ALL_WORDS = re.compile(r"\b(all|both|every|everything)\b|সব|সবগুলো|দুইটাই|দুটোই|সবকটা|পুরোটা", re.I)
 

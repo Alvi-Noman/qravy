@@ -7,6 +7,7 @@ import { followOrder, getOrder, type OrderStatus, type PublicOrder } from '../ap
 import OrderConfirmedModal from '../components/ai-waiter/OrderConfirmedModal';
 import OrderCountdown from '../components/OrderCountdown';
 import { storeBasePath } from '../utils/checkout-flow';
+import { withTable } from '../utils/table';
 import { money, tr, type UiLang } from '../utils/ui-lang';
 
 const STEPS: OrderStatus[] = ['placed', 'accepted', 'preparing', 'ready', 'completed'];
@@ -72,7 +73,7 @@ export default function OrderStatusPage() {
     lastStatus.current = order.status;
   }, [order]);
 
-  const backHref = storeBasePath(sub, branch) || '/';
+  const backHref = withTable(storeBasePath(sub, branch) || '/', sub); // (the table stays on the link)
 
   if (missing) {
     return (

@@ -12,6 +12,7 @@ import { DEFAULT_TIMEZONE } from '../../utils/availability.js';
 import type { Fulfillment, OrderChannel, OrderCustomer, OrderDoc, OrderLine, OrderStatus } from '../../models/Order.js';
 import type { OrderEta } from '../../models/Order.js';
 import { publishOrder, publishTenant } from './events.js';
+import { tableKeyMatches } from '../../utils/tableKeys.js';
 import {
   DEFAULT_PREP_MINUTES,
   STALE_ORDER_MS,
@@ -170,6 +171,8 @@ export async function createOrderCore(input: {
   channel?: OrderChannel;
   /** Dine-in: required */
   table?: string | null;
+  /** Dine-in: the table's QR key (?k=) — without it the order is marked "table not verified" */
+  tableKey?: string | null;
   /** Online: required */
   fulfillment?: Fulfillment | null;
   customer?: Partial<OrderCustomer> | null;
@@ -208,7 +211,19 @@ export async function createOrderCore(input: {
   const tenant = await client
     .db('authDB')
     .collection('tenants')
-    .findOne({ _id: input.tenantOid }, { projection: { timezone: 1, kitchen: 1, subdomain: 1 } });
+    .findOne({ _id: input.tenantOid }, { projection: { timezone: 1, kitchen: 1, subdomain: 1, tables: 1, tableKeys: 1 } });
+  // a dine-in order is for one of the restaurant's own tables (the ones it has QR codes for) — when it has set them up
+  const knownTables = Array.isArray(tenant?.tables) ? (tenant.tables as string[]).map((t) => String(t).toUpperCase()) : [];
+  if (dineIn && knownTables.length && !knownTables.includes(dineIn.tableNumber.replace(/^#/, '').toUpperCase())) {
+    throw new OrderError(400, 'We could not find that table — please check the number on your table.', { needs: 'table' });
+  }
+  // scanned the table's QR code (its key came along) → verified; a typed table number → the staff check it first
+  // (staff-entered orders, and tables without a key, have nothing to check)
+  if (dineIn && input.source !== 'staff') {
+    const keys = (tenant?.tableKeys ?? null) as Record<string, string> | null;
+    const hasKey = !!keys?.[dineIn.tableNumber.replace(/^#/, '').toUpperCase()];
+    if (hasKey && !tableKeyMatches(keys, dineIn.tableNumber, input.tableKey)) dineIn.tableVerified = false;
+  }
   const kitchen = kitchenSettings(tenant as { kitchen?: Partial<KitchenSettings> } | null);
   const lines = await priceLines({
     tenantOid: input.tenantOid,
@@ -267,7 +282,8 @@ export async function createOrderCore(input: {
     const waiterUrl = process.env.AI_WAITER_HTTP_URL || 'http://ai-waiter-service:7081';
     void fetch(`${waiterUrl.replace(/\/$/, '')}/internal/alert/trigger`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      // the shared key: only auth-service may set a restaurant's buzzer off
+      headers: { 'Content-Type': 'application/json', 'X-Internal-Key': process.env.INTERNAL_API_KEY ?? '' },
       body: JSON.stringify({ tenant: tenantSubdomain }),
       signal: AbortSignal.timeout(1500),
     })
@@ -566,5 +582,7 @@ export function toAdminOrder(o: OrderDoc) {
     branch: o.branch ?? null,
     source: o.source,
     businessDay: o.businessDay,
+    // false = the guest typed the table number (didn't scan its QR code) — check it's really them before cooking
+    tableVerified: o.dineIn ? o.dineIn.tableVerified !== false : null,
   };
 }

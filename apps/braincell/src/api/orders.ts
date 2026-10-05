@@ -41,6 +41,8 @@ export type AdminOrder = {
   channel?: 'dine-in' | 'online';
   /** Dine-in only */
   table: string | null;
+  /** Dine-in: false = the guest typed the table number instead of scanning its QR code — check before cooking */
+  tableVerified?: boolean | null;
   /** Online only */
   fulfillment?: 'pickup' | 'delivery';
   customer?: { name: string; phone: string; address?: string };

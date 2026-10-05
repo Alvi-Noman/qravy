@@ -363,6 +363,14 @@ function OrderCard({
           ) : (
             <div className="text-sm text-[#2e2e30]">
               Table <span className="font-semibold">{order.table}</span>
+              {order.tableVerified === false && (
+                <div
+                  className="mt-1 inline-block rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800"
+                  title="The guest typed this table number instead of scanning the table's QR code"
+                >
+                  Table not verified — check before cooking
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -502,6 +510,9 @@ function History({ token, onPrint }: { token: string | null; onPrint: PrintFn })
               <td className="px-4 py-3 font-semibold text-[#2e2e30]">#{o.orderNumber}</td>
               <td className="px-4 py-3">
                 {o.channel === 'online' ? `${orderWhere(o)} · ${o.customer?.name ?? ''}` : o.table}
+                {o.channel !== 'online' && o.tableVerified === false && (
+                  <span className="ml-1 text-xs text-amber-700">(not verified)</span>
+                )}
               </td>
               <td className="px-4 py-3 text-[#6b6b70]">{o.items.map((l) => `${l.qty}× ${l.name}`).join(', ')}</td>
               <td className="px-4 py-3">{money(o.total)}</td>

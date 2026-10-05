@@ -4,7 +4,7 @@
 // a chat header (avatar · name · status). Tap it to pause / resume the conversation. The "which one?" answers sit
 // right under it.
 import React from 'react';
-import VoiceOrb from './VoiceOrb';
+import TenminOrb from './TenminOrb';
 import type { ChooseOption } from '../../utils/handsfree';
 
 type OrbMode = 'idle' | 'listening' | 'thinking' | 'talking';
@@ -20,7 +20,7 @@ type Props = {
   onChoose?: (say: string) => void;
 };
 
-const ORB = 80; // canvas; the ball is ~44% (~35 px) — the rest is its rings' breathing room
+const ORB = 46; // the ball is ~76% (~35 px) — the rest is room for the listening ring and talking waves
 
 export default function AssistantHeader({ mode, level, paused, lang, status, onToggle, choices, onChoose }: Props) {
 
@@ -36,7 +36,7 @@ export default function AssistantHeader({ mode, level, paused, lang, status, onT
         {/* the orb, with space to breathe */}
         <span className="relative h-14 w-14 shrink-0">
           <span className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
-            <VoiceOrb mode={paused ? 'idle' : mode} size={ORB} level={micOpen ? level : 0} />
+            <TenminOrb mode={paused ? 'idle' : mode} size={ORB} level={micOpen ? level : 0} />
           </span>
           {paused && (
             <span className="absolute -bottom-0.5 -right-0.5 flex h-6 w-6 items-center justify-center rounded-full bg-white shadow ring-1 ring-rose-100">

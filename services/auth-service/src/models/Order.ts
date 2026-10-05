@@ -58,7 +58,8 @@ export interface OrderDoc {
   status: OrderStatus;
   statusHistory: Array<{ status: OrderStatus; at: Date; by?: string }>;
   /** Set for dine-in orders */
-  dineIn?: { tableNumber: string } | null;
+  /** tableVerified: false = the guest typed the table instead of scanning its QR code (no / wrong key) — staff check */
+  dineIn?: { tableNumber: string; tableVerified?: boolean } | null;
   /** Set for online orders: collected at the counter, or brought to the guest */
   online?: { fulfillment: Fulfillment; customer: OrderCustomer } | null;
   items: OrderLine[];
