@@ -35,6 +35,7 @@ const TYPE_LABEL: Record<string, string> = {
   meal_addon: 'Make it a meal',
   more_food: 'More for the group',
   rice: 'Rice with a curry',
+  main: 'A main after starters',
   side: 'A side',
   drink: 'A drink',
   addon: 'Add-on (dip, extra)',

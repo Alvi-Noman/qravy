@@ -42,7 +42,7 @@ export default function AssistantDock({ mode, status, subtitle, orbProps, origin
   const orbRef = React.useRef<HTMLButtonElement | null>(null);
 
   // ONE orb, travelling (orbFlight): when the sheet opens, the home orb glides down into the dock (shrinking as it
-  // goes) and becomes this orb; when the sheet closes, this orb glides back up and becomes the home orb again.
+  // goes) and becomes this orb. (Closing the sheet has no flight back.)
   const [inFlight, setInFlight] = React.useState(false);
   const modeRef = React.useRef(mode);
   modeRef.current = mode;
@@ -71,32 +71,7 @@ export default function AssistantDock({ mode, status, subtitle, orbProps, origin
       });
     }
 
-    return () => {
-      // where this orb is as the sheet closes (still on screen at this moment) — or the copy, mid-way down
-      const from = down ? down.now() : btn?.isConnected ? ballOf(btn.getBoundingClientRect(), BALL) : null;
-      down?.cancel();
-      if (!from || !origin || reduce) return;
-      requestAnimationFrame(() => {
-        // (React's dev double-mount "unmounts" without removing anything — only a real close flies home)
-        if (btn?.isConnected) return;
-        if (!home()) return; // left the home screen altogether
-        const prev = origin.style.opacity;
-        origin.style.opacity = '0'; // the copy is the home orb until it lands
-        const restore = () => {
-          origin.style.opacity = prev;
-        };
-        flyOrb({
-          from,
-          to: () => (home() ? ballOf(origin.getBoundingClientRect()) : null),
-          mode: modeRef.current,
-          onLanded: () => {
-            restore();
-            settle(origin);
-          },
-        });
-        window.setTimeout(restore, 1600); // never leave the home orb invisible (the page changed mid-flight)
-      });
-    };
+    return () => down?.cancel(); // the sheet closed mid-flight: the copy just goes
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

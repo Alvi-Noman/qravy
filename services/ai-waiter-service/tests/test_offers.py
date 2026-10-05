@@ -199,3 +199,47 @@ def test_the_size_up_is_a_hint_on_the_picker_not_a_question():
     hints = offers.size_hints([{"name": "6 pcs", "price": 320}, {"name": "10 pcs", "price": 490}], "bn")
     assert hints == {"10 pcs": "আরও 4 পিস, মাত্র +৳170 · সবচেয়ে সাশ্রয়ী"}, hints
     assert offers.size_hints([{"name": "Regular", "price": 150}, {"name": "Large", "price": 210}], "en") == {"Large": "just +৳60"}
+
+
+THAI = [
+    {"id": "soup", "name": "Crispy Rice Soup", "price": 250, "category": "Soup"},
+    {"id": "pak", "name": "Chicken Pakora", "price": 220, "category": "Appetizer"},
+    {"id": "cfr", "name": "Chicken Fried Rice", "price": 320, "category": "Rice"},
+    {"id": "curry", "name": "Chicken Red Curry", "price": 380, "category": "Chicken"},
+    {"id": "lime", "name": "Fresh Lime Soda", "price": 120, "category": "Drinks"},
+]
+
+
+def test_starters_only_are_offered_a_main_course():
+    # the real turn: "একটা ক্রিস্পি রাইস স্যুপ আর দুইটা চিকেন পাকোড়া" → added, then just "আর কিছু লাগবে…?" — a soup
+    # and pakoras are starters: no side / rice / drink rule fired, so the meal's real gap (a main) was never offered
+    idx = brain.MenuIndex(THAI)
+
+    async def fake(messages):
+        return json.dumps({**TURN, "cartOps": [{"op": "add", "item": idx.ref(idx.by_id["soup"]), "quantity": 1},
+                                               {"op": "add", "item": idx.ref(idx.by_id["pak"]), "quantity": 2}],
+                           "replyText": "যোগ করলাম।"})
+
+    async def no_reading(*a, **k):
+        return None
+
+    orig = brain._call_openai, brain._understand
+    brain._call_openai, brain._understand = fake, no_reading
+    try:
+        out = asyncio.run(brain.generate_reply(
+            "একটা ক্রিস্পি রাইস স্যুপ আর দুইটা চিকেন পাকোড়া দেন", menu_snapshot={"items": THAI}, locale="bn",
+            context={"cartItems": [], "mealKinds": ["dinner"], "channel": "online"}))
+    finally:
+        brain._call_openai, brain._understand = orig
+    offer = out["meta"].get("upsellOffer")
+    assert offer and offer["type"] == "main", (out["replyText"], offer)
+    assert offer["ops"][0]["itemId"] in ("cfr", "curry") and "মেইন কোর্সে" in out["replyText"], out["replyText"]
+
+
+def test_a_tray_of_starters_can_still_get_a_drink():
+    idx = brain.MenuIndex(THAI)
+    rows = [{"itemId": "soup", "quantity": 1, "price": 250}, {"itemId": "pak", "quantity": 2, "price": 220}]
+    c = offers.Ctx(index=idx, orderable={}, rows=rows, added=[], picks=[], stats=OrderStats.from_orders([]),
+                   profile=GuestProfile(), clash=lambda it: [], lang="bn", arm={"wording": "reason", "timing": "early"})
+    o = offers._drink("wrap_up", c)
+    assert o and o.ops[0]["itemId"] == "lime", o

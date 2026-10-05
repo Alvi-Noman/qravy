@@ -155,6 +155,8 @@ export async function updateTenant(
     kitchen?: { defaultPrepMinutes: number; parallelOrders: number };
     /** Dine-in table labels for table QR codes */
     tables?: string[];
+    /** uploaded logo URL; null removes it */
+    logoUrl?: string | null;
   },
   token: string
 ): Promise<TenantDTO> {

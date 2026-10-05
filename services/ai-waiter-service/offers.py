@@ -52,7 +52,7 @@ def arm_for(tenant: Optional[str], session: Optional[str]) -> Dict[str, str]:
 
 @dataclass
 class Offer:
-    type: str  # combo | meal_addon | more_food | side | drink | addon | dessert
+    type: str  # combo | meal_addon | more_food | rice | main | side | drink | addon | dessert
     moment: str  # first_add | wrap_up
     text: str
     ops: List[Dict[str, Any]]  # applied on "yes" — the same shape as brain's validated ops
@@ -106,7 +106,7 @@ def plan(moment: str, c: Ctx) -> Optional[Offer]:
         # a table of four with one burger: "make it four" comes before any extra; with spicy food a cold drink
         # comes before a side
         spicy = bool(_roles(c)["spicy"])
-        steps = (_more_food, _combo_swap, _meal_addon, _rice) + ((_drink, _side) if spicy else (_side, _drink)) + (_addon,)
+        steps = (_more_food, _combo_swap, _meal_addon, _rice, _main) + ((_drink, _side) if spicy else (_side, _drink)) + (_addon,)
     else:
         steps = (_drink, _dessert)
     for step in steps:
@@ -141,6 +141,7 @@ def _roles(c: Ctx) -> Dict[str, Any]:
         "drink": any(ro["drink"] for ro, _i, _r in rs),
         "dessert": any(ro["dessert"] for ro, _i, _r in rs),
         "real_food": any(ro["main"] or ro["rice"] or ro["handheld"] for ro, _i, _r in rs),
+        "starter": any(ro.get("starter") or ro.get("snack") for ro, _i, _r in rs),
         "handheld": [it for ro, it, _r in rs if ro["handheld"]],
         "spicy": spicy,
     }
@@ -369,6 +370,24 @@ def _rice(moment: str, c: Ctx) -> Optional[Offer]:
                  card=_card(r, c, f"with your {dish}"))
 
 
+def _main(moment: str, c: Ctx) -> Optional[Offer]:
+    """Only starters so far (a soup, pakoras) → the main course: the guest's best-fitting main, e.g. "স্টার্টারের পর
+    মেইন কোর্সে Chicken Fried Rice নেবেন? (৳৩২০) — দেব?" (a soup and two pakoras once got no offer at all)."""
+    shape = _roles(c)
+    it, _row = _anchor(c)
+    if shape["real_food"] or not it or not shape["starter"]:
+        return None
+    m = _best("main", c, shape["ids"])
+    if not m:
+        return None
+    name, p = _label(m), _money(_price(m))
+    text = _say(c, f"স্টার্টারের পর মেইন কোর্সে {name} নেবেন? ({p}) — দেব?",
+                f"For the main course, how about the {name} ({p})? Shall I add it?",
+                f"মেইন কোর্সে {name} {p} — দেব?", f"{name} for the main, {p}?")
+    return Offer("main", moment, text, [_add_op(m, c)], [c.index.item_id(m)], _price(m),
+                 card=_card(m, c, "for the main course"))
+
+
 def _side(moment: str, c: Ctx) -> Optional[Offer]:
     """A burger / wings with nothing on the side → the side that goes with it."""
     shape = _roles(c)
@@ -389,7 +408,7 @@ def _side(moment: str, c: Ctx) -> Optional[Offer]:
 def _drink(moment: str, c: Ctx) -> Optional[Offer]:
     """No drink in the tray → one drink (a cold one with spicy food; one each for a group)."""
     shape = _roles(c)
-    if shape["drink"] or not (shape["real_food"] or shape["side"]):
+    if shape["drink"] or not (shape["real_food"] or shape["side"] or shape["starter"]):
         return None
     spicy = shape["spicy"]
     drink = _best("drink", c, shape["ids"], spicy=bool(spicy))

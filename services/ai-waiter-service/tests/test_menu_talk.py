@@ -223,16 +223,22 @@ def test_a_recommendation_is_at_least_three_cards_and_never_talks_about_the_scre
     assert [s["itemId"] for s in out["meta"]["suggestions"]] == ["crs"]
 
 
-def test_what_do_you_have_is_recommendation_cards_not_the_menu_page():
-    # the real turn: "হ্যালো কি আছো আপনাদের?" (আছো = misheard আছে) — was a plain hello with one dish inline
+def test_what_do_you_have_opens_the_menu_page_in_any_wording():
+    # every general "what do you have?" opens the menu itself and asks: order from it, or shall I suggest? (never a
+    # tour read out). The real turn "হ্যালো কি আছো আপনাদের?" (আছো = misheard আছে) was a plain hello with one dish.
     real = {"topic": "greeting", "replyText": "হ্যালো! আপনাকে স্বাগতম। আজকে Beef with Red Curry খুব ভালো হবে। কোনটা নিতে চান, বলুন?",
             "suggestions": [{"item": ref("brc"), "reason": "signature"}]}
-    for said in ("হ্যালো কি আছো আপনাদের?", "কি কি আছে আপনার রেস্টুরেন্টে?", "what do you have?", "আপনাদের এখানে কী পাওয়া যায়?"):
+    for said in ("হ্যালো কি আছো আপনাদের?", "কি কি আছে আপনার রেস্টুরেন্টে?", "আপনাদের এখানে কী পাওয়া যায়?",
+                 "কি আছে তোমাদের মেনুতে?", "তোমাদের কি কি আছে?", "কি কি আছে আপনাদের?", "মেনুতে কি আছে?",
+                 "ki ache tomader", "menu te ki ache", "মেনুটা দেখান"):
         out, calls = run(said, real)
-        assert not calls and out["meta"]["notes"] == "menu_overview", said  # the fixed format (see below)
         m = out["meta"]
-        assert not m["decision"].get("openMenu"), said
-        assert m["decision"]["showSuggestionsModal"] is True and len(m["suggestions"]) >= 3, said
+        assert not calls and m["decision"].get("openMenu") and "open_menu" in m["guards"], (said, out["replyText"])
+        assert out["replyText"] == "এই যে আমাদের মেনু — দেখে বলুন, কোনটা অর্ডার করতে চান? নাকি আমি কিছু সাজেস্ট করব?", (said, out["replyText"])
+        assert not m["decision"].get("showSuggestionsModal") and not m["suggestions"], said
+    for said in ("what do you have?", "what's on the menu", "what can I get?"):
+        out, calls = run(said, {**real, "language": "en"})
+        assert not calls and out["meta"]["decision"].get("openMenu"), said
 
 
 def test_any_suggested_dish_opens_the_cards_but_a_dish_asked_about_does_not():
@@ -410,51 +416,11 @@ def test_the_ai_reads_the_menu_once_and_the_waiter_uses_it():
     mp._AI.clear()
 
 
-def test_what_do_you_have_is_one_fixed_format_with_three_to_try():
-    for said in ("কি কি আছে আপনাদের?", "কি আছে আপনাদের?", "কি কি আছে আপনার রেস্টুরেন্টে?", "what do you have?"):
-        out, calls = run(said, {"replyText": "MODEL"})
-        assert not calls, (said, "a fixed answer — no model")
-        text, rows = out["replyText"], out["meta"]["suggestions"]
-        assert len(rows) == 3 and out["meta"]["decision"]["showSuggestionsModal"], said
-        if "what" in said:
-            assert text.startswith("We have") and "If you'd like something special, you could try" in text, text
-        else:
-            assert "আছে —" in text and "স্পেশাল কিছু খেতে চাইলে" in text and text.endswith("ট্রাই করতে পারেন।"), text
-            assert "স্যুপ" in text.split("।")[0], text  # the kinds of dishes come first
-            assert out["meta"]["voiceReplyText"] and "Soup" not in out["meta"]["voiceReplyText"]
-        # the three said are exactly the three cards, in order
-        names = [r["title"].split(" (")[0] for r in rows]
-        spots = [text.find(n) for n in names]
-        assert all(s >= 0 for s in spots) and spots == sorted(spots), (text, names)
-        assert out["meta"]["reco"]["last_offered"] == [r["itemId"] for r in rows]
-
-    # star-marked dishes come first, the rest keep their ranking (and the time of day)
-    import brain as b
-    starred = [dict(it, signature=True) if it["id"] in ("ccs", "crs") else dict(it, signature=False) for it in ITEMS]
-    calls2 = []
-
-    async def fake(messages):
-        calls2.append(messages)
-        return json.dumps({**TURN, "replyText": "MODEL"})
-
-    orig, b._call_openai = b._call_openai, fake
-    try:
-        out = asyncio.run(b.generate_reply("কি কি আছে আপনাদের?", menu_snapshot={"items": starred}, locale="bn",
-                                           context={"cartItems": [], "mealKinds": ["breakfast"], "kitchen": KITCHEN}))
-    finally:
-        b._call_openai = orig
-    assert {r["itemId"] for r in out["meta"]["suggestions"][:2]} == {"ccs", "crs"}, out["meta"]["suggestions"]
-
-    # anything more specific is still the model's
+def test_something_more_specific_than_what_do_you_have_is_still_the_models():
     for said in ("নতুন কি আছে আপনাদের?", "ড্রিংকসে কি কি আছে?"):  # ("ভালো কি আছে", a kind: the reco shapes)
-        _, calls = run(said, {"topic": "recommendation", "replyText": "Crispy Rice Soup ভালো। কোনটা অর্ডার করবেন?",
-                              "suggestions": [{"item": ref("crs"), "reason": "x"}]})
-        assert calls, said
-    # English, and a menu with nothing orderable right now, still read well
-    from menu_profile import overview_text
-    assert overview_text("", [], [], "bn") == "আমাদের অনেক রকম খাবার আছে। কী খেতে চান, বলুন?"
-    assert overview_text("Chinese", ["soups"], ["A", "B"], "en") == \
-        "We have all kinds of Chinese items — soups. If you'd like something special, you could try A or B."
+        out, calls = run(said, {"topic": "recommendation", "replyText": "Crispy Rice Soup ভালো। কোনটা অর্ডার করবেন?",
+                                "suggestions": [{"item": ref("crs"), "reason": "x"}]})
+        assert calls and not out["meta"]["decision"].get("openMenu"), said
 
 
 def test_recommendations_use_the_waiters_two_shapes():

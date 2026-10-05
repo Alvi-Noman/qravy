@@ -860,17 +860,24 @@ _SERVICE = re.compile(
     re.I,
 )
 # "what do you have?" — a tour of the menu, shown as cards to pick from
+# "What do you have?" in any wording — the restaurant's food in general, not a kind or a dish:
+# "কি আছে তোমাদের মেনুতে?", "তোমাদের কি কি আছে?", "মেনুতে কি আছে?", "ki ache tomader", "what can I get?"
+_WHO = r"(আপনাদের|আপনার|তোমাদের|তোমার|তোদের|তোর|আপনাগো|এখানে|আজকে|আজ|মেনুতে|মেনুর মধ্যে|মেনুর ভিতরে|রেস্টুরেন্টে)"
+_HAVE = r"(আছে|আছো|আছেন|আসে|পাওয়া যায়|পাওয়া যায়|পাওয়া|পাওয়া|পাব|পাবো|পাবো|পাই|খাওয়া যাবে|খাওয়া যায়)"
+_WHAT = r"(কি|কী)"
 _OVERVIEW = re.compile(
-    r"(কি|কী) (কি|কী) (আছে|পাওয়া|পাওয়া|খাবার|পাব|পাবো)|মেনুতে (কি|কী)|মেনু(তে)? (কি|কী) (কি|কী)|মেনুটা (কি|কী)|আপনাদের (কি|কী) আছে|"
-    r"খাবারের (তালিকা|লিস্ট|মেনু)|কী কী খাবার|কি কি খাবার|মেনুতে (আর )?(কি|কী) (আছে|পাওয়া)|"
-    # "কি আছে আপনাদের?", "কি আছো আপনাদের" (misheard), "আপনাদের এখানে কী পাওয়া যায়?"
-    r"(কি|কী) (আছে|আছো|আছেন) (আপনাদের|আপনার|এখানে|আজকে|আজ)|(আপনাদের|আপনার|এখানে)( এখানে)? (কি|কী) (কি |কী )?(আছে|আছো|পাওয়া যায়)|"
-    r"(কি|কী) (কি |কী )?পাওয়া যায়|\bwhat have you got\b|\bki ache (apnader|apnar)\b|"
-    r"\bwhat (do|have) you (have|got|serve)\b|\bwhat'?s (on )?(the|your) menu\b|\bwhat (food|dishes) (do you have|are there)\b|"
-    r"\bki ki (ache|ase|pawa|khabar)\b|\bmenu ?te ki\b",
+    rf"{_WHAT} {_WHAT} ({_HAVE}|খাবার)|{_WHAT}\s+({_WHAT}\s+)?{_HAVE}(\s+\S+)?\s+{_WHO}|"
+    rf"{_WHO}(\s+(এখানে|আজকে|আজ|মেনুতে))?\s+{_WHAT}\s+({_WHAT}\s+)?(খাবার\s+)?{_HAVE}|"
+    r"মেনুতে (আর )?(কি|কী)|মেনু(তে)? (কি|কী) (কি|কী)|মেনুটা (কি|কী)|মেনুতে কী কী|"
+    r"খাবারের (তালিকা|লিস্ট|মেনু)|কী কী খাবার|কি কি খাবার|(কি|কী) (কি |কী )?(খাবার )?পাওয়া যায়|"
+    r"\bki\s+(ki\s+)?(ache|ase|ase|pawa jay|paoa jay|pabo|khabar)\s+(apnader|apnar|tomader|tomar|tor|toder|ekhane|menu\s*te)\b|"
+    r"\b(apnader|apnar|tomader|tomar|toder|ekhane|menu\s*te|menu\s*r\s*moddhe)\s+(ki\s+)?ki\s+(ache|ase|pawa|pabo|khabar)\b|"
+    r"\bki ki (ache|ase|pawa|khabar)\b|\bmenu ?te ki\b|"
+    r"\bwhat have you got\b|\bwhat (do|have) you( guys)? (have|got|serve|offer)\b|\bwhat'?s (on )?(the|your) menu\b|"
+    r"\bwhat (food|dishes|items) (do you have|are there|have you got)\b|\bwhat can i (get|order|eat|have)\b|"
+    r"\bwhat'?s (available|good to eat|there to eat)\b|\bwhat are (your|the) (options|dishes|items)\b|\bwhat do you sell\b",
     re.I,
 )
-
 
 _MINE = re.compile(r"আমার|ট্রে|কার্ট|\b(my|tray|cart)\b", re.I)
 

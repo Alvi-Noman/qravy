@@ -42,7 +42,7 @@ export type ModalProps = {
   options?: Array<{ name: string; values: string[] }>;
   /** Add-on / choice groups ("Extras", "Choose a side") */
   modifierGroups?: ModifierGroup[];
-  /** When set, the sheet shows quantity + "Add to cart" */
+  /** When set, the sheet shows quantity + "Add to tray" */
   itemId?: string;
   size?: 'sm' | 'md' | 'lg';
   dismissible?: boolean;
@@ -503,7 +503,7 @@ export default function Modal({
                   onClick={() => setIdx(i)}
                   className={cx(
                     'h-2 rounded-full transition-all',
-                    i === idx ? 'w-4 bg-neutral-900' : 'w-2 bg-neutral-400'
+                    i === idx ? 'w-4 bg-[#FA2851]' : 'w-2 bg-neutral-300'
                   )}
                 />
               ))}
@@ -600,9 +600,9 @@ export default function Modal({
                           className={cx(
                             'min-h-[40px] rounded-full border px-4 py-2 text-[14px] font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-neutral-400',
                             checked
-                              ? 'border-neutral-900 bg-neutral-900 text-white'
+                              ? 'border-[#FA2851] bg-[#FA2851] text-white'
                               : state === 'on'
-                              ? 'border-neutral-300 bg-white text-neutral-900 hover:border-neutral-900'
+                              ? 'border-neutral-300 bg-white text-neutral-900 hover:border-[#FA2851]/50'
                               : state === 'switch'
                               ? 'border-dashed border-neutral-300 bg-white text-neutral-400 hover:border-neutral-500'
                               : 'cursor-not-allowed border-neutral-200 bg-neutral-50 text-neutral-300 line-through'
@@ -643,7 +643,7 @@ export default function Modal({
                         <input
                           type="radio"
                           name="modal-variation"
-                          className="h-[18px] w-[18px] accent-black"
+                          className="h-[18px] w-[18px] accent-[#FA2851]"
                           disabled={disabled}
                           checked={checked}
                           onChange={() => setSelectedVar(i)}
@@ -716,9 +716,9 @@ export default function Modal({
               <button
                 type="button"
                 onClick={handleAdd}
-                className="flex h-11 flex-1 items-center justify-between rounded-full bg-neutral-900 px-5 text-[15px] font-semibold text-white hover:bg-neutral-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-neutral-400"
+                className="flex h-11 flex-1 items-center justify-between rounded-full bg-[#FA2851] px-5 text-[15px] font-semibold text-white shadow-md shadow-rose-200 hover:bg-[#E91F47] active:scale-[0.99] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#FA2851]/40"
               >
-                <span>Add to cart</span>
+                <span>Add to tray</span>
                 <span className="tabular-nums">{formatBDT(unitPrice * qty)}</span>
               </button>
             </div>
