@@ -35,6 +35,8 @@ const SelectLocation = lazy(() => import('./pages/SelectLocation')); // ADD
 const QrCodesPage = lazy(() => import('./pages/QrCodes'));
 const QuickDemoPage = lazy(() => import('./pages/QuickDemo'));
 const ConversationsPage = lazy(() => import('./pages/Conversations'));
+const SalesReportPage = lazy(() => import('./pages/reports/SalesReport'));
+const MenuPerformancePage = lazy(() => import('./pages/reports/MenuPerformance'));
 
 // Settings pages
 const SettingsOverview = lazy(() => import('./pages/settings/index'));
@@ -273,6 +275,24 @@ function App() {
                   element={
                     <Suspense fallback={null}>
                       <ConversationsPage />
+                    </Suspense>
+                  }
+                />
+
+                {/* Insights: this restaurant's performance (a branch login sees its own branch; the server enforces it) */}
+                <Route
+                  path="/reports/sales"
+                  element={
+                    <Suspense fallback={null}>
+                      <SalesReportPage />
+                    </Suspense>
+                  }
+                />
+                <Route
+                  path="/reports/menu-performance"
+                  element={
+                    <Suspense fallback={null}>
+                      <MenuPerformancePage />
                     </Suspense>
                   }
                 />

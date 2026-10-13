@@ -63,7 +63,7 @@ export default function Sidebar(): JSX.Element {
 
     // Insights
     'Sales Reports': 'reports:view',
-    'Menu Performance': 'reports:menuPerformance',
+    'Menu Performance': 'reports:view',
     'AI Conversations': 'conversations:read', // owners/admins only
   };
 

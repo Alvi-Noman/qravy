@@ -20,6 +20,7 @@ import authRoutes from './routes/authRoutes.js';
 import menuRoutes from './routes/menuItemsRoutes.js';
 import eventsRoutes from './routes/eventsRoutes.js';
 import cortexRoutes from './routes/cortexRoutes.js';
+import insightsRoutes from './routes/insightsRoutes.js';
 import tenantRoutes from './routes/tenantRoutes.js';
 import userRoutes from './routes/userRoutes.js';
 import locationRoutes from './routes/locationRoutes.js';
@@ -171,6 +172,7 @@ app.use('/api/v1', (req, res, next) => (req.path === '/public/events' ? next() :
 app.use('/api/v1', publicRoutes);          // ✅ fixed mount
 app.use('/api/v1', eventsRoutes); // POST /public/events — what guests do in the storefront (for Cortex)
 app.use('/api/v1', cortexRoutes); // /cortex/* — the company admin panel (apps/cortex)
+app.use('/api/v1', insightsRoutes); // /insights/* — a restaurant's own performance (dashboard → Insights)
 app.use('/api/v1/auth', authRoutes);
 app.use('/api/v1/menu', menuRoutes);
 app.use('/api/v1/tenant', tenantRoutes);
