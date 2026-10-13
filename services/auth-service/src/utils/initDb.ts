@@ -535,6 +535,15 @@ export async function ensureUserIndexes(client: MongoClient): Promise<void> {
   );
   logger.info('Ensured order idempotency + public token indexes');
 
+  // Guests calling for staff from their table ("Call waiter", the bill …) — the live board, the guest's own
+  // request, the "already called" check; kept 30 days
+  const serviceRequests = db.collection('serviceRequests');
+  await serviceRequests.createIndex({ tenantId: 1, status: 1, createdAt: -1 }, { name: 'ix_serviceRequests_tenant_status_created' });
+  await serviceRequests.createIndex({ tenantId: 1, table: 1, kind: 1, status: 1 }, { name: 'ix_serviceRequests_tenant_table_kind' });
+  await serviceRequests.createIndex({ publicToken: 1 }, { name: 'ux_serviceRequests_public_token', unique: true });
+  await serviceRequests.createIndex({ createdAt: 1 }, { name: 'ttl_serviceRequests_created', expireAfterSeconds: 60 * 60 * 24 * 30 });
+  logger.info('Ensured serviceRequests indexes');
+
   // Display order (drag & drop / PDF import)
   await categories.createIndex({ tenantId: 1, sortOrder: 1 }, { name: 'ix_categories_tenant_sort' });
   await menuItems.createIndex({ tenantId: 1, categoryId: 1, sortOrder: 1 }, { name: 'ix_menuItems_tenant_cat_sort' });

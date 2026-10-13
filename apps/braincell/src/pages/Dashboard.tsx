@@ -13,6 +13,7 @@ import {
   PhotoIcon,
 } from '@heroicons/react/24/outline';
 import { useAuthContext } from '../context/AuthContext';
+import { useOrdersLiveOptional } from '../context/OrdersLiveContext';
 import { getMenuItems } from '../api/menuItems';
 import { getCategories } from '../api/categories';
 import { getTenant } from '../api/tenant';
@@ -200,6 +201,7 @@ export default function Dashboard(): JSX.Element {
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [showOrdersDialog, setShowOrdersDialog] = useState(false);
   const [showCallsDialog, setShowCallsDialog] = useState(false);
+  const openCalls = useOrdersLiveOptional()?.openCallCount ?? 0;
 
 
   // Tenant info query
@@ -324,8 +326,8 @@ export default function Dashboard(): JSX.Element {
           />
           <KpiCard
             title="Waiter Calls"
-            subtitle="Active requests"
-            value="3"
+            subtitle="Tables waiting"
+            value={openCalls}
             icon={<BellAlertIcon className="h-6 w-6 text-pink-500" />}
             onClick={() => setShowCallsDialog(true)}
           />

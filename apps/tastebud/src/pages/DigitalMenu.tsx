@@ -19,6 +19,7 @@ import { FulfillmentToggle } from '../components/OnlineOrderDetails';
 import { useFulfillment, useOrderChannel } from '../utils/order-mode';
 import LangSwitch from '../components/LangSwitch';
 import CartFab from '../components/ai-waiter/CartFab';
+import CallWaiterButton from '../components/CallWaiterButton';
 import { withTable } from '../utils/table';
 import { storeBasePath } from '../utils/checkout-flow';
 // THE WAITER — the same one as on the home screen (src/waiter): its voice session, how its replies are handled,
@@ -471,6 +472,8 @@ export default function DigitalMenu() {
       <div className="sticky top-0 z-30 bg-[#F6F5F8]">
         <div className="mx-auto max-w-6xl px-4 pt-4">
           <div className="relative flex items-center justify-between">
+            {/* Back · "Call waiter" (dine-in only: just the bell — the title sits in the middle) */}
+            <div className="flex items-center gap-2">
             <Link
               to={backHref}
               aria-label="Back"
@@ -492,6 +495,13 @@ export default function DigitalMenu() {
                 />
               </svg>
             </Link>
+            <CallWaiterButton
+              sub={subdomain}
+              branch={normalizedBranch ?? null}
+              variant="icon"
+              lang={w.selectedLang === 'en' ? 'en' : 'bn'}
+            />
+            </div>
             <h1 className="pointer-events-none absolute left-1/2 -translate-x-1/2 text-[22px] sm:text-[24px] font-semibold text-gray-900">
               Menu
             </h1>

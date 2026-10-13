@@ -1061,6 +1061,10 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
 
             console.log('[AI PAGE][AIWaiterHome]', { replyText, voiceText, meta });
 
+            // "bill please" / "call a waiter" said to the waiter → it called the staff; the bell button follows it
+            const serviceCall = (meta as any)?.serviceCall;
+            if (serviceCall?.token) window.dispatchEvent(new CustomEvent('qravy:service-call', { detail: serviceCall }));
+
             // order placed → clear the tray and open the live order page
             if (meta?.decision?.orderPlaced && handleCheckout(meta)) {
               return;

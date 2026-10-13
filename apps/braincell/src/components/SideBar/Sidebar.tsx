@@ -35,7 +35,9 @@ export default function Sidebar(): JSX.Element {
   const { activeLocationId, setActiveLocationId } = useScope();
   const { locations, locationsQuery } = useLocations();
   const { has } = usePermissions();
-  const newOrders = useOrdersLiveOptional()?.newCount ?? 0;
+  const live = useOrdersLiveOptional();
+  const newOrders = live?.newCount ?? 0;
+  const openCalls = live?.openCallCount ?? 0;
   const { data: tenant } = useTenant();
 
   const isMultipleLocations = tenant?.restaurantInfo?.locationMode === 'multiple';
@@ -208,8 +210,15 @@ export default function Sidebar(): JSX.Element {
                     <NavLink to={item.to} end={item.end} className={({ isActive }) => linkClass(isActive)}>
                       <Icon className="h-5 w-5 text-slate-600 group-[aria-current=page]:text-slate-700" aria-hidden="true" />
                       <span className="font-medium">{item.name}</span>
+                      {/* tables calling for staff — answered on the Orders page */}
+                      {item.name === 'Orders' && openCalls > 0 && (
+                        <span className="ml-auto inline-flex items-center gap-0.5 rounded-full bg-pink-500 px-1.5 py-0.5 text-[11px] font-semibold leading-none text-white" aria-label={`${openCalls} tables calling`} title="Tables calling for staff">
+                          <BellAlertIcon className="h-3 w-3" aria-hidden="true" />
+                          {openCalls > 99 ? '99+' : openCalls}
+                        </span>
+                      )}
                       {item.name === 'Orders' && newOrders > 0 && (
-                        <span className="ml-auto min-w-[20px] rounded-full bg-red-500 px-1.5 py-0.5 text-center text-[11px] font-semibold leading-none text-white" aria-label={`${newOrders} new orders`}>
+                        <span className={`${openCalls > 0 ? 'ml-1' : 'ml-auto'} min-w-[20px] rounded-full bg-red-500 px-1.5 py-0.5 text-center text-[11px] font-semibold leading-none text-white`} aria-label={`${newOrders} new orders`}>
                           {newOrders > 99 ? '99+' : newOrders}
                         </span>
                       )}
