@@ -149,7 +149,8 @@ router.get('/me', authenticateJWT, applyScope, async (req: Request, res: Respons
     if (tenant?.onboardingCompleted) isOnboarded = true;
   }
 
-  const isCentral = !req.user?.role;
+  // a session locked to one branch (branch device / branch staff), or a device login without a role
+  const isCentral = (req.user as any)?.sessionType === 'branch' || !req.user?.role;
   const locationId = req.user?.locationId ?? null;
 
   // NEW: expose RBAC info produced by applyScope/auth

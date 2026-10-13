@@ -29,8 +29,9 @@ function categoryVisibilityCol() {
 function canWrite(role?: string): boolean {
   return role === 'owner' || role === 'admin' || role === 'editor';
 }
+/** A session locked to one branch (a branch device, branch staff) — or a device login without a role. */
 function isBranch(req: Request): boolean {
-  return !req.user?.role; // central device/branch session has no membership role
+  return req.user?.sessionType === 'branch' || !req.user?.role;
 }
 
 function parseChannel(v: unknown): 'dine-in' | 'online' | undefined {

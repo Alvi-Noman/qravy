@@ -93,8 +93,9 @@ function canManageBranches(req: Request): boolean {
   return role === 'owner' || role === 'admin';
 }
 
+/** A session locked to one branch (a branch device, branch staff) — or a device login without a role. */
 function isCentral(req: Request): boolean {
-  return !Boolean((req as any).user?.role);
+  return (req as any).user?.sessionType === 'branch' || !Boolean((req as any).user?.role);
 }
 
 export async function listLocations(req: Request, res: Response) {

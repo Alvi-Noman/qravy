@@ -67,14 +67,21 @@ function cleanupTokens(tokens: any[] | undefined): any[] {
 // ———————————————————————————————————————————————————————————————
 
 /** Invite an Admin user (Owner only) */
+/** Inviting, re-inviting and removing team members: owners and admins only. */
+function managesTeam(req: Request): boolean {
+  const role = req.user?.role;
+  return role === 'owner' || role === 'admin';
+}
+
 export const inviteAdmin = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
     const tenantId = req.user?.tenantId;
     const inviterEmail = req.user?.email;
     if (!tenantId) return void res.fail(409, 'Tenant not set');
     if (!inviterEmail) return void res.fail(401, 'Unauthorized');
+    if (!managesTeam(req)) return void res.fail(403, 'Only owners and admins can invite people.');
 
-    const { email } = req.body || {};
+    const { email, locationId } = req.body || {};
     if (!email || typeof email !== 'string') return void res.fail(400, 'Email is required');
 
     const normalizedEmail = email.trim().toLowerCase();
@@ -82,6 +89,17 @@ export const inviteAdmin = async (req: Request, res: Response, next: NextFunctio
 
     const tenant = await tenants().findOne({ _id: tenantObjectId });
     if (!tenant) return void res.fail(404, 'Tenant not found');
+
+    // "<branch> only": one of this restaurant's open branches; none → every branch
+    let branchOid: ObjectId | null = null;
+    if (locationId) {
+      if (typeof locationId !== 'string' || !ObjectId.isValid(locationId)) return void res.fail(400, 'Invalid branch');
+      const loc = await getDb()
+        .collection('locations')
+        .findOne({ _id: new ObjectId(locationId), tenantId: tenantObjectId, disabled: { $ne: true } }, { projection: { _id: 1 } });
+      if (!loc) return void res.fail(404, 'Branch not found');
+      branchOid = loc._id as ObjectId;
+    }
 
     const tenantName = (tenant as any).name || 'Your Restaurant';
 
@@ -101,6 +119,7 @@ export const inviteAdmin = async (req: Request, res: Response, next: NextFunctio
           status: 'invited',
           inviteTokenHash,
           inviteExpiresAt,
+          locationId: branchOid, // null → every branch
           updatedAt: now,
         },
         $setOnInsert: { createdAt: now },
@@ -122,6 +141,7 @@ export const inviteAdmin = async (req: Request, res: Response, next: NextFunctio
 /** Resend Admin invite (Owner only) */
 export const resendInvite = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
+    if (!managesTeam(req)) return void res.fail(403, 'Only owners and admins can invite people.');
     const tenantId = req.user?.tenantId;
     const { email } = req.body || {};
     if (!tenantId || !email) return void res.fail(400, 'Missing required fields');
@@ -158,6 +178,7 @@ export const resendInvite = async (req: Request, res: Response, next: NextFuncti
 /** Revoke Admin invite (or remove pending admin) */
 export const revokeAdmin = async (req: Request, res: Response): Promise<void> => {
   try {
+    if (!managesTeam(req)) return void res.fail(403, 'Only owners and admins can remove people.');
     const tenantId = req.user?.tenantId;
     const { email } = req.body || {};
     if (!tenantId || !email) return void res.fail(400, 'Missing required fields');
@@ -260,6 +281,8 @@ export const confirmInvite = async (req: Request, res: Response, next: NextFunct
         $set: {
           role: 'admin',
           status: 'active',
+          // "<branch> only" → a branch login (that branch's orders, calls and menu switches); none → every branch
+          locationId: invite.locationId ?? null,
           updatedAt: new Date(),
         },
         $setOnInsert: {
@@ -412,6 +435,11 @@ export const registerOrAssignDevice = async (req: Request, res: Response, next: 
     };
 
     if (!locationId || typeof locationId !== 'string') return void res.fail(400, 'locationId is required');
+    // a device already locked to a branch stays there (re-confirming it is fine): moving it is done from the
+    // owner's or an admin's own device, in Settings → Restaurant Access
+    if (req.user?.sessionType === 'branch' && req.user?.locationId !== locationId) {
+      return void res.fail(403, 'This device belongs to another branch.');
+    }
 
     const cookies = (req as any).cookies as Record<string, string> | undefined;
     const cookieDeviceKey = (cookies?.deviceKey || '').trim();
@@ -601,7 +629,22 @@ export const listAdmins = async (req: Request, res: Response, next: NextFunction
     const tenantDoc = await tenants().findOne({ _id: tenantObjectId });
     const ownerEmail = String((tenantDoc as any)?.accessSettings?.centralEmail || '').toLowerCase();
 
-    const items: Array<{ id: string; email: string; role: 'owner' | 'admin'; status: 'active' | 'invited' }> = [];
+    const items: Array<{
+      id: string;
+      email: string;
+      role: 'owner' | 'admin';
+      status: 'active' | 'invited';
+      /** "<branch> only" (null → every branch) */
+      branchId?: string | null;
+      branchName?: string | null;
+    }> = [];
+    const branchNames = new Map(
+      (await getDb().collection('locations').find({ tenantId: tenantObjectId }, { projection: { name: 1 } }).toArray()).map(
+        (l) => [String(l._id), String(l.name || '')]
+      )
+    );
+    const branchOf = (id: unknown) =>
+      id ? { branchId: String(id), branchName: branchNames.get(String(id)) ?? null } : { branchId: null, branchName: null };
 
     if (ownerEmail) {
       const ownerUser = await users.findOne({ email: ownerEmail });
@@ -615,8 +658,9 @@ export const listAdmins = async (req: Request, res: Response, next: NextFunction
 
     const activeAdmins = await memberships()
       .find({ tenantId: tenantObjectId, role: 'admin', status: 'active' })
-      .project({ userId: 1 })
+      .project({ userId: 1, locationId: 1 })
       .toArray();
+    const branchByUser = new Map(activeAdmins.map((m) => [String(m.userId), m.locationId]));
 
     const adminUserIds = activeAdmins.map((m) => m.userId).filter(Boolean);
     if (adminUserIds.length) {
@@ -628,13 +672,14 @@ export const listAdmins = async (req: Request, res: Response, next: NextFunction
           email: String(u.email).toLowerCase(),
           role: 'admin',
           status: 'active',
+          ...branchOf(branchByUser.get(String(u._id))),
         });
       }
     }
 
     const invited = await adminInvites()
       .find({ tenantId: tenantObjectId, status: 'invited' })
-      .project({ email: 1, _id: 1 })
+      .project({ email: 1, _id: 1, locationId: 1 })
       .toArray();
 
     for (const inv of invited) {
@@ -643,6 +688,7 @@ export const listAdmins = async (req: Request, res: Response, next: NextFunction
         email: String(inv.email).toLowerCase(),
         role: 'admin',
         status: 'invited',
+        ...branchOf(inv.locationId),
       });
     }
 

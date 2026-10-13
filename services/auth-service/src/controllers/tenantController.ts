@@ -274,7 +274,13 @@ export async function getMyTenant(req: Request, res: Response, next: NextFunctio
     // Do NOT compute onboarding flags here; rely on stored values only
     const dto = toTenantDTO(tenant);
     // the caller's role here (none for a branch device): the AI waiter service gates owner/admin-only views on it
-    return res.ok({ item: dto, role: req.user?.role ?? null });
+    const branchSession = req.user?.sessionType === 'branch';
+    return res.ok({
+      item: dto,
+      role: branchSession ? null : req.user?.role ?? null,
+      // a session locked to one branch (branch staff / a branch device): which one
+      branch: branchSession ? req.user?.locationId ?? null : null,
+    });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     logger.error(`getMyTenant error: ${msg}`);

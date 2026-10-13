@@ -345,6 +345,9 @@ async def staff_subdomain(request: web.Request) -> Optional[str]:
     return (await staff_identity(request))[0]
 
 
+_STAFF_BRANCH: Dict[str, Optional[str]] = {}
+
+
 async def staff_identity(request: web.Request) -> Tuple[Optional[str], Optional[str]]:
     """(restaurant subdomain, role: owner | admin | editor | viewer, None for a branch device) of the staff member
     calling; (None, None) for no / bad / expired token. Raises AuthUnavailable when auth-service can't be asked."""
@@ -369,17 +372,28 @@ async def staff_identity(request: web.Request) -> Tuple[Optional[str], Optional[
         raise AuthUnavailable()
     sub: Optional[str] = None
     role: Optional[str] = None
+    branch: Optional[str] = None
     if r.status_code == 200:
         try:
             body = r.json() or {}
             sub = str((body.get("item") or {}).get("subdomain") or "") or None
             role = str(body.get("role") or "") or None
+            branch = str(body.get("branch") or "") or None  # a session locked to one branch: its location id
         except Exception:
-            sub = role = None
+            sub = role = branch = None
     if len(_STAFF_CACHE) > 2000:
         _STAFF_CACHE.clear()
+        _STAFF_BRANCH.clear()
     _STAFF_CACHE[key] = (now + (60 if sub else 10), sub, role)
+    _STAFF_BRANCH[key] = branch
     return sub, role
+
+
+async def staff_branch(request: web.Request) -> Optional[str]:
+    """The branch (location id) the calling staff session is locked to — a branch device or branch staff; None for
+    the owner / an admin (every branch)."""
+    await staff_identity(request)
+    return _STAFF_BRANCH.get(hashlib.sha256(request.headers.get("Authorization", "").encode()).hexdigest())
 
 
 async def require_staff_of(request: web.Request, tenant: str, roles: Optional[Tuple[str, ...]] = None
@@ -425,6 +439,10 @@ async def handle_alert_dismiss(request: web.Request) -> web.Response:
         return denied
     branch = request.rel_url.query.get("branch", "")
     location = await asyncio.to_thread(_alert_location, tenant, branch) if branch else None
+    # a branch device / branch staff silences its own branch's buzzer only, whatever it asks for
+    own = await staff_branch(request)
+    if own:
+        location = own.lower()
     _set_alert(tenant, False, location)
     print(f"[alert] ✅ buzzer dismissed for {tenant}{' / ' + branch if branch else ''}")
     return web.Response(
@@ -453,8 +471,8 @@ async def handle_alert_trigger(request: web.Request) -> web.Response:
     return web.json_response({"ok": True})
 
 async def handle_upsell_stats(request: web.Request) -> web.Response:
-    """GET /upsell/stats?tenant=<subdomain>&days=7 — the admin's "Upsell this week" card (upsell_stats.stats).
-    Staff of that restaurant only (its revenue)."""
+    """GET /upsell/stats?tenant=<subdomain>&days=7[&branch=<slug or id>] — the admin's "Upsell this week" card
+    (upsell_stats.stats). Staff of that restaurant only (its revenue); a branch login sees its own branch only."""
     tenant = request.rel_url.query.get("tenant", "").strip()
     cors = _CORS
     if not tenant:
@@ -466,8 +484,11 @@ async def handle_upsell_stats(request: web.Request) -> web.Response:
         days = max(1, min(90, int(request.rel_url.query.get("days", "7"))))
     except ValueError:
         days = 7
+    own = await staff_branch(request)  # a branch login: its branch, whatever it asks for
+    asked = request.rel_url.query.get("branch", "")
+    location = own.lower() if own else (await asyncio.to_thread(_alert_location, tenant, asked) if asked else None)
     try:
-        data = await asyncio.to_thread(upsell_stats.stats, DB, tenant, days)
+        data = await asyncio.to_thread(upsell_stats.stats, DB, tenant, days, None, location)
     except Exception as e:
         print("[upsell-stats] stats failed:", repr(e))
         return web.json_response({"ok": False, "error": "stats unavailable"}, status=500, headers=cors)
@@ -1844,7 +1865,9 @@ async def run_text_turn(
         reply_text = to_bangla_script(reply_text, drop_code_letter=drop)
         meta["voiceReplyText"] = to_bangla_script(voice_src, spoken=True, drop_code_letter=drop)
     # H: the waiter's offers and what became of them, for the restaurant's upsell stats (never breaks a reply)
-    upsell_stats.record(DB, tenant=tenant, branch=branch, session=session_id, meta=meta)
+    stats_loc = resolve_location_id(_CLIENT[MENU_DB_NAME], resolve_tenant_id(tenant), branch) if tenant else None
+    upsell_stats.record(DB, tenant=tenant, branch=branch, session=session_id, meta=meta,
+                        location=str(stats_loc) if stats_loc is not None else None)
     # the guest profile (allergies, diet…) stays in server memory — not sent to the browser or logged
     meta.pop("reco", None)
     meta.pop("guestProfile", None)

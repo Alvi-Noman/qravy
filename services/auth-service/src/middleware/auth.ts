@@ -62,6 +62,41 @@ async function resolveTenantAndRole(userId: string, hintTenantId?: string) {
   return { tenantId: activeTenantId?.toHexString(), role };
 }
 
+/**
+ * The branch this session is locked to, if any — then it sees and runs that branch only (orders, table calls, the
+ * buzzer, its menu's on/off switches), never the restaurant's setup:
+ *  - a staff member limited to one branch (Settings → Team: "<branch> only"), or
+ *  - a device assigned to a branch (sign-in → "Which location are you signing from?", Settings → Restaurant Access).
+ * The owner's and admins' own devices aren't assigned, so they keep every branch.
+ */
+export async function lockedBranch(req: Request, tenantId?: string, userId?: string): Promise<string | null> {
+  if (!tenantId || !ObjectId.isValid(tenantId)) return null;
+  const tenantOid = new ObjectId(tenantId);
+  const db = client.db('authDB');
+  try {
+    if (userId && ObjectId.isValid(userId)) {
+      const m = await db
+        .collection<MembershipDoc>('memberships')
+        .findOne(
+          { tenantId: tenantOid, userId: new ObjectId(userId), status: 'active', locationId: { $type: 'objectId' } },
+          { projection: { locationId: 1 } }
+        );
+      if (m?.locationId) return (m.locationId as ObjectId).toHexString();
+    }
+    const cookies = (req as unknown as { cookies?: Record<string, string> }).cookies;
+    const deviceKey = (cookies?.deviceKey || '').trim();
+    if (deviceKey) {
+      const dev = await db
+        .collection<DeviceDoc>('devices')
+        .findOne({ tenantId: tenantOid, deviceKey, status: 'active' }, { projection: { locationId: 1 } });
+      if (dev?.locationId) return (dev.locationId as ObjectId).toHexString();
+    }
+  } catch {
+    // a lookup failure must not lock anyone out — the token's own scope still applies
+  }
+  return null;
+}
+
 export async function authenticateJWT(req: Request, res: Response, next: NextFunction): Promise<void> {
   const authHeader = req.headers.authorization;
 
@@ -106,27 +141,11 @@ export async function authenticateJWT(req: Request, res: Response, next: NextFun
     const roleFromToken = payload.role;
     const sessionTypeFromToken = payload.sessionType;
 
-    // If this is a central session (no role) and we have a tenant, try to bind device -> location via cookie
-    let locationIdFromDevice: string | undefined;
-    try {
-      const cookies = (req as any).cookies as Record<string, string> | undefined;
-      const cookieDeviceKey = (cookies?.deviceKey || '').trim();
-      if (!roleFromToken && !resolvedRole && finalTenantId && cookieDeviceKey) {
-        const db = client.db('authDB');
-        const dev = await db
-          .collection<DeviceDoc>('devices')
-          .findOne({
-            tenantId: new ObjectId(finalTenantId),
-            deviceKey: cookieDeviceKey,
-            status: 'active',
-          });
-        if (dev?.locationId) {
-          locationIdFromDevice = (dev.locationId as ObjectId).toHexString();
-        }
-      }
-    } catch {
-      // ignore device lookup errors
-    }
+    // a branch staff member, or a device assigned to a branch → this session is that branch's (whatever the role);
+    // a token issued on such a device carries the lock too (the AI waiter checks staff with the token alone)
+    const lock =
+      (await lockedBranch(req, finalTenantId, id)) ??
+      (payload.sessionType === 'branch' && typeof payload.locationId === 'string' ? payload.locationId : null);
 
     req.user = {
       ...(payload as any),
@@ -134,8 +153,8 @@ export async function authenticateJWT(req: Request, res: Response, next: NextFun
       email,
       tenantId: finalTenantId,
       role: roleFromToken ?? resolvedRole,     // 👈 prefer token role
-      sessionType: sessionTypeFromToken,       // 👈 pass through
-      locationId: locationIdFromDevice ?? payload.locationId,
+      sessionType: lock ? 'branch' : sessionTypeFromToken,
+      locationId: lock ?? payload.locationId,
     };
     next();
   } catch {
