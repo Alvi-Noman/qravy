@@ -73,7 +73,7 @@ jobs:
               APP=braincell
               VITE_API_URL=https://${{ vars.ADMIN_DOMAIN }}
               VITE_AI_WAITER_API=/waiter
-              VITE_STOREFRONT_URL=https://${{ vars.STOREFRONT_DOMAIN }}/t/{subdomain}
+              VITE_STOREFRONT_URL=https://{subdomain}.qravy.com
           - name: tastebud
             file: apps/Dockerfile.prod
             context: .

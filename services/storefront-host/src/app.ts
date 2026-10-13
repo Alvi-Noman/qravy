@@ -85,6 +85,26 @@ export function createApp(): Application {
   // Health
   app.get('/health', (_req, res) => res.status(200).json({ status: 'ok' }));
 
+  /* ========================= On-demand TLS check (Caddy "ask") =========================
+   * Caddy calls GET /internal/tls-ask?domain=<host> before issuing a certificate for
+   * <restaurant>.qravy.com. 200 = a real restaurant, anything else = refuse.
+   * Caddy blocks /internal/* from the internet; it calls this container directly.
+   */
+  app.get('/internal/tls-ask', async (req, res) => {
+    const domain = String(req.query.domain || '').toLowerCase();
+    const m = domain.match(/^([a-z0-9-]{1,63})\.qravy\.com$/);
+    const sub = m?.[1];
+    if (!sub) return res.status(404).end();
+    try {
+      const r = await fetch(`${GATEWAY_URL}/api/v1/public/tenant?subdomain=${encodeURIComponent(sub)}`, {
+        signal: AbortSignal.timeout(5000),
+      });
+      return res.status(r.ok ? 200 : 404).end();
+    } catch {
+      return res.status(503).end();
+    }
+  });
+
   /* ========================= API proxy -> Gateway =========================
    * Mount at /api. Express sets baseUrl="/api" and url="/v1/...".
    * We must forward baseUrl + url so the gateway receives "/api/v1/...".
