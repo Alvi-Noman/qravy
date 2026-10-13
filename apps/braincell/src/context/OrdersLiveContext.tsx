@@ -1,6 +1,7 @@
 /**
  * Live orders for the whole admin app: one stream connection, the active orders, a "new orders" count
- * for the sidebar badge, and an optional chime when an order comes in.
+ * for the sidebar badge, and an optional chime when an order comes in. The same stream brings the guests'
+ * "Call waiter" requests from their tables (calls), with a toast + chime when one comes in.
  */
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { useAuthContext } from './AuthContext';
@@ -8,6 +9,13 @@ import { usePermissions } from './PermissionsContext';
 import { useScope } from './ScopeContext';
 import { useTenant } from '../hooks/useTenant';
 import { loadPrintSettings, printOrder } from '../utils/thermalPrint';
+import { toast } from '../components/Toaster';
+import {
+  listServiceRequests,
+  updateServiceRequestStatus,
+  SERVICE_KIND_LABEL,
+  type ServiceRequest,
+} from '../api/serviceRequests';
 import {
   listOrders,
   streamOrders,
@@ -31,6 +39,11 @@ type OrdersLive = {
   setStatus: (id: string, status: OrderStatus) => Promise<AdminOrder>;
   /** +5 / −5 minutes on the ready time */
   adjustEta: (id: string, addMinutes: number) => Promise<AdminOrder>;
+  /** Table calls in the selected branch: waiting first, then on the way, then done (last hour) */
+  calls: ServiceRequest[];
+  /** Calls nobody has answered yet */
+  openCallCount: number;
+  setCallStatus: (id: string, status: 'acknowledged' | 'resolved') => Promise<ServiceRequest>;
 };
 
 const Ctx = createContext<OrdersLive | undefined>(undefined);
@@ -68,6 +81,7 @@ export function OrdersLiveProvider({ children }: { children: React.ReactNode }) 
   const canRead = has('orders:read');
 
   const [all, setAll] = useState<AdminOrder[]>([]);
+  const [allCalls, setAllCalls] = useState<ServiceRequest[]>([]);
   const [loading, setLoading] = useState(false);
   const [connected, setConnected] = useState(false);
   const [soundOn, setSoundState] = useState<boolean>(() => {
@@ -105,13 +119,17 @@ export function OrdersLiveProvider({ children }: { children: React.ReactNode }) 
     });
   }, []);
 
+  const upsertCall = useCallback((r: ServiceRequest) => {
+    setAllCalls((prev) => [r, ...prev.filter((x) => x.id !== r.id)]);
+  }, []);
+
   const refresh = useCallback(async () => {
     if (!token || !canRead) return;
     setLoading(true);
     try {
-      setAll(await listOrders(token, 'active'));
-    } catch {
-      /* keep what we have */
+      const [orders, calls] = await Promise.allSettled([listOrders(token, 'active'), listServiceRequests(token)]);
+      if (orders.status === 'fulfilled') setAll(orders.value);
+      if (calls.status === 'fulfilled') setAllCalls(calls.value);
     } finally {
       setLoading(false);
     }
@@ -120,6 +138,7 @@ export function OrdersLiveProvider({ children }: { children: React.ReactNode }) 
   useEffect(() => {
     if (!token || !canRead) {
       setAll([]);
+      setAllCalls([]);
       return;
     }
     const stop = streamOrders(token, {
@@ -128,6 +147,19 @@ export function OrdersLiveProvider({ children }: { children: React.ReactNode }) 
         void refresh(); // re-sync anything missed while disconnected
       },
       onDown: () => setConnected(false),
+      onService: (ev) => {
+        const r = ev.request;
+        upsertCall(r);
+        // a new call, or the guest pressed again while it was still waiting (lastCalledAt moves only then)
+        const called = ev.type === 'service.created' || (r.status === 'open' && r.lastCalledAt === r.updatedAt);
+        const pc = printCtx.current;
+        const mine = !pc.locationId || !r.locationId || r.locationId === pc.locationId;
+        if (!called || !mine) return;
+        if (soundRef.current) chime();
+        const what = r.kind === 'other' && r.note ? r.note : SERVICE_KIND_LABEL[r.kind];
+        toast(`Table ${r.table}: ${what}${r.calls > 1 ? ` (called ${r.calls}×)` : ''}`, { type: 'info', duration: 8000 });
+        if (document.visibilityState !== 'visible') document.title = `(Table call) ${document.title.replace(/^\((New order|Table call)\) /, '')}`;
+      },
       onEvent: (ev) => {
         upsert(ev.order);
         if (ev.type === 'order.created') {
@@ -142,7 +174,7 @@ export function OrdersLiveProvider({ children }: { children: React.ReactNode }) 
             if (ps.autoPrintReceipt) void printOrder(ev.order, 'receipt', opts);
           }
           // title nudge for a background tab
-          if (document.visibilityState !== 'visible') document.title = `(New order) ${document.title.replace(/^\(New order\) /, '')}`;
+          if (document.visibilityState !== 'visible') document.title = `(New order) ${document.title.replace(/^\((New order|Table call)\) /, '')}`;
         }
       },
     });
@@ -150,11 +182,11 @@ export function OrdersLiveProvider({ children }: { children: React.ReactNode }) 
       stop();
       setConnected(false);
     };
-  }, [token, canRead, refresh, upsert]);
+  }, [token, canRead, refresh, upsert, upsertCall]);
 
   useEffect(() => {
     const onVis = () => {
-      if (document.visibilityState === 'visible') document.title = document.title.replace(/^\(New order\) /, '');
+      if (document.visibilityState === 'visible') document.title = document.title.replace(/^\((New order|Table call)\) /, '');
     };
     document.addEventListener('visibilitychange', onVis);
     return () => document.removeEventListener('visibilitychange', onVis);
@@ -189,9 +221,29 @@ export function OrdersLiveProvider({ children }: { children: React.ReactNode }) 
   );
   const newCount = orders.filter((o) => o.status === 'placed').length;
 
+  const setCallStatus = useCallback(
+    async (id: string, status: 'acknowledged' | 'resolved') => {
+      if (!token) throw new Error('Not signed in');
+      const r = await updateServiceRequestStatus(token, id, status);
+      upsertCall(r);
+      return r;
+    },
+    [token, upsertCall],
+  );
+
+  const calls = useMemo(() => {
+    const rank = { open: 0, acknowledged: 1, resolved: 2 } as const;
+    return allCalls
+      .filter((r) => !activeLocationId || !r.locationId || r.locationId === activeLocationId)
+      .sort((a, b) => rank[a.status] - rank[b.status] || b.lastCalledAt.localeCompare(a.lastCalledAt));
+  }, [allCalls, activeLocationId]);
+  const openCallCount = calls.filter((r) => r.status === 'open').length;
+
   const value = useMemo<OrdersLive>(
-    () => ({ orders, newCount, loading, connected, soundOn, setSoundOn, refresh, setStatus, adjustEta }),
-    [orders, newCount, loading, connected, soundOn, setSoundOn, refresh, setStatus, adjustEta],
+    () => ({
+      orders, newCount, loading, connected, soundOn, setSoundOn, refresh, setStatus, adjustEta, calls, openCallCount, setCallStatus,
+    }),
+    [orders, newCount, loading, connected, soundOn, setSoundOn, refresh, setStatus, adjustEta, calls, openCallCount, setCallStatus],
   );
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

@@ -16,7 +16,7 @@ import {
   toPublicOrder,
   updateStatusCore,
 } from '../services/orders/core.js';
-import { openStream } from '../services/orders/events.js';
+import { eventPayload, openStream } from '../services/orders/events.js';
 import type { OrderDoc, OrderStatus } from '../models/Order.js';
 
 const ordersCol = () => client.db('authDB').collection<OrderDoc>('orders');
@@ -218,7 +218,8 @@ export async function adjustOrderEta(req: Request, res: Response, next: NextFunc
   }
 }
 
-/** GET /api/v1/orders/stream — live board events (SSE). Branch sessions get their branch only. */
+/** GET /api/v1/orders/stream — live board events (SSE): orders and guests' service requests. Branch sessions get
+ *  their branch only. */
 export async function streamOrders(req: Request, res: Response, next: NextFunction) {
   try {
     const tenantId = req.user?.tenantId;
@@ -229,7 +230,7 @@ export async function streamOrders(req: Request, res: Response, next: NextFuncti
       res,
       `tenant:${tenantId}`,
       { connectedAt: new Date().toISOString() },
-      loc ? (ev) => String(ev.order.locationId ?? '') === loc.toHexString() : undefined,
+      loc ? (ev) => String(eventPayload(ev).locationId ?? '') === loc.toHexString() : undefined,
     );
   } catch (e) {
     return next(e);

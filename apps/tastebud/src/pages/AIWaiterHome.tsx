@@ -4,6 +4,7 @@
 import React, { useRef, useState, useEffect } from 'react';
 import { useParams, useSearchParams, useNavigate } from 'react-router-dom';
 import CartFab from '../components/ai-waiter/CartFab';
+import CallWaiterButton from '../components/CallWaiterButton';
 import TenminOrb from '../components/ai-waiter/TenminOrb';
 import { useCart } from '../context/CartContext';
 import { useConversationStore } from '../state/conversation';
@@ -318,6 +319,21 @@ export default function AiWaiterHome() {
         style={{ top: 'calc(env(safe-area-inset-top, 0px) + 16px)' }}
       >
         <LangSwitch value={selectedLang} onChange={setSelectedLang} />
+      </div>
+
+      {/* "Call waiter" (dine-in only) — top-left, the language switch's twin: a person to the table, the bill, water …
+          straight to the dashboard. Under the start screen (unlike the language switch, it waits for "Get started");
+          just the bell while the order pill shares the top row, so the three never touch on a small phone. */}
+      <div
+        className={`fixed left-4 z-[90] ${showSuggestions || showTray ? 'hidden' : ''}`}
+        style={{ top: 'calc(env(safe-area-inset-top, 0px) + 16px)' }}
+      >
+        <CallWaiterButton
+          sub={resolvedSub}
+          branch={resolvedBranch ?? null}
+          variant={lastOrder ? 'icon' : 'pill'}
+          lang={selectedLang === 'en' ? 'en' : 'bn'}
+        />
       </div>
 
       {/* ORB — it is the mic: hold to talk, release to send (a tap only says "Hold to talk") */}

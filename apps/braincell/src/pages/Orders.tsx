@@ -15,6 +15,7 @@ import {
   type TicketKind,
 } from '../utils/thermalPrint';
 import { useOrdersLive } from '../context/OrdersLiveContext';
+import WaiterCalls from '../components/Dashboard/WaiterCalls';
 import { useAuthContext } from '../context/AuthContext';
 import { usePermissions } from '../context/PermissionsContext';
 import { useScope } from '../context/ScopeContext';
@@ -669,6 +670,9 @@ export default function Orders() {
           </button>
         </div>
       )}
+
+      {/* tables calling for staff ("Call waiter") — only while one is waiting or someone's on the way */}
+      <WaiterCalls hideWhenEmpty />
 
       <div className="flex gap-1 rounded-md bg-[#f1f2f4] p-1 w-fit" role="tablist">
         {(['active', 'history'] as const).map((t) => (

@@ -1438,33 +1438,9 @@ def session_tenant(session_id: str) -> Optional[str]:
     return t
 
 
-def record_service_request(
-    tenant: Optional[str],
-    branch: Optional[str],
-    session_id: Optional[str],
-    channel: Optional[str],
-    request: Dict[str, Any],
-    text: str,
-) -> None:
-    """Persist bill/water/call-staff requests for a staff screen (only when paging is enabled)."""
-    if not STAFF_ALERTS_ENABLED or not isinstance(request, dict):
-        return
-    try:
-        DB.serviceRequests.insert_one(
-            {
-                "tenant": tenant,
-                "branch": branch,
-                "sessionId": session_id,
-                "channel": channel,
-                "type": request.get("type"),
-                "note": request.get("note") or "",
-                "utterance": text,
-                "status": "open",
-                "createdAt": datetime.utcnow(),
-            }
-        )
-    except Exception as e:
-        print("[ai-waiter-service] ⚠️ service request insert failed:", e)
+def staff_can_be_paged(channel: Optional[str], table: Optional[str]) -> bool:
+    """The waiter can call staff over only to a table (dine-in, with its number) — never for the online shop."""
+    return bool(STAFF_ALERTS_ENABLED and table and str(table).strip() and _normalize_channel(channel) != "online")
 
 
 # ---------- Placing orders (auth-service owns orders: pricing, availability, order numbers) ----------
@@ -1526,6 +1502,46 @@ async def place_order_via_api(
     return {"ok": False, "message": str(msg).rstrip(".") + ".", "needs": details.get("needs")}
 
 
+# the dashboard's kinds; anything else the guest asks for goes as "other" with what it was
+_SERVICE_KIND = {"bill": "bill", "water": "water", "call_staff": "waiter", "cleanup": "cleanup"}
+_SERVICE_NOTE = {"cutlery": "Cutlery", "napkins": "Napkins", "condiments": "Condiments"}
+
+
+async def call_staff_via_api(
+    *, tenant: Optional[str], branch: Optional[str], table: Optional[str], table_key: Optional[str], request: Dict[str, Any]
+) -> Dict[str, Any]:
+    """POST /api/v1/public/service-requests (the "Call waiter" button's endpoint) → the request shows up live on the
+    restaurant's dashboard. {"ok": True, "request": {token, kind, status, …}} or {"ok": False}."""
+    sub = tenant_subdomain(tenant)
+    if not sub or not table:
+        return {"ok": False}
+    rtype = str(request.get("type") or "other")
+    kind = _SERVICE_KIND.get(rtype, "other")
+    # the dashboard's own kinds say it all (the model's note is filler: "guest requested water"); the rest say what
+    note = "" if kind != "other" else (str(request.get("note") or "").strip() or _SERVICE_NOTE.get(rtype, ""))
+    if kind == "other" and not note:
+        note = "Asked the AI waiter for a staff member"
+    body: Dict[str, Any] = {"subdomain": sub, "table": str(table).strip()[:20], "kind": kind}
+    if note:
+        body["note"] = note[:200]
+    if table_key:
+        body["tableKey"] = table_key
+    if branch:
+        body["branch"] = branch
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            r = await client.post(f"{AUTH_INTERNAL_URL}/api/v1/public/service-requests", json=body)
+        data = r.json() if r.content else {}
+    except Exception as e:
+        print("[ai-waiter-service] ⚠️ call staff failed:", repr(e))
+        return {"ok": False}
+    req = data.get("request") if isinstance(data, dict) else None
+    if r.status_code < 300 and isinstance(req, dict):
+        return {"ok": True, "request": req}
+    print("[ai-waiter-service] ⚠️ staff call rejected:", r.status_code, data.get("message") if isinstance(data, dict) else "")
+    return {"ok": False}
+
+
 # ---------- One guest turn (text → waiter reply) ----------
 
 async def run_text_turn(
@@ -1544,6 +1560,7 @@ async def run_text_turn(
     table: Optional[str] = None,
     table_key: Optional[str] = None,
     place_order=None,
+    call_staff=None,
     shown: Optional[List[str]] = None,
     lock_language: bool = False,
 ) -> Dict[str, Any]:
@@ -1551,7 +1568,7 @@ async def run_text_turn(
     `now` (UTC) overrides the clock — used by the eval to simulate breakfast/dinner/closed hours.
     `table` comes from the storefront (?table=12), `table_key` from its QR code (&k=…) — it goes with the order so
     the restaurant knows the guest really scanned that table. `place_order` overrides the order placer (evals never
-    create real orders). `lock_language`: always reply in `locale` (the language chosen on the storefront —
+    create real orders); `call_staff` the same for "bill please" / "call a waiter" (evals never page real staff). `lock_language`: always reply in `locale` (the language chosen on the storefront —
     the restaurant's default or the guest's switch) instead of mirroring what the guest spoke.
     Snapshot the live menu, normalise the transcript, build context and ask the brain.
     Used by the voice socket and by evals/run_eval.py. Returns {replyText, meta, textNorm, normChanges, snapshotSize}.
@@ -1569,7 +1586,8 @@ async def run_text_turn(
     dialog_state = get_state(tenant, session_id)
     push_user(tenant, session_id, norm_text)
 
-    profile = fetch_restaurant_profile(tenant, branch)
+    # (a copy: the profile is cached per restaurant, paging depends on this guest being at a table)
+    profile = {**fetch_restaurant_profile(tenant, branch), "staffAlerts": staff_can_be_paged(channel, table)}
     ctx = build_runtime_context(
         tenant=tenant,
         branch=branch,
@@ -1669,6 +1687,26 @@ async def run_text_turn(
         if lang_out == "bn":
             meta["voiceReplyText"] = reply_text
 
+    # "bill please" / "call a waiter" at a table → the staff's dashboard, the same as the "Call waiter" button
+    # (the brain only says it has told the staff when paging is on — so if the call fails, say so instead)
+    service = meta.get("serviceRequest")
+    if isinstance(service, dict) and profile.get("staffAlerts"):
+        caller = call_staff or call_staff_via_api
+        res = await caller(tenant=tenant, branch=branch, table=table, table_key=table_key, request=service)
+        if res.get("ok"):
+            req = res.get("request") or {}
+            # the storefront's bell button shows it too ("Waiter called" → "On the way")
+            meta["serviceCall"] = {k: req.get(k) for k in ("token", "kind", "status", "table")}
+        else:
+            lang_out = meta.get("language") or lang
+            reply_text = (
+                "দুঃখিত, এই মুহূর্তে স্টাফকে জানাতে পারলাম না — একজন স্টাফকে হাত তুলে ডাকুন, বা নিচের বেল বাটনটা চাপুন।"
+                if lang_out == "bn"
+                else "Sorry, I couldn't reach the staff just now — please wave to a staff member, or tap the bell button."
+            )
+            if lang_out == "bn":
+                meta["voiceReplyText"] = reply_text
+
     # memory keeps exact English MENU names (keeps the model grounded) …
     push_assistant(tenant, session_id, reply_text)
     update_state(tenant, session_id, meta=meta, user_text=norm_text)
@@ -1692,8 +1730,6 @@ async def run_text_turn(
     meta.pop("reco", None)
     meta.pop("guestProfile", None)
     meta.pop("tray", None)  # server-side memory (undo / pending questions), not for the browser
-    if meta.get("serviceRequest"):
-        record_service_request(tenant, branch, session_id, channel, meta["serviceRequest"], norm_text)
 
     return {
         "replyText": reply_text,

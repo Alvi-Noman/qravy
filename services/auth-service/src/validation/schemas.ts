@@ -546,6 +546,22 @@ export const orderEtaUpdateSchema = z.object({
   addMinutes: z.coerce.number().int().min(-60).max(120).refine((n) => n !== 0, 'Add or remove at least a minute'),
 });
 
+/** A guest at a table calls for staff (the "Call waiter" button on the dine-in pages) */
+export const SERVICE_REQUEST_KINDS = ['waiter', 'bill', 'water', 'cleanup', 'other'] as const;
+export const publicServiceRequestSchema = z.object({
+  subdomain: z.string().trim().min(1),
+  branch: z.string().trim().max(80).nullable().optional(),
+  table: z.string().trim().min(1, 'Which table are you at?').max(20),
+  tableKey: z.string().trim().max(40).nullable().optional(),
+  kind: z.enum(SERVICE_REQUEST_KINDS),
+  note: z.string().trim().max(200).nullable().optional(),
+});
+
+/** Staff: "on my way" (acknowledged) → done (resolved) */
+export const serviceRequestStatusSchema = z.object({
+  status: z.enum(['acknowledged', 'resolved']),
+});
+
 /** Settings → Kitchen: AI prep times for dishes without one (ids = only these; redoAi = refresh AI estimates too) */
 export const prepEstimateSchema = z.object({
   ids: z.array(objectId).max(2000).optional(),

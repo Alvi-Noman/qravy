@@ -5,6 +5,7 @@
  * - Live stream of new/updated orders (SSE read with fetch, so the token stays in a header)
  */
 import api from './auth';
+import type { ServiceRequest } from './serviceRequests';
 
 export type OrderStatus = 'placed' | 'accepted' | 'preparing' | 'ready' | 'completed' | 'cancelled';
 
@@ -101,14 +102,21 @@ export async function adjustOrderEta(token: string, id: string, addMinutes: numb
 }
 
 export type OrderStreamEvent = { type: 'order.created' | 'order.updated'; order: AdminOrder };
+/** A guest's "Call waiter" (see api/serviceRequests.ts) — on the same stream */
+export type ServiceStreamEvent = { type: 'service.created' | 'service.updated'; request: ServiceRequest };
 
 /**
- * Follow the tenant's live order events. Reconnects with backoff; `onOpen` fires on every (re)connect so
- * the caller can re-sync anything missed while disconnected. Returns a stop function.
+ * Follow the tenant's live order events (and table service requests). Reconnects with backoff; `onOpen` fires on
+ * every (re)connect so the caller can re-sync anything missed while disconnected. Returns a stop function.
  */
 export function streamOrders(
   token: string,
-  handlers: { onEvent: (ev: OrderStreamEvent) => void; onOpen?: () => void; onDown?: () => void },
+  handlers: {
+    onEvent: (ev: OrderStreamEvent) => void;
+    onService?: (ev: ServiceStreamEvent) => void;
+    onOpen?: () => void;
+    onDown?: () => void;
+  },
 ): () => void {
   const base = String(api.defaults.baseURL || '').replace(/\/$/, '');
   let stopped = false;
@@ -148,6 +156,12 @@ export function streamOrders(
           if ((event === 'order.created' || event === 'order.updated') && data.length) {
             try {
               handlers.onEvent({ type: event, order: JSON.parse(data.join('\n')) as AdminOrder });
+            } catch {
+              /* malformed event */
+            }
+          } else if ((event === 'service.created' || event === 'service.updated') && data.length) {
+            try {
+              handlers.onService?.({ type: event, request: JSON.parse(data.join('\n')) as ServiceRequest });
             } catch {
               /* malformed event */
             }

@@ -120,6 +120,11 @@ async def fake_place_order(*, tenant, branch, session_id, draft):
                                   "total": total, "table": draft.get("table")}}
 
 
+async def fake_call_staff(*, tenant, branch, table, table_key, request):
+    """"Bill please" in an eval never pages a real restaurant's staff."""
+    return {"ok": True, "request": {"token": "eval" * 6, "kind": request.get("type"), "status": "open", "table": table}}
+
+
 async def turn_current(srv, *, text: str, tenant: str, session: str, locale: str, cart: Dict[str, int], now=None):
     if not hasattr(srv, "run_text_turn"):
         return await turn_baseline(srv, text=text, tenant=tenant, session=session, locale=locale, cart=cart)
@@ -129,6 +134,8 @@ async def turn_current(srv, *, text: str, tenant: str, session: str, locale: str
     if "place_order" in inspect.signature(srv.run_text_turn).parameters:
         # guests scan the table QR (?table=E1); orders go to a fake placer, never to auth-service
         extra = {"table": "E1", "place_order": fake_place_order}
+        if "call_staff" in inspect.signature(srv.run_text_turn).parameters:
+            extra["call_staff"] = fake_call_staff
     return await srv.run_text_turn(
         text=text,
         tenant=tenant,

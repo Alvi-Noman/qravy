@@ -39,6 +39,7 @@ const TENANT_COLLECTIONS = [
   'devices',
   'menuImports',
   'orders',
+  'serviceRequests',
 ];
 
 function db() {
