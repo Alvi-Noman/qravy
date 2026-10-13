@@ -22,6 +22,8 @@ import { useTenant } from '../hooks/useTenant';
 import { waiterFetch } from '../api/waiter';
 
 type ConversationSummary = {
+  /** one guest at one branch ("<session>@<location>"; just the session when there's no branch) */
+  id?: string;
   session: string;
   startedAt: string;
   lastAt: string;
@@ -35,6 +37,9 @@ type ConversationSummary = {
   channel: string | null;
   branch: string | null;
 };
+
+/** A conversation is one guest at one branch; older waiter versions only sent the session. */
+const convoId = (c: ConversationSummary) => c.id ?? c.session;
 
 type Action = { op: string; name?: string; quantity?: number; variant?: string; note?: string };
 
@@ -132,7 +137,7 @@ export default function ConversationsPage(): JSX.Element {
     (d) => d.turns ?? [],
   );
 
-  const current = useMemo(() => list.data?.find((c) => c.session === selected), [list.data, selected]);
+  const current = useMemo(() => list.data?.find((c) => convoId(c) === selected), [list.data, selected]);
 
   if (!allowed) {
     return (
@@ -182,12 +187,12 @@ export default function ConversationsPage(): JSX.Element {
           )}
           <ul>
             {list.data?.map((c) => (
-              <li key={c.session}>
+              <li key={convoId(c)}>
                 <button
                   type="button"
-                  onClick={() => setParam('session', c.session)}
+                  onClick={() => setParam('session', convoId(c))}
                   className={`block w-full border-b border-[#f2f2f2] px-4 py-3 text-left transition ${
-                    c.session === selected ? 'bg-slate-50' : 'hover:bg-slate-50/60'
+                    convoId(c) === selected ? 'bg-slate-50' : 'hover:bg-slate-50/60'
                   }`}
                 >
                   <div className="flex items-center justify-between gap-2 text-[12px] text-slate-500">

@@ -561,7 +561,8 @@ export default function Orders() {
   const [now, setNow] = useState(() => Date.now());
   const { data: tenant } = useTenant();
   const tenantSubdomain = (tenant as { subdomain?: string } | undefined)?.subdomain;
-  const { active: buzzerActive, dismiss: dismissBuzzer } = useBuzzerAlert(tenantSubdomain);
+  const { activeLocationId } = useScope(); // one branch selected → its buzzer only
+  const { active: buzzerActive, dismiss: dismissBuzzer } = useBuzzerAlert(tenantSubdomain, activeLocationId);
   const [printSettings, setPrintSettings] = useState<PrintSettings>(loadPrintSettings);
   const updatePrintSettings = (s: PrintSettings) => {
     setPrintSettings(s);

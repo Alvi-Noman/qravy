@@ -314,7 +314,8 @@ export async function createOrderCore(input: {
       method: 'POST',
       // the shared key: only auth-service may set a restaurant's buzzer off
       headers: { 'Content-Type': 'application/json', 'X-Internal-Key': process.env.INTERNAL_API_KEY ?? '' },
-      body: JSON.stringify({ tenant: tenantSubdomain }),
+      // the order's branch: that branch's buzzer rings (a buzzer set up without a branch rings for every order)
+      body: JSON.stringify({ tenant: tenantSubdomain, location: input.locationId ? input.locationId.toHexString() : null }),
       signal: AbortSignal.timeout(1500),
     })
       .then((response) => {

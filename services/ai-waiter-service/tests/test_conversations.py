@@ -117,3 +117,23 @@ if __name__ == "__main__":
         if name.startswith("test_"):
             fn()
     print("ok")
+
+
+def test_the_same_phone_at_two_branches_is_two_conversations():
+    docs = [
+        turn("p", 20, "wagyu?", "Yes.", table="1", branch="gulshan-2-main", location="locG"),
+        turn("p", 10, "wagyu?", "Not here.", table="1", branch="banani", location="locB"),
+        turn("p", 9, "fries", "Sold out.", table="1", branch="banani", location="locB"),
+    ]
+    names = {"locG": "Gulshan 2 (Main)", "locB": "Banani"}
+    out = conversations.list_conversations(DB(docs), "burger-house", now=NOW, branch_names=names)
+    assert [(c["id"], c["branch"], c["turns"]) for c in out] == [("p@locB", "Banani", 2), ("p@locG", "Gulshan 2 (Main)", 1)]
+    assert all(c["session"] == "p" for c in out)
+    # opening one shows only its branch's turns; a plain session (an older link) still shows them all
+    assert [t["said"] for t in conversations.conversation(DB(docs), "burger-house", "p@locG")] == ["Yes."]
+    assert len(conversations.conversation(DB(docs), "burger-house", "p")) == 3
+
+
+def test_without_names_the_branch_is_the_link_name():
+    out = conversations.list_conversations(DB(DOCS), "burger-house", days=7, now=NOW)
+    assert next(c for c in out if c["session"] == "a")["branch"] == "gulshan"
