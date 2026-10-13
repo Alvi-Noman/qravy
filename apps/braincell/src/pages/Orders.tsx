@@ -3,6 +3,7 @@
  * New → Accepted → Preparing → Ready → Completed, or Cancelled. Updates arrive live; the guest's
  * order page follows every change.
  */
+import { useBranchLabel } from '../hooks/useBranchLabel';
 import { useEffect, useMemo, useState } from 'react';
 import { BellAlertIcon, BellSlashIcon, ArrowPathIcon, ClockIcon, PrinterIcon } from '@heroicons/react/24/outline';
 import { useTenant } from '../hooks/useTenant';
@@ -318,6 +319,7 @@ function OrderCard({
 }) {
   const [busy, setBusy] = useState(false);
   const [confirmCancel, setConfirmCancel] = useState(false);
+  const branch = useBranchLabel()(order.locationId);
   const next = NEXT[order.status];
   const waitingMins = (now - new Date(order.createdAt).getTime()) / 60000;
   const isNew = order.status === 'placed';
@@ -341,7 +343,14 @@ function OrderCard({
     >
       <header className="flex items-start justify-between gap-2">
         <div>
-          <div className="text-lg font-semibold text-[#2e2e30]">#{order.orderNumber}</div>
+          <div className="text-lg font-semibold text-[#2e2e30]">
+            #{order.orderNumber}
+            {branch && (
+              <span className="ml-2 rounded bg-slate-100 px-1.5 py-0.5 align-middle text-[11px] font-semibold text-slate-700">
+                {branch}
+              </span>
+            )}
+          </div>
           {order.channel === 'online' ? (
             <div className="text-sm text-[#2e2e30]">
               <span

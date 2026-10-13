@@ -171,20 +171,29 @@ def resolve_location_id(db, tenant_oid, branch_hint: Optional[str]):
 
 
 def _lookup_location_id(db, tenant_oid, branch_hint: str):
+    """Same matching as the Node services (resolveBranchLocationId): the id, the branch's link name (slug — what the
+    guest's link carries, "gulshan-2-main"), its code, its name in any case, or the name written as a link."""
+    from bson import ObjectId
+
     b = str(branch_hint).strip()
-    norm = re.sub(r"^-|-$", "", re.sub(r"--+", "-", re.sub(r"[^a-z0-9-]", "", re.sub(r"\s+", "-", b.lower()))))
+    if ObjectId.is_valid(b):
+        try:
+            doc = db["locations"].find_one({"_id": ObjectId(b), "tenantId": tenant_oid, "disabled": {"$ne": True}}, {"_id": 1})
+            return doc["_id"] if doc else None
+        except Exception:
+            return None
+    linkish = re.sub(r"^-|-$", "", re.sub(r"--+", "-", re.sub(r"[^a-z0-9-]", "", re.sub(r"\s+", "-", b.lower()))))
+    ors: List[Dict[str, Any]] = [
+        {"slug": b.lower()},
+        {"code": b},
+        {"name": {"$regex": f"^{re.escape(b)}$", "$options": "i"}},
+    ]
+    if linkish:
+        ors.append({"name": {"$regex": "^" + "[\\s-]+".join(re.escape(p) for p in linkish.split("-")) + "$", "$options": "i"}})
     try:
-        doc = db["locations"].find_one(
-            {
-                "tenantId": tenant_oid,
-                "$or": [
-                    {"name": {"$regex": f"^{re.escape(b)}$", "$options": "i"}},
-                    {"name": {"$regex": "^" + norm.replace("-", "[\\s-]") + "$", "$options": "i"}},
-                ],
-            },
-            {"_id": 1},
-        )
-        return doc["_id"] if doc else None
+        docs = list(db["locations"].find({"tenantId": tenant_oid, "disabled": {"$ne": True}, "$or": ors}, {"_id": 1, "slug": 1}))
+        best = next((d for d in docs if d.get("slug") == b.lower()), docs[0] if docs else None)  # a slug match wins
+        return best["_id"] if best else None
     except Exception:
         return None
 
@@ -212,7 +221,8 @@ def load_rules(db, tenant_oid, location_id=None, channel: Optional[str] = None) 
                 rules["opening"] = loc["openingHours"]
 
         for c in db["categories"].find(
-            {"tenantId": tenant_oid}, {"name": 1, "availability": 1, "branchAvailability": 1, "servicePeriodIds": 1}
+            {"tenantId": tenant_oid},
+            {"name": 1, "availability": 1, "branchAvailability": 1, "servicePeriodIds": 1, "scope": 1, "locationId": 1},
         ):
             hours = resolve_windows(c.get("servicePeriodIds"), c.get("availability"), rules["periods"])
             if location_id is not None:
@@ -220,20 +230,76 @@ def load_rules(db, tenant_oid, location_id=None, channel: Optional[str] = None) 
                     if str(b.get("locationId")) == str(location_id):
                         hours = b.get("availability") or []
                         break
-            rules["categories"][str(c["_id"])] = {"name": c.get("name"), "hours": hours}
+            rules["categories"][str(c["_id"])] = {
+                "name": c.get("name"),
+                "hours": hours,
+                # a branch's own category ("scope: location") is only on that branch's menu
+                "branchOnly": str(c.get("locationId") or "") if c.get("scope") == "location" else None,
+            }
 
         if location_id is not None:
-            q: Dict[str, Any] = {
-                "tenantId": tenant_oid,
-                "locationId": location_id,
-                "$or": [{"available": False}, {"removed": True}],
-            }
-            if channel in ("dine-in", "online"):
-                q["channel"] = channel
-            rules["sold_out"] = {str(o["itemId"]) for o in db["itemAvailability"].find(q, {"itemId": 1})}
+            rules["location_id"] = str(location_id)
+            ch_q: Dict[str, Any] = {"channel": channel} if channel in ("dine-in", "online") else {}
+            q: Dict[str, Any] = {"tenantId": tenant_oid, "locationId": location_id, **ch_q}
+            sold_out: set = set()
+            removed: Dict[str, set] = {}
+            turned_on: Dict[str, set] = {}
+            for o in db["itemAvailability"].find(q, {"itemId": 1, "channel": 1, "available": 1, "removed": 1}):
+                if o.get("removed") is True:
+                    removed.setdefault(str(o["itemId"]), set()).add(o.get("channel"))
+                elif o.get("available") is False:
+                    sold_out.add(str(o["itemId"]))
+                elif o.get("available") is True:
+                    turned_on.setdefault(str(o["itemId"]), set()).add(o.get("channel"))
+            rules["sold_out"] = sold_out
+            rules["removed_items"] = removed
+            # switched on at this branch for a channel the dish is otherwise not on ("online only" → also dine-in here)
+            rules["turned_on"] = turned_on
+            # categories taken off (or hidden on) this branch's menu
+            off: Dict[str, set] = {}
+            for v in db["categoryVisibility"].find(q, {"categoryId": 1, "channel": 1, "removed": 1, "visible": 1}):
+                if v.get("removed") is True or v.get("visible") is False:
+                    off.setdefault(str(v["categoryId"]), set()).add(v.get("channel"))
+            rules["removed_categories"] = off
+            rules["channel"] = channel if channel in ("dine-in", "online") else None
     except Exception as e:  # never break the waiter over availability
         print("[ai-waiter-service] ⚠️ availability rules failed:", e)
     return rules
+
+
+def on_branch_menu(item: Dict[str, Any], rules: Dict[str, Any]) -> bool:
+    """Is the item on this branch's menu at all? Mirrors the Node public menu (routes/publicRoutes.ts): another branch's
+    own item or category isn't; neither is one the branch took off its menu (for this channel — or, with no channel,
+    for both). No branch → the whole restaurant's menu."""
+    loc = rules.get("location_id")
+    if not loc:
+        return True
+    item_loc = item.get("locationId")
+    if item_loc and str(item_loc) != loc:
+        return False
+    cid = str(item.get("categoryId") or "")
+    cat = rules.get("categories", {}).get(cid) or {}
+    if cat.get("branchOnly") is not None and cat.get("branchOnly") != loc:
+        return False
+    channels = {rules["channel"]} if rules.get("channel") else {"dine-in", "online"}
+    if channels <= (rules.get("removed_categories", {}).get(cid) or set()):
+        return False
+    if channels <= (rules.get("removed_items", {}).get(str(item.get("id"))) or set()):
+        return False
+    return True
+
+
+def on_channel_menu(item: Dict[str, Any], rules: Dict[str, Any], channel: Optional[str]) -> bool:
+    """Is the dish served on this channel? An "online only" dish isn't on the dine-in menu (nor offered at the table)
+    unless this branch switched it on there — as the menu page and checkout decide. No channel → on either."""
+    vis = item.get("visibility") or {}
+    if channel == "dine-in":
+        ok = vis.get("dineIn", True) is not False
+    elif channel == "online":
+        ok = vis.get("online", True) is not False
+    else:
+        return True
+    return ok or channel in (rules.get("turned_on", {}).get(str(item.get("id"))) or set())
 
 
 def unavailable_reason(item: Dict[str, Any], rules: Dict[str, Any], now: Optional[datetime] = None, lang: str = "en") -> Optional[str]:

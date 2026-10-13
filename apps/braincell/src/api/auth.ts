@@ -207,8 +207,36 @@ export async function createTenant<T = unknown>(body: {
     const response = await api.post<T>('/api/v1/auth/tenants', body);
     return response.data;
   } catch (error) {
+    // the subdomain was taken meanwhile → the error carries free ones to offer instead
+    if (axios.isAxiosError(error) && error.response?.status === 409) {
+      const extra = (error.response.data as { error?: { suggestions?: string[] } } | undefined)?.error;
+      throw new SubdomainTakenError(extractErrorMessage(error), extra?.suggestions ?? []);
+    }
     throw new Error(extractErrorMessage(error));
   }
+}
+
+export class SubdomainTakenError extends Error {
+  suggestions: string[];
+  constructor(message: string, suggestions: string[]) {
+    super(message);
+    this.name = 'SubdomainTakenError';
+    this.suggestions = suggestions;
+  }
+}
+
+export type SubdomainCheck = {
+  subdomain: string;
+  available: boolean;
+  reason?: 'invalid' | 'reserved' | 'taken';
+  /** free ones close to it, when it isn't */
+  suggestions: string[];
+};
+
+/** Is <subdomain>.qravy.com free? Asked while the owner types during sign-up. */
+export async function checkSubdomain(subdomain: string): Promise<SubdomainCheck> {
+  const { data } = await api.get<SubdomainCheck>('/api/v1/auth/tenants/subdomain-check', { params: { subdomain } });
+  return data;
 }
 
 /**

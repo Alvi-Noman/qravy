@@ -11,7 +11,7 @@ import { client } from '../db.js';
 import logger from '../utils/logger.js';
 import { resolveBranchLocationId } from './categoriesController.js';
 import { publishTenant } from '../services/orders/events.js';
-import { tableKeyMatches } from '../utils/tableKeys.js';
+import { branchForUnnamed, tableBook } from '../utils/branches.js';
 import type { SERVICE_REQUEST_KINDS } from '../validation/schemas.js';
 
 export type ServiceRequestKind = (typeof SERVICE_REQUEST_KINDS)[number];
@@ -110,16 +110,20 @@ export async function createServiceRequest(req: Request, res: Response, next: Ne
     if ((tenant.restaurantInfo as { dineInEnabled?: boolean } | undefined)?.dineInEnabled === false) {
       return res.fail(409, "This restaurant isn't serving tables right now.");
     }
-    const locationId = b.branch ? await resolveBranchLocationId(tenantOid, b.branch) : null;
+    let locationId = b.branch ? await resolveBranchLocationId(tenantOid, b.branch) : null;
     if (b.branch && !locationId) return res.fail(404, 'Branch not found');
+    if (!b.branch) {
+      const unnamed = await branchForUnnamed(tenantOid);
+      if (unnamed.mustChoose) return res.fail(409, 'Please choose a branch first.', { needs: 'branch' });
+      locationId = unnamed.locationId;
+    }
 
     const table = tableId(b.table).slice(0, 20);
-    const knownTables = Array.isArray(tenant.tables) ? (tenant.tables as string[]).map((t) => String(t).toUpperCase()) : [];
-    if (!table || (knownTables.length && !knownTables.includes(table))) {
+    const book = await tableBook(tenant, locationId);
+    if (!table || !book.knows(table)) {
       return res.fail(400, 'We could not find that table — please check the number on your table.', { needs: 'table' });
     }
-    const keys = (tenant.tableKeys ?? null) as Record<string, string> | null;
-    const tableVerified = !keys?.[table] || tableKeyMatches(keys, table, b.tableKey);
+    const tableVerified = book.verified(table, b.tableKey);
     const note = b.kind === 'other' || b.note ? String(b.note ?? '').trim().slice(0, 200) : '';
     const now = new Date();
 

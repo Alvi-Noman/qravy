@@ -7,6 +7,8 @@ import { client } from '../db.js';
 import type { LocationDoc } from '../models/Location.js';
 import { auditLog } from '../utils/audit.js';
 import logger from '../utils/logger.js';
+import { ensureBranchSlugs, uniqueBranchSlug } from '../utils/branches.js';
+import { tableKeysFor } from '../utils/tableKeys.js';
 
 function col() {
   return client.db('authDB').collection<LocationDoc>('locations');
@@ -30,6 +32,12 @@ const updateSchema = z.object({
   disabled: z.boolean().optional(),
   /** Branch opening hours; null → same as the restaurant */
   openingHours: z.array(availabilityWindowSchema).max(7).nullable().optional(),
+});
+// Same shape as the restaurant-wide tables (validation/schemas.ts)
+const tablesSchema = z.object({
+  tables: z
+    .array(z.string().trim().regex(/^#?[A-Za-z0-9-]{1,12}$/, 'Table names: letters, numbers and dashes (max 12)'))
+    .max(500),
 });
 
 function getTenantId(req: Request): string {
@@ -70,6 +78,9 @@ function toDTO(doc: LocationDoc) {
     zip: doc.zip || '',
     country: doc.country || '',
     disabled: doc.disabled || false,
+    slug: doc.slug ?? null,
+    tables: doc.tables ?? [],
+    tableKeys: doc.tableKeys ?? {},
     openingHours: doc.openingHours ?? null,
     createdAt: doc.createdAt.toISOString(),
     updatedAt: doc.updatedAt.toISOString(),
@@ -93,6 +104,7 @@ export async function listLocations(req: Request, res: Response) {
     return res.ok({ items });
   }
 
+  await ensureBranchSlugs(new ObjectId(tenantId));
   const items = await col()
     .find({ tenantId: new ObjectId(tenantId) })
     .sort({ createdAt: -1 })
@@ -145,6 +157,7 @@ export async function createLocation(req: Request, res: Response) {
       zip: body.zip || '',
       country: body.country || '',
       disabled: body.disabled || false,
+      slug: await uniqueBranchSlug(new ObjectId(tenantId), body.name),
       createdAt: now,
       updatedAt: now,
     };
@@ -221,6 +234,28 @@ export async function updateLocation(req: Request, res: Response) {
     if (e?.code === 11000) return res.fail(409, 'Location name already exists');
     throw e;
   }
+}
+
+/** PUT /locations/:id/tables { tables } — the branch's dine-in tables; a table keeps its QR key, a new one gets one. */
+export async function updateLocationTables(req: Request, res: Response) {
+  if (isCentral(req)) return res.fail(403, 'Not allowed for device-scoped session');
+
+  const tenantId = getTenantId(req);
+  const { id } = req.params;
+  const { tables: raw } = tablesSchema.parse(req.body);
+  const filter = { _id: new ObjectId(id), tenantId: new ObjectId(tenantId) };
+
+  const loc = await col().findOne(filter, { projection: { tableKeys: 1 } });
+  if (!loc) return res.fail(404, 'Location not found');
+
+  const tables = [...new Set(raw.map((t) => t.trim().replace(/^#/, '').toUpperCase()))];
+  const doc = await col().findOneAndUpdate(
+    filter,
+    { $set: { tables, tableKeys: tableKeysFor(tables, loc.tableKeys), updatedAt: new Date() } },
+    { returnDocument: 'after', includeResultMetadata: false }
+  );
+  if (!doc) return res.fail(404, 'Location not found');
+  return res.ok({ item: toDTO(doc) });
 }
 
 export async function deleteLocation(req: Request, res: Response) {

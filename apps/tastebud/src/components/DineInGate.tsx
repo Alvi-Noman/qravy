@@ -1,10 +1,11 @@
 // apps/tastebud/src/components/DineInGate.tsx
 // The dine-in side ("/t/burger-house/dine-in…") always runs with a table in the link (?table=12, from the table's
 // QR code). A link without one — the number erased, a typed URL — asks for the table first; the guest's page opens
-// once it's given. Numbers are checked against the restaurant's own tables (the ones it has QR codes for).
+// once it's given. Numbers are checked against the restaurant's own tables (the ones it has QR codes for) — at a
+// branch, the branch's tables plus the restaurant-wide ones (as the server checks them).
 import { useState, type ReactNode } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { getTable, getTableKey, normalizeTable, storeSubFromPath } from '../utils/table';
+import { getTable, getTableKey, normalizeTable, storeBranchFromPath, storeSubFromPath } from '../utils/table';
 import { useStoreChannels } from '../utils/order-mode';
 import { tr, uiLang } from '../utils/ui-lang';
 
@@ -20,7 +21,10 @@ function AskTable() {
   const navigate = useNavigate();
   const lang = uiLang();
   const sub = storeSubFromPath(location.pathname);
-  const { tables } = useStoreChannels(sub);
+  const branchSlug = storeBranchFromPath(location.pathname);
+  const { tables: restaurantTables, branches } = useStoreChannels(sub);
+  const branchTables = branches.find((b) => b.slug === branchSlug)?.tables ?? [];
+  const tables = [...branchTables, ...restaurantTables];
   const [value, setValue] = useState(() => getTable(sub) ?? ''); // this phone's table from earlier, one tap away
   const [error, setError] = useState('');
 

@@ -10,6 +10,7 @@ import type { MenuItemDoc } from '../models/MenuItem.js';
 import type { ItemAvailabilityDoc } from '../models/ItemAvailability.js';
 import { DEFAULT_TIMEZONE, resolveWindows, tenantServicePeriods } from '../utils/availability.js';
 import { resolveBranchLocationId } from '../controllers/categoriesController.js';
+import { publicBranches } from '../utils/branches.js';
 
 const router: express.Router = express.Router();
 
@@ -48,7 +49,11 @@ async function findTenantBySubdomain(subdomain: string): Promise<TenantDoc | nul
   return tenants.findOne({ subdomain });
 }
 
-function toPublicTenantItem(tenant: TenantDoc, fallbackSub: string) {
+function toPublicTenantItem(
+  tenant: TenantDoc,
+  fallbackSub: string,
+  branches: Awaited<ReturnType<typeof publicBranches>>
+) {
   return {
     id: tenant._id!.toString(),
     name:
@@ -76,6 +81,8 @@ function toPublicTenantItem(tenant: TenantDoc, fallbackSub: string) {
     },
     // The dine-in tables (the ones with QR codes) — the guest app checks a typed table number against them
     tables: Array.isArray(tenant.tables) ? tenant.tables : [],
+    // The open branches (two or more → the guest picks one first), each with its own tables
+    branches,
   };
 }
 
@@ -104,7 +111,7 @@ router.get('/public/tenant', async (req: Request, res: Response, next: NextFunct
       return res.status(404).json({ message: 'Tenant not found' });
     }
 
-    const item = toPublicTenantItem(tenant, subdomain);
+    const item = toPublicTenantItem(tenant, subdomain, await publicBranches(tenant._id));
     return res.json({ item });
   } catch (err) {
     logger.error(`[PUBLIC TENANT] ${String((err as Error)?.message || err)}`);
@@ -130,7 +137,7 @@ router.get(
         return res.status(404).json({ message: 'Tenant not found' });
       }
 
-      const item = toPublicTenantItem(tenant, subdomain);
+      const item = toPublicTenantItem(tenant, subdomain, await publicBranches(tenant._id));
       return res.json({ item });
     } catch (err) {
       logger.error(
@@ -212,29 +219,7 @@ router.get('/public/menu', async (req: Request, res: Response, next: NextFunctio
     const periods = tenantServicePeriods(tenant);
 
     // Resolve branch (location) if provided
-    let locId: ObjectId | null = null;
-    if (branch && branch.trim()) {
-      const locations = client.db('authDB').collection('locations');
-      const norm = (s: string) =>
-        s
-          .toLowerCase()
-          .replace(/\s+/g, '-')
-          .replace(/[^a-z0-9-]/g, '')
-          .replace(/--+/g, '-')
-          .replace(/^-|-$/g, '');
-      const branchNorm = norm(branch);
-
-      const locDoc = await locations.findOne({
-        tenantId: tenantOid,
-        $or: [
-          { name: { $regex: `^${branch}$`, $options: 'i' } },
-          { name: { $regex: `^${branchNorm.replace(/-/g, '[\\s-]')}$`, $options: 'i' } },
-        ],
-      });
-      if (locDoc?._id) {
-        locId = locDoc._id as ObjectId;
-      }
-    }
+    const locId: ObjectId | null = await resolveBranchLocationId(tenantOid, branch);
 
     // Collections
     const itemsCol = client.db('authDB').collection<MenuItemDoc>('menuItems');
@@ -440,29 +425,7 @@ router.get('/public/categories', async (req: Request, res: Response, next: NextF
     const tenantOid = tenant._id!;
 
     // Resolve branch (location) if provided
-    let locId: ObjectId | null = null;
-    if (branch && branch.trim()) {
-      const locations = client.db('authDB').collection('locations');
-      const norm = (s: string) =>
-        s
-          .toLowerCase()
-          .replace(/\s+/g, '-')
-          .replace(/[^a-z0-9-]/g, '')
-          .replace(/--+/g, '-')
-          .replace(/^-|-$/g, '');
-      const branchNorm = norm(branch);
-
-      const locDoc = await locations.findOne({
-        tenantId: tenantOid,
-        $or: [
-          { name: { $regex: `^${branch}$`, $options: 'i' } },
-          { name: { $regex: `^${branchNorm.replace(/-/g, '[\\s-]')}$`, $options: 'i' } },
-        ],
-      });
-      if (locDoc?._id) {
-        locId = locDoc._id as ObjectId;
-      }
-    }
+    const locId: ObjectId | null = await resolveBranchLocationId(tenantOid, branch);
 
     const catsCol = client.db('authDB').collection('categories');
     const catVisCol = client.db('authDB').collection('categoryVisibility');

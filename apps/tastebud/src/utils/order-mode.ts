@@ -11,6 +11,8 @@ import { isDineInPath } from './table';
 
 export type Fulfillment = 'pickup' | 'delivery';
 export type GuestContact = { name: string; phone: string; address: string };
+/** One of the restaurant's open branches: its link is "<restaurant>/<slug>", its tables are its own. */
+export type StoreBranch = { slug: string; name: string; address: string; tables: string[] };
 
 const EMPTY_CONTACT: GuestContact = { name: '', phone: '', address: '' };
 const fulfillmentKey = (sub?: string | null) => `qravy:fulfillment:${sub || 'anon'}`;
@@ -23,6 +25,7 @@ export function useStoreChannels(sub?: string | null): {
   online: boolean;
   loaded: boolean;
   tables: string[];
+  branches: StoreBranch[];
 } {
   const { data, isFetched } = useQuery({
     queryKey: ['tenantInfo', sub],
@@ -37,7 +40,8 @@ export function useStoreChannels(sub?: string | null): {
   });
   const ch = (data as any)?.channels;
   const tables = Array.isArray((data as any)?.tables) ? ((data as any).tables as string[]) : [];
-  return { dineIn: ch?.dineIn !== false, online: ch?.online !== false, loaded: isFetched, tables };
+  const branches = Array.isArray((data as any)?.branches) ? ((data as any).branches as StoreBranch[]) : [];
+  return { dineIn: ch?.dineIn !== false, online: ch?.online !== false, loaded: isFetched, tables, branches };
 }
 
 /** Pure rule: the dine-in side of the site ("…/dine-in…") is dine-in, everything else is the online shop — unless

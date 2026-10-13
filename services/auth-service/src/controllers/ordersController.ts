@@ -7,6 +7,7 @@ import { ObjectId } from 'mongodb';
 import { client } from '../db.js';
 import logger from '../utils/logger.js';
 import { resolveBranchLocationId } from './categoriesController.js';
+import { branchForUnnamed } from '../utils/branches.js';
 import {
   OrderError,
   adjustEtaCore,
@@ -54,8 +55,13 @@ export async function placePublicOrder(req: Request, res: Response, next: NextFu
       .findOne({ subdomain: b.subdomain }, { projection: { _id: 1, restaurantInfo: 1 } });
     if (!tenant) return res.fail(404, 'Restaurant not found');
     const tenantOid = tenant._id as ObjectId;
-    const locationId = b.branch ? await resolveBranchLocationId(tenantOid, b.branch) : null;
+    let locationId = b.branch ? await resolveBranchLocationId(tenantOid, b.branch) : null;
     if (b.branch && !locationId) return res.fail(404, 'Branch not found');
+    if (!b.branch) {
+      const unnamed = await branchForUnnamed(tenantOid);
+      if (unnamed.mustChoose) return res.fail(409, 'Please choose a branch first.', { needs: 'branch' });
+      locationId = unnamed.locationId;
+    }
     const info = (tenant.restaurantInfo ?? {}) as { dineInEnabled?: boolean; onlineSalesEnabled?: boolean };
     if (b.channel === 'online' && info.onlineSalesEnabled === false) {
       return res.fail(409, "This restaurant isn't taking online orders.");

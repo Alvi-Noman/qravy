@@ -343,22 +343,41 @@ async function resolveTenantBySubdomain(subdomain?: string | null): Promise<Tena
   return tenantsCol().findOne({ subdomain: sd });
 }
 
+/** The branch a guest link names — open branches only (a switched-off branch takes no orders and shows no menu). */
 export async function resolveBranchLocationId(tenantOid: ObjectId, branch?: string | null): Promise<ObjectId | null> {
   if (!branch || typeof branch !== 'string' || !branch.trim()) return null;
   const raw = branch.trim();
 
   // Accept direct ObjectId
   if (ObjectId.isValid(raw)) {
-    const loc = await locationsCol().findOne({ _id: new ObjectId(raw), tenantId: tenantOid }, { projection: { _id: 1 } });
+    const loc = await locationsCol().findOne(
+      { _id: new ObjectId(raw), tenantId: tenantOid, disabled: { $ne: true } },
+      { projection: { _id: 1 } }
+    );
     return loc?._id ?? null;
   }
 
-  // Try slug/code/name exact match (keep it simple and deterministic)
-  const bySlug = await locationsCol().findOne(
-    { tenantId: tenantOid, $or: [{ slug: raw }, { code: raw }, { name: raw }] },
-    { projection: { _id: 1 } }
-  );
-  return bySlug?._id ?? null;
+  // The branch's link name (utils/branches) first; then its code or name, any case ("Gulshan", "gulshan"), or the name
+  // written as a link ("banani-11" → "Banani 11") — links made before branches had slugs.
+  // The AI waiter matches the same way (services/ai-waiter-service/availability.py).
+  const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const linkish = raw
+    .toLowerCase()
+    .replace(/\s+/g, '-')
+    .replace(/[^a-z0-9-]/g, '')
+    .replace(/--+/g, '-')
+    .replace(/^-|-$/g, '');
+  const or: object[] = [
+    { slug: raw.toLowerCase() },
+    { code: raw },
+    { name: { $regex: `^${escape(raw)}$`, $options: 'i' } },
+  ];
+  if (linkish) or.push({ name: { $regex: `^${linkish.split('-').map(escape).join('[\\s-]+')}$`, $options: 'i' } });
+  const docs = await locationsCol()
+    .find({ tenantId: tenantOid, disabled: { $ne: true }, $or: or }, { projection: { _id: 1, slug: 1 } })
+    .toArray();
+  // a slug match wins over a name that happens to read the same
+  return (docs.find((d) => d.slug === raw.toLowerCase()) ?? docs[0])?._id ?? null;
 }
 
 /* -------------------------------------------------------------------------- */

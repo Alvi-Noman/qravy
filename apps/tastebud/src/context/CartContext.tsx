@@ -13,7 +13,7 @@ import React, {
 import { useLocation } from 'react-router-dom';
 import { loadCart as apiLoadCart, saveCart as apiSaveCart } from '../api/cart';
 import { getStableSessionId } from '../utils/ws';
-import { isDineInPath } from '../utils/table';
+import { isDineInPath, storeBranchFromPath } from '../utils/table';
 
 /* -------------------------------------------------------------------------- */
 /*                                Type Definitions                            */
@@ -180,9 +180,14 @@ function deriveSubdomain(pathname: string, search: string): string | null {
 }
 
 function deriveBranch(pathname: string, search: string): string | null {
-  // 1) /t/:subdomain/branch/:branch
+  // 1) /t/:subdomain/branch/:branch (old links)
   const m = pathname.match(/^\/t\/[^/]+\/branch\/([^/]+)/);
   if (m) return decodeURIComponent(m[1]);
+
+  // the branch's link: "/gulshan/…" (burger-house.qravy.com/gulshan) or "/t/burger-house/gulshan/…" — each branch
+  // keeps its own cart (a Gulshan cart never shows up at Banani)
+  const fromPath = storeBranchFromPath(pathname);
+  if (fromPath) return fromPath;
 
   // 2) ?branch=...
   if (search) {
@@ -476,7 +481,7 @@ export function CartProvider({ children }: PropsWithChildren<object>) {
       }
 
       try {
-        const remote = await apiLoadCart(subdomain, sessionId);
+        const remote = await apiLoadCart(subdomain, sessionId, branch);
 
         if (!remote || !Array.isArray(remote.items) || !remote.items.length) {
           if (!cancelled) {
@@ -540,7 +545,7 @@ export function CartProvider({ children }: PropsWithChildren<object>) {
     const items = state.items || [];
 
     // fire-and-forget
-    apiSaveCart(subdomain, sessionId, items).catch(() => {
+    apiSaveCart(subdomain, sessionId, items, branch).catch(() => {
       // ignore errors
     });
   }, [state, storageKey, subdomain, branch]);

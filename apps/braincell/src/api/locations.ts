@@ -7,6 +7,11 @@ export interface Location {
   zip?: string;
   country?: string;
   disabled?: boolean;
+  /** In the branch's guest links: {storefront}/<slug> (set once from the name) */
+  slug?: string | null;
+  /** The branch's dine-in tables and each one's secret QR key */
+  tables?: string[];
+  tableKeys?: Record<string, string>;
   /** Branch opening hours; null = same as the restaurant */
   openingHours?: Array<{ days: number[]; start: string; end: string }> | null;
   createdAt: string;
@@ -89,5 +94,11 @@ export async function updateLocationHours(
   const res = await api.patch(`/api/v1/locations/${encodeURIComponent(id)}`, { openingHours }, {
     withCredentials: true,
   });
+  return unwrap<Location>(res.data);
+}
+
+/** The branch's dine-in tables (each keeps its QR key; new ones get one). */
+export async function updateLocationTables(id: string, tables: string[]): Promise<Location> {
+  const res = await api.put(`/api/v1/locations/${encodeURIComponent(id)}/tables`, { tables }, { withCredentials: true });
   return unwrap<Location>(res.data);
 }
