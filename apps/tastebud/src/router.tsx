@@ -6,6 +6,7 @@ import { CartProvider } from './context/CartContext';
 import KeepTableInUrl from './components/KeepTableInUrl';
 import DineInGate from './components/DineInGate';
 import BranchGate from './components/BranchGate';
+import TrackPageViews from './components/TrackPageViews';
 
 const Home = lazy(() => import('./pages/Directory'));
 const Restaurant = lazy(() => import('./pages/DigitalMenu'));
@@ -30,6 +31,8 @@ export default function AppRouter() {
         <UndoToast />
         {/* online shop vs. dine-in ("/dine-in?table=12"): old links moved over, the table kept on every dine-in page */}
         <KeepTableInUrl />
+        {/* page views, QR scans, time on page — for the company's Cortex panel (utils/track.ts) */}
+        <TrackPageViews />
         <Suspense fallback={<div className="p-6 text-sm text-gray-500">Loading…</div>}>
           <Routes>
             {/* Demo routes */}

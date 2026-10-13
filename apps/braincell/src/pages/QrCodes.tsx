@@ -62,6 +62,10 @@ export function parseTableInput(raw: string): { tables: string[]; invalid: strin
 
 const naturalSort = (a: string, b: string) => a.localeCompare(b, undefined, { numeric: true });
 
+/** What the printed code opens: an online code carries ?qr=1 so a scan is told apart from a shared link (a table's
+ *  code already carries its key). The link shown / copied stays clean. */
+export const qrValue = (url: string) => (/[?&]k=/.test(url) ? url : `${url}${url.includes('?') ? '&' : '?'}qr=1`);
+
 /** Render a QR <svg> plus captions to a PNG and download it. */
 async function downloadQrPng(svg: SVGSVGElement, title: string, subtitle: string, filename: string) {
   const size = 1024;
@@ -139,7 +143,7 @@ function QrCard({
         </button>
       )}
       <div ref={wrapRef} className="rounded-lg bg-white p-2">
-        <QRCodeSVG value={url} size={148} level="M" marginSize={0} />
+        <QRCodeSVG value={qrValue(url)} size={148} level="M" marginSize={0} />
       </div>
       <div className="mt-3 text-center text-[14px] font-semibold text-slate-900">{title}</div>
       <a
@@ -199,7 +203,7 @@ function PrintSheet({ items, restaurant }: { items: { title: string; subtitle: s
           >
             <div style={{ fontSize: 11, color: '#64748b' }}>{restaurant}</div>
             <div style={{ margin: '3mm auto', width: '42mm' }}>
-              <QRCodeSVG value={it.url} size={320} level="M" marginSize={0} style={{ width: '100%', height: 'auto' }} />
+              <QRCodeSVG value={qrValue(it.url)} size={320} level="M" marginSize={0} style={{ width: '100%', height: 'auto' }} />
             </div>
             <div style={{ fontSize: 18, fontWeight: 700, color: '#0f172a' }}>{it.title}</div>
             <div style={{ fontSize: 10, color: '#64748b' }}>{it.subtitle}</div>

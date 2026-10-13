@@ -9,6 +9,7 @@ import { useLocation } from 'react-router-dom';
 import { callForService, getServiceRequest, type ServiceKind, type ServiceStatus } from '../api/serviceRequests';
 import { isDineInPath, normalizeTable, storeSubFromPath, useTable } from '../utils/table';
 import { tr, uiLang, type UiLang } from '../utils/ui-lang';
+import { track } from '../utils/track';
 
 type Active = Partial<Record<ServiceKind, { token: string; status: ServiceStatus; at: number }>>;
 
@@ -151,6 +152,7 @@ export default function CallWaiterButton({
     setError('');
     try {
       const r = await callForService({ subdomain: sub, branch, table, kind, note });
+      track('call_waiter', { data: { kind } });
       save({ ...readActive(sub, table), [kind]: { token: r.token, status: r.status, at: Date.now() } });
       setSent(kind);
       setWriting(false);

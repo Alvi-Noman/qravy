@@ -2,6 +2,7 @@
 // Guest ordering: place a dine-in (table) or online (pickup / delivery) order and follow its status live.
 import type { CartItem } from '../context/CartContext';
 import { getTableKey } from '../utils/table';
+import { track } from '../utils/track';
 
 const API_BASE: string =
   (import.meta.env.VITE_API_URL as string | undefined) ||
@@ -244,7 +245,10 @@ const recentKey = (sub?: string | null) => `qravy:orders:${sub || 'anon'}`;
 
 export type RecentOrder = { token: string; orderNumber: number; at: number };
 
-export function rememberOrder(sub: string | null | undefined, o: { token: string; orderNumber: number }) {
+export function rememberOrder(sub: string | null | undefined, o: { token: string; orderNumber: number; total?: number }) {
+  track('order_placed', {
+    data: { token: o.token, orderNumber: o.orderNumber, ...(typeof o.total === 'number' ? { total: o.total } : {}) },
+  });
   try {
     const list = recentOrders(sub).filter((r) => r.token !== o.token);
     list.unshift({ token: o.token, orderNumber: o.orderNumber, at: Date.now() });

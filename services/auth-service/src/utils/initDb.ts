@@ -1,6 +1,7 @@
 // services/auth-service/src/utils/initDb.ts
 import { MongoClient } from 'mongodb';
 import logger from './logger.js';
+import { ensureCortexAdmin } from './cortexAuth.js';
 
 function userJsonSchema() {
   return {
@@ -518,6 +519,15 @@ export async function ensureUserIndexes(client: MongoClient): Promise<void> {
   );
   logger.info('Ensured unique index on categoryVisibility(tenantId,categoryId,locationId,channel)');
 
+  // What guests do in the storefront (routes/eventsRoutes) — for Cortex; kept a year
+  const guestEvents = db.collection('guestEvents');
+  await guestEvents.createIndex({ at: 1 }, { name: 'ttl_guest_events', expireAfterSeconds: 365 * 24 * 3600 });
+  await guestEvents.createIndex({ tenantId: 1, at: -1 }, { name: 'ix_guest_events_tenant_at' });
+  await guestEvents.createIndex({ vid: 1, at: 1 }, { name: 'ix_guest_events_vid' });
+  logger.info('Ensured guestEvents indexes (a year TTL)');
+  // Cortex (the company admin panel): its admin from the environment
+  await ensureCortexAdmin();
+
   // ✅ NEW: Orders
   await ensureValidator(client, 'orders', ordersJsonSchema());
   logger.info('Applied validator to orders');
@@ -527,6 +537,7 @@ export async function ensureUserIndexes(client: MongoClient): Promise<void> {
   await orders.createIndex({ tenantId: 1, status: 1, createdAt: -1 }, { name: 'ix_orders_tenant_status_created' });
   logger.info('Ensured index on orders.tenantId,status,createdAt');
   await orders.createIndex({ tenantId: 1, channel: 1, createdAt: -1 }, { name: 'ix_orders_tenant_channel_created' });
+  await orders.createIndex({ createdAt: -1 }, { name: 'ix_orders_created' }); // Cortex: every restaurant's orders by time
   logger.info('Ensured index on orders.tenantId,channel,createdAt');
   // one order per idempotency key (double taps / retries / voice + button at once)
   await orders.createIndex(

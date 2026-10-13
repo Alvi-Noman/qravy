@@ -19,6 +19,7 @@ import {
   type GuestContact,
 } from '../utils/order-mode';
 import OnlineOrderDetails, { CONTACT_MESSAGES } from '../components/OnlineOrderDetails';
+import { track } from '../utils/track';
 import { orderPath, storeBasePath } from '../utils/checkout-flow';
 import { getStableSessionId } from '../utils/ws';
 import { money, tr, uiLang } from '../utils/ui-lang';
@@ -35,6 +36,12 @@ export default function CheckoutPage() {
   const lang = uiLang();
   const navigate = useNavigate();
   const { items, subtotal, count, setLineQty, removeLine, clear } = useCart();
+  // opened checkout with something in the tray (once per visit to this page)
+  const hasItems = items.length > 0;
+  useEffect(() => {
+    if (hasItems) track('checkout_started', { page: 'checkout' });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasItems]);
   const channel = useOrderChannel(sub);
   const online = channel === 'online';
   const wait = useCartWait({ subdomain: sub, branch, items });
