@@ -502,9 +502,11 @@ export default function QrCodesPage(): JSX.Element {
             Online storefront
           </h2>
           <p className="mt-0.5 text-[12px] text-slate-500">
-            {multiBranch
-              ? 'For flyers, social media, takeaway bags and your shop window. The main code asks guests which branch; a branch code goes straight to it.'
-              : 'For flyers, social media, takeaway bags and your shop window.'}
+            {!multiBranch
+              ? 'For flyers, social media, takeaway bags and your shop window.'
+              : mainBranch
+                ? `For flyers, social media, takeaway bags and your shop window. The main code sends orders to ${mainBranch.name}; a branch code goes straight to its branch.`
+                : 'For flyers, social media, takeaway bags and your shop window. The main code asks guests which branch; a branch code goes straight to it.'}
           </p>
           <div className="mt-3 grid grid-cols-[repeat(auto-fill,minmax(210px,1fr))] gap-3">
             <QrCard

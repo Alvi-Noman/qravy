@@ -133,3 +133,17 @@ def test_conversation_memory_is_per_branch():
     server = importlib.import_module("server")
     assert server.convo_sid("s1", "gulshan") != server.convo_sid("s1", "banani")
     assert server.convo_sid("s1", None) == "s1"
+
+
+def test_no_branch_means_the_branch_orders_go_to(db):
+    # two open branches, no main link branch → no branch (the whole menu, no one branch's changes)
+    assert resolve_location_id(db, T, None) is None
+    availability._LOCATION_ID_CACHE.clear()
+    # the owner sends the main link's orders to Banani → that branch
+    db["tenants"].update_one({"_id": T}, {"$set": {"mainBranchId": BANANI}})
+    assert resolve_location_id(db, T, None) == BANANI
+    availability._LOCATION_ID_CACHE.clear()
+    # one open branch → it
+    db["tenants"].update_one({"_id": T}, {"$unset": {"mainBranchId": ""}})
+    db["locations"].update_many({"tenantId": T, "_id": {"$ne": GULSHAN}}, {"$set": {"disabled": True}})
+    assert resolve_location_id(db, T, None) == GULSHAN

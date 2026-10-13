@@ -343,14 +343,15 @@ function OrderCard({
     >
       <header className="flex items-start justify-between gap-2">
         <div>
-          <div className="text-lg font-semibold text-[#2e2e30]">
-            #{order.orderNumber}
-            {branch && (
-              <span className="ml-2 rounded bg-slate-100 px-1.5 py-0.5 align-middle text-[11px] font-semibold text-slate-700">
-                {branch}
-              </span>
-            )}
-          </div>
+          <div className="text-lg font-semibold text-[#2e2e30]">#{order.orderNumber}</div>
+          {branch && (
+            <div
+              title={branch}
+              className="mb-0.5 max-w-[11rem] truncate rounded bg-slate-100 px-1.5 py-0.5 text-[11px] font-semibold text-slate-700"
+            >
+              {branch}
+            </div>
+          )}
           {order.channel === 'online' ? (
             <div className="text-sm text-[#2e2e30]">
               <span

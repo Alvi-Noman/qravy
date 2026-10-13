@@ -10,7 +10,7 @@ import type { MenuItemDoc } from '../models/MenuItem.js';
 import type { ItemAvailabilityDoc } from '../models/ItemAvailability.js';
 import { DEFAULT_TIMEZONE, resolveWindows, tenantServicePeriods } from '../utils/availability.js';
 import { resolveBranchLocationId } from '../controllers/categoriesController.js';
-import { publicBranches } from '../utils/branches.js';
+import { branchForUnnamed, publicBranches } from '../utils/branches.js';
 
 const router: express.Router = express.Router();
 
@@ -168,17 +168,18 @@ router.get('/public/hours', async (req: Request, res: Response, next: NextFuncti
     let openingHours = tenant.openingHours ?? [];
     let source: 'restaurant' | 'branch' = 'restaurant';
     const branch = typeof req.query.branch === 'string' ? req.query.branch.trim() : '';
-    if (branch) {
-      const locId = await resolveBranchLocationId(tenant._id as ObjectId, branch);
-      if (locId) {
-        const loc = await client
-          .db('authDB')
-          .collection('locations')
-          .findOne({ _id: locId, tenantId: tenant._id }, { projection: { openingHours: 1 } });
-        if (Array.isArray(loc?.openingHours)) {
-          openingHours = loc!.openingHours;
-          source = 'branch';
-        }
+    // no branch in the link → the branch its orders go to (the only one, or the main link's), as checkout checks
+    const locId = branch
+      ? await resolveBranchLocationId(tenant._id as ObjectId, branch)
+      : (await branchForUnnamed(tenant._id as ObjectId)).locationId;
+    if (locId) {
+      const loc = await client
+        .db('authDB')
+        .collection('locations')
+        .findOne({ _id: locId, tenantId: tenant._id }, { projection: { openingHours: 1 } });
+      if (Array.isArray(loc?.openingHours)) {
+        openingHours = loc!.openingHours;
+        source = 'branch';
       }
     }
 
@@ -221,7 +222,10 @@ router.get('/public/menu', async (req: Request, res: Response, next: NextFunctio
     const periods = tenantServicePeriods(tenant);
 
     // Resolve branch (location) if provided
-    const locId: ObjectId | null = await resolveBranchLocationId(tenantOid, branch);
+    // no branch in the link → the branch its orders go to (the only one, or the main link's); none → the whole menu
+    const locId: ObjectId | null = branch
+      ? await resolveBranchLocationId(tenantOid, branch)
+      : (await branchForUnnamed(tenantOid)).locationId;
 
     // Collections
     const itemsCol = client.db('authDB').collection<MenuItemDoc>('menuItems');
@@ -265,7 +269,7 @@ router.get('/public/menu', async (req: Request, res: Response, next: NextFunctio
     const catById = new Map<string, any>(cats.map((c: any) => [c._id.toString(), c]));
 
     const catVisQuery: any = { tenantId: tenantOid, categoryId: { $in: catIds } };
-    if (locId) catVisQuery.locationId = locId;
+    catVisQuery.locationId = locId; // no branch → no branch's changes (null matches none)
     if (qCh) catVisQuery.channel = qCh;
     const catVis = catIds.length ? await catVisCol.find(catVisQuery).toArray() : [];
 
@@ -289,7 +293,7 @@ router.get('/public/menu', async (req: Request, res: Response, next: NextFunctio
       tenantId: tenantOid,
       itemId: { $in: docs.map((d) => d._id!).filter(Boolean) },
     };
-    if (locId) overlayQuery.locationId = locId;
+    overlayQuery.locationId = locId;
     if (qCh) overlayQuery.channel = qCh;
 
     const overlays = await availCol.find(overlayQuery).toArray();
@@ -427,7 +431,10 @@ router.get('/public/categories', async (req: Request, res: Response, next: NextF
     const tenantOid = tenant._id!;
 
     // Resolve branch (location) if provided
-    const locId: ObjectId | null = await resolveBranchLocationId(tenantOid, branch);
+    // no branch in the link → the branch its orders go to (the only one, or the main link's); none → the whole menu
+    const locId: ObjectId | null = branch
+      ? await resolveBranchLocationId(tenantOid, branch)
+      : (await branchForUnnamed(tenantOid)).locationId;
 
     const catsCol = client.db('authDB').collection('categories');
     const catVisCol = client.db('authDB').collection('categoryVisibility');
@@ -448,7 +455,7 @@ router.get('/public/categories', async (req: Request, res: Response, next: NextF
     // Apply visibility overlay logic
     const catIds = catsScoped.map((c) => c._id as ObjectId);
     const visQuery: any = { tenantId: tenantOid, categoryId: { $in: catIds } };
-    if (locId) visQuery.locationId = locId;
+    visQuery.locationId = locId; // no branch → no branch's changes (null matches none)
     if (qCh) visQuery.channel = qCh;
 
     const visDocs = await catVisCol.find(visQuery).toArray();
