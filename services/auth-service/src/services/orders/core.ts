@@ -12,7 +12,7 @@ import { DEFAULT_TIMEZONE } from '../../utils/availability.js';
 import type { Fulfillment, OrderChannel, OrderCustomer, OrderDoc, OrderLine, OrderStatus } from '../../models/Order.js';
 import type { OrderEta } from '../../models/Order.js';
 import { publishOrder, publishTenant } from './events.js';
-import { tableBook } from '../../utils/branches.js';
+import { branchName, tableBook } from '../../utils/branches.js';
 import {
   DEFAULT_PREP_MINUTES,
   STALE_ORDER_MS,
@@ -166,15 +166,32 @@ export async function priceLines(opts: {
   return priced;
 }
 
-async function nextOrderNumber(tenantOid: ObjectId, day: string): Promise<number> {
-  const res = await countersCol().findOneAndUpdate(
-    { _id: `${tenantOid.toHexString()}:${day}` },
-    { $inc: { seq: 1 } },
-    { upsert: true, returnDocument: 'after' }
-  );
+/** #1, #2 … each business day — counted per branch (Gulshan's #12 and Banani's #12 are two orders), per restaurant
+ *  without one. A branch's first order of the day continues after the day's highest number it already has. */
+async function nextOrderNumber(tenantOid: ObjectId, day: string, locationId: ObjectId | null): Promise<number> {
+  const _id = locationId ? `${tenantOid.toHexString()}:${locationId.toHexString()}:${day}` : `${tenantOid.toHexString()}:${day}`;
   // driver v5 returns the doc, v4 returns { value }
-  const doc = (res as unknown as { value?: { seq: number } })?.value ?? (res as unknown as { seq: number } | null);
-  return doc?.seq ?? 1;
+  const seqOf = (res: unknown) =>
+    ((res as { value?: { seq: number } })?.value ?? (res as { seq: number } | null))?.seq ?? null;
+
+  if (locationId) {
+    const bumped = seqOf(await countersCol().findOneAndUpdate({ _id }, { $inc: { seq: 1 } }, { returnDocument: 'after' }));
+    if (bumped !== null) return bumped;
+    // first of the day here: start after the branch's highest number today (orders numbered before per-branch counting)
+    const last = await ordersCol()
+      .find({ tenantId: tenantOid, locationId, businessDay: day }, { projection: { orderNumber: 1 } })
+      .sort({ orderNumber: -1 })
+      .limit(1)
+      .toArray();
+    try {
+      await countersCol().insertOne({ _id, seq: (last[0]?.orderNumber ?? 0) + 1 });
+      return (last[0]?.orderNumber ?? 0) + 1;
+    } catch (e) {
+      if ((e as { code?: number }).code !== 11000) throw e; // another order started the counter at the same moment
+    }
+  }
+  const res = await countersCol().findOneAndUpdate({ _id }, { $inc: { seq: 1 } }, { upsert: true, returnDocument: 'after' });
+  return seqOf(res) ?? 1;
 }
 
 export async function createOrderCore(input: {
@@ -254,9 +271,9 @@ export async function createOrderCore(input: {
   const doc: OrderDoc = {
     tenantId: input.tenantOid,
     locationId: input.locationId,
-    branch: input.branch ?? null,
+    branch: (await branchName(input.locationId)) ?? input.branch ?? null,
     channel,
-    orderNumber: await nextOrderNumber(input.tenantOid, day),
+    orderNumber: await nextOrderNumber(input.tenantOid, day, input.locationId ?? null),
     businessDay: day,
     status: 'placed',
     statusHistory: [{ status: 'placed', at: now, by: input.source }],

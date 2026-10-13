@@ -103,3 +103,10 @@ export async function branchForUnnamed(tenantId: ObjectId): Promise<{ locationId
   if (open.length >= 2) return { locationId: null, mustChoose: true };
   return { locationId: (open[0]?._id as ObjectId | undefined) ?? null, mustChoose: false };
 }
+
+/** The branch's name for orders, table calls and kitchen tickets ("Gulshan 2 (Main)", not the link's "gulshan-2-main"). */
+export async function branchName(locationId: ObjectId | null | undefined): Promise<string | null> {
+  if (!locationId) return null;
+  const loc = await locationsCol().findOne({ _id: locationId }, { projection: { name: 1 } });
+  return loc?.name ?? null;
+}
