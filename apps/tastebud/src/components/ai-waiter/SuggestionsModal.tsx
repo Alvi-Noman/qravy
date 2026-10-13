@@ -1,5 +1,6 @@
 // apps/tastebud/src/components/ai-waiter/SuggestionsModal.tsx
 import React from 'react';
+import { track } from '../../utils/track';
 import { Link, useLocation, useParams, useSearchParams } from 'react-router-dom';
 import MicInputBar from './MicInputBar';
 import SheetScrollArea, { ScrollLock } from '../SheetScroll';
@@ -151,6 +152,9 @@ export default function SuggestionsModal({
 }: Props) {
   const hl = new Set(highlightIds.map(String));
   const cardRefs = React.useRef<Record<string, HTMLElement | null>>({});
+  React.useEffect(() => {
+    if (open) track('suggestions_opened');
+  }, [open]);
   React.useEffect(() => {
     // bring the first highlighted dish into view
     const first = highlightIds.find((id) => cardRefs.current[id]);

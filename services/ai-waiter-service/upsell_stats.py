@@ -13,13 +13,14 @@ ENDED_AFTER_S = 10 * 60  # quiet this long after an offer → the conversation e
 
 
 def record(db: Any, *, tenant: Optional[str], branch: Optional[str], session: Optional[str], meta: Dict[str, Any],
-           now: Optional[float] = None) -> None:
-    """Called after every waiter turn. Never raises (stats must not break a reply)."""
+           now: Optional[float] = None, location: Optional[str] = None) -> None:
+    """Called after every waiter turn. Never raises (stats must not break a reply). `location`: the branch's id —
+    each branch's stats are its own (one conversation per guest and branch)."""
     if db is None or not tenant or not session:
         return
     now = now or time.time()
     try:
-        sid = f"{tenant}|{session}"
+        sid = f"{tenant}|{session}|{location}" if location else f"{tenant}|{session}"
         inc: Dict[str, float] = {"turns": 1}
         offer = meta.get("upsellOffer") if isinstance(meta.get("upsellOffer"), dict) else None
         outcome = meta.get("upsellOutcome") if isinstance(meta.get("upsellOutcome"), dict) else None
@@ -32,7 +33,7 @@ def record(db: Any, *, tenant: Optional[str], branch: Optional[str], session: Op
             inc["revenue"] = revenue
         if offer and offer.get("id"):
             db.upsell_offers.insert_one({
-                "_id": offer["id"], "tenant": tenant, "branch": branch, "session": session, "at": now,
+                "_id": offer["id"], "tenant": tenant, "branch": branch, "location": location, "session": session, "at": now,
                 "type": offer.get("type"), "moment": offer.get("moment"), "arm": offer.get("arm") or {},
                 "itemIds": offer.get("item_ids") or [], "value": float(offer.get("value") or 0),
                 "outcome": "pending", "revenue": 0.0,
@@ -46,7 +47,8 @@ def record(db: Any, *, tenant: Optional[str], branch: Optional[str], session: Op
             total = (meta.get("order") or {}).get("total")
             if isinstance(total, (int, float)):
                 sets["lastSubtotal"] = float(total)
-        on_insert: Dict[str, Any] = {"tenant": tenant, "branch": branch, "session": session, "firstAt": now}
+        on_insert: Dict[str, Any] = {"tenant": tenant, "branch": branch, "location": location, "session": session,
+                                     "firstAt": now}
         arm = meta.get("upsellArm") or (offer or {}).get("arm")
         if isinstance(arm, dict) and arm:
             sets["arm"] = arm  # every conversation, offered or not — the arms are compared on all of them
@@ -64,13 +66,16 @@ def _mean(xs: list) -> Optional[float]:
     return round(sum(xs) / len(xs), 2) if xs else None
 
 
-def stats(db: Any, tenant: str, days: int = 7, now: Optional[float] = None) -> Dict[str, Any]:
+def stats(db: Any, tenant: str, days: int = 7, now: Optional[float] = None, location: Optional[str] = None
+          ) -> Dict[str, Any]:
     """The restaurant's last `days`: take rate, extra revenue, order value with vs without an accepted offer, how
-    often a conversation ended right after an offer — overall, per offer type and per A/B arm."""
+    often a conversation ended right after an offer — overall, per offer type and per A/B arm. `location`: one
+    branch only (a branch login always; the owner with a branch selected)."""
     now = now or time.time()
     since = now - days * 86400
-    offers = list(db.upsell_offers.find({"tenant": tenant, "at": {"$gte": since}}))
-    sessions = list(db.upsell_sessions.find({"tenant": tenant, "lastAt": {"$gte": since}}))
+    where: Dict[str, Any] = {"tenant": tenant, **({"location": location} if location else {})}
+    offers = list(db.upsell_offers.find({**where, "at": {"$gte": since}}))
+    sessions = list(db.upsell_sessions.find({**where, "lastAt": {"$gte": since}}))
 
     def summary(off: list, ses: list) -> Dict[str, Any]:
         n = {k: sum(1 for o in off if o.get("outcome") == k) for k in ("accepted", "declined", "ignored", "pending")}
@@ -101,7 +106,7 @@ def stats(db: Any, tenant: str, days: int = 7, now: Optional[float] = None) -> D
         if s.get("arm"):
             arms_ses[_arm_key(s.get("arm"))].append(s)
     return {
-        "tenant": tenant, "days": days, **summary(offers, sessions),
+        "tenant": tenant, "days": days, "location": location, **summary(offers, sessions),
         "byType": {t: {k: v for k, v in summary(o, []).items() if k in ("offers", "accepted", "takeRate", "revenue")}
                    for t, o in sorted(by_type.items())},
         "byArm": {a: summary(arms_off.get(a, []), arms_ses.get(a, [])) for a in sorted(set(arms_off) | set(arms_ses))},

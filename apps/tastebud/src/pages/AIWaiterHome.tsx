@@ -10,6 +10,7 @@ import { useCart } from '../context/CartContext';
 import { useConversationStore } from '../state/conversation';
 import { orderPath, storeBasePath } from '../utils/checkout-flow';
 import { useOrderChannel, useStoreBranch } from '../utils/order-mode';
+import { track } from '../utils/track';
 import { getOrder, recentOrders } from '../api/orders';
 import { uiLang } from '../utils/ui-lang';
 import { useTenantInfo } from '../utils/waiter-lang';
@@ -315,6 +316,7 @@ export default function AiWaiterHome() {
   const handleFirstTap = () => {
     if (hasInteracted) return;
     setHasInteracted(true);
+    track('waiter_start');
     // FIRST, inside the tap: unlock sound (iPhones play nothing that a tap didn't start — state/tts.ts)
     tts.unlock();
     markWelcomeInteraction();

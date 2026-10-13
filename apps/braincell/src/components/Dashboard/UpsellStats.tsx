@@ -3,6 +3,7 @@
 // (wording: a reason vs just the price · timing: right after food is added vs only at the end).
 import { useQuery } from '@tanstack/react-query';
 import { useAuthContext } from '../../context/AuthContext';
+import { useScope } from '../../context/ScopeContext';
 import { waiterFetch } from '../../api/waiter';
 
 type Summary = {
@@ -44,14 +45,16 @@ const TYPE_LABEL: Record<string, string> = {
 
 export default function UpsellStats({ tenantSubdomain, days = 7 }: { tenantSubdomain?: string; days?: number }) {
   const { getToken, refreshToken } = useAuthContext();
+  const { activeLocationId } = useScope(); // one branch selected (or a branch login) → that branch's offers only
   const q = useQuery<Stats>({
-    queryKey: ['upsell-stats', tenantSubdomain, days],
+    queryKey: ['upsell-stats', tenantSubdomain, days, activeLocationId],
     enabled: !!tenantSubdomain,
     refetchInterval: 60_000,
     queryFn: async () => {
       // the restaurant's revenue: the staff login is checked by the waiter service
       const res = await waiterFetch(
-        `/upsell/stats?tenant=${encodeURIComponent(tenantSubdomain as string)}&days=${days}`,
+        `/upsell/stats?tenant=${encodeURIComponent(tenantSubdomain as string)}&days=${days}` +
+          (activeLocationId ? `&branch=${encodeURIComponent(activeLocationId)}` : ''),
         {},
         { getToken, refreshToken },
       );

@@ -7,7 +7,7 @@ export const RESERVED_SUBDOMAINS = new Set([
   'www', 'app', 'api', 'admin', 'dashboard', 'auth', 'login', 'mail', 'email', 'smtp', 'ftp',
   'cdn', 'static', 'assets', 'img', 'images', 'media', 'menu', 'order', 'orders', 'waiter',
   'staging', 'dev', 'test', 'demo', 'status', 'docs', 'help', 'support', 'blog', 'cname',
-  'ns1', 'ns2', 'qravy',
+  'ns1', 'ns2', 'qravy', 'cortex', 'events',
 ]);
 
 export function isValidSubdomain(s: string): boolean {

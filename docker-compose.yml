@@ -125,6 +125,26 @@ services:
       - api-gateway
     restart: unless-stopped
 
+  # Cortex — the company admin panel (every restaurant's activity) on :5600
+  cortex:
+    build:
+      context: .
+      dockerfile: apps/Dockerfile.dev
+      args:
+        APP: cortex
+    environment:
+      VITE_BIND_HOST: "0.0.0.0"
+      VITE_USE_POLLING: "true"
+      API_PROXY_TARGET: http://api-gateway:8080
+    ports:
+      - "5600:5600"
+    volumes:
+      - ./apps/cortex:/repo/apps/cortex
+      - /repo/apps/cortex/node_modules
+    depends_on:
+      - api-gateway
+    restart: unless-stopped
+
   tastebud:
     build:
       context: .

@@ -89,4 +89,15 @@ export async function applyScope(req: Request, res: Response, next: NextFunction
   next();
 }
 
+/** Restaurant setup (settings, billing, branches, devices, the team) — not from a session locked to one branch. */
+export function denyBranchSession(req: Request, res: Response, next: NextFunction): void {
+  if ((req.user as MutableUser | undefined)?.sessionType === 'branch') {
+    (res as any).fail
+      ? (res as any).fail(403, 'Not available on a branch device or branch login.')
+      : res.status(403).json({ message: 'Not available on a branch device or branch login.' });
+    return;
+  }
+  next();
+}
+
 export default applyScope;

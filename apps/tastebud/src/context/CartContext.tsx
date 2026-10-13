@@ -14,6 +14,7 @@ import { useLocation } from 'react-router-dom';
 import { loadCart as apiLoadCart, saveCart as apiSaveCart } from '../api/cart';
 import { getStableSessionId } from '../utils/ws';
 import { isDineInPath, storeBranchFromPath } from '../utils/table';
+import { trackItemAdded } from '../utils/track';
 
 /* -------------------------------------------------------------------------- */
 /*                                Type Definitions                            */
@@ -554,6 +555,7 @@ export function CartProvider({ children }: PropsWithChildren<object>) {
 
   const addItem = useCallback((input: AddItemInput) => {
     const qty = Math.max(1, input.qty ?? 1);
+    trackItemAdded(String(input.id), qty);
     dispatch({
       type: 'ADD',
       payload: { ...input, qty },

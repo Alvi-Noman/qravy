@@ -1,0 +1,17 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+  /* chart roles (dataviz reference palette, light surface) */
+  --surface-1: #fcfcfb;
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --grid: #e7e5e4;
+  --text-secondary: #52514e;
+}
+body {
+  background: #f6f6f4;
+  color: #0b0b0b;
+}

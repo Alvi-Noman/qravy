@@ -7,11 +7,13 @@ import {
   // export async function listAdmins(): Promise<Member[]>
   listAdmins as apiListAdmins,
 } from '../../api/access';
+import { useLocations } from '../../components/locations/useLocations';
 
 /**
  * Admin-only Team Settings
  * - Single authority role: "admin" (plus the immutable tenant "owner").
- * - Email-based invites for Admin access across all branches.
+ * - Email-based invites: Admin access across all branches — or, with two or more branches, "<branch> only": that
+ *   branch's orders, table calls and menu switches, nothing else (a branch login; see middleware/auth lockedBranch).
  * - Server-driven state: fetch on mount and after mutations.
  */
 
@@ -20,6 +22,8 @@ export type Member = {
   email: string;
   role: 'owner' | 'admin';
   status: 'active' | 'invited';
+  branchId?: string | null;
+  branchName?: string | null;
 };
 
 export default function SettingsAdminAccess(): JSX.Element {
@@ -27,6 +31,10 @@ export default function SettingsAdminAccess(): JSX.Element {
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState<string | null>(null);
   const [inviteEmail, setInviteEmail] = useState('');
+  const [inviteBranch, setInviteBranch] = useState(''); // '' → every branch
+  const { locations } = useLocations();
+  const branches = useMemo(() => locations.filter((l) => !l.disabled), [locations]);
+  const multiBranch = branches.length >= 2;
   const [confirm, setConfirm] = useState<{ id: string; email: string } | null>(null);
 
   const owner = useMemo(() => team.find((m) => m.role === 'owner'), [team]);
@@ -67,12 +75,20 @@ export default function SettingsAdminAccess(): JSX.Element {
 
     // optimistic row
     const tempId = `tmp-${Date.now()}`;
-    const optimistic: Member = { id: tempId, email: mail, role: 'admin', status: 'invited' };
+    const branch = branches.find((b) => b.id === inviteBranch);
+    const optimistic: Member = {
+      id: tempId,
+      email: mail,
+      role: 'admin',
+      status: 'invited',
+      branchId: branch?.id ?? null,
+      branchName: branch?.name ?? null,
+    };
     setTeam((t) => [optimistic, ...t]);
 
     try {
-      await apiInviteAdmin(mail);
-      toast('Admin invite sent');
+      await apiInviteAdmin(mail, branch?.id ?? null);
+      toast(branch ? `Invite sent — ${branch.name} only` : 'Admin invite sent');
       // Revalidate to get canonical id/status from server
       await load();
       setInviteEmail('');
@@ -141,6 +157,21 @@ export default function SettingsAdminAccess(): JSX.Element {
                 Invite Admin by email
               </label>
               <div className="mt-1 flex w-full gap-2">
+                {multiBranch && (
+                  <select
+                    value={inviteBranch}
+                    onChange={(e) => setInviteBranch(e.target.value)}
+                    aria-label="Which branches"
+                    className="shrink-0 rounded-lg border border-[#e2e2e2] bg-white px-2 py-2 text-sm outline-none focus:border-slate-400"
+                  >
+                    <option value="">All branches (Admin)</option>
+                    {branches.map((b) => (
+                      <option key={b.id} value={b.id}>
+                        {b.name} only
+                      </option>
+                    ))}
+                  </select>
+                )}
                 <input
                   id="invite"
                   inputMode="email"
@@ -163,8 +194,17 @@ export default function SettingsAdminAccess(): JSX.Element {
                 </button>
               </div>
               <p className="mt-1 text-[11px] text-slate-500">
-                This invite grants <span className="font-medium text-slate-800">Admin</span> access to the entire
-                restaurant.
+                {inviteBranch ? (
+                  <>
+                    They&apos;ll see and run <span className="font-medium text-slate-800">only this branch</span>: its
+                    orders (dine-in and online), table calls and menu switches — no settings.
+                  </>
+                ) : (
+                  <>
+                    This invite grants <span className="font-medium text-slate-800">Admin</span> access to the entire
+                    restaurant.
+                  </>
+                )}
               </p>
             </div>
           </div>
@@ -197,6 +237,14 @@ export default function SettingsAdminAccess(): JSX.Element {
                       <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-medium text-slate-700">
                         <i aria-hidden className="h-1.5 w-1.5 rounded-full bg-slate-500" />
                         Owner (Primary)
+                      </span>
+                    ) : m.branchId ? (
+                      <span
+                        className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2.5 py-1 text-[11px] font-medium text-amber-900"
+                        title="Sees and runs this branch only"
+                      >
+                        <i aria-hidden className="h-1.5 w-1.5 rounded-full bg-amber-500" />
+                        {m.branchName ?? 'One branch'} only
                       </span>
                     ) : (
                       <span className="inline-flex items-center gap-1 rounded-full bg-black/5 px-2.5 py-1 text-[11px] font-medium text-slate-900">

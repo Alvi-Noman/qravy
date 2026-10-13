@@ -45,8 +45,14 @@ function locationsCol() {
 function canWrite(role?: string): boolean {
   return role === 'owner' || role === 'admin' || role === 'editor';
 }
+/** A session locked to one branch (a branch device, branch staff) — or a device login without a role. */
 function isBranch(req: Request): boolean {
-  return !req.user?.role; // device/branch session has no membership role
+  return req.user?.sessionType === 'branch' || !req.user?.role;
+}
+
+/** That branch (its location id) for a branch session — its switches and lists are always its own branch's. */
+function lockedLocation(req: Request): string | null {
+  return req.user?.sessionType === 'branch' && req.user?.locationId ? req.user.locationId : null;
 }
 
 const CHANNELS: Array<'dine-in' | 'online'> = ['dine-in', 'online'];
@@ -2001,7 +2007,7 @@ export async function bulkSetAvailability(req: Request, res: Response, next: Nex
     if (!tenantId) return res.fail(409, 'Tenant not set');
     if (!(canWrite(req.user?.role) || isBranch(req))) return res.fail(403, 'Forbidden');
 
-    const { ids, active, locationId, channel, hardExclude, reviveExcluded, untilReset } = req.body as {
+    const { ids, active, locationId: askedLocationId, channel, hardExclude, reviveExcluded, untilReset } = req.body as {
       ids: string[];
       active: boolean;
       locationId?: string;
@@ -2010,6 +2016,8 @@ export async function bulkSetAvailability(req: Request, res: Response, next: Nex
       reviveExcluded?: boolean;  // NEW: when active===true, also clear removed:true tombstones first
       untilReset?: boolean;      // with active:false → back on at the next daily reset ("sold out")
     };
+    // a branch session switches its own branch's dishes only — never another branch's, nor restaurant-wide
+    const locationId = lockedLocation(req) ?? askedLocationId;
 
     const oids = (ids || [])
       .filter((s) => ObjectId.isValid(s))
@@ -2701,6 +2709,8 @@ export async function soldOutUntilByItem(
 
 /** Branch the admin list is scoped to (query ?locationId=, or the branch session). */
 function getTargetLocationIdForList(req: Request): ObjectId | null {
+  const lock = lockedLocation(req); // a branch session sees its own branch's menu
+  if (lock && ObjectId.isValid(lock)) return new ObjectId(lock);
   const q = typeof req.query.locationId === 'string' ? req.query.locationId : '';
   if (q && ObjectId.isValid(q)) return new ObjectId(q);
   const lid = req.user?.locationId;

@@ -35,7 +35,7 @@ const validateListQuery: express.RequestHandler = (req, res, next) => {
 const allowBranchOrAuthorize =
   (capability: string): express.RequestHandler =>
   (req, res, next) => {
-    if (!req.user?.role) return next(); // branch session
+    if (!req.user?.role || req.user?.sessionType === 'branch') return next(); // branch session
     return authorize(capability)(req, res, next);
   };
 

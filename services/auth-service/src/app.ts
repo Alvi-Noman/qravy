@@ -18,6 +18,8 @@ import cors from 'cors';
 
 import authRoutes from './routes/authRoutes.js';
 import menuRoutes from './routes/menuItemsRoutes.js';
+import eventsRoutes from './routes/eventsRoutes.js';
+import cortexRoutes from './routes/cortexRoutes.js';
 import tenantRoutes from './routes/tenantRoutes.js';
 import userRoutes from './routes/userRoutes.js';
 import locationRoutes from './routes/locationRoutes.js';
@@ -124,6 +126,20 @@ const apiLimiter = rateLimit({
   keyGenerator: (req: Request) => getClientIp(req),
 });
 
+/**
+ * Guest activity tracking (POST /public/events — the storefront's tracker) has its own, larger budget: a restaurant's
+ * guests often share its Wi-Fi IP, and tracking must never use up that IP's allowance for menus and orders.
+ */
+const eventsLimiter = rateLimit({
+  windowMs,
+  max: Number(process.env.RATE_LIMIT_MAX_EVENTS ?? 3000),
+  standardHeaders: false,
+  legacyHeaders: false,
+  skip: skipCommon,
+  keyGenerator: (req: Request) => getClientIp(req),
+  handler: (_req: Request, res: Response) => res.status(204).end(), // over budget: drop quietly (tracking only)
+});
+
 /** Tighter limiter only for risky auth endpoints */
 const authLimiter = rateLimit({
   windowMs,
@@ -143,13 +159,18 @@ const authLimiter = rateLimit({
 app.use('/api/v1/auth/login', authLimiter);
 app.use('/api/v1/auth/signup', authLimiter);
 app.use('/api/v1/auth/magic-link', authLimiter);
+app.use('/api/v1/cortex/login', authLimiter); // the company admin panel's sign-in
 
 /** Apply the mild limiter to the broader API surface */
-app.use('/api/v1', apiLimiter);
+app.use('/api/v1/public/events', eventsLimiter);
+// (the tracker's events are counted above, not here)
+app.use('/api/v1', (req, res, next) => (req.path === '/public/events' ? next() : apiLimiter(req, res, next)));
 
 /* ---------- Routes ---------- */
 // Mount public routes at /api/v1 so router.get('/public/menu') → /api/v1/public/menu
 app.use('/api/v1', publicRoutes);          // ✅ fixed mount
+app.use('/api/v1', eventsRoutes); // POST /public/events — what guests do in the storefront (for Cortex)
+app.use('/api/v1', cortexRoutes); // /cortex/* — the company admin panel (apps/cortex)
 app.use('/api/v1/auth', authRoutes);
 app.use('/api/v1/menu', menuRoutes);
 app.use('/api/v1/tenant', tenantRoutes);

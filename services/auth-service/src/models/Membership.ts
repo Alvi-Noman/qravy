@@ -10,6 +10,8 @@ export interface MembershipDoc {
   email: string;            
   role: MembershipRole;
   status: MembershipStatus;
+  /** Staff limited to one branch (Settings → Team, "<branch> only"): they see and run that branch only */
+  locationId?: ObjectId | null;
   inviteTokenHash?: string; 
   inviteExpiresAt?: Date;  
   createdAt: Date;

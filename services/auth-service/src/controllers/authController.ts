@@ -1,4 +1,5 @@
 // services/auth-service/src/controllers/authController.ts
+import { lockedBranch } from '../middleware/auth.js';
 import type { Request, Response, NextFunction } from 'express';
 import jwt, { type JwtPayload } from 'jsonwebtoken';
 import { Db, Collection, ObjectId } from 'mongodb';
@@ -230,7 +231,9 @@ export const verifyMagicLink = async (req: Request, res: Response, next: NextFun
     const { role, tenantIdStr, isOnboarded } = await resolveUserRoleAndTenantInfo(user);
 
     // Dashboard login ⇒ member session
-    const sessionType: 'member' | 'branch' = 'member';
+    // a branch staff member / a device assigned to a branch → a branch session (that branch only)
+    const lock = await lockedBranch(req, tenantIdStr ?? undefined, (user._id as ObjectId).toString());
+    const sessionType: 'member' | 'branch' = lock ? 'branch' : 'member';
 
     const capabilities = computeCapabilities({
       role,
@@ -245,6 +248,7 @@ export const verifyMagicLink = async (req: Request, res: Response, next: NextFun
         tenantId: tenantIdStr ?? undefined,
         role,
         sessionType,
+        ...(lock ? { locationId: lock } : {}),
       },
       process.env.JWT_SECRET!,
       { expiresIn: '15m' }
@@ -339,7 +343,9 @@ export const verifyOtp = async (req: Request, res: Response, next: NextFunction)
 
     // ---- Resolve tenant + role, then compute capabilities
     const { role, tenantIdStr, isOnboarded } = await resolveUserRoleAndTenantInfo(user);
-    const sessionType: 'member' | 'branch' = 'member';
+    // a branch staff member / a device assigned to a branch → a branch session (that branch only)
+    const lock = await lockedBranch(req, tenantIdStr ?? undefined, (user._id as ObjectId).toString());
+    const sessionType: 'member' | 'branch' = lock ? 'branch' : 'member';
     const capabilities = computeCapabilities({ role, sessionType });
 
     // ---- Sign access token
@@ -350,6 +356,7 @@ export const verifyOtp = async (req: Request, res: Response, next: NextFunction)
         tenantId: tenantIdStr ?? undefined,
         role,
         sessionType,
+        ...(lock ? { locationId: lock } : {}),
       },
       process.env.JWT_SECRET!,
       { expiresIn: '15m' }
@@ -506,7 +513,12 @@ export const refreshToken = async (req: Request, res: Response, next: NextFuncti
 
     // Resolve role again (owner/admin/editor/viewer) from tenant/membership
     const { role } = await resolveUserRoleAndTenantInfo(user);
-    const sessionType: 'member' | 'branch' = 'member'; // dashboard refresh ⇒ member
+    const lock = await lockedBranch(
+      req,
+      tenantIdFromRefresh ?? (user.tenantId ? (user.tenantId as ObjectId).toString() : undefined),
+      (user._id as ObjectId).toString()
+    );
+    const sessionType: 'member' | 'branch' = lock ? 'branch' : 'member'; // a branch device / branch staff ⇒ branch
 
     // Access token carries tenantId (from refresh payload or DB), plus role + sessionType
     const newAccessToken = jwt.sign(
@@ -516,6 +528,7 @@ export const refreshToken = async (req: Request, res: Response, next: NextFuncti
         tenantId: tenantIdFromRefresh ?? (user.tenantId ? (user.tenantId as ObjectId).toString() : undefined),
         role,
         sessionType,
+        ...(lock ? { locationId: lock } : {}),
       },
       process.env.JWT_SECRET!,
       { expiresIn: '15m' }

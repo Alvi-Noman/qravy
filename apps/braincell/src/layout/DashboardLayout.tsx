@@ -75,7 +75,9 @@ function SidebarFallback() {
 export default function DashboardLayout(): JSX.Element {
   const [aiOpen, setAiOpen] = useState(false);
   const [aiDismissed, setAiDismissed] = useState(false); // remember user closed the panel
-  const { user, loading, token } = useAuthContext();
+  const { user, loading, token, session } = useAuthContext();
+  // a branch device / branch login runs one branch's service — the restaurant's setup guide isn't for it
+  const branchSession = session?.type === 'central';
   const location = useLocation();
   const isSettingsPage = location.pathname.startsWith('/settings');
   const queryClient = useQueryClient();
@@ -185,7 +187,7 @@ export default function DashboardLayout(): JSX.Element {
           <div
             className="h-full min-h-0 min-w-0 rounded-xl border border-[#ececec] bg-[#fcfcfc] overflow-hidden grid"
             style={{
-              gridTemplateColumns: `minmax(0,1fr) ${aiOpen ? AI_PANEL_WIDTH : 0}px`,
+              gridTemplateColumns: `minmax(0,1fr) ${aiOpen && !branchSession ? AI_PANEL_WIDTH : 0}px`,
               transition: 'grid-template-columns 300ms ease',
             }}
           >
@@ -201,12 +203,12 @@ export default function DashboardLayout(): JSX.Element {
             </div>
 
             {/* Right */}
-            <AIAssistantPanel
+            {!branchSession && <AIAssistantPanel
               open={aiOpen}
               onClose={() => { setAiDismissed(true); setAiOpen(false); }}
               onRequestOpen={() => { if (!aiDismissed) setAiOpen(true); }} // allow auto-open unless dismissed
               width={AI_PANEL_WIDTH}
-            />
+            />}
           </div>
         </div>
       </main>
@@ -218,7 +220,7 @@ export default function DashboardLayout(): JSX.Element {
         hoursLeft={trial.hoursLeft ?? 0}
         onUpgrade={() => setPaywallOpen(true)}
         onCompare={() => setPaywallOpen(true)}
-        offsetRight={aiOpen ? AI_PANEL_WIDTH + 20 : 20}
+        offsetRight={aiOpen && !branchSession ? AI_PANEL_WIDTH + 20 : 20}
       />
 
       {/* Paywall */}

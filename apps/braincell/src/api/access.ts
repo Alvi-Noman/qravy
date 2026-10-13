@@ -23,6 +23,9 @@ export type AdminMember = {
   email: string;
   role: 'owner' | 'admin';
   status: 'active' | 'invited';
+  /** limited to one branch ("<branch> only"); null → every branch */
+  branchId?: string | null;
+  branchName?: string | null;
 };
 
 export type Member = AdminMember;
@@ -77,8 +80,9 @@ export async function registerDevice(opts: {
 /**
  * Send an admin invite email (owner only).
  */
-export async function inviteAdmin(email: string) {
-  const res = await api.post('/api/v1/access/invite-admin', { email });
+/** `locationId`: limit them to that branch (its orders, table calls and menu switches); omit → every branch. */
+export async function inviteAdmin(email: string, locationId?: string | null) {
+  const res = await api.post('/api/v1/access/invite-admin', { email, ...(locationId ? { locationId } : {}) });
   return res.data;
 }
 

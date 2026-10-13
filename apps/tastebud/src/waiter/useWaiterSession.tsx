@@ -6,6 +6,7 @@
 // (Moved verbatim from AIWaiterHome, which was the reference behaviour.)
 import React, { useCallback, useRef, useState, useEffect } from 'react';
 import { getWsURL, getStableSessionId } from '../utils/ws';
+import { noteSuggested, track } from '../utils/track';
 import type { WaiterIntent, AiReplyMeta } from '../types/waiter-intents';
 import { normalizeIntent, localHeuristicIntent } from '../utils/intent-routing';
 import { buildMenuIndex, resolveItemIdByName } from '../utils/item-resolver';
@@ -993,6 +994,16 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
             }, 0);
             const meta: AiReplyMeta | undefined = msg.meta;
             const replyText = (msg.replyText || '').toString().trim();
+            track('ai_turn');
+            {
+              const m = (meta ?? {}) as any;
+              noteSuggested([
+                ...(Array.isArray(m.suggestions) ? m.suggestions.map((s: any) => s?.itemId ?? s?.id) : []),
+                ...(Array.isArray(m.upsell) ? m.upsell.map((u: any) => u?.itemId ?? u?.id) : []),
+                ...(Array.isArray(m.upsellOffer?.item_ids) ? m.upsellOffer.item_ids : []),
+                ...(Array.isArray(m.highlight) ? m.highlight : []),
+              ]);
+            }
             const voiceText = (meta?.voiceReplyText || '').toString().trim();
             const speakText = voiceText || replyText;
             const silent = silentReplyRef.current; // asked by a button: shown, never spoken
