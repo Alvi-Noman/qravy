@@ -32,6 +32,8 @@ export interface TenantDoc {
   tables?: string[];
   /** Each table's secret QR key (utils/tableKeys): "/dine-in?table=12&k=<key>" proves the guest scanned that table */
   tableKeys?: Record<string, string>;
+  /** Two or more branches: the branch the main link (no branch in it) orders from. Missing → guests pick one. */
+  mainBranchId?: ObjectId | null;
 
   /**
    * Set only on a quick-demo restaurant (/quick-demo, no account): created from photos of a real menu to show the

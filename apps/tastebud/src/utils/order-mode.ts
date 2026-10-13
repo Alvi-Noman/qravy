@@ -26,6 +26,8 @@ export function useStoreChannels(sub?: string | null): {
   loaded: boolean;
   tables: string[];
   branches: StoreBranch[];
+  /** the branch the main link orders from (the owner's choice); null → the guest picks */
+  mainBranch: string | null;
 } {
   const { data, isFetched } = useQuery({
     queryKey: ['tenantInfo', sub],
@@ -41,7 +43,8 @@ export function useStoreChannels(sub?: string | null): {
   const ch = (data as any)?.channels;
   const tables = Array.isArray((data as any)?.tables) ? ((data as any).tables as string[]) : [];
   const branches = Array.isArray((data as any)?.branches) ? ((data as any).branches as StoreBranch[]) : [];
-  return { dineIn: ch?.dineIn !== false, online: ch?.online !== false, loaded: isFetched, tables, branches };
+  const mainBranch = typeof (data as any)?.mainBranch === 'string' ? ((data as any).mainBranch as string) : null;
+  return { dineIn: ch?.dineIn !== false, online: ch?.online !== false, loaded: isFetched, tables, branches, mainBranch };
 }
 
 /** Pure rule: the dine-in side of the site ("…/dine-in…") is dine-in, everything else is the online shop — unless

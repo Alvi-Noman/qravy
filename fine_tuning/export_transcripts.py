@@ -117,12 +117,13 @@ def export_once(coll, outdir: str, mark_value: str, batch: int, *, force: bool =
       - --lastN: export last N docs regardless of status (no marking)
     """
     if lastN > 0:
-        docs = list(coll.find({"ai.replyText": {"$exists": True, "$ne": ""}})
+        docs = list(coll.find({"ai.replyText": {"$exists": True, "$ne": ""}, "status": {"$ne": "unheard"}})
                     .sort("_id", -1).limit(lastN))
         docs.reverse()  # chronological order in the output file
         mark_ids = []
     else:
-        q = {"ai.replyText": {"$exists": True, "$ne": ""}}
+        # "unheard": the waiter asked the guest to repeat (kept for the admin's conversations page, not training)
+        q = {"ai.replyText": {"$exists": True, "$ne": ""}, "status": {"$ne": "unheard"}}
         if not force:
             q["status"] = "new"
         docs = list(coll.find(q).sort("_id", 1).limit(batch))

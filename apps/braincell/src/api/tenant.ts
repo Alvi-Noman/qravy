@@ -155,6 +155,8 @@ export async function updateTenant(
     kitchen?: { defaultPrepMinutes: number; parallelOrders: number };
     /** Dine-in table labels for table QR codes */
     tables?: string[];
+    /** Two or more branches: the branch the main link orders from; null → guests pick one */
+    mainBranchId?: string | null;
     /** uploaded logo URL; null removes it */
     logoUrl?: string | null;
   },

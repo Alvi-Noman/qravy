@@ -5,8 +5,9 @@
  *     goes to it (apps/tastebud/src/utils/table.ts). The key is the table's secret (made when the table is saved): an
  *     order without it (a typed table number) reaches the staff marked "table not verified".
  * Two or more branches → each branch gets the same, the branch first: {storefront}/<slug> and
- *   {storefront}/<slug>/dine-in?table=<name>&k=<key>, so the order goes to that branch. The main online code then asks
- *   the guest which branch (apps/tastebud/src/components/BranchGate.tsx).
+ *   {storefront}/<slug>/dine-in?table=<name>&k=<key>, so the order goes to that branch. The main online code (and old
+ *   table codes without a branch) asks the guest which branch — or goes to the one chosen under "Main link"
+ *   (apps/tastebud/src/components/BranchGate.tsx).
  * Table names are saved on the tenant (one branch) or on each branch; codes can be downloaded as PNG or printed as a sheet.
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -372,6 +373,22 @@ export default function QrCodesPage(): JSX.Element {
   // two or more open branches → every branch gets its own online code and its own tables
   const branches = useMemo(() => locations.filter((l) => !l.disabled && l.slug), [locations]);
   const multiBranch = branches.length >= 2;
+  // the branch the main link orders from (null → guests pick one)
+  const mainBranch = branches.find((b) => b.id === tenant?.mainBranchId) ?? null;
+  const [savingMain, setSavingMain] = useState(false);
+  const saveMainBranch = async (id: string | null) => {
+    setSavingMain(true);
+    try {
+      await updateTenant({ mainBranchId: id }, token as string);
+      await queryClient.invalidateQueries({ queryKey: ['tenant', token] });
+      const name = branches.find((b) => b.id === id)?.name;
+      toastSuccess(name ? `Main link orders now go to ${name}` : 'Main link asks guests which branch');
+    } catch (e: any) {
+      toastError(e?.response?.data?.message || 'Could not save');
+    } finally {
+      setSavingMain(false);
+    }
+  };
 
   const savedTables = useMemo(() => tenant?.tables ?? [], [tenant?.tables]);
   const dineIn = !!tenant?.restaurantInfo?.dineInEnabled;
@@ -392,7 +409,11 @@ export default function QrCodesPage(): JSX.Element {
   const printItems: PrintItem[] = [
     ...(online && base
       ? [
-          { title: 'Order online', subtitle: 'Scan to order for pickup or delivery', url: onlineUrl(base) },
+          {
+            title: mainBranch ? `Order online · ${mainBranch.name}` : 'Order online',
+            subtitle: 'Scan to order for pickup or delivery',
+            url: onlineUrl(base),
+          },
           ...(multiBranch
             ? branches.map((b) => ({
                 title: `Order online · ${b.name}`,
@@ -448,6 +469,32 @@ export default function QrCodesPage(): JSX.Element {
         </button>
       </div>
 
+      {multiBranch && (
+        <section className="mt-6 rounded-xl border border-[#ececec] bg-white p-4">
+          <label htmlFor="main-branch" className="text-[14px] font-semibold text-slate-900">
+            Main link
+          </label>
+          <p className="mt-0.5 text-[12px] text-slate-500">
+            Where orders from {base.replace(/^https?:\/\//, '')} go (and from table codes without a branch). Branch
+            links always go to their own branch.
+          </p>
+          <select
+            id="main-branch"
+            value={mainBranch?.id ?? ''}
+            disabled={savingMain}
+            onChange={(e) => saveMainBranch(e.target.value || null)}
+            className="mt-2 w-72 max-w-full rounded-md border border-[#e2e2e2] bg-white px-3 py-2 text-sm outline-none focus:border-slate-400 disabled:opacity-50"
+          >
+            <option value="">Ask guests which branch</option>
+            {branches.map((b) => (
+              <option key={b.id} value={b.id}>
+                Send orders to {b.name}
+              </option>
+            ))}
+          </select>
+        </section>
+      )}
+
       {online && (
         <section className="mt-6">
           <h2 className="flex items-center gap-1.5 text-[14px] font-semibold text-slate-900">
@@ -455,14 +502,18 @@ export default function QrCodesPage(): JSX.Element {
             Online storefront
           </h2>
           <p className="mt-0.5 text-[12px] text-slate-500">
-            {multiBranch
-              ? 'For flyers, social media, takeaway bags and your shop window. The main code asks guests which branch; a branch code goes straight to it.'
-              : 'For flyers, social media, takeaway bags and your shop window.'}
+            {!multiBranch
+              ? 'For flyers, social media, takeaway bags and your shop window.'
+              : mainBranch
+                ? `For flyers, social media, takeaway bags and your shop window. The main code sends orders to ${mainBranch.name}; a branch code goes straight to its branch.`
+                : 'For flyers, social media, takeaway bags and your shop window. The main code asks guests which branch; a branch code goes straight to it.'}
           </p>
           <div className="mt-3 grid grid-cols-[repeat(auto-fill,minmax(210px,1fr))] gap-3">
             <QrCard
               title="Order online"
-              subtitle={multiBranch ? 'Guests pick a branch' : 'Scan to order for pickup or delivery'}
+              subtitle={
+                !multiBranch ? 'Scan to order for pickup or delivery' : mainBranch ? `Orders go to ${mainBranch.name}` : 'Guests pick a branch'
+              }
               url={onlineUrl(base)}
               filename={`${tenant.subdomain}-online-qr.png`}
             />

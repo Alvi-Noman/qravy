@@ -59,14 +59,19 @@ export async function ensureBranchSlugs(tenantId: ObjectId): Promise<void> {
   }
 }
 
-/** The restaurant's open branches, for the guest app ("Which branch?" and each branch's tables). */
-export async function publicBranches(tenantId: ObjectId) {
+/** The restaurant's open branches, for the guest app ("Which branch?" and each branch's tables), and the one its
+ *  main link orders from when the owner chose one (null → the guest picks). */
+export async function publicBranches(tenantId: ObjectId, mainBranchId?: unknown) {
   await ensureBranchSlugs(tenantId);
   const locs = await locationsCol()
     .find({ tenantId, disabled: { $ne: true } }, { projection: { slug: 1, name: 1, address: 1, tables: 1 } })
     .sort({ createdAt: 1 })
     .toArray();
-  return locs.map((l) => ({ slug: l.slug as string, name: l.name, address: l.address || '', tables: l.tables ?? [] }));
+  const main = mainBranchId ? locs.find((l) => String(l._id) === String(mainBranchId)) : undefined;
+  return {
+    branches: locs.map((l) => ({ slug: l.slug as string, name: l.name, address: l.address || '', tables: l.tables ?? [] })),
+    mainBranch: (main?.slug as string | undefined) ?? null,
+  };
 }
 
 type TenantTables = { tables?: unknown; tableKeys?: unknown; [field: string]: unknown } | null | undefined;
@@ -93,13 +98,25 @@ export async function tableBook(tenant: TenantTables, locationId: ObjectId | nul
   };
 }
 
-/** A guest order or table call that names no branch: with one open branch it is that branch's; with two or more
- *  the guest has to choose (the storefront asks "Which branch?") — otherwise no branch's staff would ever see it. */
+/** A guest order or table call that names no branch (the main link): with one open branch it is that branch's; with
+ *  two or more, the branch the owner set for the main link — or, without one, the guest has to choose (the storefront
+ *  asks "Which branch?"); otherwise no branch's staff would ever see it. */
 export async function branchForUnnamed(tenantId: ObjectId): Promise<{ locationId: ObjectId | null; mustChoose: boolean }> {
   const open = await locationsCol()
     .find({ tenantId, disabled: { $ne: true } }, { projection: { _id: 1 } })
     .limit(2)
     .toArray();
-  if (open.length >= 2) return { locationId: null, mustChoose: true };
-  return { locationId: (open[0]?._id as ObjectId | undefined) ?? null, mustChoose: false };
+  if (open.length < 2) return { locationId: (open[0]?._id as ObjectId | undefined) ?? null, mustChoose: false };
+  const tenant = await client.db('authDB').collection('tenants').findOne({ _id: tenantId }, { projection: { mainBranchId: 1 } });
+  const main = tenant?.mainBranchId
+    ? await locationsCol().findOne({ _id: tenant.mainBranchId, tenantId, disabled: { $ne: true } }, { projection: { _id: 1 } })
+    : null;
+  return main ? { locationId: main._id as ObjectId, mustChoose: false } : { locationId: null, mustChoose: true };
+}
+
+/** The branch's name for orders, table calls and kitchen tickets ("Gulshan 2 (Main)", not the link's "gulshan-2-main"). */
+export async function branchName(locationId: ObjectId | null | undefined): Promise<string | null> {
+  if (!locationId) return null;
+  const loc = await locationsCol().findOne({ _id: locationId }, { projection: { name: 1 } });
+  return loc?.name ?? null;
 }

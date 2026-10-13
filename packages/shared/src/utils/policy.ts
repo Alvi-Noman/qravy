@@ -48,6 +48,7 @@ const ROLE_CAPS: Record<Role, Capability[]> = {
     'offers:*',
     'customers:*',
     'locations:*',
+    'conversations:*', // the AI waiter's conversations with guests (owners have '*')
   ],
   editor: [
     'dashboard:view',

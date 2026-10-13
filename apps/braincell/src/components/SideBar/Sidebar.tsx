@@ -18,6 +18,7 @@ import {
   MapPinIcon,
   Cog6ToothIcon,
   QrCodeIcon,
+  ChatBubbleLeftRightIcon,
 } from '@heroicons/react/24/outline';
 import { useAuthContext } from '../../context/AuthContext';
 import { useScope } from '../../context/ScopeContext';
@@ -62,6 +63,7 @@ export default function Sidebar(): JSX.Element {
     // Insights
     'Sales Reports': 'reports:view',
     'Menu Performance': 'reports:menuPerformance',
+    'AI Conversations': 'conversations:read', // owners/admins only
   };
 
   // Define the full menu once…
@@ -87,6 +89,7 @@ export default function Sidebar(): JSX.Element {
       items: [
         { name: 'Sales Reports', to: '/reports/sales', icon: BanknotesIcon },
         { name: 'Menu Performance', to: '/reports/menu-performance', icon: ChartBarIcon },
+        { name: 'AI Conversations', to: '/conversations', icon: ChatBubbleLeftRightIcon },
       ],
     },
     {

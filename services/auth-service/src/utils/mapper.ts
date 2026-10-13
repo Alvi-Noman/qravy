@@ -163,6 +163,7 @@ export function toTenantDTO(doc: TenantDoc): v1.TenantDTO {
     kitchen: kitchenSettings(doc),
     tables: doc.tables ?? [],
     tableKeys: doc.tableKeys ?? {},
+    mainBranchId: doc.mainBranchId ? String(doc.mainBranchId) : null,
     servicePeriods: tenantServicePeriods(doc),
 
     // trial info

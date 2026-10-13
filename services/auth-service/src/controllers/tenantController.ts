@@ -273,7 +273,8 @@ export async function getMyTenant(req: Request, res: Response, next: NextFunctio
 
     // Do NOT compute onboarding flags here; rely on stored values only
     const dto = toTenantDTO(tenant);
-    return res.ok({ item: dto });
+    // the caller's role here (none for a branch device): the AI waiter service gates owner/admin-only views on it
+    return res.ok({ item: dto, role: req.user?.role ?? null });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     logger.error(`getMyTenant error: ${msg}`);
@@ -728,6 +729,18 @@ export async function updateMyTenant(req: Request, res: Response, next: NextFunc
     if (parsed.dailyResetTime) update.dailyResetTime = parsed.dailyResetTime;
     if (parsed.servicePeriods) update.servicePeriods = normalizeServicePeriods(parsed.servicePeriods);
     if (parsed.kitchen) update.kitchen = kitchenSettings({ kitchen: parsed.kitchen });
+    if (parsed.mainBranchId !== undefined) {
+      if (parsed.mainBranchId) {
+        const loc = await client
+          .db('authDB')
+          .collection('locations')
+          .findOne({ _id: new ObjectId(parsed.mainBranchId), tenantId: tenant._id, disabled: { $ne: true } }, { projection: { _id: 1 } });
+        if (!loc) return res.fail(400, 'That branch is not open — choose another one.');
+        update.mainBranchId = loc._id as ObjectId;
+      } else {
+        update.mainBranchId = null;
+      }
+    }
     if (parsed.tables) {
       update.tables = [...new Set(parsed.tables.map((t) => t.trim().replace(/^#/, '').toUpperCase()))];
       update.tableKeys = tableKeysFor(update.tables, tenant.tableKeys);

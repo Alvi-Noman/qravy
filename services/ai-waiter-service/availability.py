@@ -158,16 +158,32 @@ LOCATION_ID_TTL_S = 10 * 60
 
 def resolve_location_id(db, tenant_oid, branch_hint: Optional[str]):
     """Branch slug/name → location _id (same matching as the Node public menu). Cached — it's asked several times a turn."""
-    if not branch_hint or tenant_oid is None:
+    if tenant_oid is None:
         return None
-    key = (str(tenant_oid), str(branch_hint))
+    key = (str(tenant_oid), str(branch_hint or ""))
     hit = _LOCATION_ID_CACHE.get(key)
     if hit and time.monotonic() - hit[0] < LOCATION_ID_TTL_S:
         return hit[1]
-    loc_id = _lookup_location_id(db, tenant_oid, branch_hint)
+    # no branch in the link → the branch its orders go to (the only one, or the main link's) — as the Node services do
+    loc_id = _lookup_location_id(db, tenant_oid, branch_hint) if branch_hint else _default_location_id(db, tenant_oid)
     if loc_id is not None:
         _LOCATION_ID_CACHE[key] = (time.monotonic(), loc_id)
     return loc_id
+
+
+def _default_location_id(db, tenant_oid):
+    """Same as Node's branchForUnnamed: one open branch → it; two or more → the owner's main-link branch, if open."""
+    try:
+        open_ids = [d["_id"] for d in db["locations"].find({"tenantId": tenant_oid, "disabled": {"$ne": True}}, {"_id": 1}).limit(2)]
+        if len(open_ids) == 1:
+            return open_ids[0]
+        if len(open_ids) >= 2:
+            main = (db["tenants"].find_one({"_id": tenant_oid}, {"mainBranchId": 1}) or {}).get("mainBranchId")
+            if main and db["locations"].find_one({"_id": main, "tenantId": tenant_oid, "disabled": {"$ne": True}}, {"_id": 1}):
+                return main
+        return None
+    except Exception:
+        return None
 
 
 def _lookup_location_id(db, tenant_oid, branch_hint: str):

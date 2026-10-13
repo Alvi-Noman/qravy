@@ -11,7 +11,7 @@ import { client } from '../db.js';
 import logger from '../utils/logger.js';
 import { resolveBranchLocationId } from './categoriesController.js';
 import { publishTenant } from '../services/orders/events.js';
-import { branchForUnnamed, tableBook } from '../utils/branches.js';
+import { branchForUnnamed, branchName, tableBook } from '../utils/branches.js';
 import type { SERVICE_REQUEST_KINDS } from '../validation/schemas.js';
 
 export type ServiceRequestKind = (typeof SERVICE_REQUEST_KINDS)[number];
@@ -159,7 +159,7 @@ export async function createServiceRequest(req: Request, res: Response, next: Ne
     const doc: ServiceRequestDoc = {
       tenantId: tenantOid,
       locationId,
-      branch: b.branch ?? null,
+      branch: (await branchName(locationId)) ?? b.branch ?? null,
       table,
       tableVerified,
       kind: b.kind,

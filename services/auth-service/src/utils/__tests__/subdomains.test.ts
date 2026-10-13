@@ -50,5 +50,5 @@ describe('subdomain check route', () => {
     const { default: app } = await import('../../app.js');
     const res = await request(app).get('/api/v1/auth/tenants/subdomain-check?subdomain=burger-house');
     expect(res.status).toBe(401);
-  });
+  }, 30_000); // loading the whole app is slow while the other suites run
 });

@@ -343,14 +343,15 @@ function OrderCard({
     >
       <header className="flex items-start justify-between gap-2">
         <div>
-          <div className="text-lg font-semibold text-[#2e2e30]">
-            #{order.orderNumber}
-            {branch && (
-              <span className="ml-2 rounded bg-slate-100 px-1.5 py-0.5 align-middle text-[11px] font-semibold text-slate-700">
-                {branch}
-              </span>
-            )}
-          </div>
+          <div className="text-lg font-semibold text-[#2e2e30]">#{order.orderNumber}</div>
+          {branch && (
+            <div
+              title={branch}
+              className="mb-0.5 max-w-[11rem] truncate rounded bg-slate-100 px-1.5 py-0.5 text-[11px] font-semibold text-slate-700"
+            >
+              {branch}
+            </div>
+          )}
           {order.channel === 'online' ? (
             <div className="text-sm text-[#2e2e30]">
               <span
@@ -478,6 +479,7 @@ function OrderCard({
 function History({ token, onPrint }: { token: string | null; onPrint: PrintFn }) {
   const [rows, setRows] = useState<AdminOrder[] | null>(null);
   const { activeLocationId } = useScope();
+  const branchOf = useBranchLabel(); // order numbers are per branch: "#12 · Gulshan"
 
   const load = async () => {
     if (!token) return;
@@ -517,7 +519,14 @@ function History({ token, onPrint }: { token: string | null; onPrint: PrintFn })
         <tbody className="divide-y divide-[#f0f0f0]">
           {visible.map((o) => (
             <tr key={o.id}>
-              <td className="px-4 py-3 font-semibold text-[#2e2e30]">#{o.orderNumber}</td>
+              <td className="px-4 py-3 font-semibold text-[#2e2e30]">
+                #{o.orderNumber}
+                {branchOf(o.locationId) && (
+                  <span className="ml-1.5 rounded bg-slate-100 px-1.5 py-0.5 text-[11px] font-semibold text-slate-700">
+                    {branchOf(o.locationId)}
+                  </span>
+                )}
+              </td>
               <td className="px-4 py-3">
                 {o.channel === 'online' ? `${orderWhere(o)} · ${o.customer?.name ?? ''}` : o.table}
                 {o.channel !== 'online' && o.tableVerified === false && (
