@@ -94,6 +94,13 @@ export const profileUpdateSchema = z.object({
   company: z.string().min(1, 'Company is required'),
 });
 
+const RESERVED_SUBDOMAINS = new Set([
+  'www', 'app', 'api', 'admin', 'dashboard', 'auth', 'login', 'mail', 'email', 'smtp', 'ftp',
+  'cdn', 'static', 'assets', 'img', 'images', 'media', 'menu', 'order', 'orders', 'waiter',
+  'staging', 'dev', 'test', 'demo', 'status', 'docs', 'help', 'support', 'blog', 'cname',
+  'ns1', 'ns2', 'qravy',
+]);
+
 export const tenantCreateSchema = z.object({
   name: z.string().min(1, 'Name is required').max(100),
   subdomain: z
@@ -103,7 +110,9 @@ export const tenantCreateSchema = z.object({
     .regex(/^[a-z0-9-]{3,32}$/, 'Invalid subdomain')
     .refine((s) => !s.startsWith('-') && !s.endsWith('-') && !s.includes('--'), {
       message: 'Invalid subdomain',
-    }),
+    })
+    // the storefront lives at <subdomain>.qravy.com, so names our own hosts use are off limits
+    .refine((s) => !RESERVED_SUBDOMAINS.has(s), { message: 'This subdomain is not available' }),
   dineInEnabled: z.boolean().optional(),
   onlineSalesEnabled: z.boolean().optional(),
 });

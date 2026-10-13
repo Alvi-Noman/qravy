@@ -1,5 +1,30 @@
 {
 	email {$TLS_EMAIL}
+
+	# <restaurant>.qravy.com: a certificate per restaurant, issued on its first visit,
+	# only after storefront-host confirms the restaurant exists.
+	on_demand_tls {
+		ask http://storefront-host:8090/internal/tls-ask
+	}
+}
+
+(storefront) {
+	@internal path /internal/*
+	handle @internal {
+		respond "Not Found" 404
+	}
+
+	@voice path /ws/voice
+	handle @voice {
+		reverse_proxy api-gateway:8080
+	}
+
+	@azure path /azure/*
+	handle @azure {
+		reverse_proxy api-gateway:8080
+	}
+
+	reverse_proxy storefront-host:8090
 }
 
 {$ADMIN_DOMAIN} {
@@ -37,16 +62,15 @@
 	}
 }
 
+# Old links and printed QR codes: {$STOREFRONT_DOMAIN}/t/<restaurant>
 {$STOREFRONT_DOMAIN} {
-	@voice path /ws/voice
-	handle @voice {
-		reverse_proxy api-gateway:8080
-	}
+	import storefront
+}
 
-	@azure path /azure/*
-	handle @azure {
-		reverse_proxy api-gateway:8080
+# Online shop: <restaurant>.qravy.com — dine-in: <restaurant>.qravy.com/dine-in?table=12
+*.qravy.com {
+	tls {
+		on_demand
 	}
-
-	reverse_proxy storefront-host:8090
+	import storefront
 }
