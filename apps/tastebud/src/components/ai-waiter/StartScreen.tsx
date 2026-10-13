@@ -11,6 +11,10 @@ type Props = {
   table?: string | null;
   lang: 'bn' | 'en';
   onStart: () => void;
+  /** two or more branches: the one the guest is ordering from */
+  branch?: string | null;
+  /** online guests can pick another branch (a table's QR code already says which) */
+  onChangeBranch?: () => void;
 };
 
 const LOGO = 96; // px — a launch-screen app icon
@@ -26,7 +30,7 @@ function initialsOf(name: string): string {
   );
 }
 
-export default function StartScreen({ name, logoUrl, table, lang, onStart }: Props) {
+export default function StartScreen({ name, logoUrl, table, lang, onStart, branch, onChangeBranch }: Props) {
   const [logoFailed, setLogoFailed] = useState(false);
   const loaded = !!name;
   const showLogo = !!logoUrl && !logoFailed;
@@ -69,6 +73,21 @@ export default function StartScreen({ name, logoUrl, table, lang, onStart }: Pro
         >
           {name || '…'}
         </h1>
+
+        {branch && (
+          <p className="qv-start-in mt-2 text-[15px] text-gray-600" style={{ animationDelay: '90ms' }}>
+            {branch}
+            {onChangeBranch && (
+              <button
+                type="button"
+                onClick={onChangeBranch}
+                className="ml-2 text-[13px] font-semibold text-[#FA2851] underline-offset-2 hover:underline"
+              >
+                {en ? 'Change' : 'বদলান'}
+              </button>
+            )}
+          </p>
+        )}
 
         {table && (
           <span

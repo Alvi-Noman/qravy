@@ -3,7 +3,7 @@
 // ("burger-house.qravy.com/gulshan", "…/gulshan/dine-in?table=12"); the main link ("burger-house.qravy.com", or an
 // old table code without a branch) goes to the branch the owner chose for it — or, without one, asks "Which branch?"
 // first — then opens the same page for that branch, the table and its QR key along. A branch link that isn't one of
-// its open branches asks.
+// its open branches asks — and so does "?choose=1" (the start screen's "Change" next to the branch name).
 import type { ReactNode } from 'react';
 import { Navigate, useLocation, useNavigate } from 'react-router-dom';
 import { splitStorePath, storeBranchFromPath, storeSubFromPath } from '../utils/table';
@@ -20,8 +20,9 @@ export default function BranchGate({ children }: { children: ReactNode }) {
   if (!sub) return <>{children}</>;
   if (!loaded) return null; // a moment — whether to ask depends on the restaurant's branches
   if (branches.length < 2) return <>{children}</>;
-  if (branch && branches.some((b) => b.slug === branch)) return <>{children}</>;
-  if (!branch && mainBranch && branches.some((b) => b.slug === mainBranch)) {
+  const choosing = new URLSearchParams(location.search).has('choose');
+  if (!choosing && branch && branches.some((b) => b.slug === branch)) return <>{children}</>;
+  if (!choosing && !branch && mainBranch && branches.some((b) => b.slug === mainBranch)) {
     // the main link orders from the owner's chosen branch — straight there, no question
     return <Navigate replace to={{ pathname: branchPath(pathname, null, mainBranch), search: location.search, hash: location.hash }} />;
   }
@@ -41,8 +42,11 @@ function AskBranch({ branches, current }: { branches: StoreBranch[]; current: st
   const lang = uiLang();
 
   const open = (slug: string) => {
+    const search = new URLSearchParams(location.search);
+    search.delete('choose'); // asked once
+    const q = search.toString();
     navigate(
-      { pathname: branchPath(location.pathname, current, slug), search: location.search, hash: location.hash },
+      { pathname: branchPath(location.pathname, current, slug), search: q ? `?${q}` : '', hash: location.hash },
       { replace: true },
     );
   };

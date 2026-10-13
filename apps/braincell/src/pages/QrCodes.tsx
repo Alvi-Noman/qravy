@@ -221,6 +221,7 @@ function TableSection({
   keys,
   urlFor,
   filePrefix,
+  branchName,
   onSave,
   onDirtyChange,
 }: {
@@ -230,6 +231,8 @@ function TableSection({
   keys: Record<string, string>;
   urlFor: (table: string, key?: string) => string;
   filePrefix: string;
+  /** a branch's tables: its name goes on each code (Table 1 at Gulshan and at Banani look alike otherwise) */
+  branchName?: string;
   onSave: (tables: string[]) => Promise<unknown>;
   onDirtyChange: (dirty: boolean) => void;
 }) {
@@ -339,7 +342,7 @@ function TableSection({
             <QrCard
               key={t}
               title={`Table ${t}`}
-              subtitle={keys[t] ? 'Scan to order' : 'Save to finish this code'}
+              subtitle={keys[t] ? (branchName ? `${branchName} · Scan to order` : 'Scan to order') : 'Save to finish this code'}
               url={urlFor(t, keys[t])}
               filename={`${filePrefix}-table-${t}-qr.png`}
               onRemove={() => setTables((prev) => prev.filter((x) => x !== t))}
@@ -549,6 +552,7 @@ export default function QrCodesPage(): JSX.Element {
               keys={b.tableKeys ?? {}}
               urlFor={(t, k) => tableUrl(base, t, k, b.slug)}
               filePrefix={`${tenant.subdomain}-${b.slug}`}
+              branchName={b.name}
               onSave={saveBranchTables(b.id)}
               onDirtyChange={markDirty(b.id)}
             />

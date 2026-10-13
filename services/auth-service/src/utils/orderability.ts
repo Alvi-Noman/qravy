@@ -35,11 +35,13 @@ export async function checkOrderable(opts: {
   const tz: string = tenant?.timezone ?? DEFAULT_TIMEZONE;
 
   let openingHours: AvailabilityWindow[] = tenant?.openingHours ?? [];
+  let branchName: string | null = null;
   if (opts.locationId) {
     const loc = await db
       .collection('locations')
-      .findOne({ _id: opts.locationId, tenantId: opts.tenantOid }, { projection: { openingHours: 1 } });
+      .findOne({ _id: opts.locationId, tenantId: opts.tenantOid }, { projection: { openingHours: 1, name: 1 } });
     if (Array.isArray(loc?.openingHours)) openingHours = loc!.openingHours;
+    branchName = typeof loc?.name === 'string' ? loc.name : null;
   }
 
   const items = await db
@@ -139,7 +141,9 @@ export async function checkOrderable(opts: {
       itemUntil: it.availableUntil,
       categoryName: cat?.name,
     });
-    out.set(id, res.ok ? res : { ok: false, reason: res.reason, message: res.message });
+    // closed at a branch: say which (the restaurant's other branches may well be open)
+    const message = !res.ok && res.reason === 'closed' && branchName ? `${branchName} is closed right now.` : !res.ok ? res.message : '';
+    out.set(id, res.ok ? res : { ok: false, reason: res.reason, message });
   }
   return out;
 }

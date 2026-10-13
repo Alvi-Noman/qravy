@@ -9,7 +9,7 @@ import TenminOrb from '../components/ai-waiter/TenminOrb';
 import { useCart } from '../context/CartContext';
 import { useConversationStore } from '../state/conversation';
 import { orderPath, storeBasePath } from '../utils/checkout-flow';
-import { useOrderChannel } from '../utils/order-mode';
+import { useOrderChannel, useStoreBranch } from '../utils/order-mode';
 import { getOrder, recentOrders } from '../api/orders';
 import { uiLang } from '../utils/ui-lang';
 import { useTenantInfo } from '../utils/waiter-lang';
@@ -125,6 +125,7 @@ export default function AiWaiterHome() {
 
   // the link decides: "/dine-in?table=12" (the table's QR) → dine-in; "/t/<sub>" → the online shop (pickup / delivery)
   const resolvedChannel = useOrderChannel(resolvedSub);
+  const here = useStoreBranch(resolvedSub, resolvedBranch ?? null); // two or more branches: shown on the start screen
 
   // the menu on the same side ("…/dine-in/menu?table=12" or "…/menu")
   const seeMenuHref = withTable(`${storeBasePath(resolvedSub, resolvedBranch ?? null)}/menu`, resolvedSub);
@@ -514,6 +515,8 @@ export default function AiWaiterHome() {
           name={tenantInfo?.name}
           logoUrl={tenantInfo?.logoUrl}
           table={resolvedChannel === 'dine-in' ? tableNo : null}
+          branch={here?.name}
+          onChangeBranch={here && resolvedChannel === 'online' ? () => navigate({ search: '?choose=1' }) : undefined}
           lang={selectedLang === 'en' ? 'en' : 'bn'}
           onStart={handleFirstTap}
         />

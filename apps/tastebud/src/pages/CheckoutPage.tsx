@@ -15,6 +15,7 @@ import {
   useFulfillment,
   useGuestContact,
   useOrderChannel,
+  useStoreBranch,
   type GuestContact,
 } from '../utils/order-mode';
 import OnlineOrderDetails, { CONTACT_MESSAGES } from '../components/OnlineOrderDetails';
@@ -29,6 +30,7 @@ export default function CheckoutPage() {
   const store = typeof window !== 'undefined' ? (window as any).__STORE__ : undefined;
   const sub = params.subdomain ?? store?.subdomain ?? null;
   const branch = params.branchSlug ?? params.branch ?? store?.branch ?? null;
+  const here = useStoreBranch(sub, branch); // two or more branches: the one this order goes to
 
   const lang = uiLang();
   const navigate = useNavigate();
@@ -140,6 +142,13 @@ export default function CheckoutPage() {
               ? tr(lang, 'ডেলিভারি · ক্যাশ অন ডেলিভারি', 'Delivery · cash on delivery')
               : tr(lang, 'পিকআপ · নেওয়ার সময় পরিশোধ', 'Pickup · pay when you collect')}
           </p>
+          {/* which branch this order goes to (two or more branches): where to collect it, which kitchen cooks it */}
+          {here && (
+            <p className="mt-0.5 text-xs font-medium text-gray-700">
+              {here.name}
+              {here.address ? <span className="font-normal text-gray-500"> · {here.address}</span> : null}
+            </p>
+          )}
         </div>
       </header>
 
