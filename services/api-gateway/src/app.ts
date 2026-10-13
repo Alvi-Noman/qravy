@@ -69,6 +69,7 @@ function isAllowedOrigin(origin?: string): boolean {
       '5173',
       '5174',
       '5179',
+      '5600', // Cortex (the company admin panel)
       '8090', // storefront-host
       '', // default ports
       null as any,

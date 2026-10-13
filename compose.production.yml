@@ -4,6 +4,7 @@ services:
     environment:
       ADMIN_DOMAIN: ${ADMIN_DOMAIN:?Set ADMIN_DOMAIN in .env.production}
       STOREFRONT_DOMAIN: ${STOREFRONT_DOMAIN:?Set STOREFRONT_DOMAIN in .env.production}
+      CORTEX_DOMAIN: ${CORTEX_DOMAIN:-cortex.qravy.com}
       TLS_EMAIL: ${TLS_EMAIL:?Set TLS_EMAIL in .env.production}
     ports:
       - "80:80"
@@ -15,6 +16,7 @@ services:
       - caddy_config:/config
     depends_on:
       - braincell
+      - cortex
       - storefront-host
       - api-gateway
       - ai-waiter-service
@@ -26,6 +28,11 @@ services:
 
   tastebud:
     image: ${IMAGE_PREFIX:?Set IMAGE_PREFIX in .env.production}/qravy-tastebud:${IMAGE_TAG:-prod}
+    restart: unless-stopped
+
+  # Cortex — the company admin panel (Caddy: CORTEX_DOMAIN, default cortex.qravy.com)
+  cortex:
+    image: ${IMAGE_PREFIX:?Set IMAGE_PREFIX in .env.production}/qravy-cortex:${IMAGE_TAG:-prod}
     restart: unless-stopped
 
   auth-service:

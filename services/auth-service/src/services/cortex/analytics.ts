@@ -162,6 +162,7 @@ export function funnel(rows: SessionRow[]) {
     suggestionsOpenedSessions: c((r) => r.suggestionsOpened > 0),
     suggestionsAdded: rows.reduce((s, r) => s + r.suggestionsAdded, 0),
     itemsAdded: rows.reduce((s, r) => s + r.itemsAdded, 0),
+    cartSessions: c((r) => r.itemsAdded > 0 || r.checkout || r.ordered),
     checkoutSessions: checkout,
     orderedSessions: ordered,
     waiterCalls: rows.reduce((s, r) => s + r.calls, 0),
