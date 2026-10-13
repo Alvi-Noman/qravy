@@ -127,7 +127,10 @@ export async function publicWaitTime(req: Request, res: Response, next: NextFunc
     const tenant = await client.db('authDB').collection('tenants').findOne({ subdomain: b.subdomain }, { projection: { _id: 1 } });
     if (!tenant) return res.fail(404, 'Restaurant not found');
     const tenantOid = tenant._id as ObjectId;
-    const locationId = b.branch ? await resolveBranchLocationId(tenantOid, b.branch) : null;
+    // no branch → the kitchen the order would go to (the only branch, or the main link's), as placing it decides
+    const locationId = b.branch
+      ? await resolveBranchLocationId(tenantOid, b.branch)
+      : (await branchForUnnamed(tenantOid)).locationId;
     if (b.branch && !locationId) return res.fail(404, 'Branch not found');
     const estimate = await estimateForGuest({ tenantOid, locationId, items: b.items ?? [] });
     return res.ok({ estimate });
@@ -149,10 +152,21 @@ export async function createOrder(req: Request, res: Response, next: NextFunctio
     const tenantId = req.user?.tenantId;
     if (!tenantId) return res.fail(409, 'Tenant not set');
     const b = req.body as { table: string; items: any[]; notes?: string; idempotencyKey?: string; locationId?: string };
-    const locationId =
-      scopeLocation(req) ?? (b.locationId && ObjectId.isValid(b.locationId) ? new ObjectId(b.locationId) : null);
+    const tenantOid = new ObjectId(tenantId);
+    // a branch session is its branch; otherwise the branch asked for — one of this restaurant's open branches — or,
+    // without one, the branch orders without a branch go to (two or more and none chosen → staff must pick one)
+    let locationId = scopeLocation(req);
+    if (!locationId && b.locationId) {
+      locationId = ObjectId.isValid(b.locationId) ? await resolveBranchLocationId(tenantOid, b.locationId) : null;
+      if (!locationId) return res.fail(404, 'Branch not found');
+    }
+    if (!locationId) {
+      const unnamed = await branchForUnnamed(tenantOid);
+      if (unnamed.mustChoose) return res.fail(409, 'Choose the branch for this order first.', { needs: 'branch' });
+      locationId = unnamed.locationId;
+    }
     const { order, created } = await createOrderCore({
-      tenantOid: new ObjectId(tenantId),
+      tenantOid,
       locationId,
       table: b.table,
       lines: b.items,
