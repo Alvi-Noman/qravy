@@ -34,6 +34,7 @@ const ManageCategories = lazy(() => import('./pages/ManageCategories'));
 const SelectLocation = lazy(() => import('./pages/SelectLocation')); // ADD
 const QrCodesPage = lazy(() => import('./pages/QrCodes'));
 const QuickDemoPage = lazy(() => import('./pages/QuickDemo'));
+const ConversationsPage = lazy(() => import('./pages/Conversations'));
 
 // Settings pages
 const SettingsOverview = lazy(() => import('./pages/settings/index'));
@@ -262,6 +263,16 @@ function App() {
                   element={
                     <Suspense fallback={null}>
                       <QrCodesPage />
+                    </Suspense>
+                  }
+                />
+
+                {/* the AI waiter's conversations with guests (owners/admins: the page checks conversations:read) */}
+                <Route
+                  path="/conversations"
+                  element={
+                    <Suspense fallback={null}>
+                      <ConversationsPage />
                     </Suspense>
                   }
                 />

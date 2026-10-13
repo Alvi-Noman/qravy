@@ -274,6 +274,8 @@ export interface TenantDTO {
   tables?: string[];
   /** Each table's secret QR key (staff only — never on the public tenant info) */
   tableKeys?: Record<string, string>;
+  /** Two or more branches: the branch the main link orders from; null → guests pick one */
+  mainBranchId?: string | null;
 
   // Trial info (ISO strings)
   trialStartedAt?: string | null;

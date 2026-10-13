@@ -30,6 +30,7 @@ const ROLE_CAPS = {
         'offers:*',
         'customers:*',
         'locations:*',
+        'conversations:*', // the AI waiter's conversations with guests (owners have '*')
     ],
     editor: [
         'dashboard:view',

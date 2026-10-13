@@ -51,6 +51,7 @@ from stt import stt_np_float32
 # ✅ Cart persistence helper
 from cart_store import save_cart, load_cart
 import upsell_stats
+import conversations
 from availability import (
     DEFAULT_PERIODS,
     DEFAULT_TZ,
@@ -132,6 +133,12 @@ try:
     COLL.create_index("ts", expireAfterSeconds=30 * 24 * 3600, name="ttl_30d")
 except Exception as e:
     print("[ai-waiter-service] TTL index create failed:", str(e))
+# the admin's conversations page: a restaurant's recent turns, and one conversation's
+try:
+    COLL.create_index([("tenant", 1), ("ts", -1)], name="tenant_ts")
+    COLL.create_index([("tenant", 1), ("session", 1), ("ts", 1)], name="tenant_session_ts")
+except Exception as e:
+    print("[ai-waiter-service] transcripts index create failed:", str(e))
 
 WHISPER_MODEL = os.environ.get("WHISPER_MODEL", "tiny")
 DEVICE = os.environ.get("WHISPER_DEVICE", "cpu")
@@ -211,6 +218,19 @@ async def writer():
 
 WRITER_TASK = None
 
+
+def turn_place(tenant: Optional[str], branch: Optional[str], channel: Optional[str], table: Optional[str]
+               ) -> Dict[str, Any]:
+    """Where a stored turn happened — the admin's conversations page shows it and filters by branch."""
+    loc = None
+    try:
+        tenant_oid = resolve_tenant_id(tenant) if branch else None
+        loc = resolve_location_id(_CLIENT[MENU_DB_NAME], tenant_oid, branch) if tenant_oid is not None else None
+    except Exception:
+        loc = None
+    return {"branch": branch or None, "location": str(loc) if loc is not None else None,
+            "channel": channel or None, "table": table or None}
+
 # ---------- Buzzer alert state (per-tenant) ----------
 # { tenant_subdomain: {"active": bool, "since": float | None} }
 _ALERT_STATE: Dict[str, Dict[str, Any]] = defaultdict(lambda: {"active": False, "since": None})
@@ -285,7 +305,7 @@ async def handle_cart_options(request: web.Request) -> web.StreamResponse:
 # auth-service → us (a new order → buzz): the shared INTERNAL_API_KEY.
 AUTH_SERVICE_URL = os.environ.get("AUTH_SERVICE_URL", "http://auth-service:3001").rstrip("/")
 INTERNAL_API_KEY = os.environ.get("INTERNAL_API_KEY", "")
-_STAFF_CACHE: Dict[str, Tuple[float, Optional[str]]] = {}
+_STAFF_CACHE: Dict[str, Tuple[float, Optional[str], Optional[str]]] = {}  # token → (until, subdomain, role)
 _CORS = {"Access-Control-Allow-Origin": "*"}
 
 
@@ -296,14 +316,20 @@ class AuthUnavailable(Exception):
 async def staff_subdomain(request: web.Request) -> Optional[str]:
     """The restaurant (subdomain) of the logged-in staff member calling, or None (no / bad / expired token).
     Raises AuthUnavailable when auth-service can't be asked."""
+    return (await staff_identity(request))[0]
+
+
+async def staff_identity(request: web.Request) -> Tuple[Optional[str], Optional[str]]:
+    """(restaurant subdomain, role: owner | admin | editor | viewer, None for a branch device) of the staff member
+    calling; (None, None) for no / bad / expired token. Raises AuthUnavailable when auth-service can't be asked."""
     auth = request.headers.get("Authorization", "")
     if not auth.startswith("Bearer ") or len(auth) < 20:
-        return None
+        return None, None
     key = hashlib.sha256(auth.encode()).hexdigest()
     now = time.monotonic()
     hit = _STAFF_CACHE.get(key)
     if hit and hit[0] > now:
-        return hit[1]
+        return hit[1], hit[2]
     headers = {"Authorization": auth}
     if request.headers.get("x-tenant-id"):
         headers["x-tenant-id"] = request.headers["x-tenant-id"]
@@ -316,27 +342,34 @@ async def staff_subdomain(request: web.Request) -> Optional[str]:
     if r.status_code >= 500:
         raise AuthUnavailable()
     sub: Optional[str] = None
+    role: Optional[str] = None
     if r.status_code == 200:
         try:
-            sub = str(((r.json() or {}).get("item") or {}).get("subdomain") or "") or None
+            body = r.json() or {}
+            sub = str((body.get("item") or {}).get("subdomain") or "") or None
+            role = str(body.get("role") or "") or None
         except Exception:
-            sub = None
+            sub = role = None
     if len(_STAFF_CACHE) > 2000:
         _STAFF_CACHE.clear()
-    _STAFF_CACHE[key] = (now + (60 if sub else 10), sub)
-    return sub
+    _STAFF_CACHE[key] = (now + (60 if sub else 10), sub, role)
+    return sub, role
 
 
-async def require_staff_of(request: web.Request, tenant: str) -> Optional[web.Response]:
-    """None when the caller is logged-in staff of `tenant`; otherwise the error response to send."""
+async def require_staff_of(request: web.Request, tenant: str, roles: Optional[Tuple[str, ...]] = None
+                           ) -> Optional[web.Response]:
+    """None when the caller is logged-in staff of `tenant` (with one of `roles`, when given); otherwise the error
+    response to send."""
     try:
-        sub = await staff_subdomain(request)
+        sub, role = await staff_identity(request)
     except AuthUnavailable:
         return web.json_response({"ok": False, "error": "auth unavailable"}, status=503, headers=_CORS)
     if not sub:
         return web.json_response({"ok": False, "error": "login required"}, status=401, headers=_CORS)
     if sub != tenant:
         return web.json_response({"ok": False, "error": "not your restaurant"}, status=403, headers=_CORS)
+    if roles and role not in roles:
+        return web.json_response({"ok": False, "error": "owners and admins only"}, status=403, headers=_CORS)
     return None
 
 
@@ -410,6 +443,34 @@ async def handle_upsell_stats(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "stats": data}, headers=cors)
 
 
+async def handle_conversations(request: web.Request) -> web.Response:
+    """GET /conversations?tenant=<subdomain>&days=7[&location=<id>]  — the restaurant's conversations
+       GET /conversations?tenant=<subdomain>&session=<id>            — one of them, turn by turn
+    What guests said is private: owners and admins of that restaurant only."""
+    q = request.rel_url.query
+    tenant = q.get("tenant", "").strip()
+    if not tenant:
+        return web.json_response({"ok": False, "error": "tenant required"}, status=400, headers=_CORS)
+    denied = await require_staff_of(request, tenant, roles=("owner", "admin"))
+    if denied is not None:  # (an aiohttp Response is a mapping — an empty one is falsy)
+        return denied
+    session = q.get("session", "").strip()
+    try:
+        if session:
+            turns = await asyncio.to_thread(conversations.conversation, DB, tenant, session)
+            return web.json_response({"ok": True, "session": session, "turns": turns}, headers=_CORS)
+        try:
+            days = max(1, min(30, int(q.get("days", "7"))))  # transcripts are kept 30 days
+        except ValueError:
+            days = 7
+        items = await asyncio.to_thread(conversations.list_conversations, DB, tenant, days=days,
+                                        location=q.get("location", "").strip() or None)
+        return web.json_response({"ok": True, "days": days, "conversations": items}, headers=_CORS)
+    except Exception as e:
+        print("[conversations] failed:", repr(e))
+        return web.json_response({"ok": False, "error": "conversations unavailable"}, status=500, headers=_CORS)
+
+
 async def handle_alert_options(request: web.Request) -> web.Response:
     return web.Response(status=204, headers={
         "Access-Control-Allow-Origin": "*",
@@ -427,6 +488,7 @@ async def start_http_server():
     app.router.add_route("OPTIONS", "/alert", handle_alert_options)
     app.router.add_route("OPTIONS", "/alert/dismiss", handle_alert_options)
     app.router.add_route("OPTIONS", "/upsell/stats", handle_alert_options)
+    app.router.add_route("OPTIONS", "/conversations", handle_alert_options)
 
     # Actual endpoints
     app.router.add_get("/cart/load", handle_cart_load)
@@ -435,6 +497,7 @@ async def start_http_server():
     app.router.add_post("/alert/dismiss", handle_alert_dismiss)
     app.router.add_post("/internal/alert/trigger", handle_alert_trigger)
     app.router.add_get("/upsell/stats", handle_upsell_stats)
+    app.router.add_get("/conversations", handle_conversations)
 
     runner = web.AppRunner(app)
     await runner.setup()
@@ -2272,6 +2335,16 @@ async def handle_conn(ws: WebSocketServerProtocol):
                     print(f"[ai-waiter-service] 🙏 {stt_engine} → asked the guest to repeat")
                 except Exception:
                     pass
+                # the admin's conversations page shows these too (status "unheard": never exported as training data)
+                try:
+                    await writer_q.put({
+                        "user": user_id, "session": session_id, "text": "", "ts": datetime.utcnow(),
+                        "status": conversations.UNHEARD, "engine": stt_engine, "tenant": tenant_hint,
+                        "ai": {"replyText": sorry, "meta": {"language": sorry_lang, "guards": [stt_engine]}},
+                        **turn_place(tenant_hint, branch_hint, channel_hint, table_hint),
+                    })
+                except Exception as e:
+                    print("[ai-waiter-service] writer queue error:", e)
 
             if selected_text and not ws.closed:
                 t_stt = time.monotonic()
@@ -2343,6 +2416,7 @@ async def handle_conn(ws: WebSocketServerProtocol):
                             "ai": {"replyText": turn.get("replyText"), "meta": turn.get("meta")},
                             "tenant": tenant_hint,
                             "menu_snapshot_size": turn.get("snapshotSize"),
+                            **turn_place(tenant_hint, branch_hint, channel_hint, table_hint),
                         }
                     )
                 except Exception as e:

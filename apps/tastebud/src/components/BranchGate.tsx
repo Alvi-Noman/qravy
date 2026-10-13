@@ -1,10 +1,11 @@
 // apps/tastebud/src/components/BranchGate.tsx
 // A restaurant with two or more branches takes every order for one branch. Its branch links go straight in
 // ("burger-house.qravy.com/gulshan", "…/gulshan/dine-in?table=12"); the main link ("burger-house.qravy.com", or an
-// old table code without a branch) asks "Which branch?" first, then opens the same page for that branch — the table
-// and its QR key come along. A branch link that isn't one of its open branches asks again.
+// old table code without a branch) goes to the branch the owner chose for it — or, without one, asks "Which branch?"
+// first — then opens the same page for that branch, the table and its QR key along. A branch link that isn't one of
+// its open branches asks.
 import type { ReactNode } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { Navigate, useLocation, useNavigate } from 'react-router-dom';
 import { splitStorePath, storeBranchFromPath, storeSubFromPath } from '../utils/table';
 import { useStoreChannels, type StoreBranch } from '../utils/order-mode';
 import { tr, uiLang } from '../utils/ui-lang';
@@ -13,13 +14,25 @@ export default function BranchGate({ children }: { children: ReactNode }) {
   const { pathname } = useLocation();
   const sub = storeSubFromPath(pathname);
   const branch = storeBranchFromPath(pathname);
-  const { branches, loaded } = useStoreChannels(sub);
+  const { branches, mainBranch, loaded } = useStoreChannels(sub);
+  const location = useLocation();
 
   if (!sub) return <>{children}</>;
   if (!loaded) return null; // a moment — whether to ask depends on the restaurant's branches
   if (branches.length < 2) return <>{children}</>;
   if (branch && branches.some((b) => b.slug === branch)) return <>{children}</>;
+  if (!branch && mainBranch && branches.some((b) => b.slug === mainBranch)) {
+    // the main link orders from the owner's chosen branch — straight there, no question
+    return <Navigate replace to={{ pathname: branchPath(pathname, null, mainBranch), search: location.search, hash: location.hash }} />;
+  }
   return <AskBranch branches={branches} current={branch} />;
+}
+
+/** The same page at another branch: "/dine-in/menu" → "/gulshan/dine-in/menu" (an unknown branch in it is replaced). */
+function branchPath(pathname: string, current: string | null, slug: string): string {
+  const { base, dineIn, rest } = splitStorePath(pathname);
+  const storeBase = current ? base.slice(0, base.lastIndexOf('/')) : base;
+  return `${storeBase}/${encodeURIComponent(slug)}${dineIn ? '/dine-in' : ''}${rest}`;
 }
 
 function AskBranch({ branches, current }: { branches: StoreBranch[]; current: string | null }) {
@@ -28,11 +41,10 @@ function AskBranch({ branches, current }: { branches: StoreBranch[]; current: st
   const lang = uiLang();
 
   const open = (slug: string) => {
-    const { base, dineIn, rest } = splitStorePath(location.pathname);
-    // an unknown branch in the link is replaced, not kept
-    const storeBase = current ? base.slice(0, base.lastIndexOf('/')) : base;
-    const path = `${storeBase}/${encodeURIComponent(slug)}${dineIn ? '/dine-in' : ''}${rest}`;
-    navigate({ pathname: path, search: location.search, hash: location.hash }, { replace: true });
+    navigate(
+      { pathname: branchPath(location.pathname, current, slug), search: location.search, hash: location.hash },
+      { replace: true },
+    );
   };
 
   return (

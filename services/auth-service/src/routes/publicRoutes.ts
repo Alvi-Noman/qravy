@@ -52,7 +52,7 @@ async function findTenantBySubdomain(subdomain: string): Promise<TenantDoc | nul
 function toPublicTenantItem(
   tenant: TenantDoc,
   fallbackSub: string,
-  branches: Awaited<ReturnType<typeof publicBranches>>
+  { branches, mainBranch }: Awaited<ReturnType<typeof publicBranches>>
 ) {
   return {
     id: tenant._id!.toString(),
@@ -81,8 +81,10 @@ function toPublicTenantItem(
     },
     // The dine-in tables (the ones with QR codes) — the guest app checks a typed table number against them
     tables: Array.isArray(tenant.tables) ? tenant.tables : [],
-    // The open branches (two or more → the guest picks one first), each with its own tables
+    // The open branches (two or more → the guest picks one first, unless the main link has its branch), each with
+    // its own tables
     branches,
+    mainBranch,
   };
 }
 
@@ -111,7 +113,7 @@ router.get('/public/tenant', async (req: Request, res: Response, next: NextFunct
       return res.status(404).json({ message: 'Tenant not found' });
     }
 
-    const item = toPublicTenantItem(tenant, subdomain, await publicBranches(tenant._id));
+    const item = toPublicTenantItem(tenant, subdomain, await publicBranches(tenant._id, tenant.mainBranchId));
     return res.json({ item });
   } catch (err) {
     logger.error(`[PUBLIC TENANT] ${String((err as Error)?.message || err)}`);
@@ -137,7 +139,7 @@ router.get(
         return res.status(404).json({ message: 'Tenant not found' });
       }
 
-      const item = toPublicTenantItem(tenant, subdomain, await publicBranches(tenant._id));
+      const item = toPublicTenantItem(tenant, subdomain, await publicBranches(tenant._id, tenant.mainBranchId));
       return res.json({ item });
     } catch (err) {
       logger.error(

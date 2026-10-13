@@ -470,6 +470,8 @@ export const tenantUpdateSchema = z
       .array(z.string().trim().regex(/^#?[A-Za-z0-9-]{1,12}$/, 'Table names: letters, numbers and dashes (max 12)'))
       .max(500)
       .optional(),
+    // The branch the main link orders from (two or more branches); null → guests pick one
+    mainBranchId: z.string().regex(/^[a-f0-9]{24}$/i, 'Invalid branch').nullable().optional(),
     // The restaurant's logo (an uploaded image's URL) — the guest app's start screen shows it; null removes it
     logoUrl: z.string().trim().url('Logo must be an image link').max(1000).nullable().optional(),
   })
