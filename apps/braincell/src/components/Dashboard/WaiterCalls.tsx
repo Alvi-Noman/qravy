@@ -1,3 +1,4 @@
+import { useBranchLabel } from '../../hooks/useBranchLabel';
 import { BellAlertIcon, CheckIcon, ExclamationTriangleIcon } from '@heroicons/react/24/outline';
 import { useEffect, useState } from 'react';
 import { toastError } from '../Toaster';
@@ -27,6 +28,7 @@ export default function WaiterCalls({ hideWhenEmpty = false, limit = 8 }: { hide
   const canUpdate = has('orders:update');
   const [now, setNow] = useState(() => Date.now());
   const [busy, setBusy] = useState<string | null>(null);
+  const branchOf = useBranchLabel();
 
   useEffect(() => {
     const id = window.setInterval(() => setNow(Date.now()), 30_000);
@@ -68,6 +70,9 @@ export default function WaiterCalls({ hideWhenEmpty = false, limit = 8 }: { hide
                 <div className="min-w-0">
                   <div className="flex items-center gap-1.5 font-medium text-[#2e2e30]">
                     Table {c.table}
+                    {branchOf(c.locationId) && (
+                      <span className="rounded bg-slate-100 px-1.5 text-[11px] font-semibold text-slate-700">{branchOf(c.locationId)}</span>
+                    )}
                     {!c.tableVerified && (
                       <span title="The guest typed this table number instead of scanning its QR code — check it's them">
                         <ExclamationTriangleIcon className="h-4 w-4 text-amber-500" aria-label="Table not verified" />

@@ -493,6 +493,11 @@ export async function ensureUserIndexes(client: MongoClient): Promise<void> {
     { unique: true, name: 'ux_locations_tenant_name', collation: { locale: 'en', strength: 2 } }
   );
   logger.info('Ensured unique index on locations.tenantId,name');
+  await locations.createIndex(
+    { tenantId: 1, slug: 1 },
+    { unique: true, name: 'ux_locations_tenant_slug', partialFilterExpression: { slug: { $type: 'string' } } }
+  );
+  logger.info('Ensured unique index on locations.tenantId,slug');
   await locations.createIndex({ tenantId: 1, createdAt: -1 });
   logger.info('Ensured compound index on locations.tenantId,createdAt');
 

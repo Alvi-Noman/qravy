@@ -1,5 +1,7 @@
 /**
  * Guest-app (tastebud) links: the online shop at {storefront}, dine-in at {storefront}/dine-in?table=<name>&k=<key>.
+ * A restaurant with branches gets the same per branch, the branch first: {storefront}/<slug> and
+ * {storefront}/<slug>/dine-in?table=<name>&k=<key> — the order goes to that branch.
  * Used by the QR codes page and the quick demo, so both always open the same place.
  */
 
@@ -11,6 +13,8 @@ export function storefrontBase(subdomain: string): string {
   return template.replace('{subdomain}', encodeURIComponent(subdomain)).replace(/\/$/, '');
 }
 
-export const tableUrl = (base: string, table: string, key?: string) =>
-  `${base}/dine-in?table=${encodeURIComponent(table)}${key ? `&k=${encodeURIComponent(key)}` : ''}`;
-export const onlineUrl = (base: string) => base;
+const withBranch = (base: string, branch?: string | null) => (branch ? `${base}/${encodeURIComponent(branch)}` : base);
+
+export const tableUrl = (base: string, table: string, key?: string, branch?: string | null) =>
+  `${withBranch(base, branch)}/dine-in?table=${encodeURIComponent(table)}${key ? `&k=${encodeURIComponent(key)}` : ''}`;
+export const onlineUrl = (base: string, branch?: string | null) => withBranch(base, branch);

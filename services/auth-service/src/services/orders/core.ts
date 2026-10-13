@@ -12,7 +12,7 @@ import { DEFAULT_TIMEZONE } from '../../utils/availability.js';
 import type { Fulfillment, OrderChannel, OrderCustomer, OrderDoc, OrderLine, OrderStatus } from '../../models/Order.js';
 import type { OrderEta } from '../../models/Order.js';
 import { publishOrder, publishTenant } from './events.js';
-import { tableKeyMatches } from '../../utils/tableKeys.js';
+import { tableBook } from '../../utils/branches.js';
 import {
   DEFAULT_PREP_MINUTES,
   STALE_ORDER_MS,
@@ -96,13 +96,27 @@ export async function priceLines(opts: {
     )
     .toArray();
   const byId = new Map(docs.map((d) => [String(d._id), d]));
+  // dishes this branch switched on for this channel ("online only" → also dine-in here), as its menu page shows them
+  const switchedOn = new Set(
+    locationId
+      ? (
+          await client
+            .db('authDB')
+            .collection('itemAvailability')
+            .find({ tenantId: tenantOid, itemId: { $in: ids }, locationId, channel, available: true, removed: { $ne: true } })
+            .project({ itemId: 1 })
+            .toArray()
+        ).map((o) => String(o.itemId))
+      : []
+  );
 
   const priced: OrderLine[] = [];
   for (const line of lines) {
     const d = byId.get(line.itemId);
     if (!d || d.status === 'hidden' || d.hidden) throw new OrderError(409, 'An item in your order is no longer on the menu.');
-    if (channel === 'dine-in' && d.visibility?.dineIn === false) throw new OrderError(409, `${d.name} isn't served for dine-in.`);
-    if (channel === 'online' && d.visibility?.online === false) throw new OrderError(409, `${d.name} isn't available for online orders.`);
+    const onHere = switchedOn.has(String(d._id));
+    if (channel === 'dine-in' && d.visibility?.dineIn === false && !onHere) throw new OrderError(409, `${d.name} isn't served for dine-in.`);
+    if (channel === 'online' && d.visibility?.online === false && !onHere) throw new OrderError(409, `${d.name} isn't available for online orders.`);
     if (d.locationId && locationId && String(d.locationId) !== String(locationId)) {
       throw new OrderError(409, `${d.name} isn't available at this branch.`);
     }
@@ -212,17 +226,16 @@ export async function createOrderCore(input: {
     .db('authDB')
     .collection('tenants')
     .findOne({ _id: input.tenantOid }, { projection: { timezone: 1, kitchen: 1, subdomain: 1, tables: 1, tableKeys: 1 } });
-  // a dine-in order is for one of the restaurant's own tables (the ones it has QR codes for) — when it has set them up
-  const knownTables = Array.isArray(tenant?.tables) ? (tenant.tables as string[]).map((t) => String(t).toUpperCase()) : [];
-  if (dineIn && knownTables.length && !knownTables.includes(dineIn.tableNumber.replace(/^#/, '').toUpperCase())) {
+  // a dine-in order is for one of the restaurant's own tables (the ones it has QR codes for; the branch's, when the
+  // order is for a branch) — when it has set them up
+  const book = dineIn ? await tableBook(tenant, input.locationId ?? null) : null;
+  if (dineIn && book && !book.knows(dineIn.tableNumber)) {
     throw new OrderError(400, 'We could not find that table — please check the number on your table.', { needs: 'table' });
   }
   // scanned the table's QR code (its key came along) → verified; a typed table number → the staff check it first
   // (staff-entered orders, and tables without a key, have nothing to check)
-  if (dineIn && input.source !== 'staff') {
-    const keys = (tenant?.tableKeys ?? null) as Record<string, string> | null;
-    const hasKey = !!keys?.[dineIn.tableNumber.replace(/^#/, '').toUpperCase()];
-    if (hasKey && !tableKeyMatches(keys, dineIn.tableNumber, input.tableKey)) dineIn.tableVerified = false;
+  if (dineIn && book && input.source !== 'staff' && !book.verified(dineIn.tableNumber, input.tableKey)) {
+    dineIn.tableVerified = false;
   }
   const kitchen = kitchenSettings(tenant as { kitchen?: Partial<KitchenSettings> } | null);
   const lines = await priceLines({

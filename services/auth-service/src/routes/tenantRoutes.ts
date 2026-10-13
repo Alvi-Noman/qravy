@@ -5,6 +5,7 @@ import { validateRequest } from '../middleware/validateRequest.js';
 import { tenantCreateSchema, tenantUpdateSchema } from '../validation/schemas.js';
 import {
   createTenant,
+  checkSubdomainAvailability,
   getMyTenant,
   saveOnboardingStep,
   updateMyTenant,
@@ -21,6 +22,7 @@ const router: RouterType = express.Router();
 
 // Tenant routes
 router.post('/tenants', authenticateJWT, validateRequest(tenantCreateSchema), createTenant);
+router.get('/tenants/subdomain-check', authenticateJWT, checkSubdomainAvailability);
 router.get('/tenants/me', authenticateJWT, getMyTenant);
 router.put('/tenants/me', authenticateJWT, validateRequest(tenantUpdateSchema), updateMyTenant);
 router.post('/tenants/onboarding-step', authenticateJWT, saveOnboardingStep);

@@ -1,8 +1,15 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { AnimatePresence, motion } from 'framer-motion';
 import { useAuthContext } from '../context/AuthContext';
-import { createTenant } from '../api/auth';
+import { checkSubdomain, createTenant, SubdomainTakenError } from '../api/auth';
+
+// Is the subdomain free? Checked while the owner types; taken → a soft alert with free ones close to it.
+type UrlCheck =
+  | { state: 'idle' }
+  | { state: 'checking'; subdomain: string }
+  | { state: 'available'; subdomain: string }
+  | { state: 'taken'; subdomain: string; reserved: boolean; suggestions: string[] };
 
 export default function CreateRestaurant() {
   const navigate = useNavigate();
@@ -19,6 +26,8 @@ export default function CreateRestaurant() {
 
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
+  const [urlCheck, setUrlCheck] = useState<UrlCheck>({ state: 'idle' });
+  const urlInputRef = useRef<HTMLInputElement>(null);
 
   // 🚫 Redirect if user already has a tenant
   useEffect(() => {
@@ -39,6 +48,47 @@ export default function CreateRestaurant() {
     }
   }, [name, slugManuallyEdited]);
 
+  // ask the server a moment after the owner stops typing (only a well-formed subdomain; stale answers are ignored)
+  useEffect(() => {
+    const sub = restaurantUrl;
+    if (validate('x', sub)) {
+      setUrlCheck({ state: 'idle' });
+      return;
+    }
+    setUrlCheck((prev) => (prev.state !== 'idle' && prev.subdomain === sub ? prev : { state: 'checking', subdomain: sub }));
+    let cancelled = false;
+    const t = setTimeout(async () => {
+      try {
+        const r = await checkSubdomain(sub);
+        if (cancelled) return;
+        setUrlCheck(
+          r.available
+            ? { state: 'available', subdomain: sub }
+            : { state: 'taken', subdomain: sub, reserved: r.reason === 'reserved', suggestions: r.suggestions ?? [] }
+        );
+      } catch {
+        if (!cancelled) setUrlCheck({ state: 'idle' }); // can't check now → creating the restaurant checks again
+      }
+    }, 400);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [restaurantUrl]);
+
+  const pickSuggestion = (sub: string) => {
+    setRestaurantUrl(sub);
+    setSlugManuallyEdited(true);
+    setLocalError(null);
+  };
+
+  const editUrl = () => {
+    const el = urlInputRef.current;
+    if (!el) return;
+    el.focus();
+    el.select();
+  };
+
   const handleNextStep = (e: React.FormEvent) => {
     e.preventDefault();
     setLocalError(null);
@@ -46,6 +96,10 @@ export default function CreateRestaurant() {
     const error = validate(name, restaurantUrl);
     if (error) {
       setLocalError(error);
+      return;
+    }
+    if (urlCheck.state === 'taken' && urlCheck.subdomain === restaurantUrl) {
+      editUrl(); // the alert below the field already says why
       return;
     }
     setStep(1);
@@ -76,9 +130,16 @@ export default function CreateRestaurant() {
       navigate('/onboarding', { replace: true });
     } catch (err) {
       const msg = (err as Error)?.message || 'Could not create restaurant. Please try again.';
-      if (/subdomain/i.test(msg) || /taken/i.test(msg) || /409/.test(msg)) {
-        setLocalError('That URL is taken. Please try a different one.');
-        setStep(0); // return to step 0 if URL error
+      if (err instanceof SubdomainTakenError || /subdomain/i.test(msg) || /taken/i.test(msg)) {
+        // someone took it in the meantime → back to the name step, with the soft alert and free ones to pick
+        setUrlCheck({
+          state: 'taken',
+          subdomain: restaurantUrl.trim().toLowerCase(),
+          reserved: /not available/i.test(msg),
+          suggestions: err instanceof SubdomainTakenError ? err.suggestions : [],
+        });
+        setStep(0);
+        setTimeout(editUrl, 250); // after the step animation
       } else if (/already has a tenant/i.test(msg)) {
         navigate('/onboarding', { replace: true });
       } else {
@@ -88,6 +149,8 @@ export default function CreateRestaurant() {
       setIsSubmitting(false);
     }
   };
+
+  const urlTaken = urlCheck.state === 'taken' && urlCheck.subdomain === restaurantUrl;
 
   return (
     <div className="min-h-screen w-full bg-[#fcfcfc] flex flex-col font-inter">
@@ -157,7 +220,11 @@ export default function CreateRestaurant() {
                     <label htmlFor="restaurant-url" className="block text-base text-[#2e2e30] mb-1">
                       Subdomain
                     </label>
-                    <div className="relative flex items-center gap-2 rounded-md border border-[#cecece] hover:border-[#b0b0b5] bg-white transition px-2">
+                    <div
+                      className={`relative flex items-center gap-2 rounded-md border bg-white transition px-2 ${
+                        urlTaken ? 'border-amber-400' : 'border-[#cecece] hover:border-[#b0b0b5]'
+                      }`}
+                    >
                       <span className="select-none text-[#2e2e30] shrink-0 whitespace-nowrap">
                         <span className="inline-flex items-center h-8 px-2 rounded bg-[#f7f7f9] text-sm leading-none">
                           https://
@@ -165,7 +232,10 @@ export default function CreateRestaurant() {
                       </span>
                       <input
                         id="restaurant-url"
+                        ref={urlInputRef}
                         type="text"
+                        aria-describedby="restaurant-url-status"
+                        aria-invalid={urlTaken}
                         placeholder="your-restaurant"
                         className="flex-1 min-w-0 px-2 py-3 bg-transparent text-[#2e2e30] focus:outline-none text-base font-normal"
                         value={restaurantUrl}
@@ -186,6 +256,53 @@ export default function CreateRestaurant() {
                         </span>
                       </span>
                     </div>
+                  </div>
+
+                  {/* Free or taken — a soft alert, never a dead end: pick a free one or type another */}
+                  <div id="restaurant-url-status" aria-live="polite" className="w-96">
+                    {urlCheck.state === 'checking' && (
+                      <div className="mb-3 text-xs text-[#8a8a8d]">Checking {urlCheck.subdomain}.qravy.com…</div>
+                    )}
+                    {urlCheck.state === 'available' && urlCheck.subdomain === restaurantUrl && (
+                      <div className="mb-3 flex items-center gap-1.5 text-xs text-emerald-700">
+                        <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                          <polyline points="20 6 9 17 4 12" />
+                        </svg>
+                        {urlCheck.subdomain}.qravy.com is available
+                      </div>
+                    )}
+                    {urlCheck.state === 'taken' && urlTaken && (
+                      <div role="status" className="mb-4 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+                        <div className="font-medium">
+                          {urlCheck.reserved
+                            ? `${urlCheck.subdomain}.qravy.com is reserved`
+                            : `${urlCheck.subdomain}.qravy.com is already taken`}
+                        </div>
+                        <p className="mt-1 text-xs text-amber-800">
+                          Your restaurant name is fine — only the web address needs to be different.
+                          {urlCheck.suggestions.length ? ' Pick one of these, or type your own:' : ' Try another one.'}
+                        </p>
+                        <div className="mt-2 flex flex-wrap gap-1.5">
+                          {urlCheck.suggestions.map((sug) => (
+                            <button
+                              key={sug}
+                              type="button"
+                              onClick={() => pickSuggestion(sug)}
+                              className="rounded-full border border-amber-300 bg-white px-2.5 py-1 text-xs text-[#2e2e30] hover:border-amber-500"
+                            >
+                              {sug}.qravy.com
+                            </button>
+                          ))}
+                          <button
+                            type="button"
+                            onClick={editUrl}
+                            className="rounded-full px-2.5 py-1 text-xs font-medium text-amber-900 underline-offset-2 hover:underline"
+                          >
+                            Edit subdomain
+                          </button>
+                        </div>
+                      </div>
+                    )}
                   </div>
 
                   {/* Info box */}

@@ -11,6 +11,7 @@ import { toTenantDTO } from '../utils/mapper.js';
 import { normalizeAvailability, normalizeServicePeriods } from '../utils/availability.js';
 import { kitchenSettings } from '../services/orders/waitTime.js';
 import { missingTableKeys, tableKeysFor } from '../utils/tableKeys.js';
+import { checkSubdomain } from '../utils/subdomains.js';
 import type { v1 } from '@qravy/shared';
 import { restaurantOnboardingSchema, tenantUpdateSchema } from '../validation/schemas.js';
 
@@ -128,8 +129,11 @@ export async function createTenant(req: Request, res: Response, next: NextFuncti
       return res.fail(400, 'Invalid subdomain');
     }
 
-    const exists = await tenantsCol().findOne({ subdomain: cleanSub });
-    if (exists) return res.fail(409, 'Subdomain already taken');
+    // taken (someone signed up with it meanwhile) → say so, with free ones to pick instead
+    const check = await checkSubdomain(tenantsCol(), cleanSub);
+    if (!check.available) {
+      return res.fail(409, 'Subdomain already taken', { reason: check.reason, suggestions: check.suggestions });
+    }
 
     const now = new Date();
     const doc: TenantDoc = {
@@ -182,6 +186,15 @@ export async function createTenant(req: Request, res: Response, next: NextFuncti
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     logger.error(`createTenant error: ${msg}`);
+    next(err);
+  }
+}
+
+/** GET /tenants/subdomain-check?subdomain=… — onboarding asks while the owner types: free, or taken + free ones near it. */
+export async function checkSubdomainAvailability(req: Request, res: Response, next: NextFunction) {
+  try {
+    return res.ok(await checkSubdomain(tenantsCol(), String(req.query.subdomain ?? '')));
+  } catch (err) {
     next(err);
   }
 }

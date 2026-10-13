@@ -5,6 +5,7 @@ import UndoToast from './components/ai-waiter/UndoToast';
 import { CartProvider } from './context/CartContext';
 import KeepTableInUrl from './components/KeepTableInUrl';
 import DineInGate from './components/DineInGate';
+import BranchGate from './components/BranchGate';
 
 const Home = lazy(() => import('./pages/Directory'));
 const Restaurant = lazy(() => import('./pages/DigitalMenu'));
@@ -47,30 +48,30 @@ export default function AppRouter() {
                 A branch goes before either: /t/<subdomain>/<branch>(/dine-in)…
                 Old links ("?table=12" on an online page, "/menu/dine-in") are moved over by KeepTableInUrl.
             */}
-            <Route path="/t/:subdomain" element={<AIWaiter />} />
-            <Route path="/t/:subdomain/menu" element={<Restaurant />} />
+            <Route path="/t/:subdomain" element={<BranchGate><AIWaiter /></BranchGate>} />
+            <Route path="/t/:subdomain/menu" element={<BranchGate><Restaurant /></BranchGate>} />
             <Route path="/t/:subdomain/checkout" element={<CheckoutPage />} />
             <Route path="/t/:subdomain/confirmation" element={<ConfirmationPage />} />
             <Route path="/t/:subdomain/order/:token" element={<OrderStatusPage />} />
-            <Route path="/t/:subdomain/dine-in" element={<DineInGate><AIWaiter /></DineInGate>} />
-            <Route path="/t/:subdomain/dine-in/menu" element={<DineInGate><Restaurant /></DineInGate>} />
+            <Route path="/t/:subdomain/dine-in" element={<BranchGate><DineInGate><AIWaiter /></DineInGate></BranchGate>} />
+            <Route path="/t/:subdomain/dine-in/menu" element={<BranchGate><DineInGate><Restaurant /></DineInGate></BranchGate>} />
             <Route path="/t/:subdomain/dine-in/checkout" element={<DineInGate><CheckoutPage /></DineInGate>} />
             <Route path="/t/:subdomain/dine-in/confirmation" element={<DineInGate><ConfirmationPage /></DineInGate>} />
             <Route path="/t/:subdomain/dine-in/order/:token" element={<OrderStatusPage />} />
-            <Route path="/t/:subdomain/menu/dine-in" element={<DineInGate><Restaurant /></DineInGate>} />
+            <Route path="/t/:subdomain/menu/dine-in" element={<BranchGate><DineInGate><Restaurant /></DineInGate></BranchGate>} />
             <Route path="/t/:subdomain/online" element={<Navigate replace to=".." relative="path" />} />
 
-            <Route path="/t/:subdomain/:branchSlug" element={<AIWaiter />} />
-            <Route path="/t/:subdomain/:branchSlug/menu" element={<Restaurant />} />
+            <Route path="/t/:subdomain/:branchSlug" element={<BranchGate><AIWaiter /></BranchGate>} />
+            <Route path="/t/:subdomain/:branchSlug/menu" element={<BranchGate><Restaurant /></BranchGate>} />
             <Route path="/t/:subdomain/:branchSlug/checkout" element={<CheckoutPage />} />
             <Route path="/t/:subdomain/:branchSlug/confirmation" element={<ConfirmationPage />} />
             <Route path="/t/:subdomain/:branchSlug/order/:token" element={<OrderStatusPage />} />
-            <Route path="/t/:subdomain/:branchSlug/dine-in" element={<DineInGate><AIWaiter /></DineInGate>} />
-            <Route path="/t/:subdomain/:branchSlug/dine-in/menu" element={<DineInGate><Restaurant /></DineInGate>} />
+            <Route path="/t/:subdomain/:branchSlug/dine-in" element={<BranchGate><DineInGate><AIWaiter /></DineInGate></BranchGate>} />
+            <Route path="/t/:subdomain/:branchSlug/dine-in/menu" element={<BranchGate><DineInGate><Restaurant /></DineInGate></BranchGate>} />
             <Route path="/t/:subdomain/:branchSlug/dine-in/checkout" element={<DineInGate><CheckoutPage /></DineInGate>} />
             <Route path="/t/:subdomain/:branchSlug/dine-in/confirmation" element={<DineInGate><ConfirmationPage /></DineInGate>} />
             <Route path="/t/:subdomain/:branchSlug/dine-in/order/:token" element={<OrderStatusPage />} />
-            <Route path="/t/:subdomain/:branchSlug/menu/dine-in" element={<DineInGate><Restaurant /></DineInGate>} />
+            <Route path="/t/:subdomain/:branchSlug/menu/dine-in" element={<BranchGate><DineInGate><Restaurant /></DineInGate></BranchGate>} />
 
             {/* ================== Prod-style routes (subdomain at host) ==================
                 burger-house.qravy.com                        -> online shop (AI waiter); /menu, /checkout, /order/<token>
@@ -78,29 +79,29 @@ export default function AppRouter() {
                 burger-house.qravy.com/<branch>(/dine-in)…    -> the same for a branch
                These rely on window.__STORE__.subdomain injected by the host.
             */}
-            <Route path="/" element={hasTenantFromRuntime ? <AIWaiter /> : <Home />} />
-            <Route path="/menu" element={<Restaurant />} />
+            <Route path="/" element={hasTenantFromRuntime ? <BranchGate><AIWaiter /></BranchGate> : <Home />} />
+            <Route path="/menu" element={<BranchGate><Restaurant /></BranchGate>} />
             <Route path="/checkout" element={<CheckoutPage />} />
             <Route path="/confirmation" element={<ConfirmationPage />} />
             <Route path="/order/:token" element={<OrderStatusPage />} />
-            <Route path="/dine-in" element={<DineInGate><AIWaiter /></DineInGate>} />
-            <Route path="/dine-in/menu" element={<DineInGate><Restaurant /></DineInGate>} />
+            <Route path="/dine-in" element={<BranchGate><DineInGate><AIWaiter /></DineInGate></BranchGate>} />
+            <Route path="/dine-in/menu" element={<BranchGate><DineInGate><Restaurant /></DineInGate></BranchGate>} />
             <Route path="/dine-in/checkout" element={<DineInGate><CheckoutPage /></DineInGate>} />
             <Route path="/dine-in/confirmation" element={<DineInGate><ConfirmationPage /></DineInGate>} />
             <Route path="/dine-in/order/:token" element={<OrderStatusPage />} />
-            <Route path="/menu/dine-in" element={<DineInGate><Restaurant /></DineInGate>} />
+            <Route path="/menu/dine-in" element={<BranchGate><DineInGate><Restaurant /></DineInGate></BranchGate>} />
 
-            <Route path="/:branch" element={<AIWaiter />} />
-            <Route path="/:branch/menu" element={<Restaurant />} />
+            <Route path="/:branch" element={<BranchGate><AIWaiter /></BranchGate>} />
+            <Route path="/:branch/menu" element={<BranchGate><Restaurant /></BranchGate>} />
             <Route path="/:branch/checkout" element={<CheckoutPage />} />
             <Route path="/:branch/confirmation" element={<ConfirmationPage />} />
             <Route path="/:branch/order/:token" element={<OrderStatusPage />} />
-            <Route path="/:branch/dine-in" element={<DineInGate><AIWaiter /></DineInGate>} />
-            <Route path="/:branch/dine-in/menu" element={<DineInGate><Restaurant /></DineInGate>} />
+            <Route path="/:branch/dine-in" element={<BranchGate><DineInGate><AIWaiter /></DineInGate></BranchGate>} />
+            <Route path="/:branch/dine-in/menu" element={<BranchGate><DineInGate><Restaurant /></DineInGate></BranchGate>} />
             <Route path="/:branch/dine-in/checkout" element={<DineInGate><CheckoutPage /></DineInGate>} />
             <Route path="/:branch/dine-in/confirmation" element={<DineInGate><ConfirmationPage /></DineInGate>} />
             <Route path="/:branch/dine-in/order/:token" element={<OrderStatusPage />} />
-            <Route path="/:branch/menu/dine-in" element={<DineInGate><Restaurant /></DineInGate>} />
+            <Route path="/:branch/menu/dine-in" element={<BranchGate><DineInGate><Restaurant /></DineInGate></BranchGate>} />
 
             {/* Fallback 404 → Home (or AIWaiter if tenant runtime present) */}
             <Route

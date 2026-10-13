@@ -9,6 +9,7 @@ import {
   setDefaultLocation,
   clearDefaultLocation,
   importMenuFromLocation,
+  updateLocationTables,
 } from '../controllers/locationsController.js';
 
 const asyncHandler =
@@ -31,7 +32,8 @@ router.post('/', asyncHandler(createLocation));
 
 // Constrain :id to ObjectId to avoid matching "default"
 router.patch('/:id([0-9a-fA-F]{24})', asyncHandler(updateLocation));
-router.delete('/:id([0-9a-fA-F]{24})', asyncHandler(deleteLocation));
+router.put('/:id([0-9a-fA-F]{24})/tables', asyncHandler(updateLocationTables));
+router.delete('/:id([0-9a-fA-F]{24})',asyncHandler(deleteLocation));
 router.post('/:id([0-9a-fA-F]{24})/import-menu', asyncHandler(importMenuFromLocation));
 
 export default router;

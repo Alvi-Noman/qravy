@@ -4,7 +4,10 @@
  *   - One per dine-in table: {storefront}/dine-in?table=<name>&k=<key> — the virtual waiter for that table; the order
  *     goes to it (apps/tastebud/src/utils/table.ts). The key is the table's secret (made when the table is saved): an
  *     order without it (a typed table number) reaches the staff marked "table not verified".
- * Table names are saved on the tenant; codes can be downloaded as PNG or printed as a sheet.
+ * Two or more branches → each branch gets the same, the branch first: {storefront}/<slug> and
+ *   {storefront}/<slug>/dine-in?table=<name>&k=<key>, so the order goes to that branch. The main online code then asks
+ *   the guest which branch (apps/tastebud/src/components/BranchGate.tsx).
+ * Table names are saved on the tenant (one branch) or on each branch; codes can be downloaded as PNG or printed as a sheet.
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
@@ -22,6 +25,8 @@ import {
 import { useAuthContext } from '../context/AuthContext';
 import { useTenant } from '../hooks/useTenant';
 import { updateTenant } from '../api/tenant';
+import { updateLocationTables } from '../api/locations';
+import { useLocations } from '../components/locations/useLocations';
 import { onlineUrl, storefrontBase, tableUrl } from '../utils/storefront';
 import { toastError, toastSuccess } from '../components/Toaster';
 
@@ -205,12 +210,28 @@ function PrintSheet({ items, restaurant }: { items: { title: string; subtitle: s
   );
 }
 
-export default function QrCodesPage(): JSX.Element {
-  const { token } = useAuthContext();
-  const queryClient = useQueryClient();
-  const { data: tenant, isLoading } = useTenant();
+type PrintItem = { title: string; subtitle: string; url: string };
 
-  const savedTables = useMemo(() => tenant?.tables ?? [], [tenant?.tables]);
+/** One set of dine-in tables — the restaurant's, or one branch's — with its own add / remove / save. */
+function TableSection({
+  title,
+  description,
+  savedTables,
+  keys,
+  urlFor,
+  filePrefix,
+  onSave,
+  onDirtyChange,
+}: {
+  title: string;
+  description: string;
+  savedTables: string[];
+  keys: Record<string, string>;
+  urlFor: (table: string, key?: string) => string;
+  filePrefix: string;
+  onSave: (tables: string[]) => Promise<unknown>;
+  onDirtyChange: (dirty: boolean) => void;
+}) {
   const [tables, setTables] = useState<string[]>(savedTables);
   const [input, setInput] = useState('');
   const [saving, setSaving] = useState(false);
@@ -218,11 +239,7 @@ export default function QrCodesPage(): JSX.Element {
   useEffect(() => setTables(savedTables), [savedTables]);
 
   const dirty = tables.join('\n') !== savedTables.join('\n');
-  const dineIn = !!tenant?.restaurantInfo?.dineInEnabled;
-  const online = tenant?.restaurantInfo?.onlineSalesEnabled !== false;
-  const base = tenant?.subdomain ? storefrontBase(tenant.subdomain) : '';
-  const restaurant = tenant?.name ?? '';
-  const keys = tenant?.tableKeys ?? {}; // each table's secret, part of its QR code (made when tables are saved)
+  useEffect(() => onDirtyChange(dirty), [dirty, onDirtyChange]);
 
   const addTables = () => {
     const { tables: parsed, invalid } = parseTableInput(input);
@@ -242,8 +259,7 @@ export default function QrCodesPage(): JSX.Element {
   const save = async () => {
     setSaving(true);
     try {
-      await updateTenant({ tables }, token as string);
-      await queryClient.invalidateQueries({ queryKey: ['tenant', token] });
+      await onSave(tables);
       toastSuccess('Tables saved');
     } catch (e: any) {
       toastError(e?.response?.data?.message || 'Could not save tables');
@@ -252,14 +268,157 @@ export default function QrCodesPage(): JSX.Element {
     }
   };
 
-  const printItems = [
-    ...(online && base ? [{ title: 'Order online', subtitle: 'Scan to order for pickup or delivery', url: onlineUrl(base) }] : []),
+  return (
+    <section className="mt-8">
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h2 className="text-[14px] font-semibold text-slate-900">
+            {title}
+            {tables.length > 0 ? ` (${tables.length})` : ''}
+          </h2>
+          <p className="mt-0.5 text-[12px] text-slate-500">{description}</p>
+        </div>
+        {dirty && (
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setTables(savedTables)}
+              className="text-xs text-slate-500 underline-offset-2 hover:underline"
+            >
+              Discard
+            </button>
+            <button
+              type="button"
+              onClick={save}
+              disabled={saving}
+              className="rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-40"
+            >
+              {saving ? 'Saving…' : 'Save tables'}
+            </button>
+          </div>
+        )}
+      </div>
+
+      <form
+        className="mt-3 flex flex-wrap items-center gap-2"
+        onSubmit={(e) => {
+          e.preventDefault();
+          addTables();
+        }}
+      >
+        <input
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          placeholder="Add tables — e.g. 1-20, Patio-1, A4"
+          aria-label={`Add tables to ${title}`}
+          className="w-72 max-w-full rounded-md border border-[#e2e2e2] px-3 py-2 text-sm outline-none focus:border-slate-400"
+        />
+        <button
+          type="submit"
+          disabled={!input.trim()}
+          className="inline-flex items-center gap-1 rounded-md border border-[#e5e5e5] bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-40"
+        >
+          <PlusIcon className="h-4 w-4" />
+          Add
+        </button>
+      </form>
+
+      {tables.length === 0 ? (
+        <div className="mt-3 rounded-xl border border-dashed border-[#e2e2e2] bg-white p-8 text-center">
+          <QrCodeIcon className="mx-auto h-8 w-8 text-slate-300" />
+          <div className="mt-2 text-[13px] text-slate-600">No tables yet</div>
+          <div className="mt-1 text-[12px] text-slate-500">
+            Type a range like <span className="font-medium text-slate-700">1-12</span> above to create a code for each
+            table.
+          </div>
+        </div>
+      ) : (
+        <div className="mt-4 grid grid-cols-[repeat(auto-fill,minmax(210px,1fr))] gap-3">
+          {tables.map((t) => (
+            <QrCard
+              key={t}
+              title={`Table ${t}`}
+              subtitle={keys[t] ? 'Scan to order' : 'Save to finish this code'}
+              url={urlFor(t, keys[t])}
+              filename={`${filePrefix}-table-${t}-qr.png`}
+              onRemove={() => setTables((prev) => prev.filter((x) => x !== t))}
+            />
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+export default function QrCodesPage(): JSX.Element {
+  const { token } = useAuthContext();
+  const queryClient = useQueryClient();
+  const { data: tenant, isLoading } = useTenant();
+  const { locations, locationsQuery } = useLocations();
+
+  // which table sections have unsaved changes (printing waits until they're saved)
+  const [dirtySections, setDirtySections] = useState<Record<string, boolean>>({});
+  const dirtySetters = useRef(new Map<string, (d: boolean) => void>());
+  const markDirty = (id: string) => {
+    let fn = dirtySetters.current.get(id);
+    if (!fn) {
+      fn = (d: boolean) => setDirtySections((prev) => (prev[id] === d ? prev : { ...prev, [id]: d }));
+      dirtySetters.current.set(id, fn);
+    }
+    return fn;
+  };
+  const dirty = Object.values(dirtySections).some(Boolean);
+
+  // two or more open branches → every branch gets its own online code and its own tables
+  const branches = useMemo(() => locations.filter((l) => !l.disabled && l.slug), [locations]);
+  const multiBranch = branches.length >= 2;
+
+  const savedTables = useMemo(() => tenant?.tables ?? [], [tenant?.tables]);
+  const dineIn = !!tenant?.restaurantInfo?.dineInEnabled;
+  const online = tenant?.restaurantInfo?.onlineSalesEnabled !== false;
+  const base = tenant?.subdomain ? storefrontBase(tenant.subdomain) : '';
+  const restaurant = tenant?.name ?? '';
+  const keys = tenant?.tableKeys ?? {}; // each table's secret, part of its QR code (made when tables are saved)
+
+  const saveRestaurantTables = async (tables: string[]) => {
+    await updateTenant({ tables }, token as string);
+    await queryClient.invalidateQueries({ queryKey: ['tenant', token] });
+  };
+  const saveBranchTables = (id: string) => async (tables: string[]) => {
+    await updateLocationTables(id, tables);
+    await queryClient.invalidateQueries({ queryKey: ['locations'] });
+  };
+
+  const printItems: PrintItem[] = [
+    ...(online && base
+      ? [
+          { title: 'Order online', subtitle: 'Scan to order for pickup or delivery', url: onlineUrl(base) },
+          ...(multiBranch
+            ? branches.map((b) => ({
+                title: `Order online · ${b.name}`,
+                subtitle: 'Scan to order for pickup or delivery',
+                url: onlineUrl(base, b.slug),
+              }))
+            : []),
+        ]
+      : []),
     ...(dineIn && base
-      ? savedTables.map((t) => ({ title: `Table ${t}`, subtitle: 'Scan to order', url: tableUrl(base, t, keys[t]) }))
+      ? [
+          ...(multiBranch
+            ? branches.flatMap((b) =>
+                (b.tables ?? []).map((t) => ({
+                  title: `Table ${t}`,
+                  subtitle: `${b.name} · Scan to order`,
+                  url: tableUrl(base, t, b.tableKeys?.[t], b.slug),
+                })),
+              )
+            : []),
+          ...savedTables.map((t) => ({ title: `Table ${t}`, subtitle: 'Scan to order', url: tableUrl(base, t, keys[t]) })),
+        ]
       : []),
   ];
 
-  if (isLoading || !tenant) {
+  if (isLoading || !tenant || locationsQuery.isLoading) {
     return <div className="p-6 text-sm text-slate-500">Loading…</div>;
   }
 
@@ -272,7 +431,9 @@ export default function QrCodesPage(): JSX.Element {
             QR Codes
           </h1>
           <p className="mt-1 text-[13px] text-slate-500">
-            Every code guests can scan. Table codes tell the kitchen where to bring the order.
+            {multiBranch
+              ? 'Every code guests can scan. Branch codes send the order to that branch; table codes tell it where to bring it.'
+              : 'Every code guests can scan. Table codes tell the kitchen where to bring the order.'}
           </p>
         </div>
         <button
@@ -293,105 +454,79 @@ export default function QrCodesPage(): JSX.Element {
             <GlobeAltIcon className="h-4 w-4 text-slate-500" />
             Online storefront
           </h2>
-          <p className="mt-0.5 text-[12px] text-slate-500">For flyers, social media, takeaway bags and your shop window.</p>
+          <p className="mt-0.5 text-[12px] text-slate-500">
+            {multiBranch
+              ? 'For flyers, social media, takeaway bags and your shop window. The main code asks guests which branch; a branch code goes straight to it.'
+              : 'For flyers, social media, takeaway bags and your shop window.'}
+          </p>
           <div className="mt-3 grid grid-cols-[repeat(auto-fill,minmax(210px,1fr))] gap-3">
             <QrCard
               title="Order online"
-              subtitle="Scan to order for pickup or delivery"
+              subtitle={multiBranch ? 'Guests pick a branch' : 'Scan to order for pickup or delivery'}
               url={onlineUrl(base)}
               filename={`${tenant.subdomain}-online-qr.png`}
             />
+            {multiBranch &&
+              branches.map((b) => (
+                <QrCard
+                  key={b.id}
+                  title={b.name}
+                  subtitle="Scan to order for pickup or delivery"
+                  url={onlineUrl(base, b.slug)}
+                  filename={`${tenant.subdomain}-${b.slug}-online-qr.png`}
+                />
+              ))}
           </div>
         </section>
       )}
 
-      <section className="mt-8">
-        <div className="flex flex-wrap items-end justify-between gap-3">
-          <div>
-            <h2 className="text-[14px] font-semibold text-slate-900">
-              Dine-in tables{dineIn && tables.length > 0 ? ` (${tables.length})` : ''}
-            </h2>
-            <p className="mt-0.5 text-[12px] text-slate-500">
-              One code per table. Guests who scan it order straight to that table.
-            </p>
-          </div>
-          {dineIn && dirty && (
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => setTables(savedTables)}
-                className="text-xs text-slate-500 underline-offset-2 hover:underline"
-              >
-                Discard
-              </button>
-              <button
-                type="button"
-                onClick={save}
-                disabled={saving}
-                className="rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-40"
-              >
-                {saving ? 'Saving…' : 'Save tables'}
-              </button>
-            </div>
-          )}
-        </div>
-
-        {!dineIn ? (
+      {!dineIn ? (
+        <section className="mt-8">
+          <h2 className="text-[14px] font-semibold text-slate-900">Dine-in tables</h2>
           <div className="mt-3 rounded-xl border border-dashed border-[#e2e2e2] bg-white p-6 text-center text-[13px] text-slate-500">
             Dine-in is turned off for your restaurant, so there are no table codes.
           </div>
-        ) : (
-          <>
-            <form
-              className="mt-3 flex flex-wrap items-center gap-2"
-              onSubmit={(e) => {
-                e.preventDefault();
-                addTables();
-              }}
-            >
-              <input
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                placeholder="Add tables — e.g. 1-20, Patio-1, A4"
-                aria-label="Add tables"
-                className="w-72 max-w-full rounded-md border border-[#e2e2e2] px-3 py-2 text-sm outline-none focus:border-slate-400"
-              />
-              <button
-                type="submit"
-                disabled={!input.trim()}
-                className="inline-flex items-center gap-1 rounded-md border border-[#e5e5e5] bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-40"
-              >
-                <PlusIcon className="h-4 w-4" />
-                Add
-              </button>
-            </form>
-
-            {tables.length === 0 ? (
-              <div className="mt-3 rounded-xl border border-dashed border-[#e2e2e2] bg-white p-8 text-center">
-                <QrCodeIcon className="mx-auto h-8 w-8 text-slate-300" />
-                <div className="mt-2 text-[13px] text-slate-600">No tables yet</div>
-                <div className="mt-1 text-[12px] text-slate-500">
-                  Type a range like <span className="font-medium text-slate-700">1-12</span> above to create a code for
-                  each table.
-                </div>
-              </div>
-            ) : (
-              <div className="mt-4 grid grid-cols-[repeat(auto-fill,minmax(210px,1fr))] gap-3">
-                {tables.map((t) => (
-                  <QrCard
-                    key={t}
-                    title={`Table ${t}`}
-                    subtitle={keys[t] ? 'Scan to order' : 'Save to finish this code'}
-                    url={tableUrl(base, t, keys[t])}
-                    filename={`${tenant.subdomain}-table-${t}-qr.png`}
-                    onRemove={() => setTables((prev) => prev.filter((x) => x !== t))}
-                  />
-                ))}
-              </div>
-            )}
-          </>
-        )}
-      </section>
+        </section>
+      ) : multiBranch ? (
+        <>
+          {branches.map((b) => (
+            <TableSection
+              key={b.id}
+              title={`Dine-in tables · ${b.name}`}
+              description={`One code per table. Guests who scan it order straight to that table at ${b.name}.`}
+              savedTables={b.tables ?? []}
+              keys={b.tableKeys ?? {}}
+              urlFor={(t, k) => tableUrl(base, t, k, b.slug)}
+              filePrefix={`${tenant.subdomain}-${b.slug}`}
+              onSave={saveBranchTables(b.id)}
+              onDirtyChange={markDirty(b.id)}
+            />
+          ))}
+          {savedTables.length > 0 && (
+            <TableSection
+              title="Tables without a branch"
+              description="Codes made before your branches had their own tables. They still work — guests pick their branch first. Replace them with branch codes when you can."
+              savedTables={savedTables}
+              keys={keys}
+              urlFor={(t, k) => tableUrl(base, t, k)}
+              filePrefix={tenant.subdomain}
+              onSave={saveRestaurantTables}
+              onDirtyChange={markDirty('restaurant')}
+            />
+          )}
+        </>
+      ) : (
+        <TableSection
+          title="Dine-in tables"
+          description="One code per table. Guests who scan it order straight to that table."
+          savedTables={savedTables}
+          keys={keys}
+          urlFor={(t, k) => tableUrl(base, t, k)}
+          filePrefix={tenant.subdomain}
+          onSave={saveRestaurantTables}
+          onDirtyChange={markDirty('restaurant')}
+        />
+      )}
 
       <PrintSheet items={printItems} restaurant={restaurant} />
     </div>

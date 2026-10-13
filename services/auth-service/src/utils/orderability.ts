@@ -1,7 +1,8 @@
 /**
  * Server-side "can this be ordered right now?" check.
  * Combines restaurant/branch opening hours, category hours (with per-branch
- * overrides), item hours and sold-out switches — all in the restaurant's time zone.
+ * overrides), item hours and sold-out switches — all in the restaurant's time zone. At a branch, also what the
+ * branch's menu leaves out (as the menu page does): another branch's own categories, and categories it took off.
  */
 import { ObjectId } from 'mongodb';
 import { client } from '../db.js';
@@ -67,7 +68,7 @@ export async function checkOrderable(opts: {
         .collection('categories')
         .find(
           { _id: { $in: catIds }, tenantId: opts.tenantOid },
-          { projection: { name: 1, availability: 1, branchAvailability: 1, servicePeriodIds: 1 } }
+          { projection: { name: 1, availability: 1, branchAvailability: 1, servicePeriodIds: 1, scope: 1, locationId: 1 } }
         )
         .toArray()
     : [];
@@ -89,6 +90,23 @@ export async function checkOrderable(opts: {
     : [];
   const offIds = new Set(offOverlays.map((o) => String(o.itemId)));
 
+  // Categories this branch took off (or hid on) its menu, for this channel
+  const offCats =
+    opts.locationId && catIds.length
+      ? await db
+          .collection('categoryVisibility')
+          .find({
+            tenantId: opts.tenantOid,
+            categoryId: { $in: catIds },
+            locationId: opts.locationId,
+            ...(opts.channel ? { channel: opts.channel } : {}),
+            $or: [{ removed: true }, { visible: false }],
+          })
+          .project({ categoryId: 1 })
+          .toArray()
+      : [];
+  const offCatIds = new Set(offCats.map((v) => String(v.categoryId)));
+
   for (const it of items) {
     const id = String(it._id);
     if (offIds.has(id) || it.offline) {
@@ -96,6 +114,14 @@ export async function checkOrderable(opts: {
       continue;
     }
     const cat = it.categoryId ? catById.get(String(it.categoryId)) : undefined;
+    if (
+      opts.locationId &&
+      ((cat?.scope === 'location' && String(cat.locationId ?? '') !== String(opts.locationId)) ||
+        offCatIds.has(String(it.categoryId ?? '')))
+    ) {
+      out.set(id, { ok: false, reason: 'not-at-branch', message: `${it.name} isn't on the menu at this branch.` });
+      continue;
+    }
     const branchOverride = opts.locationId
       ? (cat?.branchAvailability as Array<{ locationId: ObjectId; availability: AvailabilityWindow[] }> | undefined)?.find(
           (b) => String(b.locationId) === String(opts.locationId)

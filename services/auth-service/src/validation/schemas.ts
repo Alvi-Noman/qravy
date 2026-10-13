@@ -2,6 +2,7 @@
  * Validation schemas for auth-service
  */
 import { z } from 'zod';
+import { RESERVED_SUBDOMAINS } from '../utils/subdomains.js';
 
 const objectId = z.string().regex(/^[a-fA-F0-9]{24}$/, 'Invalid id');
 export const channelEnum = z.enum(['dine-in', 'online']);
@@ -93,13 +94,6 @@ export const profileUpdateSchema = z.object({
   name: z.string().min(1, 'Name is required'),
   company: z.string().min(1, 'Company is required'),
 });
-
-const RESERVED_SUBDOMAINS = new Set([
-  'www', 'app', 'api', 'admin', 'dashboard', 'auth', 'login', 'mail', 'email', 'smtp', 'ftp',
-  'cdn', 'static', 'assets', 'img', 'images', 'media', 'menu', 'order', 'orders', 'waiter',
-  'staging', 'dev', 'test', 'demo', 'status', 'docs', 'help', 'support', 'blog', 'cname',
-  'ns1', 'ns2', 'qravy',
-]);
 
 export const tenantCreateSchema = z.object({
   name: z.string().min(1, 'Name is required').max(100),

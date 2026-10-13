@@ -8,7 +8,11 @@ const TTL_MS = 6 * 60 * 60 * 1000;
 const VALID = /^[A-Za-z0-9-]{1,12}$/;
 const VALID_KEY = /^[a-z0-9]{4,40}$/;
 
-const key = (sub?: string | null) => `qravy:table:${sub || 'anon'}`;
+// per restaurant and branch: table 12 at Gulshan (and its QR key) is no table at Banani
+const key = (sub?: string | null) => {
+  const branch = typeof window !== 'undefined' ? storeBranchFromPath(window.location.pathname) : null;
+  return `qravy:table:${sub || 'anon'}${branch ? `:${branch}` : ''}`;
+};
 
 export function normalizeTable(raw: unknown): string | null {
   const t = String(raw ?? '').trim().replace(/^#/, '');
@@ -95,6 +99,13 @@ export function splitStorePath(pathname: string): { base: string; dineIn: boolea
   const m = (pathname.startsWith('/t/') ? DEV_PATH : HOST_PATH).exec(pathname || '/');
   if (!m) return { base: '', dineIn: false, rest: pathname };
   return { base: `${m[1]}${m[2] ?? ''}`, dineIn: !!m[3], rest: m[4] === '/' ? '' : m[4] };
+}
+
+/** The branch the link is for: "/t/burger-house/gulshan/dine-in" (burger-house.qravy.com/gulshan/dine-in) → "gulshan". */
+export function storeBranchFromPath(pathname: string): string | null {
+  const { base } = splitStorePath(pathname);
+  const seg = base.split('/')[pathname.startsWith('/t/') ? 3 : 1];
+  return seg ? decodeURIComponent(seg) : null;
 }
 
 /** A link into the restaurant, with the guest's table kept on it ("/t/burger-house/dine-in/menu" →

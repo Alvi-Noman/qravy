@@ -58,6 +58,8 @@ from availability import (
     is_within,
     load_rules,
     local_now,
+    on_branch_menu,
+    on_channel_menu,
     resolve_location_id,
     unavailable_reason,
 )
@@ -82,6 +84,12 @@ SESSION_CTX: Dict[Tuple[str, str], Deque[Dict[str, str]]] = defaultdict(
 
 def session_key(tenant: Optional[str], sid: Optional[str]) -> Tuple[str, str]:
     return ((tenant or "unknown").strip(), (sid or "anon").strip())
+
+
+def convo_sid(session_id: Optional[str], branch: Optional[str]) -> Optional[str]:
+    """The conversation's memory (history, checkout stage, open offers) is per branch: the same phone at Gulshan and
+    then at Banani is two conversations. The session id itself (orders, logs) stays the device's."""
+    return f"{session_id}@{branch}" if session_id and branch else session_id
 
 
 _CLIENT = MongoClient(MONGO_URI)
@@ -229,7 +237,7 @@ async def handle_cart_load(request: web.Request) -> web.StreamResponse:
             or request.query.get("sid")
             or "anon"
         )
-        items = load_cart(tenant, sid)
+        items = load_cart(tenant, sid, request.query.get("branch") or None)
         return web.json_response(
             {"ok": True, "items": items},
             headers=_cart_cors_headers(),
@@ -249,7 +257,7 @@ async def handle_cart_save(request: web.Request) -> web.StreamResponse:
         tenant = data.get("tenant") or "unknown"
         sid = data.get("sessionId") or "anon"
         items = data.get("items") or []
-        save_cart(tenant, sid, items)
+        save_cart(tenant, sid, items, data.get("branch") or None)
         return web.json_response(
             {"ok": True},
             headers=_cart_cors_headers(),
@@ -725,7 +733,7 @@ async def _timed(coro) -> Tuple[Optional[str], int]:
 
 async def cloud_transcribe(
     pcm_bytes: bytes, lang: Optional[str], rate: int = 16000, tenant: Optional[str] = None,
-    session: Optional[str] = None,
+    session: Optional[str] = None, branch: Optional[str] = None,
 ) -> Tuple[Optional[str], str]:
     """(text, engine) — OpenAI (OPENAI_STT_MODEL, gpt-4o-transcribe) with the menu as a hint; Groq Whisper if that fails.
     In A/B mode both run on the same audio and both results (+ the clip) are saved to qravy.stt_ab."""
@@ -762,7 +770,7 @@ async def cloud_transcribe(
     if OPENAI_STT_ON:
         t0 = time.monotonic()
         prompt = stt_prompt(tenant, lang)
-        just = stt_turn_hint(tenant, session, lang)
+        just = stt_turn_hint(tenant, convo_sid(session, branch), lang)
         if just:  # the dishes just named lead the hint (they're the likeliest words this turn)
             prompt = f"{just}। {prompt}" if lang != "en" else f"{just}. {prompt}"
         text = await openai_transcribe(pcm_bytes, lang, rate=rate, prompt=prompt)
@@ -953,6 +961,7 @@ def fetch_menu_snapshot(
                 "servicePeriodIds": 1,
                 "availableFrom": 1,
                 "availableUntil": 1,
+                "locationId": 1,
             },
         ).limit(limit)
 
@@ -996,6 +1005,7 @@ def fetch_menu_snapshot(
                     "servicePeriodIds": d.get("servicePeriodIds") or [],
                     "availableFrom": d.get("availableFrom"),
                     "availableUntil": d.get("availableUntil"),
+                    "locationId": str(d.get("locationId")) if d.get("locationId") else None,
                 }
             )
 
@@ -1005,6 +1015,8 @@ def fetch_menu_snapshot(
             menu_db = _CLIENT[MENU_DB_NAME]
             loc_id = resolve_location_id(menu_db, tenant_oid, branch)
             rules = load_rules(menu_db, tenant_oid, loc_id, channel)
+            # only this branch's menu: not another branch's own dishes, nor ones this branch took off (as the menu page)
+            items = [it for it in items if on_branch_menu(it, rules) and on_channel_menu(it, rules, channel)]
             now = now or datetime.utcnow()
             for it in items:
                 reason = unavailable_reason(it, rules, now=now, lang=(lang or "en"))
@@ -1582,9 +1594,10 @@ async def run_text_turn(
     norm_text, changes = normalize_text(text, vocab=vocab, fuzzy_threshold=FUZZY_THRESHOLD)
 
     # history before this utterance (the brain gets the utterance itself separately)
-    history = get_history(tenant, session_id)
-    dialog_state = get_state(tenant, session_id)
-    push_user(tenant, session_id, norm_text)
+    convo = convo_sid(session_id, branch)
+    history = get_history(tenant, convo)
+    dialog_state = get_state(tenant, convo)
+    push_user(tenant, convo, norm_text)
 
     # (a copy: the profile is cached per restaurant, paging depends on this guest being at a table)
     profile = {**fetch_restaurant_profile(tenant, branch), "staffAlerts": staff_can_be_paged(channel, table)}
@@ -1608,7 +1621,7 @@ async def run_text_turn(
         ctx["openNow"] = is_within(profile["opening"], profile.get("tz"), now)
 
     if cart_items is None:
-        cart_items = load_cart(tenant or "unknown", session_id or "anon") or []
+        cart_items = load_cart(tenant or "unknown", session_id or "anon", branch) or []
     ctx["cartItems"] = [
         {
             "itemId": it.get("itemId") or it.get("id") or it.get("_id"),
@@ -1708,8 +1721,8 @@ async def run_text_turn(
                 meta["voiceReplyText"] = reply_text
 
     # memory keeps exact English MENU names (keeps the model grounded) …
-    push_assistant(tenant, session_id, reply_text)
-    update_state(tenant, session_id, meta=meta, user_text=norm_text)
+    push_assistant(tenant, convo, reply_text)
+    update_state(tenant, convo, meta=meta, user_text=norm_text)
     # … while a Bangla guest reads and hears every name in Bangla script ("চিকেন চিলি অনিয়ন", not an English accent)
     if (meta.get("language") or lang) == "bn" and BN_SCRIPT_NAMES:
         # "Set Menu A-01" → "সেট মেনু 1" when every code on this menu uses the same letter (else "এ-1")
@@ -2126,7 +2139,7 @@ async def handle_conn(ws: WebSocketServerProtocol):
                         f"[ai-waiter-service] lang preference for final: {lang_pref or 'auto'}"
                     )
                     groq_text, stt_engine = await cloud_transcribe(
-                        final_bytes, lang_pref, rate=rate, tenant=tenant_hint, session=session_id
+                        final_bytes, lang_pref, rate=rate, tenant=tenant_hint, session=session_id, branch=branch_hint
                     )
 
                     # wrong language entirely (Punjabi / Hindi script for a Bangla phrase) → the same audio again,
@@ -2135,7 +2148,7 @@ async def handle_conn(ws: WebSocketServerProtocol):
                         retry_lang = "en" if lang_pref == "en" else "bn"
                         print(f"[ai-waiter-service] foreign script ({groq_text[:40]}) → retry {retry_lang}")
                         fixed, stt_engine = await cloud_transcribe(
-                            final_bytes, retry_lang, rate=rate, tenant=tenant_hint, session=session_id
+                            final_bytes, retry_lang, rate=rate, tenant=tenant_hint, session=session_id, branch=branch_hint
                         )
                         groq_text = fixed if fixed and not wrong_script(fixed) else None
 
@@ -2154,7 +2167,7 @@ async def handle_conn(ws: WebSocketServerProtocol):
                             "[ai-waiter-service] BN expected but got EN → retry en"
                         )
                         en_text, stt_engine = await cloud_transcribe(
-                            final_bytes, "en", rate=rate, tenant=tenant_hint, session=session_id
+                            final_bytes, "en", rate=rate, tenant=tenant_hint, session=session_id, branch=branch_hint
                         )
                         if en_text:
                             groq_text = en_text
@@ -2170,7 +2183,7 @@ async def handle_conn(ws: WebSocketServerProtocol):
                             "[ai-waiter-service] EN expected but got BN → retry bn"
                         )
                         bn_text, stt_engine = await cloud_transcribe(
-                            final_bytes, "bn", rate=rate, tenant=tenant_hint, session=session_id
+                            final_bytes, "bn", rate=rate, tenant=tenant_hint, session=session_id, branch=branch_hint
                         )
                         if bn_text:
                             groq_text = bn_text
