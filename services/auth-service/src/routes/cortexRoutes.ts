@@ -466,6 +466,56 @@ router.get(
   })
 );
 
+/**
+ * GET /cortex/transcripts/live?after=<cursor>&tenant=&location=&channel=
+ * The AI waiter's turns as they happen, every restaurant and branch: what it heard, understood and said. Read-only;
+ * the cursor is the last turn's id (ids grow with time — nothing missed, nothing twice). No cursor → the latest 50.
+ */
+router.get(
+  '/cortex/transcripts/live',
+  wrap(async (req, res) => {
+    const f = filtersOf(req);
+    const lb = await labels();
+    const limit = Math.max(1, Math.min(200, Number(req.query.limit) || 100));
+    const match: Document = {};
+    if (f.tenantId) match.tenant = lb.tenant.get(String(f.tenantId))?.subdomain ?? '__none__';
+    if (f.locationId) match.location = String(f.locationId);
+    if (f.channel) match.channel = f.channel;
+    const after = oid(req.query.after);
+    let docs: Document[];
+    if (after) {
+      docs = await transcriptsCol().find({ ...match, _id: { $gt: after } }).sort({ _id: 1 }).limit(limit).toArray();
+    } else {
+      // first load: the latest turns of the last day (oldest first, like the rest of the feed)
+      docs = (
+        await transcriptsCol()
+          .find({ ...match, ts: { $gte: new Date(Date.now() - 24 * 3600_000) } })
+          .sort({ _id: -1 })
+          .limit(50)
+          .toArray()
+      ).reverse();
+    }
+    const bySub = new Map([...lb.tenant.entries()].map(([id, t]) => [t.subdomain, { id, name: t.name }]));
+    res.json({
+      success: true,
+      cursor: docs.length ? String(docs[docs.length - 1]._id) : after ? String(after) : null,
+      items: docs.map((d) => {
+        const t = bySub.get(String(d.tenant));
+        return {
+          id: String(d._id),
+          conversationId: `${d.tenant}|${d.session}|${d.location ?? ''}`,
+          tenantId: t?.id ?? null,
+          restaurant: t?.name ?? String(d.tenant ?? '?'),
+          subdomain: d.tenant ?? null,
+          ...turnView(d),
+          // the branch by name (the turn itself keeps the link's slug)
+          branch: d.location ? lb.branch.get(String(d.location)) ?? d.branch ?? null : d.branch ?? null,
+        };
+      }),
+    });
+  })
+);
+
 router.get(
   '/cortex/conversations/:id',
   wrap(async (req, res) => {

@@ -22,10 +22,11 @@ export default function Conversations() {
   };
   const tenants = useQuery({ queryKey: ['tenants', 30], queryFn: () => api<{ items: TenantRow[] }>('/tenants?days=30') });
   const qs = new URLSearchParams({ days: String(days), limit: '200', ...(tenant ? { tenant } : {}), ...(q ? { q } : {}) });
-  const list = useQuery({ queryKey: ['conversations', qs.toString()], queryFn: () => api<{ items: ConversationItem[] }>(`/conversations?${qs}`) });
+  const list = useQuery({ queryKey: ['conversations', qs.toString()], refetchInterval: 15_000, queryFn: () => api<{ items: ConversationItem[] }>(`/conversations?${qs}`) });
   const detail = useQuery({
     queryKey: ['conversation', open],
     enabled: !!open,
+    refetchInterval: 5_000, // a guest may still be talking
     queryFn: () => api<{ turns: Turn[] }>(`/conversations/${encodeURIComponent(open ?? '')}`),
   });
   const current = list.data?.items.find((c) => c.id === open);

@@ -409,6 +409,31 @@ export const updateDevice = async (req: Request, res: Response, next: NextFuncti
   }
 };
 
+/**
+ * DELETE /access/devices/current — release THIS device from its branch: the way out for an owner or admin whose own
+ * computer was set to a branch ("Which location are you signing from?"). Branch staff can't; the device then shows
+ * every branch again for them.
+ */
+export const releaseCurrentDevice = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+  try {
+    if (!managesTeam(req)) return void res.fail(403, 'Only owners and admins can release a device.');
+    const tenantId = req.user?.tenantId;
+    // staff invited for one branch only (an admin role, limited to it) can't free a device either
+    const limited = await memberships().findOne(
+      { tenantId: new ObjectId(String(tenantId)), userId: new ObjectId(String(req.user?.id)), locationId: { $type: 'objectId' } },
+      { projection: { _id: 1 } }
+    );
+    if (limited) return void res.fail(403, 'Only owners and admins can release a device.');
+    const deviceKey = String(((req as any).cookies?.deviceKey as string | undefined) || '').trim();
+    if (!tenantId || !deviceKey) return void res.fail(404, 'This device is not assigned to a branch');
+    const r = await devices().deleteOne({ tenantId: new ObjectId(tenantId), deviceKey });
+    if (!r.deletedCount) return void res.fail(404, 'This device is not assigned to a branch');
+    res.ok({ released: true });
+  } catch (err) {
+    next(err);
+  }
+};
+
 export const deleteDevice = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
     if (!managesTeam(req)) return void res.fail(403, 'Only owners and admins can manage devices.');
@@ -752,6 +777,7 @@ export default {
   registerOrAssignDevice,
   updateDevice,
   deleteDevice,
+  releaseCurrentDevice,
   listAccessibleWorkspaces: async (req: Request, res: Response, next: NextFunction) =>
     listAccessibleWorkspaces(req, res, next),
   selectTenant,

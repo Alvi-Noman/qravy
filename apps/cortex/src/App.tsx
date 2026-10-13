@@ -13,6 +13,7 @@ import Sessions from './pages/Sessions';
 import SessionDetail from './pages/SessionDetail';
 import Conversations from './pages/Conversations';
 import Orders from './pages/Orders';
+import LiveTranscripts from './pages/LiveTranscripts';
 
 export default function App() {
   const qc = useQueryClient();
@@ -60,6 +61,7 @@ export default function App() {
           <Route path="restaurants/:id" element={<RestaurantDetail />} />
           <Route path="sessions" element={<Sessions />} />
           <Route path="sessions/:vid" element={<SessionDetail />} />
+          <Route path="transcripts" element={<LiveTranscripts />} />
           <Route path="conversations" element={<Conversations />} />
           <Route path="orders" element={<Orders />} />
           <Route path="*" element={<Navigate to="/" replace />} />

@@ -21,6 +21,7 @@ import {
   ChatBubbleLeftRightIcon,
 } from '@heroicons/react/24/outline';
 import { useAuthContext } from '../../context/AuthContext';
+import api from '../../api/auth';
 import { useScope } from '../../context/ScopeContext';
 import { useLocations } from '../locations/useLocations';
 import { usePermissions } from '../../context/PermissionsContext';
@@ -32,7 +33,7 @@ type Section = { heading: string; items: NavItem[] };
 type StoreLocation = { id: string; name: string };
 
 export default function Sidebar(): JSX.Element {
-  const { session } = useAuthContext();
+  const { session, user } = useAuthContext();
   const { activeLocationId, setActiveLocationId } = useScope();
   const { locations, locationsQuery } = useLocations();
   const { has } = usePermissions();
@@ -192,6 +193,24 @@ export default function Sidebar(): JSX.Element {
               displayName={displayName}
               isCentralSession={isCentralSession}
             />
+          )}
+          {/* an owner / admin on a device set to one branch: the way back to every branch (branch staff don't see it) */}
+          {isCentralSession && (user?.role === 'owner' || user?.role === 'admin') && (
+            <button
+              type="button"
+              onClick={async () => {
+                if (!window.confirm('Use all branches on this device? It will no longer be a branch device.')) return;
+                try {
+                  await api.delete('/api/v1/access/devices/current');
+                  window.location.reload();
+                } catch {
+                  window.alert('Could not release this device. Try again, or remove it in Settings → Restaurant Access from another device.');
+                }
+              }}
+              className="mt-2 w-full text-left text-[12px] text-slate-500 underline-offset-2 hover:text-slate-800 hover:underline"
+            >
+              Use all branches on this device
+            </button>
           )}
         </div>
       ) : (

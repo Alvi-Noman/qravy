@@ -8,6 +8,7 @@ import {
   ReceiptPercentIcon,
   SignalIcon,
   ArrowRightOnRectangleIcon,
+  MicrophoneIcon,
 } from '@heroicons/react/24/outline';
 import { setToken } from '../api';
 
@@ -16,6 +17,7 @@ const NAV = [
   { to: '/live', label: 'Live', icon: SignalIcon },
   { to: '/restaurants', label: 'Restaurants', icon: BuildingStorefrontIcon },
   { to: '/sessions', label: 'Guest sessions', icon: CursorArrowRaysIcon },
+  { to: '/transcripts', label: 'Live transcripts', icon: MicrophoneIcon },
   { to: '/conversations', label: 'AI conversations', icon: ChatBubbleLeftRightIcon },
   { to: '/orders', label: 'Orders', icon: ReceiptPercentIcon },
 ];

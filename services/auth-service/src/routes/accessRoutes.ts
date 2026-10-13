@@ -24,6 +24,8 @@ router.post('/devices/register', authenticateJWT, accessController.registerOrAss
 router.get('/devices/lookup', authenticateJWT, accessController.lookupDeviceByKey);
 // move a device to another branch / forget it — owners and admins, not from a branch device
 router.patch('/devices/:id', authenticateJWT, denyBranchSession, accessController.updateDevice);
+// the owner's / an admin's way out when their own device was set to a branch (allowed from that branch device)
+router.delete('/devices/current', authenticateJWT, accessController.releaseCurrentDevice);
 router.delete('/devices/:id', authenticateJWT, denyBranchSession, accessController.deleteDevice);
 
 /**
