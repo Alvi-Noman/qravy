@@ -126,6 +126,20 @@ const apiLimiter = rateLimit({
   keyGenerator: (req: Request) => getClientIp(req),
 });
 
+/**
+ * Guest activity tracking (POST /public/events — the storefront's tracker) has its own, larger budget: a restaurant's
+ * guests often share its Wi-Fi IP, and tracking must never use up that IP's allowance for menus and orders.
+ */
+const eventsLimiter = rateLimit({
+  windowMs,
+  max: Number(process.env.RATE_LIMIT_MAX_EVENTS ?? 3000),
+  standardHeaders: false,
+  legacyHeaders: false,
+  skip: skipCommon,
+  keyGenerator: (req: Request) => getClientIp(req),
+  handler: (_req: Request, res: Response) => res.status(204).end(), // over budget: drop quietly (tracking only)
+});
+
 /** Tighter limiter only for risky auth endpoints */
 const authLimiter = rateLimit({
   windowMs,
@@ -148,7 +162,9 @@ app.use('/api/v1/auth/magic-link', authLimiter);
 app.use('/api/v1/cortex/login', authLimiter); // the company admin panel's sign-in
 
 /** Apply the mild limiter to the broader API surface */
-app.use('/api/v1', apiLimiter);
+app.use('/api/v1/public/events', eventsLimiter);
+// (the tracker's events are counted above, not here)
+app.use('/api/v1', (req, res, next) => (req.path === '/public/events' ? next() : apiLimiter(req, res, next)));
 
 /* ---------- Routes ---------- */
 // Mount public routes at /api/v1 so router.get('/public/menu') → /api/v1/public/menu

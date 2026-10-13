@@ -116,7 +116,7 @@ export function track(type: TrackType, extra?: { page?: Page; data?: Record<stri
     queueCtx = ctx;
     queue.push({ type, at: Date.now(), ...(extra ?? {}) });
     if (queue.length >= 20) flush();
-    else if (!timer) timer = window.setTimeout(flush, 3000);
+    else if (!timer) timer = window.setTimeout(flush, 10_000); // a batch every 10 s at most (and on leaving the page)
   } catch {
     /* never in the way */
   }
