@@ -50,6 +50,8 @@ export type PublicOrder = {
   channel?: 'dine-in' | 'online';
   /** Dine-in only */
   table: string | null;
+  /** The branch it went to (its link name) — null for a restaurant without branches */
+  branch?: string | null;
   /** Online only */
   fulfillment?: 'pickup' | 'delivery';
   customer?: { name: string; phone: string; address?: string };

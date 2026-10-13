@@ -12,7 +12,7 @@ import { DEFAULT_TIMEZONE } from '../../utils/availability.js';
 import type { Fulfillment, OrderChannel, OrderCustomer, OrderDoc, OrderLine, OrderStatus } from '../../models/Order.js';
 import type { OrderEta } from '../../models/Order.js';
 import { publishOrder, publishTenant } from './events.js';
-import { branchName, tableBook } from '../../utils/branches.js';
+import { branchInfo, tableBook } from '../../utils/branches.js';
 import {
   DEFAULT_PREP_MINUTES,
   STALE_ORDER_MS,
@@ -268,10 +268,12 @@ export async function createOrderCore(input: {
   const now = new Date();
   const ahead = await kitchenQueue(input.tenantOid, input.locationId, now, kitchen.defaultPrepMinutes);
   const eta = orderEta(lines, ahead, kitchen, now);
+  const where = await branchInfo(input.locationId);
   const doc: OrderDoc = {
     tenantId: input.tenantOid,
     locationId: input.locationId,
-    branch: (await branchName(input.locationId)) ?? input.branch ?? null,
+    branch: where?.name ?? input.branch ?? null,
+    branchSlug: where?.slug ?? null,
     channel,
     orderNumber: await nextOrderNumber(input.tenantOid, day, input.locationId ?? null),
     businessDay: day,
@@ -589,6 +591,8 @@ export function toPublicOrder(o: OrderDoc) {
     statusHistory: o.statusHistory.map((h) => ({ status: h.status, at: h.at })),
     channel: o.channel ?? 'dine-in',
     table: o.dineIn?.tableNumber ?? null,
+    // the order's branch (its link name): the order page's "Call waiter" and links go to that branch
+    branch: o.branchSlug ?? null,
     ...(o.online ? { fulfillment: o.online.fulfillment, customer: o.online.customer } : {}),
     items: o.items.map(lineView),
     subtotal: o.subtotal,
