@@ -36,7 +36,7 @@ export default function OrderStatusPage() {
   const location = useLocation();
   const store = typeof window !== 'undefined' ? (window as any).__STORE__ : undefined;
   const sub = params.subdomain ?? store?.subdomain ?? null;
-  const branch = params.branchSlug ?? params.branch ?? store?.branch ?? null;
+  const linkBranch = params.branchSlug ?? params.branch ?? store?.branch ?? null;
   const token = params.token ?? '';
   const lang: UiLang = 'en'; // the order page is always English
   const t = (pair: [string, string]) => tr(lang, pair[0], pair[1]);
@@ -74,6 +74,9 @@ export default function OrderStatusPage() {
     lastStatus.current = order.status;
   }, [order]);
 
+  // the order's own branch when the link has none (a tracking link from before branch links): back to its menu, and
+  // "Call waiter" reaches that branch's staff
+  const branch = linkBranch ?? order?.branch ?? null;
   const backHref = withTable(storeBasePath(sub, branch) || '/', sub); // (the table stays on the link)
 
   if (missing) {

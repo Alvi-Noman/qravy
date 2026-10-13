@@ -87,6 +87,12 @@ function toDTO(doc: LocationDoc) {
   };
 }
 
+/** Setting up branches (add, rename, hours, delete, tables, copy a menu) is for owners and admins. */
+function canManageBranches(req: Request): boolean {
+  const role = (req as any).user?.role;
+  return role === 'owner' || role === 'admin';
+}
+
 function isCentral(req: Request): boolean {
   return !Boolean((req as any).user?.role);
 }
@@ -114,6 +120,7 @@ export async function listLocations(req: Request, res: Response) {
 
 export async function createLocation(req: Request, res: Response) {
   if (isCentral(req)) return res.fail(403, 'Not allowed for device-scoped session');
+  if (!canManageBranches(req)) return res.fail(403, 'Only owners and admins can change branches.');
 
   const tenantId = getTenantId(req);
   const body = createSchema.parse(req.body);
@@ -185,6 +192,7 @@ export async function createLocation(req: Request, res: Response) {
 
 export async function updateLocation(req: Request, res: Response) {
   if (isCentral(req)) return res.fail(403, 'Not allowed for device-scoped session');
+  if (!canManageBranches(req)) return res.fail(403, 'Only owners and admins can change branches.');
 
   const tenantId = getTenantId(req);
   const { id } = req.params;
@@ -239,6 +247,7 @@ export async function updateLocation(req: Request, res: Response) {
 /** PUT /locations/:id/tables { tables } — the branch's dine-in tables; a table keeps its QR key, a new one gets one. */
 export async function updateLocationTables(req: Request, res: Response) {
   if (isCentral(req)) return res.fail(403, 'Not allowed for device-scoped session');
+  if (!canManageBranches(req)) return res.fail(403, 'Only owners and admins can change branches.');
 
   const tenantId = getTenantId(req);
   const { id } = req.params;
@@ -260,6 +269,7 @@ export async function updateLocationTables(req: Request, res: Response) {
 
 export async function deleteLocation(req: Request, res: Response) {
   if (isCentral(req)) return res.fail(403, 'Not allowed for device-scoped session');
+  if (!canManageBranches(req)) return res.fail(403, 'Only owners and admins can change branches.');
 
   const tenantId = getTenantId(req);
   const { id } = req.params;
@@ -353,6 +363,7 @@ export async function clearDefaultLocation(req: Request, res: Response) {
 
 export async function importMenuFromLocation(req: Request, res: Response) {
   if (isCentral(req)) return res.fail(403, 'Not allowed for device-scoped session');
+  if (!canManageBranches(req)) return res.fail(403, 'Only owners and admins can change branches.');
 
   const tenantId = getTenantId(req);
   const targetLocationId = req.params.id;

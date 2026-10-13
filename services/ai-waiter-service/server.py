@@ -231,13 +231,39 @@ def turn_place(tenant: Optional[str], branch: Optional[str], channel: Optional[s
     return {"branch": branch or None, "location": str(loc) if loc is not None else None,
             "channel": channel or None, "table": table or None}
 
-# ---------- Buzzer alert state (per-tenant) ----------
-# { tenant_subdomain: {"active": bool, "since": float | None} }
-_ALERT_STATE: Dict[str, Dict[str, Any]] = defaultdict(lambda: {"active": False, "since": None})
+# ---------- Buzzer alert state (per restaurant and branch) ----------
+# { (tenant_subdomain, location_id or ""): {"active": bool, "since": float | None} } — "" = an order without a branch.
+# A buzzer set up for a branch (?branch=<slug or id>) rings for that branch's orders (and branch-less ones); one
+# without a branch (older devices, the owner's "All locations") rings for every order of the restaurant.
+_ALERT_STATE: Dict[Tuple[str, str], Dict[str, Any]] = defaultdict(lambda: {"active": False, "since": None})
 
-def _set_alert(tenant: str, active: bool) -> None:
-    _ALERT_STATE[tenant]["active"] = active
-    _ALERT_STATE[tenant]["since"] = time.time() if active else None
+
+def _set_alert(tenant: str, active: bool, location: Optional[str] = None) -> None:
+    """On: that branch's buzzer (location) — or the restaurant's for an order without one. Off with a location: that
+    branch's (and branch-less orders'); off without one: all of the restaurant's."""
+    if active:
+        _ALERT_STATE[(tenant, location or "")].update(active=True, since=time.time())
+        return
+    for key in [k for k in _ALERT_STATE if k[0] == tenant and (location is None or k[1] in (location, ""))]:
+        _ALERT_STATE[key].update(active=False, since=None)
+
+
+def _alert_state(tenant: str, location: Optional[str] = None) -> Dict[str, Any]:
+    """Is the buzzer on? A branch hears its own orders and branch-less ones; no branch → any of the restaurant's."""
+    on = [s for (t, loc), s in list(_ALERT_STATE.items())
+          if t == tenant and s["active"] and (location is None or loc in (location, ""))]
+    return {"active": bool(on), "since": min((s["since"] for s in on if s["since"]), default=None)}
+
+
+def _alert_location(tenant: str, branch: str) -> Optional[str]:
+    """?branch= → the branch's location id (its slug, name or id). None = no branch asked; unknown → never rings."""
+    branch = (branch or "").strip()
+    if not branch:
+        return None
+    if re.fullmatch(r"[0-9a-fA-F]{24}", branch):
+        return branch.lower()
+    loc = resolve_location_id(_CLIENT[MENU_DB_NAME], resolve_tenant_id(tenant), branch)
+    return str(loc) if loc is not None else f"unknown:{branch}"
 
 # ---------- NEW: Minimal HTTP API for cart persistence ----------
 
@@ -376,9 +402,11 @@ async def require_staff_of(request: web.Request, tenant: str, roles: Optional[Tu
 # ---------- Buzzer alert HTTP handlers ----------
 
 async def handle_alert_get(request: web.Request) -> web.Response:
-    """GET /alert?tenant=<subdomain>  — polled by the ESP32 every 2 s."""
+    """GET /alert?tenant=<subdomain>[&branch=<slug or id>]  — polled by the ESP32 every 2 s (and the dashboard)."""
     tenant = request.rel_url.query.get("tenant", "")
-    state = _ALERT_STATE[tenant] if tenant else {"active": False, "since": None}
+    branch = request.rel_url.query.get("branch", "")
+    location = await asyncio.to_thread(_alert_location, tenant, branch) if tenant and branch else None
+    state = _alert_state(tenant, location) if tenant else {"active": False, "since": None}
     return web.Response(
         content_type="application/json",
         text=json.dumps({"alert": state["active"], "since": state["since"]}),
@@ -386,8 +414,8 @@ async def handle_alert_get(request: web.Request) -> web.Response:
     )
 
 async def handle_alert_dismiss(request: web.Request) -> web.Response:
-    """POST /alert/dismiss?tenant=<subdomain>  — called by the dashboard when employee acknowledges (staff only:
-    anyone else could silence a restaurant's buzzer)."""
+    """POST /alert/dismiss?tenant=<subdomain>[&branch=<slug or id>]  — called by the dashboard when employee
+    acknowledges (staff only: anyone else could silence a restaurant's buzzer). With a branch: only its buzzer."""
     tenant = request.rel_url.query.get("tenant", "")
     if not tenant:
         return web.Response(status=400, text=json.dumps({"ok": False, "error": "tenant required"}),
@@ -395,8 +423,10 @@ async def handle_alert_dismiss(request: web.Request) -> web.Response:
     denied = await require_staff_of(request, tenant)
     if denied is not None:  # (an aiohttp Response is a mapping — an empty one is falsy)
         return denied
-    _set_alert(tenant, False)
-    print(f"[alert] ✅ buzzer dismissed for {tenant}")
+    branch = request.rel_url.query.get("branch", "")
+    location = await asyncio.to_thread(_alert_location, tenant, branch) if branch else None
+    _set_alert(tenant, False, location)
+    print(f"[alert] ✅ buzzer dismissed for {tenant}{' / ' + branch if branch else ''}")
     return web.Response(
         content_type="application/json",
         text=json.dumps({"ok": True}),
@@ -417,8 +447,9 @@ async def handle_alert_trigger(request: web.Request) -> web.Response:
     tenant = str(data.get("tenant") or "").strip()
     if not tenant:
         return web.json_response({"ok": False, "error": "tenant required"}, status=400)
-    _set_alert(tenant, True)
-    print(f"[alert] 🔔 new order for {tenant} — buzzer triggered")
+    location = str(data.get("location") or "").strip().lower() or None  # the order's branch (auth-service)
+    _set_alert(tenant, True, location)
+    print(f"[alert] 🔔 new order for {tenant}{' / ' + location if location else ''} — buzzer triggered")
     return web.json_response({"ok": True})
 
 async def handle_upsell_stats(request: web.Request) -> web.Response:
@@ -443,6 +474,17 @@ async def handle_upsell_stats(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "stats": data}, headers=cors)
 
 
+def branch_names(tenant: Optional[str]) -> Dict[str, str]:
+    """location id → branch name, for the conversations page ("Gulshan 2 (Main)", not the link's "gulshan-2-main")."""
+    try:
+        oid = resolve_tenant_id(tenant)
+        if oid is None:
+            return {}
+        return {str(l["_id"]): str(l.get("name") or "") for l in _CLIENT[MENU_DB_NAME]["locations"].find({"tenantId": oid}, {"name": 1})}
+    except Exception:
+        return {}
+
+
 async def handle_conversations(request: web.Request) -> web.Response:
     """GET /conversations?tenant=<subdomain>&days=7[&location=<id>]  — the restaurant's conversations
        GET /conversations?tenant=<subdomain>&session=<id>            — one of them, turn by turn
@@ -464,7 +506,8 @@ async def handle_conversations(request: web.Request) -> web.Response:
         except ValueError:
             days = 7
         items = await asyncio.to_thread(conversations.list_conversations, DB, tenant, days=days,
-                                        location=q.get("location", "").strip() or None)
+                                        location=q.get("location", "").strip() or None,
+                                        branch_names=branch_names(tenant))
         return web.json_response({"ok": True, "days": days, "conversations": items}, headers=_CORS)
     except Exception as e:
         print("[conversations] failed:", repr(e))

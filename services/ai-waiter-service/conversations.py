@@ -24,9 +24,17 @@ def _flags(doc: Dict[str, Any]) -> List[str]:
     return list(dict.fromkeys(out))
 
 
+def convo_id(session: Optional[str], location: Optional[str]) -> str:
+    """One conversation = one guest (session) at one branch: the same phone at Gulshan and then at Banani is two
+    conversations (as the waiter remembers them — server.convo_sid). No branch → just the session."""
+    sid = session or "anon"
+    return f"{sid}@{location}" if location else sid
+
+
 def list_conversations(db: Any, tenant: str, *, days: int = 7, location: Optional[str] = None, limit: int = 100,
-                       now: Optional[datetime] = None) -> List[Dict[str, Any]]:
-    """The restaurant's conversations in the last `days`, newest first (one per guest session)."""
+                       now: Optional[datetime] = None, branch_names: Optional[Dict[str, str]] = None) -> List[Dict[str, Any]]:
+    """The restaurant's conversations in the last `days`, newest first (one per guest session and branch).
+    `branch_names`: location id → the branch's name, shown instead of the link's slug ("Gulshan 2 (Main)")."""
     since = (now or datetime.utcnow()) - timedelta(days=days)
     q: Dict[str, Any] = {"tenant": tenant, "ts": {"$gte": since}}
     if location:
@@ -34,9 +42,10 @@ def list_conversations(db: Any, tenant: str, *, days: int = 7, location: Optiona
     convos: Dict[str, Dict[str, Any]] = {}
     for d in db.transcripts.find(q, _LIST_FIELDS).sort("ts", 1):
         sid = d.get("session") or "anon"
-        c = convos.get(sid)
+        cid = convo_id(sid, d.get("location"))
+        c = convos.get(cid)
         if c is None:
-            c = convos[sid] = {"session": sid, "startedAt": d.get("ts"), "lastAt": d.get("ts"), "turns": 0,
+            c = convos[cid] = {"id": cid, "session": sid, "startedAt": d.get("ts"), "lastAt": d.get("ts"), "turns": 0,
                                "unheard": 0, "flagged": 0, "ordered": False, "preview": "", "language": None,
                                "table": None, "channel": None, "branch": None}
         meta = (d.get("ai") or {}).get("meta") or {}
@@ -52,6 +61,8 @@ def list_conversations(db: Any, tenant: str, *, days: int = 7, location: Optiona
             c["ordered"] = True
         for k in ("table", "channel", "branch"):
             c[k] = d.get(k) or c[k]
+        if d.get("location") and (branch_names or {}).get(str(d.get("location"))):
+            c["branch"] = branch_names[str(d.get("location"))]
         c["language"] = meta.get("language") or c["language"]
     out = sorted(convos.values(), key=lambda c: c["lastAt"] or datetime.min, reverse=True)[:limit]
     for c in out:
@@ -102,6 +113,11 @@ def turn_view(doc: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def conversation(db: Any, tenant: str, session: str, limit: int = 500) -> List[Dict[str, Any]]:
-    """Every turn of one conversation at this restaurant, oldest first."""
-    docs = db.transcripts.find({"tenant": tenant, "session": session}).sort("ts", 1).limit(limit)
+    """Every turn of one conversation at this restaurant, oldest first. `session` is a conversation id
+    ("<session>@<location>", one branch) or a plain session (all its turns — links shared before branches split them)."""
+    sid, _, loc = session.partition("@")
+    q: Dict[str, Any] = {"tenant": tenant, "session": sid}
+    if loc:
+        q["location"] = loc
+    docs = db.transcripts.find(q).sort("ts", 1).limit(limit)
     return [turn_view(d) for d in docs]

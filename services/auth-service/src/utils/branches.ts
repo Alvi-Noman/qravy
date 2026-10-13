@@ -116,7 +116,12 @@ export async function branchForUnnamed(tenantId: ObjectId): Promise<{ locationId
 
 /** The branch's name for orders, table calls and kitchen tickets ("Gulshan 2 (Main)", not the link's "gulshan-2-main"). */
 export async function branchName(locationId: ObjectId | null | undefined): Promise<string | null> {
+  return (await branchInfo(locationId))?.name ?? null;
+}
+
+/** The branch's name and link name (slug) — an order keeps both: staff read the name, the guest's pages link by slug. */
+export async function branchInfo(locationId: ObjectId | null | undefined): Promise<{ name: string; slug: string | null } | null> {
   if (!locationId) return null;
-  const loc = await locationsCol().findOne({ _id: locationId }, { projection: { name: 1 } });
-  return loc?.name ?? null;
+  const loc = await locationsCol().findOne({ _id: locationId }, { projection: { name: 1, slug: 1 } });
+  return loc ? { name: loc.name, slug: loc.slug ?? null } : null;
 }

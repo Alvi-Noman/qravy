@@ -50,6 +50,8 @@ export interface OrderDoc {
   locationId?: ObjectId | null;
   /** Branch label as the guest's link had it (display only) */
   branch?: string | null;
+  /** The branch's link name ("gulshan-2-main") — the guest's order page links back (and calls staff) with it */
+  branchSlug?: string | null;
   channel: OrderChannel;
   /** Short, human number that resets daily per restaurant (restaurant time zone) */
   orderNumber: number;

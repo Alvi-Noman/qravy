@@ -700,6 +700,11 @@ export async function updateMyTenant(req: Request, res: Response, next: NextFunc
     if (!userId) return res.fail(401, 'Unauthorized');
 
     const parsed = tenantUpdateSchema.parse(req.body);
+    // tables and where the main link's orders go: owners and admins only (they decide what guests' QR codes do)
+    const role = (req.user as { role?: string } | undefined)?.role;
+    if ((parsed.mainBranchId !== undefined || parsed.tables) && role !== 'owner' && role !== 'admin') {
+      return res.fail(403, 'Only owners and admins can change tables and the main link.');
+    }
 
     const tenant = await tenantsCol().findOne({ _id: new ObjectId(tenantId) });
     if (!tenant) return res.fail(404, 'Tenant not found');
