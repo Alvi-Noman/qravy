@@ -22,6 +22,9 @@ router.put('/settings', authenticateJWT, denyBranchSession, accessController.upd
 router.get('/devices', authenticateJWT, denyBranchSession, accessController.listDevices);
 router.post('/devices/register', authenticateJWT, accessController.registerOrAssignDevice);
 router.get('/devices/lookup', authenticateJWT, accessController.lookupDeviceByKey);
+// move a device to another branch / forget it — owners and admins, not from a branch device
+router.patch('/devices/:id', authenticateJWT, denyBranchSession, accessController.updateDevice);
+router.delete('/devices/:id', authenticateJWT, denyBranchSession, accessController.deleteDevice);
 
 /**
  * Tenant / workspace selection

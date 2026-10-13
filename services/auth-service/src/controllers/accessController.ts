@@ -380,6 +380,50 @@ export const updateAccessSettings = async (req: Request, res: Response, next: Ne
 };
 
 /** List devices under tenant */
+/**
+ * PATCH /access/devices/:id { locationId } — move a device to another branch (from the owner's or an admin's own
+ * device: a branch device can't move itself). DELETE /access/devices/:id — forget it (it signs in as a new device,
+ * asked "Which location are you signing from?" again).
+ */
+export const updateDevice = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+  try {
+    if (!managesTeam(req)) return void res.fail(403, 'Only owners and admins can manage devices.');
+    const tenantId = req.user?.tenantId;
+    const { id } = req.params;
+    const { locationId } = (req.body || {}) as { locationId?: string };
+    if (!tenantId) return void res.fail(409, 'Tenant not set');
+    if (!ObjectId.isValid(id) || !locationId || !ObjectId.isValid(locationId)) return void res.fail(400, 'Invalid device or branch');
+    const tenantOid = new ObjectId(tenantId);
+    const loc = await getDb()
+      .collection('locations')
+      .findOne({ _id: new ObjectId(locationId), tenantId: tenantOid, disabled: { $ne: true } }, { projection: { name: 1 } });
+    if (!loc) return void res.fail(404, 'Branch not found');
+    const r = await devices().updateOne(
+      { _id: new ObjectId(id), tenantId: tenantOid },
+      { $set: { locationId: loc._id as ObjectId, updatedAt: new Date() } }
+    );
+    if (!r.matchedCount) return void res.fail(404, 'Device not found');
+    res.ok({ id, locationId, locationName: loc.name ?? null });
+  } catch (err) {
+    next(err);
+  }
+};
+
+export const deleteDevice = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+  try {
+    if (!managesTeam(req)) return void res.fail(403, 'Only owners and admins can manage devices.');
+    const tenantId = req.user?.tenantId;
+    const { id } = req.params;
+    if (!tenantId) return void res.fail(409, 'Tenant not set');
+    if (!ObjectId.isValid(id)) return void res.fail(400, 'Invalid device');
+    const r = await devices().deleteOne({ _id: new ObjectId(id), tenantId: new ObjectId(tenantId) });
+    if (!r.deletedCount) return void res.fail(404, 'Device not found');
+    res.ok({ id });
+  } catch (err) {
+    next(err);
+  }
+};
+
 export const listDevices = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
     const tenantId = req.user?.tenantId;
@@ -706,6 +750,8 @@ export default {
   updateAccessSettings,
   listDevices,
   registerOrAssignDevice,
+  updateDevice,
+  deleteDevice,
   listAccessibleWorkspaces: async (req: Request, res: Response, next: NextFunction) =>
     listAccessibleWorkspaces(req, res, next),
   selectTenant,

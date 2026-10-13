@@ -402,6 +402,7 @@ export default function RestaurantAccess(): JSX.Element {
                     <th className="py-2 pl-2">Device</th>
                     <th className="py-2">Location</th>
                     <th className="py-2">OS / Browser</th>
+                    <th className="py-2 pr-2 text-right">Branch</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 text-[13px]">
@@ -413,11 +414,51 @@ export default function RestaurantAccess(): JSX.Element {
                       </td>
                       <td className="py-2">{d.locationName || <span className="text-slate-500">Unassigned</span>}</td>
                       <td className="py-2">{(d.os || '—') + ' / ' + (d.browser || '—')}</td>
+                      <td className="py-2 pr-2 text-right">
+                        <div className="inline-flex items-center gap-1.5">
+                          <select
+                            aria-label={`Move ${d.label || 'device'} to another branch`}
+                            value={d.locationId ?? ''}
+                            onChange={async (e) => {
+                              if (!e.target.value) return;
+                              try {
+                                await moveDevice(d.id, e.target.value);
+                                await reloadDevices();
+                              } catch {
+                                /* the list stays as it was */
+                              }
+                            }}
+                            className="rounded-md border border-[#e2e2e2] bg-white px-2 py-1 text-[12px]"
+                          >
+                            {!d.locationId && <option value="">Choose…</option>}
+                            {locations.map((l) => (
+                              <option key={l.id} value={l.id}>
+                                {l.name}
+                              </option>
+                            ))}
+                          </select>
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              if (!window.confirm(`Remove ${d.label || 'this device'}? Signing in there asks for its branch again.`)) return;
+                              try {
+                                await removeDevice(d.id);
+                                await reloadDevices();
+                              } catch {
+                                /* the list stays as it was */
+                              }
+                            }}
+                            className="rounded-md border border-red-200 bg-white px-2 py-1 text-[12px] text-red-700 hover:bg-red-50"
+                          >
+                            Remove
+                          </button>
+                        </div>
+                      </td>
                     </tr>
                   ))}
                   {filtered.length === 0 && (
                     <tr>
-                      <td colSpan={3} className="py-6 text-center text-[13px] text-slate-600">
+                      <td colSpan={4} className="py-6 text-center text-[13px] text-slate-600">
                         No devices found.
                       </td>
                     </tr>
@@ -569,6 +610,14 @@ async function listDevices(): Promise<Device[]> {
     lastSeenAt: d.lastSeenAt || d.updatedAt || new Date().toISOString(),
     createdAt: d.createdAt || new Date().toISOString(),
   }));
+}
+/** Move a device to another branch (it then sees and runs that branch only). */
+async function moveDevice(id: string, locationId: string): Promise<void> {
+  await api.patch(`/api/v1/access/devices/${encodeURIComponent(id)}`, { locationId });
+}
+/** Forget a device: next sign-in there asks "Which location are you signing from?" again. */
+async function removeDevice(id: string): Promise<void> {
+  await api.delete(`/api/v1/access/devices/${encodeURIComponent(id)}`);
 }
 async function getAccessSettings(): Promise<AccessSettings> {
   const res = await api.get('/api/v1/access/settings');
