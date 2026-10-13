@@ -47,6 +47,14 @@ export function useStoreChannels(sub?: string | null): {
   return { dineIn: ch?.dineIn !== false, online: ch?.online !== false, loaded: isFetched, tables, branches, mainBranch };
 }
 
+/** The guest's branch (name, address) at a restaurant with two or more — shown at checkout and on the order page
+ *  ("Pickup at Gulshan 2 (Main), Road 11"). Null for a restaurant with one branch or none. */
+export function useStoreBranch(sub?: string | null, slug?: string | null): StoreBranch | null {
+  const { branches } = useStoreChannels(sub);
+  if (!slug || branches.length < 2) return null;
+  return branches.find((b) => b.slug === slug) ?? null;
+}
+
 /** Pure rule: the dine-in side of the site ("…/dine-in…") is dine-in, everything else is the online shop — unless
  *  the restaurant only does one of the two (KeepTableInUrl moves the guest to that side). */
 export function resolveChannel(opts: { dineInPath: boolean; dineIn: boolean; online: boolean }): Channel {

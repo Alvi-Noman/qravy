@@ -157,18 +157,22 @@ export function OrdersLiveProvider({ children }: { children: React.ReactNode }) 
         if (!called || !mine) return;
         if (soundRef.current) chime();
         const what = r.kind === 'other' && r.note ? r.note : SERVICE_KIND_LABEL[r.kind];
-        toast(`Table ${r.table}: ${what}${r.calls > 1 ? ` (called ${r.calls}×)` : ''}`, { type: 'info', duration: 8000 });
+        // all branches on screen → say which branch's table (Table 1 is at every branch)
+        const at = !pc.locationId && r.branch ? ` · ${r.branch}` : '';
+        toast(`Table ${r.table}${at}: ${what}${r.calls > 1 ? ` (called ${r.calls}×)` : ''}`, { type: 'info', duration: 8000 });
         if (document.visibilityState !== 'visible') document.title = `(Table call) ${document.title.replace(/^\((New order|Table call)\) /, '')}`;
       },
       onEvent: (ev) => {
         upsert(ev.order);
         if (ev.type === 'order.created') {
-          if (soundRef.current) chime();
-          // "Auto-print new orders" (this device): kitchen ticket, and a receipt if asked — for this branch only
-          const ps = loadPrintSettings();
+          // the branch on screen only (another branch's order neither chimes nor prints here)
           const pc = printCtx.current;
           const mine = !pc.locationId || !ev.order.locationId || ev.order.locationId === pc.locationId;
-          if (ps.autoPrint && mine) {
+          if (!mine) return;
+          if (soundRef.current) chime();
+          // "Auto-print new orders" (this device): kitchen ticket, and a receipt if asked
+          const ps = loadPrintSettings();
+          if (ps.autoPrint) {
             const opts = { paper: ps.paper, restaurant: pc.restaurant, timezone: pc.timezone || undefined };
             void printOrder(ev.order, 'kitchen', opts);
             if (ps.autoPrintReceipt) void printOrder(ev.order, 'receipt', opts);

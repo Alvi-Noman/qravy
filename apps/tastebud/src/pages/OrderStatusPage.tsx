@@ -9,6 +9,7 @@ import OrderCountdown from '../components/OrderCountdown';
 import CallWaiterButton from '../components/CallWaiterButton';
 import { storeBasePath } from '../utils/checkout-flow';
 import { withTable } from '../utils/table';
+import { useStoreBranch } from '../utils/order-mode';
 import { money, tr, type UiLang } from '../utils/ui-lang';
 
 const STEPS: OrderStatus[] = ['placed', 'accepted', 'preparing', 'ready', 'completed'];
@@ -78,6 +79,7 @@ export default function OrderStatusPage() {
   // "Call waiter" reaches that branch's staff
   const branch = linkBranch ?? order?.branch ?? null;
   const backHref = withTable(storeBasePath(sub, branch) || '/', sub); // (the table stays on the link)
+  const here = useStoreBranch(sub, branch); // two or more branches: which one (pickup: where to collect)
 
   if (missing) {
     return (
@@ -133,6 +135,16 @@ export default function OrderStatusPage() {
             <div className="text-xl font-semibold text-gray-900">{online ? order.customer?.name : order.table}</div>
           </div>
         </section>
+
+        {here && (
+          <section className="mt-3 rounded-3xl bg-white px-6 py-4 text-sm text-gray-700 shadow-sm">
+            <p className="text-xs text-gray-500">
+              {online && !delivery ? tr(lang, 'যেখান থেকে নেবেন', 'Pick up at') : tr(lang, 'শাখা', 'Branch')}
+            </p>
+            <div className="font-semibold text-gray-900">{here.name}</div>
+            {here.address && <div className="mt-0.5 text-gray-600">{here.address}</div>}
+          </section>
+        )}
 
         {online && order.customer && (
           <section className="mt-3 rounded-3xl bg-white px-6 py-4 text-sm text-gray-700 shadow-sm">
