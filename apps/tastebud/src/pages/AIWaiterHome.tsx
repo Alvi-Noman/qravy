@@ -1,7 +1,7 @@
 // apps/tastebud/src/pages/AIWaiterHome.tsx
 // The waiter's home screen: the big orb, the subtitles, the "tap to start" welcome. The waiter itself — the voice
 // session and how its replies are handled, its sheets and dock — is shared with the menu page: src/waiter/.
-import React, { useRef, useState, useEffect } from 'react';
+import React, { useRef, useState, useEffect, useCallback } from 'react';
 import { useParams, useSearchParams, useNavigate } from 'react-router-dom';
 import CartFab from '../components/ai-waiter/CartFab';
 import CallWaiterButton from '../components/CallWaiterButton';
@@ -18,6 +18,7 @@ import ScrollText from '../components/ai-waiter/ScrollText';
 import { useIsMobile } from '../hooks/useIsMobile';
 import { useTable, withTable } from '../utils/table';
 import StartScreen from '../components/ai-waiter/StartScreen';
+import HoldToTalkCoach, { holdCoachSeen, markHoldCoachSeen } from '../components/ai-waiter/HoldToTalkCoach';
 import { useWaiterSession, markWelcomeInteraction, WELCOME_INTERACT_KEY, WELCOME_INACTIVITY_MS } from '../waiter/useWaiterSession';
 import WaiterSheets from '../waiter/WaiterSheets';
 
@@ -141,7 +142,8 @@ export default function AiWaiterHome() {
   const {
     selectedLang, setSelectedLang, tts, setAi, setMeta, aiLive, aiFinal, uiMode, welcomePending, setWelcomePending,
     listening, micLevel, followListen, orbMode, startListening, sendTyped, orbPressProps, orbBallRef, holdHint,
-    holdHintText, showHoldPill, choices, suggestedItems, showSuggestions, showTray, setShowTray, openSuggestions, goMenu,
+    holdHintText, showHoldPill, heldOnce, choices, suggestedItems, showSuggestions, showTray, setShowTray, openSuggestions,
+    goMenu,
   } = w;
   const tenantInfo = useTenantInfo(resolvedSub);
   const [tableNo] = useTable(resolvedSub);
@@ -285,6 +287,29 @@ export default function AiWaiterHome() {
     };
   }, [visibleText, ORB_SIZE]);
 
+  // "Hold to talk" coachmark: once per phone, right after the welcome has been spoken — unless the guest already
+  // held the orb. It closes for good on "Got it" / a tap anywhere / the first hold (or a sheet opening).
+  const [coachOpen, setCoachOpen] = useState(false);
+  const welcomeWasPending = useRef(false);
+  useEffect(() => {
+    if (welcomePending) {
+      welcomeWasPending.current = true;
+      return;
+    }
+    if (!welcomeWasPending.current) return;
+    welcomeWasPending.current = false;
+    if (!hasInteracted || heldOnce || holdCoachSeen()) return;
+    const id = window.setTimeout(() => setCoachOpen(true), 500);
+    return () => window.clearTimeout(id);
+  }, [welcomePending, hasInteracted, heldOnce]);
+  const dismissCoach = useCallback(() => {
+    setCoachOpen(false);
+    markHoldCoachSeen();
+  }, []);
+  useEffect(() => {
+    if (coachOpen && (heldOnce || listening || showSuggestions || showTray)) dismissCoach();
+  }, [coachOpen, heldOnce, listening, showSuggestions, showTray, dismissCoach]);
+
   // ✅ First-tap handler: unlock audio + speak welcome, only when overlay shows
   const handleFirstTap = () => {
     if (hasInteracted) return;
@@ -339,7 +364,8 @@ export default function AiWaiterHome() {
       {/* ORB — it is the mic: hold to talk, release to send (a tap only says "Hold to talk") */}
       <div
         ref={orbRef}
-        className="absolute left-1/2 -translate-x-1/2 z-0 pointer-events-none"
+        // above the "Hold to talk" coachmark while it shows — the only bright thing on the screen, and holdable
+        className={`absolute left-1/2 -translate-x-1/2 pointer-events-none ${coachOpen ? 'z-[1450]' : 'z-0'}`}
         style={{ top: ORB_TOP }}
       >
         {/* box stays ORB_SIZE with the ball at 44% (the text placement below measures it that way) */}
@@ -359,7 +385,7 @@ export default function AiWaiterHome() {
           </button>
 
           {/* "Hold to Talk" — under the orb until the first hold; a tap brings it back with a wiggle */}
-          {showHoldPill && (
+          {showHoldPill && !coachOpen && (
             <span
               key={holdHint}
               className="qv-motion pointer-events-none absolute left-1/2 whitespace-nowrap rounded-full bg-white px-4 py-2 text-[13px] font-semibold text-[#FA2851] shadow-[0_6px_20px_rgba(250,40,81,0.15)] ring-1 ring-[#FA2851]/10"
@@ -476,6 +502,11 @@ export default function AiWaiterHome() {
         onOpenTray={() => setShowTray(true)}
         bottom={trayFabBottom}
       />
+
+      {/* first visit, after the welcome: everything but the orb dims, an arrow points at it — "Hold to talk" */}
+      {coachOpen && (
+        <HoldToTalkCoach ballRef={orbBallRef} lang={selectedLang === 'en' ? 'en' : 'bn'} onDismiss={dismissCoach} />
+      )}
 
       {/* the start screen: logo + name, "Get started" (its tap unlocks the voice, then the welcome is spoken) */}
       {!hasInteracted && (

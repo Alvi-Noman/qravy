@@ -1529,7 +1529,7 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
     aiLive, aiFinal, aiAt, uiMode, speaking, voicePending, welcomePending, setWelcomePending, listening, holding, micLevel,
     session, voiceState, followListen, orbMode,
     // the mic
-    startListening, stopListening, sendTyped, askMicAccess, orbPressProps, orbBallRef, holdHint, holdHintText, showHoldPill,
+    startListening, stopListening, sendTyped, askMicAccess, orbPressProps, orbBallRef, holdHint, holdHintText, showHoldPill, heldOnce,
     // what's on screen
     choices, pickOptions, offerItemIds, suggestedItems, highlightIds, setHighlightIds, trayPicks, setTrayPicks,
     upsellItems, trayAskTable, setTrayAskTable, showSuggestions, setShowSuggestions, showTray, setShowTray,
