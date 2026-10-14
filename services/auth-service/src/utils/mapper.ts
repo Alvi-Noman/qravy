@@ -170,7 +170,6 @@ export function toTenantDTO(doc: TenantDoc): v1.TenantDTO {
     waiterName: doc.waiterName ?? null,
     waiterVoice: doc.waiterVoice === 'female' ? 'female' : 'male',
     customAnswers: doc.customAnswers ?? [],
-    pronunciations: doc.pronunciations ?? [],
     timezone: doc.timezone ?? DEFAULT_TIMEZONE,
     openingHours: doc.openingHours ?? [],
     dailyResetTime: doc.dailyResetTime ?? DEFAULT_RESET_TIME,

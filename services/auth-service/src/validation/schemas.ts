@@ -493,8 +493,6 @@ export const tenantUpdateSchema = z
     // the AI waiter: its name ("Pixie" when unset), its voice, and the owner's own answers to common questions
     waiterName: z.string().trim().min(1, 'Give your waiter a name').max(30).nullable().optional(),
     waiterVoice: z.enum(['female', 'male']).optional(),
-    // words the voice says wrong, and how to say them ("ষোল" → "sholo")
-    pronunciations: z.array(z.object({ word: z.string().trim().min(1).max(60), sayAs: z.string().trim().min(1).max(80) })).max(100).optional(),
     customAnswers: z
       .array(z.object({ question: z.string().trim().min(2).max(200), answer: z.string().trim().min(1).max(800) }))
       .max(50)

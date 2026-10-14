@@ -2,7 +2,7 @@
 // Its name ("Pixie" until they name it), the language it starts in, its voice (with a sample), the owner's own answers
 // to the questions guests ask ("Do you have parking?" → "Yes, free, behind the building") and the facts it may share.
 import { useEffect, useRef, useState } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { PlusIcon, SpeakerWaveIcon, StopIcon, TrashIcon } from '@heroicons/react/24/outline';
 import { useAuthContext } from '../../context/AuthContext';
 import { useTenant } from '../../hooks/useTenant';
@@ -12,6 +12,7 @@ import WaiterLanguageCard from '../../components/settings/WaiterLanguageCard';
 import { WaiterKnowledgeCard } from '../MenuLayout';
 import PronunciationCard from '../../components/settings/PronunciationCard';
 import { speak, spokenFor, VOICES as AZURE } from '../../utils/speech';
+import { listWords, removeWord, saveWord } from '../../api/pronunciations';
 
 const card = 'rounded-xl border border-[#ececec] bg-white p-4 shadow-sm';
 
@@ -30,9 +31,10 @@ function NameCard() {
   const qc = useQueryClient();
   const { data: tenant } = useTenant();
   const saved = tenant?.waiterName || '';
-  const list = (tenant?.pronunciations ?? []) as Array<{ word: string; sayAs: string; spoken?: string }>;
-  // how the name sounds = the name's own entry in the pronunciation list (the voice uses that list)
-  const savedSayAs = list.find((p) => p.word.toLowerCase() === (saved || 'pixie').toLowerCase())?.sayAs ?? '';
+  // how the name sounds = the name's word in Qravy's pronunciation dictionary (every restaurant's voice uses it)
+  const dict = useQuery({ queryKey: ['dictionary'], queryFn: listWords });
+  const entry = (dict.data ?? []).find((p) => p.word.toLowerCase() === (saved || 'pixie').toLowerCase());
+  const savedSayAs = entry?.sayAs ?? '';
   const [name, setName] = useState(saved);
   const [sayAs, setSayAs] = useState(savedSayAs);
   const [spoken, setSpoken] = useState('');
@@ -65,14 +67,15 @@ function NameCard() {
   const save = async () => {
     setSaving(true);
     try {
-      // the old name's and the new name's entries go; the new one comes back with how it sounds (if given)
-      const drop = new Set([(saved || 'pixie').toLowerCase(), shown.toLowerCase()]);
-      const pronunciations = [
-        ...list.filter((p) => !drop.has(p.word.toLowerCase())).map((p) => ({ word: p.word, sayAs: p.sayAs })),
-        ...(sayAs.trim() ? [{ word: shown, sayAs: sayAs.trim() }] : []),
-      ];
-      await updateTenant({ waiterName: name.trim() || null, pronunciations }, token as string);
+      await updateTenant({ waiterName: name.trim() || null }, token as string);
+      // how it sounds goes into the dictionary (renamed: the old name's word goes, if this restaurant added it)
+      if (sayAs.trim() && (sayAs.trim() !== savedSayAs || shown !== (saved || 'Pixie'))) {
+        await saveWord(shown, sayAs.trim(), saved && saved !== shown ? saved : null);
+      } else if (!sayAs.trim() && entry?.by === 'you') {
+        await removeWord(entry.word);
+      }
       await qc.invalidateQueries({ queryKey: ['tenant', token] });
+      await qc.invalidateQueries({ queryKey: ['dictionary'] });
       toastSuccess(`Your waiter is now called ${shown}`);
     } catch (e: any) {
       toastError(e?.response?.data?.message || 'Could not save the name');

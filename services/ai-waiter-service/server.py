@@ -280,30 +280,27 @@ _LEARNED: Dict[str, Tuple[float, List[Tuple["re.Pattern[str]", str]]]] = {}
 
 
 def _say_learned(text: str, tenant: Optional[str]) -> str:
-    """'Sholo Aana' → 'শোলো আনা' in the voice text: the restaurant's own words, over Qravy's (Cortex). Kept a minute.
-    Bangla-script words are applied by the guest's app as it speaks (apps/tastebud/src/state/tts.ts)."""
-    if not text or not tenant:
+    """'Sholo Aana' → 'শোলো আনা' in the voice text, from Qravy's pronunciation dictionary — one for every restaurant
+    (fixed in Cortex or any restaurant's Settings → AI Waiter). Kept a minute. Bangla-script words are applied by the
+    guest's app as it speaks (apps/tastebud/src/state/speechWords.ts)."""
+    if not text:
         return text
     now = time.time()
-    hit = _LEARNED.get(tenant)
+    hit = _LEARNED.get("*")
     if not hit or now - hit[0] > 60:
         rules: List[Tuple["re.Pattern[str]", str]] = []
         try:
-            db = _CLIENT[MENU_DB_NAME]
-            platform = (db["pronunciations"].find_one({"_id": "platform"}) or {}).get("list") or []
-            tid = resolve_tenant_id(tenant)
-            own = ((db["tenants"].find_one({"_id": tid}, {"pronunciations": 1}) or {}).get("pronunciations") or []) if tid else []
-            merged: Dict[str, str] = {}
-            for x in list(platform) + list(own):
+            words: Dict[str, str] = {}
+            for x in _CLIENT[MENU_DB_NAME]["lexicon"].find({"removed": {"$ne": True}}, {"word": 1, "spoken": 1}):
                 w, sp = str(x.get("word") or "").strip(), str(x.get("spoken") or "").strip()
                 if w and sp and re.fullmatch(r"[A-Za-z][A-Za-z' -]*", w):
-                    merged[w.lower()] = sp
-            for w in sorted(merged, key=len, reverse=True):
-                rules.append((re.compile(r"(?<![A-Za-z])" + re.escape(w) + r"(?![A-Za-z])", re.I), merged[w]))
+                    words[w.lower()] = sp
+            for w in sorted(words, key=len, reverse=True):
+                rules.append((re.compile(r"(?<![A-Za-z])" + re.escape(w) + r"(?![A-Za-z])", re.I), words[w]))
         except Exception as e:  # never break a reply over this
             print("[pronounce] load failed:", str(e)[:120])
         hit = (now, rules)
-        _LEARNED[tenant] = hit
+        _LEARNED["*"] = hit
     for pat, spoken in hit[1]:
         text = pat.sub(spoken, text)
     return text
