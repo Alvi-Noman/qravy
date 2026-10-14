@@ -1,18 +1,29 @@
 // apps/tastebud/src/components/DineInGate.tsx
 // The dine-in side ("/t/burger-house/dine-in…") always runs with a table in the link (?table=12, from the table's
-// QR code). A link without one — the number erased, a typed URL — asks for the table first; the guest's page opens
-// once it's given. Numbers are checked against the restaurant's own tables (the ones it has QR codes for) — at a
-// branch, the branch's tables plus the restaurant-wide ones (as the server checks them).
+// QR code). A link that lost it (going back, a typed URL) gets back the table this phone scanned at this branch in the
+// last few hours; with none, it asks for the table first and the guest's page opens once it's given. Numbers are
+// checked against the restaurant's own tables (the ones it has QR codes for) — at a branch, the branch's tables plus
+// the restaurant-wide ones (as the server checks them).
 import { useState, type ReactNode } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { Navigate, useLocation, useNavigate } from 'react-router-dom';
 import { getTable, getTableKey, normalizeTable, storeBranchFromPath, storeSubFromPath } from '../utils/table';
 import { useStoreChannels } from '../utils/order-mode';
 import { tr, uiLang } from '../utils/ui-lang';
 
 export default function DineInGate({ children }: { children: ReactNode }) {
   const location = useLocation();
-  const urlTable = normalizeTable(new URLSearchParams(location.search).get('table'));
+  const params = new URLSearchParams(location.search);
+  const urlTable = normalizeTable(params.get('table'));
   if (urlTable) return <>{children}</>;
+  // a link that lost its table (going back, a link without it) — this phone's table at this branch goes back on it
+  const sub = storeSubFromPath(location.pathname);
+  const remembered = getTable(sub);
+  if (remembered) {
+    params.set('table', remembered);
+    const k = getTableKey(sub, remembered);
+    if (k) params.set('k', k);
+    return <Navigate replace to={{ pathname: location.pathname, search: `?${params.toString()}`, hash: location.hash }} state={location.state} />;
+  }
   return <AskTable />;
 }
 

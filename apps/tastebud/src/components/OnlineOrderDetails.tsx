@@ -1,5 +1,5 @@
 // apps/tastebud/src/components/OnlineOrderDetails.tsx
-// Online checkout details: Pickup / Delivery, then name, phone and (for delivery) address.
+// Online checkout details: Delivery / Pickup, then name, phone and (for delivery) address.
 import React from 'react';
 import type { Fulfillment, GuestContact } from '../utils/order-mode';
 
@@ -39,11 +39,11 @@ export function FulfillmentToggle({
   return (
     <div
       role="radiogroup"
-      aria-label="Pickup or delivery"
+      aria-label="Delivery or pickup"
       className={'inline-flex items-center rounded-full border-2 border-[#FA2851] bg-white p-1 shadow-sm ' + (className ?? '')}
     >
-      {btn('pickup', 'Pickup')}
       {btn('delivery', 'Delivery')}
+      {btn('pickup', 'Pickup')}
     </div>
   );
 }

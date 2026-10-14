@@ -18,6 +18,7 @@ import { applyVoiceCartOps } from '../utils/voice-cart';
 import { claimReveal, ownsReveal } from '../state/reveal-owner';
 import { useCheckoutFlow } from '../utils/checkout-flow';
 import { getTableKey, useTable } from '../utils/table';
+import { contactMissingNow, fulfillmentNow, useFulfillment } from '../utils/order-mode';
 import type { Channel } from '../api/storefront';
 import { useWaiterLang } from '../utils/waiter-lang';
 import {
@@ -274,6 +275,8 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
 
   // checkout steps from the waiter (read-back → checkout page, placed → live order page)
   const [trayAskTable, setTrayAskTable] = useState(false);
+  // bumps on every checkout step, so the tray moves to it even when it is already open (read-back ↔ details form)
+  const [trayAskAt, setTrayAskAt] = useState(0);
   const openTrayForCheckout = React.useMemo(
     () => ({
       openTray: (ask: boolean) => {
@@ -284,12 +287,15 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
         }
         setShowTray(true);
         setTrayAskTable(ask);
+        setTrayAskAt(Date.now());
       },
     }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [],
   );
   const handleCheckout = useCheckoutFlow(resolvedSub, resolvedBranch ?? null, openTrayForCheckout);
+  // online: "I'll pick it up" / "deliver it" said to the waiter → the checkout's toggle follows (every page)
+  const [, setFulfillment] = useFulfillment(resolvedSub);
   // remember ?table=12 from the table QR for this restaurant
   const [tableNo] = useTable(resolvedSub);
   // ws/audio
@@ -903,6 +909,9 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
                 tableKey: getTableKey(resolvedSub, tableRef.current) ?? undefined, // its QR key → a verified table
                 cart: cartItemsRef.current,
                 shown: shownIdsRef.current, // the cards / picks on screen — "which of these…" is about them
+                // online: which of name / phone / address the checkout form still lacks — the waiter only asks for those
+                contactMissing: channelRef.current === 'online' ? contactMissingNow(resolvedSub) : undefined,
+                fulfillment: channelRef.current === 'online' ? fulfillmentNow(resolvedSub) : undefined,
                 // hands-free: the server ends the turn when the guest stops talking / closes a quiet listen window
                 autoEnd: !typed && handsFreeOn(),
                 listenMs: opts?.listenMs,
@@ -1006,10 +1015,12 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
             }
             const voiceText = (meta?.voiceReplyText || '').toString().trim();
             const speakText = voiceText || replyText;
-            const silent = silentReplyRef.current; // asked by a button: shown, never spoken
+            const silent = silentReplyRef.current; // asked by a button: never spoken
             silentReplyRef.current = false;
+            // a tap whose reply asks another "which one?" (new answer buttons): its question is shown, not spoken
+            const silentQuestion = silent && !!replyText && chooseOptionsOf(meta).length > 0 && !pickOptionsOf(meta).length;
             // (before its text is set: the dock shows only what was said from this reply on — WaiterSheets)
-            if (!silent) setLastReplyAt(Date.now());
+            if (!silent || silentQuestion) setLastReplyAt(Date.now());
 
             if (speakText && !silent) {
               try {
@@ -1025,10 +1036,11 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
               setAi(replyText);
             }
             if (silent) {
-              // asked by a button ("AI suggestions"): the cards say it — no sentence shown, nothing spoken
+              // asked by a button ("AI suggestions", a tapped answer): the screen says it — nothing spoken
               try {
                 tts.stop();
               } catch {}
+              if (silentQuestion) setAi(replyText);
             }
 
             aiSeenRef.current = true;
@@ -1036,6 +1048,8 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
             setUiMode('talking');
 
             setMeta(meta ?? null);
+            const saidFulfillment = (meta as any)?.decision?.fulfillment;
+            if (saidFulfillment === 'pickup' || saidFulfillment === 'delivery') setFulfillment(saidFulfillment);
             // the waiter's flags on the tray (sold out, allergy clash) — every reply, not only when it changes the tray
             if (Array.isArray((meta as any)?.cartWarnings)) setWarnings((meta as any).cartWarnings);
             // "which one?" → the answers as buttons under the question
@@ -1290,11 +1304,13 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
   // `serverEnded`: the server already heard the guest finish (hands-free) — don't send "end", just wait for the
   // reply. `quiet`: nobody answered a listen window — close everything, no reply expected, no message.
   // a tapped answer (the tray's picker, "which one?" buttons): an open listen window (hands-free) is closed quietly
-  // first — otherwise the tap was dropped while the mic waited for the guest to speak
+  // first — otherwise the tap was dropped while the mic waited for the guest to speak.
+  // A guest using buttons is not talking to the waiter: the reply is never spoken (only a follow-up question that
+  // comes with new answer buttons is shown) — unless a hands-free conversation is live right now.
   async function sendTyped(say: string, opts?: { silent?: boolean }) {
     const open = listening || !!wsRef.current || !!ctxRef.current;
     if (open && !awaitingReplyRef.current) await stopListening({ quiet: true });
-    await startListening({ typed: say, afterStop: open, silent: opts?.silent });
+    await startListening({ typed: say, afterStop: open, silent: opts?.silent ?? sessionRef.current !== 'on' });
   }
 
   async function stopListening(opts?: { serverEnded?: boolean; quiet?: boolean }) {
@@ -1543,7 +1559,7 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
     startListening, stopListening, sendTyped, askMicAccess, orbPressProps, orbBallRef, holdHint, holdHintText, showHoldPill, heldOnce,
     // what's on screen
     choices, pickOptions, offerItemIds, suggestedItems, highlightIds, setHighlightIds, trayPicks, setTrayPicks,
-    upsellItems, trayAskTable, setTrayAskTable, showSuggestions, setShowSuggestions, showTray, setShowTray,
+    upsellItems, trayAskTable, setTrayAskTable, trayAskAt, showSuggestions, setShowSuggestions, showTray, setShowTray,
     openSuggestions, openTray, goMenu, mapUpsell, handleSuggestionsReply, handleTrayReply,
   };
 }

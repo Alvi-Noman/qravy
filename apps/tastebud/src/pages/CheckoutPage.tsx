@@ -299,6 +299,8 @@ export default function CheckoutPage() {
             >
               {placing
                 ? tr(lang, 'অর্ডার দেওয়া হচ্ছে…', 'Placing order…')
+                : online
+                ? `Confirm order · ${money(subtotal)}`
                 : tr(lang, `অর্ডার দিন · ${money(subtotal)}`, `Place order · ${money(subtotal)}`)}
             </button>
           </div>

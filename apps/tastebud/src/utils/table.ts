@@ -24,10 +24,19 @@ export const normalizeTableKey = (raw: unknown): string | null => {
   return VALID_KEY.test(k) ? k : null;
 };
 
+// this visit's copy too: a phone that blocks storage (in-app browsers, private tabs) still keeps its table between pages
+const memory = new Map<string, string>();
+
 function readStored(sub?: string | null): { table: string; k: string | null } | null {
   if (typeof window === 'undefined') return null;
   try {
-    const raw = localStorage.getItem(key(sub));
+    let raw: string | null = null;
+    try {
+      raw = localStorage.getItem(key(sub));
+    } catch {
+      /* storage blocked */
+    }
+    raw = raw ?? memory.get(key(sub)) ?? null;
     if (!raw) return null;
     const { table, k, at } = JSON.parse(raw) as { table?: string; k?: string; at?: number };
     const t = normalizeTable(table);
@@ -55,8 +64,15 @@ export function setTable(sub: string | null | undefined, table: string | null, t
   try {
     const t = normalizeTable(table);
     const k = normalizeTableKey(tableKey) ?? (t ? getTableKey(sub, t) : null);
-    if (t) localStorage.setItem(key(sub), JSON.stringify({ table: t, ...(k ? { k } : {}), at: Date.now() }));
-    else localStorage.removeItem(key(sub));
+    const entry = t ? JSON.stringify({ table: t, ...(k ? { k } : {}), at: Date.now() }) : null;
+    if (entry) memory.set(key(sub), entry);
+    else memory.delete(key(sub));
+    try {
+      if (entry) localStorage.setItem(key(sub), entry);
+      else localStorage.removeItem(key(sub));
+    } catch {
+      /* storage blocked — the memory copy does */
+    }
     window.dispatchEvent(new CustomEvent('qravy:table', { detail: { sub, table: t } }));
   } catch {
     /* storage blocked */
@@ -108,14 +124,28 @@ export function storeBranchFromPath(pathname: string): string | null {
   return seg ? decodeURIComponent(seg) : null;
 }
 
+/** The table on the page the guest is on now ("…/gulshan/dine-in/menu?table=12&k=…") — when `path` is at the same
+ *  restaurant and branch, on the dine-in side. */
+function tableOnThisPage(path: string): { table: string; k: string | null } | null {
+  if (typeof window === 'undefined' || !isDineInPath(window.location.pathname)) return null;
+  if (splitStorePath(window.location.pathname).base !== splitStorePath(path.split(/[?#]/)[0]).base) return null;
+  const params = new URLSearchParams(window.location.search);
+  const table = normalizeTable(params.get('table'));
+  return table ? { table, k: normalizeTableKey(params.get('k')) } : null;
+}
+
 /** A link into the restaurant, with the guest's table kept on it ("/t/burger-house/dine-in/menu" →
- *  "/t/burger-house/dine-in/menu?table=12"). Only dine-in links carry a table; online ones never do. */
+ *  "/t/burger-house/dine-in/menu?table=12"). Only dine-in links carry a table; online ones never do. The table this
+ *  phone remembers — or, when it can't (storage blocked or cleared), the one on the page it's on now. */
 export function withTable(path: string, sub?: string | null): string {
   if (!isDineInPath(path.split(/[?#]/)[0])) return path;
+  if (/[?&]table=/.test(path)) return path;
   const s = sub ?? storeSubFromPath(path.split('?')[0]);
-  const t = getTable(s);
-  if (!t || /[?&]table=/.test(path)) return path;
-  const k = getTableKey(s, t);
+  const stored = getTable(s);
+  const here = stored ? null : tableOnThisPage(path);
+  const t = stored ?? here?.table;
+  if (!t) return path;
+  const k = stored ? getTableKey(s, t) : here?.k;
   const [base, hash = ''] = path.split('#');
   return `${base}${base.includes('?') ? '&' : '?'}table=${encodeURIComponent(t)}${k ? `&k=${k}` : ''}${hash ? `#${hash}` : ''}`;
 }

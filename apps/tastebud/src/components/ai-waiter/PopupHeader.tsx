@@ -1,23 +1,31 @@
 // apps/tastebud/src/components/ai-waiter/PopupHeader.tsx
-// Top of a full-screen popup (the cards, the tray): the title centered, a round close button top-right.
+// Top of a full-screen popup (the cards, the tray): the title centered, a round close button top-right — and, on a
+// second step (the tray's checkout form), a back button top-left.
 import React from 'react';
 
 type Props = {
   title: React.ReactNode;
   onClose: () => void;
+  /** a step back inside the popup (checkout form → tray) */
+  onBack?: () => void;
 };
 
-export default function PopupHeader({ title, onClose }: Props) {
+const ROUND =
+  'absolute top-1/2 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full bg-gray-100 text-gray-700 transition hover:bg-[#FFE4EA] hover:text-[#FA2851] active:scale-95';
+
+export default function PopupHeader({ title, onClose, onBack }: Props) {
   return (
     <div className="relative z-20 shrink-0 bg-white pt-[env(safe-area-inset-top)]">
       <div className="relative flex h-14 items-center justify-center px-14">
+        {onBack && (
+          <button type="button" onClick={onBack} aria-label="Back" className={`${ROUND} left-3`}>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" aria-hidden="true">
+              <path d="M15 18l-6-6 6-6" />
+            </svg>
+          </button>
+        )}
         <h2 className="truncate text-[16px] font-semibold text-gray-900">{title}</h2>
-        <button
-          type="button"
-          onClick={onClose}
-          aria-label="Close"
-          className="absolute right-3 top-1/2 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full bg-gray-100 text-gray-700 transition hover:bg-[#FFE4EA] hover:text-[#FA2851] active:scale-95"
-        >
+        <button type="button" onClick={onClose} aria-label="Close" className={`${ROUND} right-3`}>
           <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true">
             <path
               fill="currentColor"

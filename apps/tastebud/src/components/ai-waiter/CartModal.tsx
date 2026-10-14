@@ -8,9 +8,10 @@ import {
   useFulfillment,
   useGuestContact,
   useOrderChannel,
+  useStoreChannels,
   type GuestContact,
 } from '../../utils/order-mode';
-import OnlineOrderDetails, { CONTACT_MESSAGES } from '../OnlineOrderDetails';
+import OnlineOrderDetails, { CONTACT_MESSAGES, FulfillmentToggle } from '../OnlineOrderDetails';
 import type { Channel } from '../../api/storefront';
 import { orderPath } from '../../utils/checkout-flow';
 import { getStableSessionId } from '../../utils/ws';
@@ -38,8 +39,10 @@ type Props = {
   upsellItems?: { itemId?: string; id?: string; title: string; price?: number }[];
   /** suggestions the guest asked for while in the tray — shown as "waiter's picks", not as tray lines */
   picks?: TrayPick[];
-  /** the waiter asked "which table?" — focus the table field */
+  /** the waiter asked "which table?" — focus the table field (online: open the details form, step 2) */
   askTable?: boolean;
+  /** bumps on every checkout step from the waiter — the tray follows it even while open (read-back ↔ form) */
+  askAt?: number;
   /** dine-in (table) or online (pickup/delivery); worked out from the table/restaurant when omitted */
   channel?: Channel;
   /** picks the waiter pointed at when the guest asked about them */
@@ -75,6 +78,7 @@ export default function TrayModal({
   picks = [],
   highlightIds = [],
   askTable = false,
+  askAt = 0,
   channel: channelProp,
   onIntent,
   voiceBar = true,
@@ -91,6 +95,9 @@ export default function TrayModal({
   const placeSub: string | null = params.subdomain ?? storeTenant ?? null;
   const placeBranch: string | null = params.branchSlug ?? params.branch ?? storeBranch ?? null;
   const autoChannel = useOrderChannel(placeSub);
+  // the branch this order goes to (a restaurant with branches) — shown on the checkout, not changeable there
+  const { branches } = useStoreChannels(placeSub);
+  const orderBranch = branches.find((b) => b.slug === placeBranch) ?? (branches.length === 1 ? branches[0] : null);
   const channel: Channel = channelProp ?? autoChannel;
   const { items: menuItems } = usePublicMenu(storeTenant ?? undefined, storeBranch ?? undefined, channel);
   const menuById = React.useMemo(() => {
@@ -132,26 +139,51 @@ export default function TrayModal({
       setEditingTable(false);
     }
   }, [table]);
+  // ONLINE is two steps: the tray (what you're ordering) → "Checkout" → the details form (delivery / pickup, name,
+  // phone, address, note) with the Confirm order button. By voice the waiter leads the same way: its read-back
+  // ("…shall I confirm the order?") shows the tray, a yes opens the form. Saved details show as one card — never
+  // asked again; the form opens only for what's missing (or "Change").
+  const online = channel === 'online';
+  const [step, setStep] = React.useState<'tray' | 'details'>('tray');
+  const [editContact, setEditContact] = React.useState(false);
+  const goDetails = React.useCallback(() => {
+    const missing = missingContactField(fulfillment, contact);
+    setPlaceError(null);
+    setEditContact(!!missing);
+    setContactFocus(missing);
+    setStep('details');
+  }, [fulfillment, contact]);
   React.useEffect(() => {
-    // the waiter asked "which table?" (or, online, for contact details) → put the cursor there
-    if (!open || !askTable) return;
-    if (channel === 'online') {
-      setContactFocus(missingContactField(fulfillment, contact));
+    if (!open) {
+      setStep('tray');
       return;
     }
+    if (online) {
+      // the waiter's read-back → the tray; its "fill in the form" → the form
+      if (askTable) goDetails();
+      else if (askAt) setStep('tray');
+      return;
+    }
+    // the waiter asked "which table?" → put the cursor there
+    if (!askTable) return;
     setEditingTable(true);
     window.setTimeout(() => tableInputRef.current?.focus(), 150);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, askTable, channel]);
+  }, [open, askTable, askAt, online]);
+  // switched to delivery with no address saved → the form opens (it never flips back to the card while typing)
+  React.useEffect(() => {
+    if (step === 'details' && missingContactField(fulfillment, contact)) setEditContact(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step, fulfillment]);
 
   const placeNow = async () => {
     setPlaceError(null);
     setContactFocus(null);
-    const online = channel === 'online';
     const t = editingTable ? normalizeTable(tableDraft) : table;
     if (online) {
       const missing = missingContactField(fulfillment, contact);
       if (missing) {
+        setEditContact(true);
         setContactFocus(missing);
         setPlaceError(CONTACT_MESSAGES[missing]);
         return;
@@ -187,7 +219,10 @@ export default function TrayModal({
     } catch (e) {
       const err = e as OrderApiError;
       if (err?.needs === 'table') setEditingTable(true);
-      if (err?.needs === 'name' || err?.needs === 'phone' || err?.needs === 'address') setContactFocus(err.needs);
+      if (err?.needs === 'name' || err?.needs === 'phone' || err?.needs === 'address') {
+        setEditContact(true); // (the saved-details card would hide the field to fix)
+        setContactFocus(err.needs);
+      }
       setPlaceError(err?.message || tr(lang, 'অর্ডার দেওয়া যায়নি। আবার চেষ্টা করুন।', "Couldn't place the order. Please try again."));
     } finally {
       setPlacing(false);
@@ -240,7 +275,7 @@ export default function TrayModal({
       sc.removeEventListener('scroll', measurePicks);
       window.removeEventListener('resize', measurePicks);
     };
-  }, [open, measurePicks]);
+  }, [open, measurePicks, step]); // (the list remounts when the guest comes back from the checkout form)
   React.useLayoutEffect(() => {
     if (!lastChange?.added.length) return;
     const next: Flight[] = [];
@@ -326,6 +361,10 @@ export default function TrayModal({
   React.useEffect(() => {
     if (open && !hasItems && !waiting) onClose?.();
   }, [open, hasItems, waiting, onClose]);
+  // a dish waiting for its size / choice is picked in the tray — back to it from the form
+  React.useEffect(() => {
+    if (waiting) setStep('tray');
+  }, [waiting]);
   useBodyScrollLock(effectiveOpen);
 
   React.useEffect(() => {
@@ -341,20 +380,128 @@ export default function TrayModal({
   // path links, and a mic without a restaurant sent orders with no restaurant ("Validation failed")
   const tenant = placeSub ?? undefined;
   const branch = placeBranch ?? undefined;
+  const onDetails = online && step === 'details';
+  // saved details → one card with "Change"; the form only for what's missing
+  const showContactCard = !editContact && !missingContactField(fulfillment, contact);
 
   return (
     <div className="fixed inset-0 z-[100] flex justify-center bg-white">
       <div className={POPUP_PAGE_CLASS}>
         <PopupHeader
           title={
-            <>
-              Your Tray <span className="font-normal text-gray-500">· {items.reduce((n, i) => n + i.qty, 0)}</span>
-            </>
+            onDetails ? (
+              'Checkout'
+            ) : (
+              <>
+                Your Tray <span className="font-normal text-gray-500">· {items.reduce((n, i) => n + i.qty, 0)}</span>
+              </>
+            )
           }
           onClose={onClose}
+          onBack={onDetails ? () => setStep('tray') : undefined}
         />
 
-        {/* the list scrolls on its own; the footer below is part of the column, so nothing hides behind it */}
+        {onDetails ? (
+          // STEP 2 (online): how it reaches them + who they are, then Confirm order below. Always English.
+          <SheetScrollArea className="px-4 pt-2 pb-4" fadeFrom="#FFFFFF">
+            {orderBranch && (
+              // which branch cooks it (and where to pick it up) — fixed by the link the guest came in on
+              <div className="mb-3 rounded-2xl bg-white px-4 py-3 ring-1 ring-gray-100">
+                <label htmlFor="checkout-branch" className="block text-[12px] font-medium text-gray-600 mb-1">
+                  {fulfillment === 'pickup' ? 'Pick up from' : 'Branch'}
+                </label>
+                <select
+                  id="checkout-branch"
+                  disabled
+                  value={orderBranch.slug}
+                  className="w-full cursor-not-allowed appearance-none rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-[14px] font-medium text-gray-800 disabled:opacity-100"
+                >
+                  <option value={orderBranch.slug}>{orderBranch.name}</option>
+                </select>
+                {orderBranch.address && <p className="mt-1 text-[12px] text-gray-500">{orderBranch.address}</p>}
+              </div>
+            )}
+            <div className="rounded-2xl bg-white px-4 py-3 ring-1 ring-gray-100">
+              {showContactCard ? (
+                <div>
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-[13px] text-gray-600">How do you want it?</span>
+                    <FulfillmentToggle value={fulfillment} onChange={setFulfillment} />
+                  </div>
+                  <div className="mt-3 flex items-start justify-between gap-3 rounded-xl bg-gray-50 px-3 py-2.5">
+                    <div className="min-w-0">
+                      <div className="truncate text-[14px] font-semibold text-gray-900">
+                        {contact.name} · <span className="font-normal text-gray-700">{contact.phone}</span>
+                      </div>
+                      {fulfillment === 'delivery' && (
+                        <div className="mt-0.5 line-clamp-2 text-[13px] text-gray-600">{contact.address}</div>
+                      )}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setEditContact(true)}
+                      className="shrink-0 text-[12px] font-medium text-[#FA2851]"
+                    >
+                      Change
+                    </button>
+                  </div>
+                  <p className="mt-2 text-[11px] text-gray-400">
+                    {fulfillment === 'delivery' ? 'Cash on delivery' : 'Pay when you pick it up'}
+                  </p>
+                </div>
+              ) : (
+                <OnlineOrderDetails
+                  compact
+                  fulfillment={fulfillment}
+                  onFulfillment={setFulfillment}
+                  contact={contact}
+                  onContact={setContact}
+                  focusField={contactFocus}
+                />
+              )}
+              {noteOpen || orderNote ? (
+                <input
+                  autoFocus={noteOpen && !orderNote}
+                  value={orderNote}
+                  onChange={(e) => setOrderNote(e.target.value)}
+                  maxLength={300}
+                  placeholder="Note for the kitchen — e.g. everything less spicy"
+                  className="mt-3 w-full rounded-xl border border-gray-200 px-3 py-2 text-[13px] focus:outline-none focus:ring-2 focus:ring-[#FA2851]/40"
+                />
+              ) : (
+                <button type="button" onClick={() => setNoteOpen(true)} className="mt-2 text-[12px] font-medium text-gray-500 hover:text-gray-800">
+                  + Note for the kitchen
+                </button>
+              )}
+            </div>
+
+            {/* what's being ordered — read-only here; "Edit" goes back to the tray */}
+            <div className="mt-3 rounded-2xl bg-white px-4 py-3 ring-1 ring-gray-100">
+              <div className="flex items-center justify-between">
+                <span className="text-[13px] font-medium text-gray-600">Your order</span>
+                <button type="button" onClick={() => setStep('tray')} className="text-[12px] font-medium text-[#FA2851]">
+                  Edit
+                </button>
+              </div>
+              <ul className="mt-2 space-y-1.5">
+                {items.map((it) => (
+                  <li key={cartLineKey(it)} className="flex justify-between gap-3 text-[13px]">
+                    <span className="min-w-0 truncate text-gray-800">
+                      {it.qty} × {it.name}
+                      {it.variation ? <span className="text-gray-500"> ({it.variation})</span> : null}
+                    </span>
+                    <span className="shrink-0 text-gray-700">{formatBDT(it.price * it.qty)}</span>
+                  </li>
+                ))}
+              </ul>
+              <div className="mt-2 flex justify-between border-t border-gray-100 pt-2 text-[14px] font-semibold text-gray-900">
+                <span>Total</span>
+                <span>{formatBDT(subtotal)}</span>
+              </div>
+            </div>
+          </SheetScrollArea>
+        ) : (
+        /* the list scrolls on its own; the footer below is part of the column, so nothing hides behind it */
         <SheetScrollArea ref={scrollRef} className="px-4 pt-2 pb-4" fadeFrom="#FFFFFF" moreHint={items.length > 3 ? tr(lang, 'আরও আছে', 'More below') : undefined}>
           {waiting && (
             <div className="mb-3">
@@ -448,18 +595,9 @@ export default function TrayModal({
             })}
           </div>
 
-          {/* table or pickup/delivery details + note — the tray is the checkout; always English */}
+          {/* dine-in: the table + note — the tray is the checkout (online: the form is step 2); always English */}
+          {!online && (
           <div className="mt-4 rounded-2xl bg-white px-4 py-3 ring-1 ring-gray-100">
-            {channel === 'online' ? (
-              <OnlineOrderDetails
-                compact
-                fulfillment={fulfillment}
-                onFulfillment={setFulfillment}
-                contact={contact}
-                onContact={setContact}
-                focusField={contactFocus}
-              />
-            ) : (
             <div className="flex items-center justify-between gap-3">
               <span className="text-[13px] text-gray-600">Table</span>
               {!editingTable && table ? (
@@ -486,7 +624,6 @@ export default function TrayModal({
                 />
               )}
             </div>
-            )}
             {noteOpen ? (
               <input
                 autoFocus
@@ -501,8 +638,9 @@ export default function TrayModal({
                 + Note for the kitchen
               </button>
             )}
-            {channel !== 'online' && <p className="mt-2 text-[11px] text-gray-400">You pay at the counter</p>}
+            <p className="mt-2 text-[11px] text-gray-400">You pay at the counter</p>
           </div>
+          )}
 
           <TrayPicks
             picks={shownPicks}
@@ -511,6 +649,7 @@ export default function TrayModal({
             highlightIds={highlightIds}
           />
         </SheetScrollArea>
+        )}
 
         {/* BOTTOM BAR: place the order + the mic — always visible, never over the list */}
         <div
@@ -526,13 +665,22 @@ export default function TrayModal({
             </div>
           )}
           <WaitEstimateLine estimate={wait} lang={lang} className="justify-center" />
+          {/* online: "Checkout" (→ the form) then "Confirm order"; dine-in: "Place order" right here */}
           <button
             type="button"
-            onClick={placeNow}
+            onClick={online && !onDetails ? goDetails : placeNow}
             disabled={placing || !hasItems}
             className="relative z-[60] flex w-full items-center justify-between rounded-2xl bg-[#FA2851] px-4 py-3.5 text-white font-semibold shadow-lg shadow-rose-200 active:scale-[0.99] disabled:opacity-70"
           >
-            <span>{placing ? tr(lang, 'অর্ডার দেওয়া হচ্ছে…', 'Placing…') : tr(lang, 'অর্ডার দিন', 'Place order')}</span>
+            <span>
+              {placing
+                ? tr(lang, 'অর্ডার দেওয়া হচ্ছে…', 'Placing…')
+                : onDetails
+                ? 'Confirm order'
+                : online
+                ? 'Checkout'
+                : tr(lang, 'অর্ডার দিন', 'Place order')}
+            </span>
             <span>{formatBDT(subtotal)}</span>
           </button>
           {voiceBar && <MicInputBar
