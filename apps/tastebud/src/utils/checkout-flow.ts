@@ -7,7 +7,7 @@ import { useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useCart } from '../context/CartContext';
 import { rememberOrder } from '../api/orders';
-import { isDineInPath } from './table';
+import { isDineInPath, withTable } from './table';
 
 function storeHint(k: 'subdomain' | 'branch'): string | null {
   return typeof window !== 'undefined' ? ((window as any).__STORE__?.[k] ?? null) : null;
@@ -27,8 +27,9 @@ export function storeBasePath(sub?: string | null, branch?: string | null): stri
 export const checkoutPath = (sub?: string | null, branch?: string | null) =>
   `${storeBasePath(sub, branch)}/checkout`;
 
+// a dine-in order page keeps the table on its link too, so going back from it (even after a reload) stays at the table
 export const orderPath = (token: string, sub?: string | null, branch?: string | null) =>
-  `${storeBasePath(sub, branch)}/order/${encodeURIComponent(token)}`;
+  withTable(`${storeBasePath(sub, branch)}/order/${encodeURIComponent(token)}`, sub);
 
 export function useCheckoutFlow(
   sub?: string | null,
