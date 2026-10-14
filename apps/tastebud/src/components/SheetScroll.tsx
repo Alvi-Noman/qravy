@@ -81,6 +81,12 @@ const SheetScrollArea = forwardRef<HTMLDivElement, Props>(function SheetScrollAr
 ) {
   const inner = useRef<HTMLDivElement | null>(null);
   const [el, setEl] = useState<HTMLDivElement | null>(null);
+  // one ref function for good: a new one each render makes React detach/attach it (null, then the node) every
+  // commit — two state updates per render, an endless loop on a busy sheet (the online checkout form)
+  const attach = useCallback((node: HTMLDivElement | null) => {
+    inner.current = node;
+    setEl(node);
+  }, []);
   useImperativeHandle(ref, () => inner.current as HTMLDivElement, [el]);
   const edges = useScrollEdges(el);
 
@@ -99,10 +105,7 @@ const SheetScrollArea = forwardRef<HTMLDivElement, Props>(function SheetScrollAr
   return (
     <div className="relative min-h-0 flex-1">
       <div
-        ref={(node) => {
-          inner.current = node;
-          setEl(node);
-        }}
+        ref={attach}
         className={`h-full overflow-y-auto overscroll-contain [-webkit-overflow-scrolling:touch] ${className}`}
       >
         {children}
