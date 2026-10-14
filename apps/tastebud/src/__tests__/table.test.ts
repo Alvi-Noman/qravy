@@ -6,6 +6,7 @@ const go = (url: string) => window.history.replaceState(null, '', url);
 
 beforeEach(() => {
   jest.resetModules(); // a fresh visit: nothing remembered in memory either
+  // eslint-disable-next-line @typescript-eslint/no-var-requires -- a fresh copy of the module per test
   ({ getTable, setTable, withTable } = require('../utils/table') as T);
   localStorage.clear();
   go('/');
