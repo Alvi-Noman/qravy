@@ -12,7 +12,6 @@ import { normalizeAvailability, normalizeServicePeriods } from '../utils/availab
 import { kitchenSettings } from '../services/orders/waitTime.js';
 import { missingTableKeys, tableKeysFor } from '../utils/tableKeys.js';
 import { checkSubdomain } from '../utils/subdomains.js';
-import { cleanList } from '../utils/pronounce.js';
 import type { v1 } from '@qravy/shared';
 import { restaurantOnboardingSchema, tenantUpdateSchema } from '../validation/schemas.js';
 
@@ -749,7 +748,6 @@ export async function updateMyTenant(req: Request, res: Response, next: NextFunc
     }
     if (parsed.waiterName !== undefined) update.waiterName = parsed.waiterName?.trim() || null;
     if (parsed.waiterVoice) update.waiterVoice = parsed.waiterVoice;
-    if (parsed.pronunciations) update.pronunciations = cleanList(parsed.pronunciations);
     if (parsed.customAnswers) {
       update.customAnswers = parsed.customAnswers
         .map((x) => ({ question: x.question.trim(), answer: x.answer.trim() }))
