@@ -29,13 +29,19 @@ function word(w: string): string {
   const s = w.replace(/[A-Z]/g, (ch, i: number) => (/^(Sh|Th|Dh|Rh)/.test(w.slice(i)) || 'TDNRIUO'.includes(ch) ? ch : ch.toLowerCase()));
   let out = '';
   let afterCons = false; // the last thing written was a consonant still waiting for its vowel
+  let aspirated = false; // the last consonant was typed with an h (sh, kh, th…): a second h adds nothing ("shholo")
   let i = 0;
   while (i < s.length) {
     const rest = s.slice(i);
+    if (aspirated && rest[0] === 'h') {
+      i += 1;
+      continue;
+    }
     const v = VOWELS.find(([k]) => rest.startsWith(k));
     if (v) {
       out += afterCons ? v[1] : v[2];
       afterCons = false;
+      aspirated = false;
       i += v[0].length;
       continue;
     }
@@ -71,6 +77,7 @@ function word(w: string): string {
       if (afterCons) out += HASANT; // two consonants together: a conjunct (kacchi → কাচ্চি)
       out += c[1];
       afterCons = true;
+      aspirated = c[0].length > 1 && c[0].endsWith('h');
       i += c[0].length;
       continue;
     }
