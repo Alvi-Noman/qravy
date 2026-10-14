@@ -18,7 +18,9 @@ import {
   sessionRows,
   sinceOf,
   type Filters,
+  type SessionRow,
 } from '../services/cortex/analytics.js';
+import { datesOf, localHourAndDate, periodOf } from '../utils/period.js';
 
 const router: express.Router = express.Router();
 const db = () => client.db('authDB');
@@ -286,6 +288,242 @@ router.get(
       })
       .sort((a, b) => b.revenue - a.revenue || b.qty - a.qty);
     res.json({ success: true, days: f.days, orders: totalOrders, items: rows });
+  })
+);
+
+/* ------------------------------------------------------------------ the home dashboard */
+
+type Row = SessionRow;
+type OrderDoc = { total?: number; channel?: string; status?: string; source?: string; createdAt: Date; locationId?: ObjectId };
+const CHANNELS = ['dine-in', 'online'] as const;
+const r1 = (n: number) => Math.round(n * 10) / 10;
+const pct = (a: number, b: number) => (b ? Math.round((a / b) * 1000) / 1000 : null);
+
+/** The headline numbers for a set of visits and their orders. */
+function summary(rows: Row[], orders: OrderDoc[], returning?: Set<string>) {
+  const live = orders.filter((o) => o.status !== 'cancelled');
+  const revenue = live.reduce((s, o) => s + Number(o.total || 0), 0);
+  const fun = funnel(rows);
+  const devices = new Set(rows.map((r) => r.did).filter(Boolean));
+  const back = returning ? [...devices].filter((d) => returning.has(d)).length : 0;
+  // left without doing anything: one page, never talked to the waiter, nothing in the tray
+  const bounced = rows.filter((r) => r.views <= 1 && !r.engaged && r.itemsAdded === 0 && !r.checkout && !r.ordered).length;
+  return {
+    scans: fun.scans,
+    guests: fun.sessions,
+    scannedGuests: fun.scannedSessions,
+    uniqueDevices: devices.size,
+    returningGuests: back,
+    newGuests: devices.size - back,
+    engagedGuests: fun.engagedSessions,
+    cartGuests: fun.cartSessions,
+    checkoutGuests: fun.checkoutSessions,
+    orderingGuests: fun.orderedSessions,
+    conversion: fun.rates.visitToOrder,
+    scanToOrder: fun.rates.scanToOrder,
+    engagement: fun.rates.engagement,
+    bounceRate: pct(bounced, rows.length),
+    avgMinutes: fun.avgMinutes,
+    medianMinutes: fun.medianMinutes,
+    pagesPerGuest: rows.length ? r1(fun.pageViews / rows.length) : null,
+    waiterCalls: fun.waiterCalls,
+    orders: orders.length,
+    cancelled: orders.length - live.length,
+    revenue: Math.round(revenue),
+    avgOrderValue: live.length ? Math.round(revenue / live.length) : null,
+    aiOrders: live.filter((o) => o.source === 'ai-waiter').length,
+  };
+}
+
+/**
+ * GET /insights/dashboard?range=today|yesterday|7d|30d|month|custom&from=YYYY-MM-DD&to=YYYY-MM-DD&channel=&location=
+ * The home dashboard: QR scans and how guests behave, dine-in vs online side by side, each number next to the
+ * period before it; charts in the restaurant's own time (by hour for one day, by day for longer).
+ */
+router.get(
+  '/insights/dashboard',
+  ...guard,
+  wrap(async (req, res) => {
+    const s = await scopeOf(req);
+    if (!s) return res.status(404).json({ success: false, message: 'Not found' });
+    const { f: base, tenant } = s;
+    const tz = String(tenant.timezone || 'Asia/Dhaka');
+    const p = periodOf(req.query.range, req.query.from, req.query.to, tz);
+    const channel = base.channel ?? null; // the page's filter; the dine-in / online comparison always shows both
+    const scope = { ...base, channel: null };
+    const cur: Filters = { ...scope, from: p.from, to: p.to };
+    const prev: Filters = { ...scope, from: p.prevFrom, to: p.prevTo };
+    const orderFind = (f: Filters) =>
+      ordersCol()
+        .find(
+          { tenantId: f.tenantId, createdAt: { $gte: f.from, $lt: f.to }, ...(f.locationId ? { locationId: f.locationId } : {}) },
+          { projection: { total: 1, channel: 1, status: 1, source: 1, createdAt: 1, locationId: 1 } }
+        )
+        .toArray() as unknown as Promise<OrderDoc[]>;
+
+    const [rowsAll, prevRowsAll, ordersAll, prevOrdersAll] = await Promise.all([
+      sessionRows(cur),
+      sessionRows(prev),
+      orderFind(cur),
+      orderFind(prev),
+    ]);
+    // devices seen here before this period → returning guests
+    const dids = [...new Set(rowsAll.map((r) => r.did).filter(Boolean))];
+    const seenBefore = dids.length
+      ? new Set(
+          (await eventsCol().distinct('did', {
+            tenantId: base.tenantId,
+            did: { $in: dids },
+            at: { $lt: p.from },
+            ...(base.locationId ? { locationId: base.locationId } : {}),
+          })) as string[]
+        )
+      : new Set<string>();
+    const prevDids = [...new Set(prevRowsAll.map((r) => r.did).filter(Boolean))];
+    const prevSeenBefore = prevDids.length
+      ? new Set(
+          (await eventsCol().distinct('did', {
+            tenantId: base.tenantId,
+            did: { $in: prevDids },
+            at: { $lt: p.prevFrom },
+            ...(base.locationId ? { locationId: base.locationId } : {}),
+          })) as string[]
+        )
+      : new Set<string>();
+
+    const pick = <T extends { channel?: string }>(list: T[], ch: string | null) => (ch ? list.filter((x) => x.channel === ch) : list);
+    const rows = pick(rowsAll, channel);
+    const prevRows = pick(prevRowsAll, channel);
+    const orders = pick(ordersAll, channel);
+    const prevOrders = pick(prevOrdersAll, channel);
+
+    // charts: one point per hour (one day) or per day, in the restaurant's time
+    const keys = p.bucket === 'hour' ? Array.from({ length: 24 }, (_, h) => String(h)) : datesOf(p);
+    const keyOf = (at: Date) => {
+      const x = localHourAndDate(new Date(at), tz);
+      return p.bucket === 'hour' ? String(x.hour) : x.date;
+    };
+    const blank = () => ({ scans: 0, guests: 0, dineInGuests: 0, onlineGuests: 0, orders: 0, dineInOrders: 0, onlineOrders: 0, revenue: 0 });
+    const fill = (rs: Row[], os: OrderDoc[], shift = 0) => {
+      const m = new Map(keys.map((k) => [k, blank()]));
+      for (const r of rs) {
+        const b = m.get(keyOf(new Date(new Date(r.first).getTime() + shift)));
+        if (!b) continue;
+        b.scans += r.scans;
+        b.guests += 1;
+        if (r.channel === 'dine-in') b.dineInGuests += 1;
+        else b.onlineGuests += 1;
+      }
+      for (const o of os) {
+        const b = m.get(keyOf(new Date(new Date(o.createdAt).getTime() + shift)));
+        if (!b) continue;
+        b.orders += 1;
+        if (o.channel === 'dine-in') b.dineInOrders += 1;
+        else b.onlineOrders += 1;
+        if (o.status !== 'cancelled') b.revenue += Number(o.total || 0);
+      }
+      return keys.map((k) => ({ key: k, ...m.get(k)!, revenue: Math.round(m.get(k)!.revenue) }));
+    };
+    const shift = p.from.getTime() - p.prevFrom.getTime(); // the previous period laid over this one
+    const series = fill(rows, orders);
+    const prevSeries = fill(prevRows, prevOrders, shift);
+
+    // when guests come: scans and guests by hour of day (over the whole period)
+    const byHour = Array.from({ length: 24 }, (_, h) => ({ hour: h, scans: 0, guests: 0, orders: 0 }));
+    for (const r of rows) {
+      const h = localHourAndDate(new Date(r.first), tz).hour;
+      byHour[h].scans += r.scans;
+      byHour[h].guests += 1;
+    }
+    for (const o of orders) byHour[localHourAndDate(new Date(o.createdAt), tz).hour].orders += 1;
+
+    // tables: which QR codes get scanned, and how often a scan turns into an order
+    const tables = new Map<string, { table: string; scans: number; guests: number; ordered: number; minutes: number }>();
+    for (const r of rowsAll) {
+      if (r.channel !== 'dine-in' || !r.table) continue;
+      const t = tables.get(r.table) ?? { table: r.table, scans: 0, guests: 0, ordered: 0, minutes: 0 };
+      t.scans += r.scans;
+      t.guests += 1;
+      t.ordered += r.ordered ? 1 : 0;
+      t.minutes += r.minutes;
+      tables.set(r.table, t);
+    }
+    const tableList = [...tables.values()]
+      .map((t) => ({ table: t.table, scans: t.scans, guests: t.guests, ordered: t.ordered, conversion: pct(t.ordered, t.guests), avgMinutes: r1(t.minutes / t.guests) }))
+      .sort((a, b) => b.scans - a.scans || b.guests - a.guests);
+
+    const devices = { mobile: 0, tablet: 0, desktop: 0 } as Record<string, number>;
+    for (const r of rows) devices[r.device ?? 'mobile'] = (devices[r.device ?? 'mobile'] ?? 0) + 1;
+
+    // guests on the menu right now (something in the last 5 minutes)
+    let now: { total: number; dineIn: number; online: number } | null = null;
+    if (p.includesNow) {
+      const recent = await eventsCol()
+        .aggregate([
+          { $match: { tenantId: base.tenantId, at: { $gte: new Date(Date.now() - 5 * 60_000) }, ...(base.locationId ? { locationId: base.locationId } : {}) } },
+          { $group: { _id: '$vid', channel: { $first: '$channel' } } },
+        ])
+        .toArray();
+      now = {
+        total: recent.length,
+        dineIn: recent.filter((x) => x.channel === 'dine-in').length,
+        online: recent.filter((x) => x.channel !== 'dine-in').length,
+      };
+    }
+
+    // every branch side by side (all branches combined only)
+    let branches: unknown[] = [];
+    if (!base.locationId) {
+      const locs = await client.db('authDB').collection('locations').find({ tenantId: base.tenantId }, { projection: { name: 1 } }).toArray();
+      if (locs.length > 1) {
+        branches = locs
+          .map((l) => {
+            const id = String(l._id);
+            const rs = rows.filter((r) => r.locationId === id);
+            const os = orders.filter((o) => String(o.locationId ?? '') === id);
+            const sm = summary(rs, os);
+            return {
+              locationId: id,
+              name: String(l.name),
+              scans: sm.scans,
+              guests: sm.guests,
+              dineInGuests: rs.filter((r) => r.channel === 'dine-in').length,
+              onlineGuests: rs.filter((r) => r.channel !== 'dine-in').length,
+              orders: sm.orders,
+              revenue: sm.revenue,
+              conversion: sm.conversion,
+              avgMinutes: sm.avgMinutes,
+            };
+          })
+          .sort((a, b) => b.guests - a.guests);
+      }
+    }
+
+    res.json({
+      success: true,
+      period: { key: p.key, from: p.fromDate, to: p.toDate, bucket: p.bucket, includesNow: p.includesNow, timezone: tz },
+      branch: base.locationId ? String(base.locationId) : null,
+      channel,
+      now,
+      summary: summary(rows, orders, seenBefore),
+      previous: summary(prevRows, prevOrders, prevSeenBefore),
+      channels: Object.fromEntries(
+        CHANNELS.map((ch) => [
+          ch,
+          {
+            current: summary(pick(rowsAll, ch), pick(ordersAll, ch), seenBefore),
+            previous: summary(pick(prevRowsAll, ch), pick(prevOrdersAll, ch), prevSeenBefore),
+            funnel: funnel(pick(rowsAll, ch)),
+          },
+        ])
+      ),
+      series,
+      prevSeries,
+      byHour,
+      tables: tableList.slice(0, 12),
+      devices,
+      branches,
+    });
   })
 );
 

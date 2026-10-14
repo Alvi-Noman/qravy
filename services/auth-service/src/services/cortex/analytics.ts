@@ -18,19 +18,24 @@ const transcripts = () => waiterDb().collection('transcripts');
 
 export type Filters = {
   days: number;
+  /** an exact window instead of "the last N days" (a restaurant's own Today, Yesterday, a custom range) */
+  from?: Date | null;
+  to?: Date | null;
   tenantId?: ObjectId | null;
   locationId?: ObjectId | null;
   channel?: 'dine-in' | 'online' | null;
 };
 
 export const sinceOf = (days: number) => new Date(Date.now() - days * 86400_000);
+/** The window the filters cover, as a Mongo range: from..to (exclusive), or the last N days. */
+const windowOf = (f: Filters): Document => (f.from ? { $gte: f.from, ...(f.to ? { $lt: f.to } : {}) } : { $gte: sinceOf(f.days) });
 const round = (n: number, d = 1) => Math.round(n * 10 ** d) / 10 ** d;
 const rate = (a: number, b: number) => (b ? round(a / b, 4) : null);
 const ENGAGED = ['waiter_start', 'ai_turn'];
 
 function eventMatch(f: Filters): Document {
   return {
-    at: { $gte: sinceOf(f.days) },
+    at: windowOf(f),
     ...(f.tenantId ? { tenantId: f.tenantId } : {}),
     ...(f.locationId ? { locationId: f.locationId } : {}),
     ...(f.channel ? { channel: f.channel } : {}),
@@ -39,7 +44,7 @@ function eventMatch(f: Filters): Document {
 
 function orderMatch(f: Filters): Document {
   return {
-    createdAt: { $gte: sinceOf(f.days) },
+    createdAt: windowOf(f),
     ...(f.tenantId ? { tenantId: f.tenantId } : {}),
     ...(f.locationId ? { locationId: f.locationId } : {}),
     ...(f.channel ? { channel: f.channel } : {}),
@@ -204,7 +209,7 @@ export async function orderStats(f: Filters) {
 
 /** What the AI waiter did: turns, conversations, turns it couldn't hear, model fallbacks. */
 export async function aiStats(f: Filters, subs?: string[] | null) {
-  const match: Document = { ts: { $gte: sinceOf(f.days) } };
+  const match: Document = { ts: windowOf(f) };
   if (subs) match.tenant = { $in: subs };
   if (f.locationId) match.location = String(f.locationId);
   if (f.channel) match.channel = f.channel;
@@ -224,7 +229,8 @@ export async function aiStats(f: Filters, subs?: string[] | null) {
       { $project: { turns: 1, unheard: 1, fallback: 1, ordered: 1, conversations: { $size: '$convos' } } },
     ])
     .toArray();
-  const upsMatch: Document = { at: { $gte: sinceOf(f.days).getTime() / 1000 } };
+  const w = windowOf(f);
+  const upsMatch: Document = { at: { $gte: (w.$gte as Date).getTime() / 1000, ...(w.$lt ? { $lt: (w.$lt as Date).getTime() / 1000 } : {}) } };
   if (subs) upsMatch.tenant = { $in: subs };
   if (f.locationId) upsMatch.location = String(f.locationId);
   const offers = await waiterDb()

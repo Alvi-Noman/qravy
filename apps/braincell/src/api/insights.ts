@@ -91,3 +91,87 @@ export async function getMenuInsights(days: number, location?: string | null, ch
   const res = await api.get(`/api/v1/insights/menu?${qs(days, location, channel)}`);
   return res.data as { orders: number; items: MenuInsight[] };
 }
+
+/* ------------------------------------------------------------------ the home dashboard */
+
+export type DashRange = 'today' | 'yesterday' | '7d' | '30d' | 'month' | 'custom';
+
+export type DashSummary = {
+  scans: number;
+  guests: number;
+  scannedGuests: number;
+  uniqueDevices: number;
+  returningGuests: number;
+  newGuests: number;
+  engagedGuests: number;
+  cartGuests: number;
+  checkoutGuests: number;
+  orderingGuests: number;
+  conversion: number | null;
+  scanToOrder: number | null;
+  engagement: number | null;
+  bounceRate: number | null;
+  avgMinutes: number | null;
+  medianMinutes: number | null;
+  pagesPerGuest: number | null;
+  waiterCalls: number;
+  orders: number;
+  cancelled: number;
+  revenue: number;
+  avgOrderValue: number | null;
+  aiOrders: number;
+};
+
+export type DashPoint = {
+  key: string;
+  scans: number;
+  guests: number;
+  dineInGuests: number;
+  onlineGuests: number;
+  orders: number;
+  dineInOrders: number;
+  onlineOrders: number;
+  revenue: number;
+};
+
+export type Dashboard = {
+  period: { key: DashRange; from: string; to: string; bucket: 'hour' | 'day'; includesNow: boolean; timezone: string };
+  branch: string | null;
+  channel: 'dine-in' | 'online' | null;
+  now: { total: number; dineIn: number; online: number } | null;
+  summary: DashSummary;
+  previous: DashSummary;
+  channels: Record<'dine-in' | 'online', { current: DashSummary; previous: DashSummary; funnel: InsightsOverview['funnel'] }>;
+  series: DashPoint[];
+  prevSeries: DashPoint[];
+  byHour: Array<{ hour: number; scans: number; guests: number; orders: number }>;
+  tables: Array<{ table: string; scans: number; guests: number; ordered: number; conversion: number | null; avgMinutes: number }>;
+  devices: Record<string, number>;
+  branches: Array<{
+    locationId: string;
+    name: string;
+    scans: number;
+    guests: number;
+    dineInGuests: number;
+    onlineGuests: number;
+    orders: number;
+    revenue: number;
+    conversion: number | null;
+    avgMinutes: number | null;
+  }>;
+};
+
+export async function getDashboard(opts: {
+  range: DashRange;
+  from?: string;
+  to?: string;
+  location?: string | null;
+  channel?: string | null;
+}): Promise<Dashboard> {
+  const q = new URLSearchParams({ range: opts.range });
+  if (opts.range === 'custom' && opts.from) q.set('from', opts.from);
+  if (opts.range === 'custom' && opts.to) q.set('to', opts.to);
+  if (opts.location) q.set('location', opts.location);
+  if (opts.channel) q.set('channel', opts.channel);
+  return (await api.get(`/api/v1/insights/dashboard?${q}`)).data as Dashboard;
+}

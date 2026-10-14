@@ -2,7 +2,7 @@
 // One measure per chart (no dual axes), one hue (#2a78d6, validated against the light surface), thin marks, a recessive
 // grid, a tooltip on every chart; numbers stay in text ink.
 import type { ReactNode } from 'react';
-import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
+import { Area, AreaChart, Bar, BarChart, CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 
 export const SERIES = '#2a78d6';
 const GRID = '#e7e5e4';
@@ -160,6 +160,131 @@ export function Period({ value, onChange }: { value: number; onChange: (d: numbe
           {l}
         </button>
       ))}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ the home dashboard */
+
+export const DINE_IN = SERIES;
+export const ONLINE = '#e8833a'; // validated with SERIES (CVD ΔE 26); its numbers are always shown as text too
+const PREV = '#a8a29e';
+
+/** Change against the previous period: "▲ 12%" — green when it's good, red when it isn't (a rising bounce rate is bad). */
+export function Delta({ now, before, upIsGood = true, points = false }: { now: number | null; before: number | null; upIsGood?: boolean; points?: boolean }) {
+  if (now == null || before == null) return null;
+  if (before === 0 && now === 0) return <span className="text-[11px] text-slate-400">no change</span>;
+  if (before === 0 && !points) return <span className="text-[11px] font-medium text-slate-500">new</span>;
+  // rates change in percentage points ("+4 pts"), counts in percent
+  const change = points ? (now - before) * 100 : ((now - before) / Math.abs(before)) * 100;
+  if (Math.abs(change) < 0.5) return <span className="text-[11px] text-slate-400">no change</span>;
+  const good = change > 0 === upIsGood;
+  return (
+    <span className={`text-[11px] font-semibold ${good ? 'text-emerald-700' : 'text-red-700'}`} title="Compared with the previous period">
+      {change > 0 ? '▲' : '▼'} {Math.abs(change).toFixed(Math.abs(change) < 10 ? 1 : 0)}
+      {points ? ' pts' : '%'}
+    </span>
+  );
+}
+
+/** A number, its change against the previous period, and what it means. */
+export function StatTile({ label, value, delta, hint, icon }: { label: string; value: ReactNode; delta?: ReactNode; hint?: ReactNode; icon?: ReactNode }) {
+  return (
+    <div className="rounded-xl border border-[#ececec] bg-white p-4 shadow-sm">
+      <div className="flex items-center gap-1.5 text-[12px] font-medium text-slate-500">
+        {icon}
+        {label}
+      </div>
+      <div className="mt-1.5 flex flex-wrap items-baseline gap-x-2">
+        <span className="text-[24px] font-semibold tracking-tight text-slate-900">{value}</span>
+        {delta}
+      </div>
+      {hint && <div className="mt-0.5 text-[12px] text-slate-500">{hint}</div>}
+    </div>
+  );
+}
+
+function CompareTip({ active, payload, label, unit, labelFmt }: { active?: boolean; payload?: Array<{ dataKey: string; value: number }>; label?: string; unit: (v: number) => string; labelFmt: (l: string) => string }) {
+  if (!active || !payload?.length || label == null) return null;
+  const cur = payload.find((p) => p.dataKey === 'now')?.value;
+  const prev = payload.find((p) => p.dataKey === 'before')?.value;
+  return (
+    <div className="rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-[12px] shadow-sm">
+      <div className="text-slate-500">{labelFmt(label)}</div>
+      <div className="font-semibold text-slate-900">{cur == null ? '—' : unit(cur)}</div>
+      {prev != null && <div className="text-slate-500">previous period: {unit(prev)}</div>}
+    </div>
+  );
+}
+
+/** One measure over time, with the previous period laid over it (dashed, grey). */
+export function CompareChart({ data, xFmt, unit = (v) => v.toLocaleString('en-US'), height = 220 }: { data: Array<{ x: string; now: number; before: number }>; xFmt: (x: string) => string; unit?: (v: number) => string; height?: number }) {
+  return (
+    <div>
+      <div className="mb-2 flex items-center gap-4 text-[12px] text-slate-600">
+        <span className="inline-flex items-center gap-1.5">
+          <span className="h-0.5 w-4 rounded" style={{ background: SERIES }} /> This period
+        </span>
+        <span className="inline-flex items-center gap-1.5">
+          <span className="h-0 w-4 border-t-2 border-dashed" style={{ borderColor: PREV }} /> Previous period
+        </span>
+      </div>
+      <div style={{ height }}>
+        <ResponsiveContainer width="100%" height="100%">
+          <LineChart data={data} margin={{ top: 6, right: 8, left: -8, bottom: 0 }}>
+            <CartesianGrid stroke={GRID} vertical={false} />
+            <XAxis dataKey="x" tickLine={false} axisLine={false} tick={{ fontSize: 11, fill: AXIS }} tickFormatter={xFmt} minTickGap={16} />
+            <YAxis tickLine={false} axisLine={false} tick={{ fontSize: 11, fill: AXIS }} allowDecimals={false} width={40} tickFormatter={fmt.short} />
+            <Tooltip content={<CompareTip unit={unit} labelFmt={xFmt} />} cursor={{ stroke: AXIS, strokeWidth: 1, strokeDasharray: '3 3' }} />
+            <Line type="monotone" dataKey="before" stroke={PREV} strokeWidth={2} strokeDasharray="4 4" dot={false} activeDot={false} isAnimationActive={false} />
+            <Line type="monotone" dataKey="now" stroke={SERIES} strokeWidth={2} dot={false} activeDot={{ r: 4, strokeWidth: 2, stroke: '#fff' }} />
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+    </div>
+  );
+}
+
+function ChannelTip({ active, payload, label, labelFmt }: { active?: boolean; payload?: Array<{ dataKey: string; value: number }>; label?: string; labelFmt: (l: string) => string }) {
+  if (!active || !payload?.length || label == null) return null;
+  const v = (k: string) => payload.find((p) => p.dataKey === k)?.value ?? 0;
+  return (
+    <div className="rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-[12px] shadow-sm">
+      <div className="text-slate-500">{labelFmt(label)}</div>
+      <div className="flex items-center gap-1.5 text-slate-900">
+        <span className="h-2 w-2 rounded-sm" style={{ background: DINE_IN }} /> Dine-in <b className="ml-auto pl-3">{v('dineIn')}</b>
+      </div>
+      <div className="flex items-center gap-1.5 text-slate-900">
+        <span className="h-2 w-2 rounded-sm" style={{ background: ONLINE }} /> Online <b className="ml-auto pl-3">{v('online')}</b>
+      </div>
+    </div>
+  );
+}
+
+/** Dine-in and online side by side over time (two bars per point, a 2px gap between them). */
+export function ChannelBars({ data, xFmt, height = 200 }: { data: Array<{ x: string; dineIn: number; online: number }>; xFmt: (x: string) => string; height?: number }) {
+  return (
+    <div>
+      <div className="mb-2 flex items-center gap-4 text-[12px] text-slate-600">
+        <span className="inline-flex items-center gap-1.5">
+          <span className="h-2.5 w-2.5 rounded-sm" style={{ background: DINE_IN }} /> Dine-in
+        </span>
+        <span className="inline-flex items-center gap-1.5">
+          <span className="h-2.5 w-2.5 rounded-sm" style={{ background: ONLINE }} /> Online
+        </span>
+      </div>
+      <div style={{ height }}>
+        <ResponsiveContainer width="100%" height="100%">
+          <BarChart data={data} margin={{ top: 6, right: 8, left: -8, bottom: 0 }} barGap={2} barCategoryGap="20%">
+            <CartesianGrid stroke={GRID} vertical={false} />
+            <XAxis dataKey="x" tickLine={false} axisLine={false} tick={{ fontSize: 11, fill: AXIS }} tickFormatter={xFmt} minTickGap={12} />
+            <YAxis tickLine={false} axisLine={false} tick={{ fontSize: 11, fill: AXIS }} allowDecimals={false} width={40} tickFormatter={fmt.short} />
+            <Tooltip content={<ChannelTip labelFmt={xFmt} />} cursor={{ fill: 'rgba(42,120,214,0.06)' }} />
+            <Bar dataKey="dineIn" fill={DINE_IN} radius={[4, 4, 0, 0]} maxBarSize={18} />
+            <Bar dataKey="online" fill={ONLINE} radius={[4, 4, 0, 0]} maxBarSize={18} />
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
     </div>
   );
 }
