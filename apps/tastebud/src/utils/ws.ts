@@ -6,13 +6,27 @@ function uuidv4(): string {
   });
 }
 
+// a phone that blocks storage (strict privacy settings) keeps one id for the visit instead of a blank page
+let memorySid: string | null = null;
+
 export function getStableSessionId(): string {
   const key = 'qravy_waiter_sid';
-  let sid = localStorage.getItem(key);
+  let sid: string | null = null;
+  try {
+    sid = localStorage.getItem(key);
+  } catch {
+    /* storage blocked */
+  }
+  sid = sid ?? memorySid;
   if (!sid) {
     sid = uuidv4();
-    localStorage.setItem(key, sid);
+    try {
+      localStorage.setItem(key, sid);
+    } catch {
+      /* storage blocked — the memory copy does */
+    }
   }
+  memorySid = sid;
   return sid;
 }
 
