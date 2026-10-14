@@ -21,6 +21,15 @@ const GATEWAY_URL = process.env.GATEWAY_URL || 'http://api-gateway:8080';
 const AI_WAITER_URL = process.env.AI_WAITER_URL || 'http://ai-waiter-service:7071';
 const AI_WAITER_HTTP_URL = process.env.AI_WAITER_HTTP_URL || 'http://ai-waiter-service:7081';
 
+// Qravy's own hosts under *.qravy.com (dashboard, old storefront, Cortex): they are no restaurant, but Caddy's
+// on-demand check covers them too — without a yes here their certificates are never used.
+const PLATFORM_HOSTS = new Set(
+  (process.env.PLATFORM_HOSTS || '')
+    .split(',')
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean),
+);
+
 // ---- CORS allow-list
 const RAW_ORIGINS = (process.env.CORS_ORIGIN || '')
   .split(',')
@@ -92,6 +101,7 @@ export function createApp(): Application {
    */
   app.get('/internal/tls-ask', async (req, res) => {
     const domain = String(req.query.domain || '').toLowerCase();
+    if (PLATFORM_HOSTS.has(domain)) return res.status(200).end();
     const m = domain.match(/^([a-z0-9-]{1,63})\.qravy\.com$/);
     const sub = m?.[1];
     if (!sub) return res.status(404).end();
