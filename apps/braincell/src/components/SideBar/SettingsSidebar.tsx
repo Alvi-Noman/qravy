@@ -40,7 +40,7 @@ const items: NavItem[] = [
   { name: 'Billing', to: '/settings/Billing', icon: CreditCardIcon },
 
   { name: 'Organization & Branding', to: '/settings/Branding', icon: BuildingOffice2Icon },
-  { name: 'Domain & Digital Menu', to: '/settings/Domain', icon: GlobeAltIcon },
+  { name: 'Domain', to: '/settings/domain', icon: GlobeAltIcon },
   { name: 'Security & Sessions', to: '/settings/Security', icon: ShieldCheckIcon },
   { name: 'Notifications', to: '/settings/Notifications', icon: BellIcon },
   { name: 'Integrations', to: '/settings/Integrations', icon: LinkIcon },
