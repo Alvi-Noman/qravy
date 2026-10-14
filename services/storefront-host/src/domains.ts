@@ -55,3 +55,52 @@ export function redirectTarget(host: string, info: HostInfo | null, isQravyHost:
   if (isQravyHost) return d.redirect ? d.primary : null;
   return d.hosts.includes(host) ? d.primary : null;
 }
+
+/* ------------------------------------------------------------------ the restaurant's name and icons for the page */
+
+export type TenantCard = { name: string; logoUrl: string | null; faviconUrl: string | null };
+const cards = new Map<string, { at: number; card: TenantCard | null }>();
+
+/** Name, logo and favicon for the page's <title>, icon and link previews (kept a minute). */
+export async function tenantCard(gatewayUrl: string, sub: string): Promise<TenantCard | null> {
+  const hit = cards.get(sub);
+  if (hit && Date.now() - hit.at < HIT_MS) return hit.card;
+  try {
+    const r = await fetch(`${gatewayUrl}/api/v1/public/tenant?subdomain=${encodeURIComponent(sub)}`, { signal: AbortSignal.timeout(3000) });
+    const item = r.ok ? ((await r.json()) as { item?: { name?: string; logoUrl?: string | null; faviconUrl?: string | null } }).item : null;
+    const card = item?.name ? { name: String(item.name), logoUrl: item.logoUrl ?? null, faviconUrl: item.faviconUrl ?? null } : null;
+    if (r.ok || r.status === 404) cards.set(sub, { at: Date.now(), card });
+    if (cards.size > 5000) cards.delete(cards.keys().next().value as string);
+    return card;
+  } catch {
+    return hit?.card ?? null;
+  }
+}
+
+const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
+
+/** The page's title, icon and link-preview tags for this restaurant ("Burger House · Order online"). */
+export function brandHead(html: string, card: TenantCard, dineIn: boolean, pageUrl: string): string {
+  const title = `${card.name} · ${dineIn ? 'Dine-in' : 'Order online'}`;
+  const desc = dineIn
+    ? `Order from your table at ${card.name} — browse the menu or just ask the AI waiter.`
+    : `Order online from ${card.name} — browse the menu or just ask the AI waiter.`;
+  const icon = card.faviconUrl || card.logoUrl;
+  let out = html.replace(/<title>[\s\S]*?<\/title>/i, `<title>${esc(title)}</title>`);
+  out = out.replace(/<meta name="description"[^>]*>/i, `<meta name="description" content="${esc(desc)}" />`);
+  if (icon) {
+    out = out
+      .replace(/<link rel="icon"[^>]*>/i, `<link rel="icon" href="${esc(icon)}" />`)
+      .replace(/<link rel="apple-touch-icon"[^>]*>/i, `<link rel="apple-touch-icon" href="${esc(card.logoUrl || icon)}" />`);
+  }
+  const og = [
+    `<meta property="og:type" content="website" />`,
+    `<meta property="og:site_name" content="${esc(card.name)}" />`,
+    `<meta property="og:title" content="${esc(title)}" />`,
+    `<meta property="og:description" content="${esc(desc)}" />`,
+    `<meta property="og:url" content="${esc(pageUrl)}" />`,
+    ...(card.logoUrl ? [`<meta property="og:image" content="${esc(card.logoUrl)}" />`] : []),
+    `<meta name="twitter:card" content="summary" />`,
+  ].join('\n    ');
+  return out.replace('</head>', `    ${og}\n  </head>`);
+}

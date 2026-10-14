@@ -1410,7 +1410,7 @@ def fetch_restaurant_profile(tenant: Optional[str], branch: Optional[str] = None
             menu_db = _CLIENT[MENU_DB_NAME]
             t = menu_db["tenants"].find_one(
                 {"_id": tenant_oid},
-                {"name": 1, "restaurantInfo": 1, "menuNotes": 1, "waiterKnowledge": 1, "timezone": 1, "openingHours": 1, "servicePeriods": 1, "kitchen": 1, "waiterLanguage": 1},
+                {"name": 1, "restaurantInfo": 1, "menuNotes": 1, "waiterKnowledge": 1, "timezone": 1, "openingHours": 1, "servicePeriods": 1, "kitchen": 1, "waiterLanguage": 1, "waiterName": 1, "customAnswers": 1},
             ) or {}
             info = t.get("restaurantInfo") or {}
             opening = t.get("openingHours") or []
@@ -1424,6 +1424,13 @@ def fetch_restaurant_profile(tenant: Optional[str], branch: Optional[str] = None
                     "online": bool(info.get("onlineSalesEnabled")),
                     "menuNotes": [n for n in (t.get("menuNotes") or []) if n],
                     "knowledge": [k for k in (t.get("waiterKnowledge") or []) if k],
+                    # the waiter's own name (Settings → AI Waiter) and the owner's answers to common questions
+                    "waiterName": (str(t.get("waiterName") or "").strip() or "Pixie")[:30],
+                    "customAnswers": [
+                        {"q": str(x.get("question") or "")[:200], "a": str(x.get("answer") or "")[:800]}
+                        for x in (t.get("customAnswers") or [])[:50]
+                        if isinstance(x, dict) and x.get("question") and x.get("answer")
+                    ],
                     "tz": t.get("timezone") or DEFAULT_TZ,
                     "periods": t.get("servicePeriods") if isinstance(t.get("servicePeriods"), list) else DEFAULT_PERIODS,
                     "kitchen": wait_time.kitchen_settings(t),

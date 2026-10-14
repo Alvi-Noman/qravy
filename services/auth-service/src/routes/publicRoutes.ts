@@ -71,6 +71,13 @@ function toPublicTenantItem(
       (tenant as any).branding?.primaryColor ??
       (tenant as any).brandColor ??
       null,
+    // the browser tab's icon (the logo when there's no favicon)
+    faviconUrl: (tenant as any).faviconUrl ?? null,
+    // the AI waiter: its name and voice
+    waiter: {
+      name: String((tenant as any).waiterName || '').trim() || 'Pixie',
+      voice: (tenant as any).waiterVoice === 'female' ? 'female' : 'male',
+    },
     menuNotes: Array.isArray(tenant.menuNotes) ? tenant.menuNotes : [],
     // The virtual waiter's default language (the guest can switch it)
     waiterLanguage: tenant.waiterLanguage === 'en' ? 'en' : 'bn',

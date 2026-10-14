@@ -6,6 +6,7 @@ import {
   ArrowLeftIcon,
   Cog6ToothIcon,
   BuildingOffice2Icon,
+  SparklesIcon,
   GlobeAltIcon,
   ShieldCheckIcon,
   BellIcon,
@@ -39,7 +40,8 @@ const items: NavItem[] = [
   { name: 'Plan', to: '/settings/Plan', icon: CurrencyDollarIcon },
   { name: 'Billing', to: '/settings/Billing', icon: CreditCardIcon },
 
-  { name: 'Organization & Branding', to: '/settings/Branding', icon: BuildingOffice2Icon },
+  { name: 'Organization & Branding', to: '/settings/branding', icon: BuildingOffice2Icon },
+  { name: 'AI Waiter', to: '/settings/ai-waiter', icon: SparklesIcon },
   { name: 'Domain', to: '/settings/domain', icon: GlobeAltIcon },
   { name: 'Security & Sessions', to: '/settings/Security', icon: ShieldCheckIcon },
   { name: 'Notifications', to: '/settings/Notifications', icon: BellIcon },

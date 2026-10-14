@@ -159,6 +159,10 @@ export async function updateTenant(
     mainBranchId?: string | null;
     /** uploaded logo URL; null removes it */
     logoUrl?: string | null;
+    faviconUrl?: string | null;
+    waiterName?: string | null;
+    waiterVoice?: 'female' | 'male';
+    customAnswers?: Array<{ question: string; answer: string }>;
   },
   token: string
 ): Promise<TenantDTO> {

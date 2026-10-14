@@ -29,6 +29,11 @@ export default defineConfig({
         target: API_PROXY_TARGET,
         changeOrigin: true,
       },
+      // the speech token (voice samples in Settings → AI Waiter) — production routes it the same way (Caddyfile)
+      '/azure': {
+        target: API_PROXY_TARGET,
+        changeOrigin: true,
+      },
     },
   },
 })

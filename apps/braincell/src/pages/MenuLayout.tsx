@@ -258,7 +258,8 @@ function MenuNotesCard() {
   );
 }
 
-function WaiterKnowledgeCard() {
+/** Facts the AI waiter may tell guests — shown under Settings → AI Waiter. */
+export function WaiterKnowledgeCard() {
   return (
     <NotesListCard
       field="waiterKnowledge"
@@ -427,7 +428,6 @@ export default function MenuLayoutPage() {
           <Can capability="categories:update">
             <div className="space-y-4">
               <MenuNotesCard />
-              <WaiterKnowledgeCard />
             </div>
           </Can>
         </aside>
