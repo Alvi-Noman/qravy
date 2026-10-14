@@ -78,7 +78,10 @@ def test_how_long_with_a_tray_answers_the_time_and_pitches_nothing():
 
 def test_whats_on_the_menu_opens_the_menu_instead_of_reading_it_out():
     for said in ("মেনুতে কি কি খাবারের তালিকা আছে একটু বিস্তারিত জানাবেন?", "মেনুটা দেখান", "মেনুতে কী আছে?",
-                 "show me the menu", "what's on your menu?"):
+                 "show me the menu", "what's on your menu?",
+                 # live: "আমি মেনু দেখতে চাচ্ছি।" got three dishes read out instead of the menu page
+                 "আমি মেনু দেখতে চাচ্ছি।", "মেনুটা দেখতে চাইছিলাম", "মেনু দেখাতে পারবেন?", "মেনুটা দেখব",
+                 "মেনু কোথায়?", "menu dekhte chacchi"):
         out, calls = run(said, {"replyText": "MODEL"})
         assert not calls, said
         assert out["meta"]["decision"]["openMenu"] is True and out["meta"]["intent"] == "menu", said
