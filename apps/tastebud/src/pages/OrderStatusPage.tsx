@@ -251,6 +251,7 @@ export default function OrderStatusPage() {
             : tr(lang, 'বিল কাউন্টারে দেবেন — এই নম্বরটা বলবেন।', 'Pay at the counter — just quote this number.')
         }
         lang={lang}
+        name={online ? order.customer?.name : undefined}
       />
     </div>
   );

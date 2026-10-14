@@ -1,4 +1,4 @@
-"""Offline tests for checkout: intent understanding, table capture, the stage machine, and the brain's two-step
+﻿"""Offline tests for checkout: intent understanding, table capture, the stage machine, and the brain's two-step
 read-back → yes → place contract.  Run: python tests/test_checkout.py"""
 import asyncio
 import json
@@ -25,7 +25,7 @@ TURN = {
 CART = [{"itemId": "a1", "quantity": 2, "price": 230}]
 
 
-def _run(text, *, cart=CART, table="12", state=None, history=None, model=None, locale=None, channel=None):
+def _run(text, *, cart=CART, table="12", state=None, history=None, model=None, locale=None, channel=None, missing=None):
     calls = []
 
     async def fake(messages):
@@ -38,6 +38,8 @@ def _run(text, *, cart=CART, table="12", state=None, history=None, model=None, l
         ctx = {"cartItems": [dict(c) for c in cart], "mealKinds": ["dinner"]}
         if table:
             ctx["table"] = table
+        if missing is not None:
+            ctx["contactMissing"] = missing  # online: the checkout form's empty fields
         out = asyncio.run(brain.generate_reply(text, menu_snapshot={"items": ITEMS}, context=ctx, history=history,
                                                dialog_state=state, locale=locale, channel=channel))
     finally:
@@ -220,16 +222,74 @@ def test_online_never_asks_for_a_table_or_places_by_voice():
     assert not calls
     d = out["meta"]["decision"]
     assert d.get("showCheckout") and d.get("askDetails") and not d.get("askTable") and not d.get("placeOrder")
+    assert "orderDraft" not in out["meta"]
     assert "table" not in out["replyText"].lower() and "counter" not in out["replyText"].lower()
-    assert "2 × Spring Roll" in out["replyText"] and "name and phone" in out["replyText"]
-    assert out["meta"]["checkout"]["stage"] == "none"
-    # "yes" afterwards still doesn't place — the Place order button on the form does
-    out2, _ = _run("yes", table=None, channel="online", state={"checkout": out["meta"]["checkout"]},
-                   history=[{"role": "assistant", "content": "Shall I confirm it?"}])
-    assert not out2["meta"]["decision"].get("placeOrder") and not out2["meta"]["decision"].get("askTable")
+    assert "Confirm order" in out["replyText"]
+    assert out["meta"]["checkout"]["stage"] == "details"  # the form is open — waiting for its button
     # Bangla
     out3, _ = _run("অর্ডারটা দিয়ে দিন", table=None, channel="online", locale="bn")
     assert out3["meta"]["decision"].get("askDetails") and "টেবিল" not in out3["replyText"]
+
+
+def _run_online(text, **kw):
+    return _run(text, table=None, channel="online", **kw)
+
+
+def test_online_is_two_step_shall_i_confirm_then_the_form():
+    # "I'm ready to order" → step 1: the short read-back + "shall I confirm the order?" (the tray opens, no form yet)
+    out, _ = _run_online("I'm ready to order", missing=[])
+    d = out["meta"]["decision"]
+    assert out["replyText"].endswith("shall I confirm the order?") and "2 × Spring Roll" in out["replyText"]
+    assert d.get("showCheckout") and not d.get("askDetails") and not d.get("askTable")
+    assert out["meta"]["checkout"]["stage"] == "readback"
+    # "yes" → step 2: the form opens; nothing is placed by voice
+    out2, _ = _run_online("yes", missing=["phone", "address"], state={"checkout": out["meta"]["checkout"]},
+                          history=[{"role": "assistant", "content": out["replyText"]}])
+    d2 = out2["meta"]["decision"]
+    assert d2.get("askDetails") and not d2.get("placeOrder") and "orderDraft" not in out2["meta"]
+    # only what's missing is named — never the name they already gave
+    assert "phone number and delivery address" in out2["replyText"] and "name" not in out2["replyText"]
+
+
+def test_online_details_name_only_what_is_missing():
+    assert co.online_details_text([], "en") == "Your details are all filled in — just tap Confirm order."
+    assert co.online_details_text(["name"], "en") == "Please add your name, then tap Confirm order."
+    assert "নাম, ফোন নম্বর আর ডেলিভারির ঠিকানা" in co.online_details_text(["name", "phone", "address"], "bn")
+    assert "Confirm order" in co.online_details_text(None, "en")
+
+
+def test_online_form_open_never_loops_back_to_shall_i_confirm():
+    # the form is open (stage details): "ok" / "yes" / "send it" just point at its button again — never a 2nd read-back
+    ck = {"stage": "details", "sig": "", "table": ""}
+    for said in ("ok", "yes", "send it", "that's all"):
+        out, _ = _run_online(said, missing=["phone"], state={"checkout": ck},
+                             history=[{"role": "assistant", "content": "Please add your phone number, then tap Confirm order."}])
+        d = out["meta"]["decision"]
+        assert "shall I confirm" not in out["replyText"], (said, out["replyText"])
+        assert d.get("askDetails") and not d.get("placeOrder"), said
+        assert out["meta"]["checkout"]["stage"] == "details", said
+    # the order went through (the tray is empty now) → a new order starts from the top
+    out, _ = _run_online("I'm ready to order", cart=[], missing=[], state={"checkout": ck})
+    assert out["meta"]["checkout"].get("stage") != "details"
+
+
+def test_online_pickup_or_delivery_by_voice():
+    assert co.fulfillment_from_text("I'll pick it up") == "pickup"
+    assert co.fulfillment_from_text("delivery please") == "delivery"
+    assert co.fulfillment_from_text("আমি নিজে এসে নিয়ে যাব") == "pickup"
+    assert co.fulfillment_from_text("বাসায় পাঠিয়ে দিন") == "delivery"
+    assert co.fulfillment_from_text("do you deliver?") is None  # a question, not a choice
+    assert co.fulfillment_from_text("not delivery, pickup") is None  # both → never guess
+    # the form is open, the address is empty: pickup → nothing left to ask; delivery → only the address
+    ck = {"stage": "details", "sig": "", "table": ""}
+    out, calls = _run_online("pickup", missing=["address"], state={"checkout": ck})
+    assert not calls and out["meta"]["decision"]["fulfillment"] == "pickup"
+    assert out["replyText"] == "Okay — pickup. Your details are all filled in — just tap Confirm order."
+    out, _ = _run_online("delivery please", missing=["address"], state={"checkout": ck})
+    assert out["meta"]["decision"]["fulfillment"] == "delivery" and "delivery address" in out["replyText"]
+    # dine-in never switches anything
+    out, _ = _run("pickup")
+    assert "fulfillment" not in out["meta"].get("decision", {})
 
 
 def test_bangla_checkout():

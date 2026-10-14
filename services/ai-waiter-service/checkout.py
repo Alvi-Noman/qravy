@@ -7,6 +7,9 @@ Stages (kept per session):
   table     guest wants to order but we don't know their table yet → ask
   readback  we read the order back (items, add-ons, total, table, pay at counter) and wait for YES
 
+Online (pickup / delivery) is two-step too, but never placed by voice: "…— shall I confirm the order?" → yes →
+the details form opens (the waiter names only the fields still missing) and the guest taps Confirm order.
+
 Placing needs a table number and the guest's own clear words, either:
   - an explicit "send it" command with a filled tray ("এগুলো দেন", "অর্ডারটা কনফার্ম করেন", "খাবারগুলো পাঠায় দেন",
     "খাবার সার্ভ করেন", "send it to the kitchen") → placed straight away, no read-back, no prices read out; or
@@ -27,9 +30,9 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from bn_translit import _N99
-from waiter_knowledge import _money, is_affirmative, is_done_ordering, is_explicit_confirm
+from waiter_knowledge import is_affirmative, is_done_ordering, is_explicit_confirm
 
-STAGES = ("none", "table", "readback")
+STAGES = ("none", "table", "readback", "details")  # details: online — the form is open, waiting for its button
 _BN_DIGITS = str.maketrans("০১২৩৪৫৬৭৮৯", "0123456789")
 
 # ------------------------------------------------------------------ "I want to order / check out"
@@ -226,16 +229,65 @@ def readback_text(rows: List[Dict[str, Any]], table: str, lang: str, vat_hint: s
     return f"{lines} — shall I place the order?"
 
 
-def online_checkout_text(rows: List[Dict[str, Any]], lang: str, vat_hint: str = "", eta_hint: str = "") -> str:
-    """Online (pickup / delivery): no table and no voice placing — read the order back and point at the form,
-    where the guest picks pickup or delivery and types name, phone and address."""
-    lines = "; ".join(f"{_line_label(r)} — {_money(float(r['price'] or 0) * r['quantity'])}" for r in rows)
-    total = sum(float(r["price"] or 0) * r["quantity"] for r in rows)
+def online_readback_text(rows: List[Dict[str, Any]], lang: str) -> str:
+    """Online, step 1 (voice only): what's being ordered, then "shall I confirm?". The tray on screen has the prices."""
+    lines = ", ".join(_line_label(r) for r in rows)
     if lang == "bn":
-        return (f"আপনার অর্ডার: {lines}। মোট {_money(total)}{vat_hint}।{eta_hint} "
-                "পিকআপ না ডেলিভারি বেছে নিন, নাম আর ফোন নম্বর দিয়ে 'অর্ডার দিন' চাপুন।")
-    return (f"Here's your order: {lines}. Total {_money(total)}{vat_hint}.{eta_hint} "
-            "Choose pickup or delivery, add your name and phone, then tap Place order.")
+        return f"{lines} — অর্ডারটা কনফার্ম করব?"
+    return f"{lines} — shall I confirm the order?"
+
+
+_CONTACT_WORDS = {
+    "name": ("নাম", "name"),
+    "phone": ("ফোন নম্বর", "phone number"),
+    "address": ("ডেলিভারির ঠিকানা", "delivery address"),
+}
+
+
+def online_details_text(missing: Optional[List[str]], lang: str) -> str:
+    """Online, step 2: the details form is on screen with its Confirm order button — nothing is placed by voice.
+    Only what's still MISSING is named (a returning guest's saved name / phone / address is never asked again).
+    `missing` None = the app didn't say (an older app) → a plain "fill in the form"."""
+    bn = lang == "bn"
+    if missing is None:
+        return ("অর্ডারটা দিতে ফর্মটা পূরণ করে 'অর্ডার কনফার্ম করুন' চাপুন।" if bn
+                else "Please fill in this form, then tap Confirm order.")
+    words = [_CONTACT_WORDS[m][0 if bn else 1] for m in ("name", "phone", "address") if m in missing]
+    if not words:
+        return ("আপনার তথ্য দেওয়া আছে — 'অর্ডার কনফার্ম করুন' চাপলেই অর্ডার চলে যাবে।" if bn
+                else "Your details are all filled in — just tap Confirm order.")
+    joined = words[0] if len(words) == 1 else f"{', '.join(words[:-1])} {'আর' if bn else 'and'} {words[-1]}"
+    return (f"অর্ডারটা দিতে আপনার {joined} লিখে 'অর্ডার কনফার্ম করুন' চাপুন।" if bn
+            else f"Please add your {joined}, then tap Confirm order.")
+
+
+# online: "I'll pick it up" / "deliver it" — the guest choosing how it reaches them (the form's toggle follows)
+_PICKUP = re.compile(
+    r"\b(pick\s*-?\s*up|take\s*-?\s*away|collect (it|them|the order)|i'?ll (come and )?(get|collect|pick) it"
+    r"|(come|coming) (to )?(get|collect|pick)( it| them)?)\b"
+    r"|পিকআপ|পিক আপ|টেক ?অ্যাওয়ে|(নিজে|এসে) (এসে )?নিয়ে যা(ব|বো|চ্ছি)|\b(pickup|nije niye jabo|eshe niye jabo)\b",
+    re.I,
+)
+_DELIVERY = re.compile(
+    r"\b(deliver(y|ed)?( it| them)?|home delivery|send it (home|to my (house|home|place|address)))\b"
+    r"|ডেলিভারি|ডেলিভারী|(বাসায়|বাড়িতে) (পাঠিয়ে|পাঠায়|পাঠাই|দিয়ে) (দিন|দেন|দাও)|\b(basay pathiye den|delivery)\b",
+    re.I,
+)
+
+
+def fulfillment_from_text(text: str) -> Optional[str]:
+    """'pickup' / 'delivery' when the guest clearly chooses one — never a question ("do you deliver?"), never both."""
+    t = (text or "").strip()
+    if not t or "?" in t:
+        return None
+    p, d = bool(_PICKUP.search(t)), bool(_DELIVERY.search(t))
+    return "pickup" if p and not d else "delivery" if d and not p else None
+
+
+def fulfillment_set_text(f: str, lang: str) -> str:
+    if lang == "bn":
+        return "ঠিক আছে — পিকআপ।" if f == "pickup" else "ঠিক আছে — ডেলিভারি।"
+    return "Okay — pickup." if f == "pickup" else "Okay — delivery."
 
 
 def table_again_text(lang: str) -> str:
@@ -328,6 +380,19 @@ def decide(
                 return "ask_table", "confirmed but no table"
             return "place", "explicit yes to the read-back"
         return "stay", "question or other talk during read-back"
+
+    if stage == "details":
+        # online, the form is already open: a yes / "send it" / "that's all" just points at its button again — never a
+        # second "shall I confirm?" (that looped: "ok" → read-back → "yes" → the form → "ok" → read-back …)
+        if not cart_nonempty:
+            return "reset", "nothing left to order"
+        if wants_to_hold(text) or (llm == "cancel" and not says_yes(text)):
+            return "hold", "guest said no / wait"
+        if says_yes(text) or wants_checkout(text) or wants_send_now(text, list_on_screen) or is_done(text) or (
+            llm in ("start", "confirm") and not question
+        ):
+            return "place", "the form is open — point at its button"
+        return "stay", "other talk while the form is open"
 
     if stage == "table":
         if table:

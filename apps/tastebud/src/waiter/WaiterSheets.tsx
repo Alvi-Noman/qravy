@@ -54,7 +54,7 @@ export function WaiterDock({ w, originFromOrb = true }: { w: WaiterSession; orig
 export default function WaiterSheets({ w, dockEnabled = true }: { w: WaiterSession; dockEnabled?: boolean }) {
   const {
     showSuggestions, setShowSuggestions, setHighlightIds, suggestedItems, highlightIds, handleSuggestionsReply,
-    showTray, setShowTray, setTrayPicks, setTrayAskTable, resolvedChannel, trayPicks, trayAskTable, lastMeta, mapUpsell,
+    showTray, setShowTray, setTrayPicks, setTrayAskTable, resolvedChannel, trayPicks, trayAskTable, trayAskAt, lastMeta, mapUpsell,
     upsellItems, handleTrayReply, pickOptions, sendTyped, offerItemIds, listening, micLevel, session, voiceState,
   } = w;
   const assistantDock = dockEnabled ? <WaiterDock w={w} /> : undefined;
@@ -83,6 +83,7 @@ export default function WaiterSheets({ w, dockEnabled = true }: { w: WaiterSessi
         }}
         picks={trayPicks}
         askTable={trayAskTable}
+        askAt={trayAskAt}
         highlightIds={highlightIds}
         upsellItems={lastMeta?.upsell?.length ? mapUpsell(lastMeta.upsell as any[]) : upsellItems}
         voiceBar={false /* the voice session talks here — its presence is the dock */}

@@ -2780,16 +2780,21 @@ def _order_draft(rows: List[Dict[str, Any]], table: str, signature: str) -> Dict
 def _checkout_turn(
     action: str, *, rows: List[Dict[str, Any]], table: Optional[str], lang: str, restaurant: Optional[Dict[str, Any]],
     prev: Dict[str, Any], transcript: str, ops_line: str = "", eta_hint: str = "", online: bool = False,
+    contact_missing: Optional[List[str]] = None,
 ) -> Tuple[Optional[str], Dict[str, Any], Dict[str, Any]]:
     """Checkout action → (reply to speak or None to keep the model's, decision flags, new checkout state).
-    Online (pickup / delivery) guests have no table and finish on the form (name, phone, address), so
-    read-back / ask-table / place all become "here's your order — fill in your details" and nothing is placed by voice."""
+    Online (pickup / delivery) guests have no table and are never placed by voice: the read-back asks "shall I
+    confirm the order?" (the tray opens), a yes opens the details form — naming only what's still missing
+    (`contact_missing`) — and the guest taps Confirm order there."""
     tbl = table or ""
     sig = co.cart_signature(rows)
     lead = (ops_line + " ") if ops_line else ""
-    if online and action in ("readback", "ask_table", "place"):
-        text = co.online_checkout_text(rows, lang, _vat_hint(restaurant, lang), eta_hint)
-        return lead + text, {"showCheckout": True, "askDetails": True, "checkoutStage": "details"}, {"stage": "none", "sig": sig, "table": ""}
+    if online and action == "readback":
+        return (lead + co.online_readback_text(rows, lang), {"showCheckout": True, "checkoutStage": "readback"},
+                {"stage": "readback", "sig": sig, "table": ""})
+    if online and action in ("ask_table", "place"):
+        return (lead + co.online_details_text(contact_missing, lang),
+                {"showCheckout": True, "askDetails": True, "checkoutStage": "details"}, {"stage": "details", "sig": sig, "table": ""})
     if action == "readback":
         text = co.readback_text(rows, tbl, lang, _vat_hint(restaurant, lang), eta_hint)
         return lead + text, {"showCheckout": True, "checkoutStage": "readback"}, {"stage": "readback", "sig": sig, "table": tbl}
@@ -3441,6 +3446,16 @@ async def _reply(
     ids = {"tenant": tenant, "branch": branch, "channel": channel, "conversationId": conversation_id, "userId": user_id}
     # online guests (pickup / delivery) finish on the checkout form — no table, no placing by voice
     online = str(channel or ctx.get("channel") or "").strip().lower() == "online"
+    # which of name / phone / address the guest's form still lacks (from the app) — only those are ever asked for.
+    # (The app lists an empty address whatever the toggle says; it only counts for delivery.)
+    fulfillment = "pickup" if ctx.get("fulfillment") == "pickup" else "delivery"
+    contact_raw = ([str(m) for m in ctx["contactMissing"] if m in ("name", "phone", "address")]
+                   if isinstance(ctx.get("contactMissing"), list) else None)
+
+    def missing_for(f: str) -> Optional[List[str]]:
+        return None if contact_raw is None else [m for m in contact_raw if m != "address" or f == "delivery"]
+
+    contact_missing = missing_for(fulfillment)
 
     index = MenuIndex((menu_snapshot or {}).get("items") or [])
     orderable = {index.item_id(it): it.get("available") is not False for it in index.items}
@@ -3479,7 +3494,12 @@ async def _reply(
     # ---------------- checkout: where are we (none → table → readback), which table, what was read back
     ck: Dict[str, Any] = dict((dialog_state or {}).get("checkout") or {})
     stage = ck.get("stage") if ck.get("stage") in co.STAGES else "none"
+    if stage == "details" and (not online or not cart_rows):
+        # the form's order was placed (or the tray emptied) — a new order starts from the top: read-back first
+        stage, ck = "none", {**ck, "stage": "none"}
     table = co.table_from_text(transcript, expecting=stage == "table") or str(ctx.get("table") or ck.get("table") or "").strip() or None
+    # online (pickup / delivery) has no table — the checkout steps never wait for one
+    ck_table = "online" if online else table
     sig_now = co.cart_signature(cart_rows)
 
     # ---- UNDERSTAND FIRST: what does the guest mean? (one focused model call; None → the word patterns below decide).
@@ -4058,6 +4078,26 @@ async def _reply(
         text = _NOT_CLEAR["bn" if bn else "en"]
         return tray_done(text, [], False, cart_rows, "understood_unclear", "other")
 
+    # online: "I'll pick it up" / "deliver it" → the form's toggle follows (no model). Only the address question
+    # changes with it — and only what's still missing is named.
+    said_f = co.fulfillment_from_text(transcript) if online else None
+    if said_f and len(transcript.split()) <= 8 and not _dishes_named(transcript, index, limit=1):
+        text = co.fulfillment_set_text(said_f, lang)
+        flags: Dict[str, Any] = {"fulfillment": said_f}
+        if stage == "details":
+            text += " " + co.online_details_text(missing_for(said_f), lang)
+            flags.update({"showCheckout": True, "askDetails": True, "checkoutStage": "details"})
+        elif cart_rows:
+            text += " " + ("আর কিছু লাগবে, নাকি অর্ডার কনফার্ম করব?" if bn else "Anything else, or shall I confirm your order?")
+        m = _base_meta(language=lang, intent="order", topic="confirm_order",
+                       decision={"showSuggestionsModal": False, "showUpsellTray": False, **flags},
+                       notes="fulfillment_set", **ids)
+        m["checkout"], m["tray"] = ck, tstate
+        m["reco"], m["recoMode"], m["guards"] = rstate.to_dict(), mode, ["fulfillment_set"]
+        if bn:
+            m["voiceReplyText"] = text
+        return {"replyText": text, "meta": m}
+
     # Fast, deterministic checkout moves (no model): "yes" to the read-back, "wait", a table number,
     # "place my order" / "that's all" with nothing else in the sentence.
     # A "না" to "আর কিছু লাগবে, নাকি অর্ডার কনফার্ম করব?" is "nothing more" — on to confirming (not "don't place it")
@@ -4065,7 +4105,7 @@ async def _reply(
                   and (bool(upsell_engine._NO.search(transcript)) or is_done_ordering(transcript)))
     action, why = co.decide(
         text="আর কিছু লাগবে না" if closing_no else transcript, stage=stage, stored_signature=str(ck.get("sig") or ""),
-        signature_now=sig_now, cart_nonempty=bool(cart_rows), table=table, llm_checkout="none",
+        signature_now=sig_now, cart_nonempty=bool(cart_rows), table=ck_table, llm_checkout="none",
         asked_to_confirm=asked_confirm and not closing_no,
         cart_changed_this_turn=False, cleared=False, defer_done=mode == "last_call",
         list_on_screen=bool(shown_ids), direct_pending=bool(ck.get("direct")),
@@ -4123,7 +4163,8 @@ async def _reply(
     ):
         text, flags, new_ck = _checkout_turn(action, rows=cart_rows, table=table, lang=lang, restaurant=restaurant,
                                              prev=ck, transcript=transcript,
-                                             eta_hint=wtalk.eta_hint(cart_est, lang) if kitchen else "", online=online)
+                                             eta_hint=wtalk.eta_hint(cart_est, lang) if kitchen else "", online=online,
+                                             contact_missing=contact_missing)
         print(f"[brain] checkout fast path: {action} ({why}) table={table}")
         text = text or co.held_text(lang)
         if action in ("readback", "ask_table") and is_done_ordering(transcript) and last_waiter.rstrip().endswith("?"):
@@ -4132,13 +4173,13 @@ async def _reply(
                     else "Alright — " + text)
         meta = _base_meta(
             language=lang, intent="order", topic="confirm_order" if action != "hold" else "order_review",
-            items=_items_payload(index, cart_qty) if action == "place" else [],
+            items=_items_payload(index, cart_qty) if action == "place" and not online else [],
             decision={"showSuggestionsModal": False, "showUpsellTray": False, **flags},
             notes=f"checkout_{action}", **ids,
         )
         meta["checkout"] = new_ck
         meta["tray"] = tstate
-        if action == "place":
+        if action == "place" and not online:  # (online: the form places it)
             meta["orderDraft"] = _order_draft(cart_rows, table or "", sig_now)
         meta["reco"], meta["recoMode"], meta["guards"] = rstate.to_dict(), mode, []
         if lang == "bn":
@@ -4807,7 +4848,7 @@ async def _reply(
     rows_now = rows_after
     action, why = co.decide(
         text=transcript, stage=stage, stored_signature=str(ck.get("sig") or ""),
-        signature_now=co.cart_signature(rows_now), cart_nonempty=bool(rows_now), table=table, llm_checkout=llm_ck,
+        signature_now=co.cart_signature(rows_now), cart_nonempty=bool(rows_now), table=ck_table, llm_checkout=llm_ck,
         asked_to_confirm=asked_confirm, cart_changed_this_turn=bool(ops) or clear, cleared=clear,
         defer_done=mode == "last_call", list_on_screen=bool(shown_ids), direct_pending=bool(ck.get("direct")),
     )
@@ -4838,7 +4879,7 @@ async def _reply(
         action, rows=rows_now, table=table, lang=lang, restaurant=restaurant, prev=ck, transcript=transcript,
         ops_line=ops_line,
         eta_hint=wtalk.eta_hint(wtalk.cart_estimate(rows_now, index.by_id, kitchen), lang) if kitchen else "",
-        online=online,
+        online=online, contact_missing=contact_missing,
     )
     if action != "stay":
         print(f"[brain] checkout: {action} ({why}) table={table}")

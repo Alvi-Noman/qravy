@@ -79,13 +79,14 @@ function read<T>(key: string, fallback: T): T {
   }
 }
 
-/** Pickup or delivery (online orders), remembered per restaurant and kept in sync across the page. */
+/** Delivery or pickup (online orders) — delivery unless the guest chose pickup here before; remembered per restaurant
+ *  and kept in sync across the page. */
 export function useFulfillment(sub?: string | null): [Fulfillment, (f: Fulfillment) => void] {
   const load = useCallback((): Fulfillment => {
     try {
-      return localStorage.getItem(fulfillmentKey(sub)) === 'delivery' ? 'delivery' : 'pickup';
+      return localStorage.getItem(fulfillmentKey(sub)) === 'pickup' ? 'pickup' : 'delivery';
     } catch {
-      return 'pickup';
+      return 'delivery';
     }
   }, [sub]);
   const [value, setValue] = useState<Fulfillment>(load);
@@ -139,4 +140,25 @@ export function missingContactField(f: Fulfillment, c: GuestContact): keyof Gues
   if (c.phone.replace(/\D/g, '').length < 6) return 'phone';
   if (f === 'delivery' && !c.address.trim()) return 'address';
   return null;
+}
+
+/** Delivery or pickup as the toggle shows it right now (the waiter is told with every utterance). */
+export function fulfillmentNow(sub?: string | null): Fulfillment {
+  try {
+    return localStorage.getItem(fulfillmentKey(sub)) === 'pickup' ? 'pickup' : 'delivery';
+  } catch {
+    return 'delivery';
+  }
+}
+
+/** Every contact field still empty on this device right now — the waiter is told, so it only ever asks for those (a
+ *  returning guest's name / phone / address is never asked again). The address is listed whatever the toggle says:
+ *  the waiter counts it only for delivery (so "pickup" by voice knows there's nothing left to ask). */
+export function contactMissingNow(sub?: string | null): (keyof GuestContact)[] {
+  const c = read(contactKey(sub), EMPTY_CONTACT);
+  const out: (keyof GuestContact)[] = [];
+  if (!c.name.trim()) out.push('name');
+  if (c.phone.replace(/\D/g, '').length < 6) out.push('phone');
+  if (!c.address.trim()) out.push('address');
+  return out;
 }
