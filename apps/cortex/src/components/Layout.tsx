@@ -11,7 +11,8 @@ import {
   MicrophoneIcon,
   SpeakerWaveIcon,
 } from '@heroicons/react/24/outline';
-import { setToken } from '../api';
+import { useQuery } from '@tanstack/react-query';
+import { api, setToken } from '../api';
 
 const NAV = [
   { to: '/', label: 'Overview', icon: ChartBarSquareIcon, end: true },
@@ -25,6 +26,16 @@ const NAV = [
 ];
 
 export default function Layout({ email, onSignOut }: { email: string; onSignOut: () => void }) {
+  // restaurants' pronunciation requests waiting for review: a count on the link
+  const waiting = useQuery({
+    queryKey: ['lexicon-requests', false],
+    queryFn: () => api<{ pending: number }>('/pronunciations/requests'),
+    refetchInterval: 60_000,
+  }).data?.pending;
+  const badge = (to: string) =>
+    to === '/pronunciation' && waiting ? (
+      <span className="ml-auto rounded-full bg-amber-500 px-1.5 text-[11px] font-semibold leading-5 text-white">{waiting}</span>
+    ) : null;
   return (
     <div className="flex min-h-screen">
       <aside className="sticky top-0 hidden h-screen w-60 shrink-0 flex-col border-r border-stone-200 bg-white px-3 py-5 md:flex">
@@ -47,6 +58,7 @@ export default function Layout({ email, onSignOut }: { email: string; onSignOut:
             >
               <n.icon className="h-[18px] w-[18px]" />
               {n.label}
+              {badge(n.to)}
             </NavLink>
           ))}
         </nav>
@@ -77,6 +89,7 @@ export default function Layout({ email, onSignOut }: { email: string; onSignOut:
               className={({ isActive }) => `whitespace-nowrap rounded-md px-2.5 py-1.5 text-[13px] ${isActive ? 'bg-stone-900 text-white' : 'text-stone-700'}`}
             >
               {n.label}
+              {badge(n.to) && <span className="ml-1">{badge(n.to)}</span>}
             </NavLink>
           ))}
         </div>

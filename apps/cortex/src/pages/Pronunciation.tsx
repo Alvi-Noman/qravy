@@ -1,15 +1,31 @@
 // apps/cortex/src/pages/Pronunciation.tsx — Qravy's pronunciation dictionary: ONE for every restaurant's AI waiter.
-// A word the Bangla voice says wrong is fixed once (here, or by any restaurant in its Settings → AI Waiter) and every
-// waiter says it that way from then on. Here: every word, who fixed it and when, its history (revert a bad change),
-// and the lock — a locked word can only be changed here. Words fixed here are locked unless unticked.
+// A word the Bangla voice says wrong is fixed once and every waiter says it that way from then on. Only Qravy changes
+// it: restaurants send requests from their Settings → AI Waiter, reviewed here first (accept as sent, accept with an
+// edit, or decline with a note they see). Below: every word, who fixed it and when, and its history (revert a bad change).
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../api';
 import { Card, ErrorBox, Loading } from '../components/ui';
 
-type Actor = { kind: 'qravy' | 'restaurant'; tenantId?: string; tenantName?: string; by?: string };
+type Actor = { kind: 'qravy' | 'restaurant'; tenantId?: string; tenantName?: string; by?: string; requestedBy?: { tenantId: string; tenantName: string } };
 type Change = { sayAs: string; spoken: string; at: string; actor: Actor; action: string };
-type Entry = { _id: string; word: string; sayAs: string; spoken: string; locked: boolean; removed?: boolean; actor: Actor; updatedAt: string; history: Change[] };
+type Entry = { _id: string; word: string; sayAs: string; spoken: string; removed?: boolean; actor: Actor; updatedAt: string; history: Change[] };
+type Request = {
+  _id: string;
+  word: string;
+  sayAs: string;
+  spoken: string;
+  note?: string;
+  tenantName: string;
+  by: string;
+  status: 'pending' | 'accepted' | 'declined';
+  createdAt: string;
+  decidedAt?: string;
+  decidedBy?: string;
+  final?: { sayAs: string; spoken: string };
+  reply?: string;
+  current: { sayAs: string; spoken: string; actor: Actor } | null;
+};
 
 const VOICES = { female: 'bn-BD-NabanitaNeural', male: 'bn-BD-PradeepNeural' } as const;
 
@@ -32,7 +48,10 @@ async function speak(voice: string, text: string): Promise<HTMLAudioElement> {
   return a;
 }
 
-const who = (a: Actor) => (a.kind === 'qravy' ? `Qravy${a.by ? ` (${a.by})` : ''}` : a.tenantName || 'a restaurant');
+const who = (a: Actor) =>
+  a.kind === 'qravy'
+    ? `Qravy${a.by ? ` (${a.by})` : ''}${a.requestedBy ? ` · asked by ${a.requestedBy.tenantName || 'a restaurant'}` : ''}`
+    : a.tenantName || 'a restaurant';
 const when = (d: string) => new Date(d).toLocaleString();
 
 function useSpoken(sayAs: string) {
@@ -44,6 +63,165 @@ function useSpoken(sayAs: string) {
     return () => (ctl.abort(), window.clearTimeout(id));
   }, [sayAs]);
   return spoken;
+}
+
+/** One restaurant's request: hear what they asked vs what it is now, edit it if needed, accept or decline. */
+function RequestRow({ r, play, onDone }: { r: Request; play: (text: string) => void; onDone: () => Promise<unknown> }) {
+  const [sayAs, setSayAs] = useState(r.sayAs);
+  const [reply, setReply] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const spoken = useSpoken(sayAs);
+  const edited = sayAs.trim() !== r.sayAs;
+  const decide = async (what: 'accept' | 'decline') => {
+    setBusy(true);
+    setError('');
+    try {
+      await api(`/pronunciations/requests/${r._id}/${what}`, { method: 'POST', body: JSON.stringify({ sayAs: sayAs.trim(), reply: reply.trim() }) });
+      await onDone();
+    } catch (e) {
+      setError((e as Error).message);
+      setBusy(false);
+    }
+  };
+  return (
+    <tr className="border-t border-stone-100 align-top">
+      <td className="py-2.5 pr-3">
+        <div className="font-medium text-stone-900">{r.word}</div>
+        <div className="text-[11px] text-stone-500">
+          {r.tenantName || 'a restaurant'}
+          {r.by ? ` · ${r.by}` : ''}
+        </div>
+        <div className="text-[11px] text-stone-400">{when(r.createdAt)}</div>
+        {r.note && <div className="mt-1 max-w-[220px] text-[12px] text-stone-600">“{r.note}”</div>}
+      </td>
+      <td className="py-2.5 pr-3">
+        {r.current ? (
+          <button type="button" onClick={() => play(r.current!.spoken)} className="text-left">
+            <span className="text-[14px] font-medium text-stone-900">▶ {r.current.spoken}</span> <span className="text-stone-400">({r.current.sayAs})</span>
+          </button>
+        ) : (
+          <button type="button" onClick={() => play(r.word)} className="text-left text-stone-600">
+            ▶ new word <span className="text-stone-400">(voice reads it on its own)</span>
+          </button>
+        )}
+      </td>
+      <td className="py-2.5 pr-3">
+        <button type="button" onClick={() => play(r.spoken)} className="text-left">
+          <span className="text-[14px] font-medium text-stone-900">▶ {r.spoken}</span> <span className="text-stone-400">({r.sayAs})</span>
+        </button>
+      </td>
+      <td className="py-2.5 pr-3">
+        <div className="flex flex-wrap items-center gap-1.5">
+          <input
+            value={sayAs}
+            maxLength={80}
+            onChange={(e) => setSayAs(e.target.value)}
+            className="w-32 rounded-md border border-stone-300 px-2 py-1 text-[13px]"
+            aria-label={`How to say ${r.word}`}
+          />
+          <button type="button" onClick={() => play(spoken)} disabled={!spoken} className="text-[14px] font-medium text-stone-900 disabled:opacity-40">
+            ▶ {spoken || '—'}
+          </button>
+        </div>
+        <input
+          value={reply}
+          maxLength={300}
+          onChange={(e) => setReply(e.target.value)}
+          placeholder="Note to the restaurant (optional)"
+          className="mt-1.5 w-full min-w-[200px] rounded-md border border-stone-300 px-2 py-1 text-[12px]"
+        />
+        {error && <p className="mt-1 text-[12px] text-red-700">{error}</p>}
+      </td>
+      <td className="py-2.5 text-right">
+        <div className="inline-flex flex-wrap justify-end gap-1.5 text-[12px]">
+          <button type="button" disabled={busy || !spoken} onClick={() => decide('accept')} className="rounded-md bg-stone-900 px-2.5 py-1 text-white disabled:opacity-50">
+            {edited ? 'Accept with my edit' : 'Accept'}
+          </button>
+          <button type="button" disabled={busy} onClick={() => decide('decline')} className="rounded-md border border-stone-300 bg-white px-2.5 py-1 text-red-700 hover:bg-red-50 disabled:opacity-50">
+            Decline
+          </button>
+        </div>
+      </td>
+    </tr>
+  );
+}
+
+/** Restaurants' requests: the queue (oldest first) and, on a switch, what was decided. */
+function Requests({ play }: { play: (text: string) => void }) {
+  const qc = useQueryClient();
+  const [decided, setDecided] = useState(false);
+  const q = useQuery({
+    queryKey: ['lexicon-requests', decided],
+    queryFn: () => api<{ items: Request[]; pending: number }>(`/pronunciations/requests${decided ? '?status=decided' : ''}`),
+    refetchInterval: 30_000,
+  });
+  const done = () => Promise.all([qc.invalidateQueries({ queryKey: ['lexicon-requests'] }), qc.invalidateQueries({ queryKey: ['lexicon'] })]);
+  const items = q.data?.items ?? [];
+  return (
+    <Card
+      title={`Requests from restaurants${q.data ? ` · ${q.data.pending} waiting` : ''}`}
+      subtitle="Nothing changes for any waiter until you accept. Edit how to say it before accepting if theirs isn’t quite right."
+      right={
+        <div className="flex rounded-md border border-stone-300 text-[12px]">
+          <button type="button" onClick={() => setDecided(false)} className={`rounded-l-md px-2.5 py-1 ${!decided ? 'bg-stone-900 text-white' : 'text-stone-700'}`}>
+            Waiting
+          </button>
+          <button type="button" onClick={() => setDecided(true)} className={`rounded-r-md px-2.5 py-1 ${decided ? 'bg-stone-900 text-white' : 'text-stone-700'}`}>
+            Decided
+          </button>
+        </div>
+      }
+    >
+      {q.isLoading && <Loading />}
+      {q.error && <ErrorBox error={q.error} />}
+      {q.data && !items.length && <p className="text-[13px] text-stone-500">{decided ? 'Nothing decided yet.' : 'No requests waiting.'}</p>}
+      {!!items.length && (
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-[13px]">
+            <thead className="text-[11px] uppercase tracking-wide text-stone-500">
+              <tr>
+                <th className="pb-2 pr-3 font-semibold">Word · from</th>
+                <th className="pb-2 pr-3 font-semibold">Now</th>
+                <th className="pb-2 pr-3 font-semibold">They asked</th>
+                <th className="pb-2 pr-3 font-semibold">{decided ? 'Decision' : 'You set'}</th>
+                <th className="pb-2" />
+              </tr>
+            </thead>
+            <tbody>
+              {decided
+                ? items.map((r) => (
+                    <tr key={r._id} className="border-t border-stone-100 align-top">
+                      <td className="py-2 pr-3">
+                        <div className="font-medium text-stone-900">{r.word}</div>
+                        <div className="text-[11px] text-stone-500">{r.tenantName || 'a restaurant'}</div>
+                      </td>
+                      <td className="py-2 pr-3 text-stone-700">{r.current ? r.current.spoken : '—'}</td>
+                      <td className="py-2 pr-3">
+                        <button type="button" onClick={() => play(r.spoken)} className="text-left">
+                          ▶ {r.spoken} <span className="text-stone-400">({r.sayAs})</span>
+                        </button>
+                      </td>
+                      <td className="py-2 pr-3">
+                        <span className={r.status === 'accepted' ? 'text-emerald-700' : 'text-red-700'}>
+                          {r.status === 'accepted' ? (r.final && r.final.spoken !== r.spoken ? `Accepted as ${r.final.spoken}` : 'Accepted') : 'Declined'}
+                        </span>
+                        {r.reply && <div className="text-[12px] text-stone-500">“{r.reply}”</div>}
+                        <div className="text-[11px] text-stone-400">
+                          {r.decidedBy ? `${r.decidedBy} · ` : ''}
+                          {r.decidedAt ? when(r.decidedAt) : ''}
+                        </div>
+                      </td>
+                      <td />
+                    </tr>
+                  ))
+                : items.map((r) => <RequestRow key={r._id} r={r} play={play} onDone={done} />)}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Card>
+  );
 }
 
 export default function Pronunciation() {
@@ -68,7 +246,6 @@ export default function Pronunciation() {
   // add / change a word
   const [word, setWord] = useState('');
   const [sayAs, setSayAs] = useState('');
-  const [lock, setLock] = useState(true);
   const spoken = useSpoken(sayAs);
   const run = async (fn: () => Promise<unknown>) => {
     setBusy(true);
@@ -82,7 +259,7 @@ export default function Pronunciation() {
       setBusy(false);
     }
   };
-  const save = (w: string, s: string, locked: boolean) => run(() => api('/pronunciations', { method: 'PUT', body: JSON.stringify({ word: w, sayAs: s, locked }) }));
+  const save = (w: string, s: string) => run(() => api('/pronunciations', { method: 'PUT', body: JSON.stringify({ word: w, sayAs: s }) }));
 
   // editing one row
   const [edit, setEdit] = useState<{ id: string; sayAs: string } | null>(null);
@@ -95,7 +272,7 @@ export default function Pronunciation() {
     const s = search.trim().toLowerCase();
     return (q.data?.items ?? []).filter(
       (e) =>
-        (byFilter === 'all' || e.actor.kind === byFilter) &&
+        (byFilter === 'all' || (byFilter === 'restaurant') === (e.actor.kind === 'restaurant' || !!e.actor.requestedBy)) &&
         (!s || e.word.toLowerCase().includes(s) || e.sayAs.toLowerCase().includes(s) || (e.actor.tenantName ?? '').toLowerCase().includes(s))
     );
   }, [q.data, search, byFilter]);
@@ -106,14 +283,16 @@ export default function Pronunciation() {
       <header>
         <h1 className="text-[22px] font-semibold text-stone-900">Pronunciation</h1>
         <p className="max-w-3xl text-[13px] text-stone-500">
-          One dictionary for every restaurant’s AI waiter. A word fixed here — or by any restaurant in its Settings → AI Waiter — is said that way by
-          every waiter from then on. Type how to say it in English letters the way Bangladeshis type Bangla (<b>sholo</b>, <b>kacchi</b>; every letter
-          is said; capitals <b>T D N R Sh</b> for ট ড ণ ড় ষ) or in Bangla. A <b>locked</b> word can only be changed here.
+          One dictionary for every restaurant’s AI waiter, changed only here. A word fixed here is said that way by every waiter from then on;
+          restaurants ask for fixes from their Settings → AI Waiter and you review them first. Type how to say it in English letters the way
+          Bangladeshis type Bangla (<b>sholo</b>, <b>kacchi</b>; every letter is said; capitals <b>T D N R Sh</b> for ট ড ণ ড় ষ) or in Bangla.
         </p>
       </header>
 
+      <Requests play={play} />
+
       <Card title="Fix a word for every restaurant">
-        <div className="grid gap-2 md:grid-cols-[1fr_1fr_auto_auto] md:items-end">
+        <div className="grid gap-2 md:grid-cols-[1fr_1fr_auto] md:items-end">
           <label className="grid gap-1 text-[12px] text-stone-600">
             Word
             <input value={word} maxLength={60} onChange={(e) => setWord(e.target.value)} placeholder="ষোল  or  Sholo" className="rounded-md border border-stone-300 px-2 py-1.5 text-[13px] text-stone-900" />
@@ -122,13 +301,10 @@ export default function Pronunciation() {
             Say it like
             <input value={sayAs} maxLength={80} onChange={(e) => setSayAs(e.target.value)} placeholder="sholo" className="rounded-md border border-stone-300 px-2 py-1.5 text-[13px] text-stone-900" />
           </label>
-          <label className="flex items-center gap-1.5 pb-2 text-[12px] text-stone-700">
-            <input type="checkbox" checked={lock} onChange={(e) => setLock(e.target.checked)} /> Lock
-          </label>
           <button
             type="button"
             disabled={busy || !word.trim() || !spoken}
-            onClick={() => save(word, sayAs, lock).then(() => (setWord(''), setSayAs('')))}
+            onClick={() => save(word, sayAs).then(() => (setWord(''), setSayAs('')))}
             className="rounded-md bg-stone-900 px-4 py-1.5 text-[13px] text-white disabled:opacity-50"
           >
             {existing ? 'Change for everyone' : 'Save for everyone'}
@@ -166,7 +342,7 @@ export default function Pronunciation() {
               <select value={byFilter} onChange={(e) => setByFilter(e.target.value as typeof byFilter)} className="rounded-md border border-stone-300 bg-white px-2 py-1">
                 <option value="all">Everyone’s</option>
                 <option value="qravy">Qravy’s</option>
-                <option value="restaurant">Restaurants’</option>
+                <option value="restaurant">Asked by restaurants</option>
               </select>
               <label className="flex items-center gap-1 text-stone-600">
                 <input type="checkbox" checked={showRemoved} onChange={(e) => setShowRemoved(e.target.checked)} /> removed
@@ -185,7 +361,6 @@ export default function Pronunciation() {
                   <th className="pb-2 pr-3 font-semibold">Word</th>
                   <th className="pb-2 pr-3 font-semibold">Voice reads</th>
                   <th className="pb-2 pr-3 font-semibold">Fixed by</th>
-                  <th className="pb-2 pr-3 font-semibold">Lock</th>
                   <th className="pb-2" />
                 </tr>
               </thead>
@@ -215,15 +390,6 @@ export default function Pronunciation() {
                         {who(e.actor)}
                         <div className="text-[11px] text-stone-400">{when(e.updatedAt)}</div>
                       </td>
-                      <td className="py-2 pr-3">
-                        <input
-                          type="checkbox"
-                          checked={e.locked}
-                          disabled={busy || e.removed}
-                          onChange={(ev) => run(() => api('/pronunciations/lock', { method: 'POST', body: JSON.stringify({ word: e.word, locked: ev.target.checked }) }))}
-                          aria-label={`Lock ${e.word}`}
-                        />
-                      </td>
                       <td className="py-2 text-right">
                         <div className="inline-flex flex-wrap justify-end gap-1.5 text-[12px]">
                           <button type="button" onClick={() => play(e.word)} className="rounded-md border border-stone-300 bg-white px-2 py-1">
@@ -237,7 +403,7 @@ export default function Pronunciation() {
                               <button
                                 type="button"
                                 disabled={busy || !editSpoken}
-                                onClick={() => save(e.word, edit.sayAs, e.locked).then(() => setEdit(null))}
+                                onClick={() => save(e.word, edit.sayAs).then(() => setEdit(null))}
                                 className="rounded-md bg-stone-900 px-2 py-1 text-white disabled:opacity-50"
                               >
                                 Save
@@ -271,7 +437,7 @@ export default function Pronunciation() {
                     </tr>
                     {open === e._id && (
                       <tr className="bg-stone-50/70">
-                        <td colSpan={5} className="px-3 py-2">
+                        <td colSpan={4} className="px-3 py-2">
                           <div className="flex items-center justify-between">
                             <span className="text-[12px] font-semibold text-stone-700">Before (newest first)</span>
                             <button

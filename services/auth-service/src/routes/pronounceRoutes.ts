@@ -1,11 +1,11 @@
 // services/auth-service/src/routes/pronounceRoutes.ts
 // Qravy's pronunciation dictionary — ONE for the whole platform. A word the Bangla voice says wrong ("ষোল" read "shol")
-// is fixed once — from Cortex or from any restaurant's Settings → AI Waiter — and every restaurant's waiter says it the
-// fixed way from then on. Each word keeps its history (who changed it, from what, when), so a bad change can be undone,
-// and Qravy can lock a word so restaurants can't change it.
+// is fixed once and every restaurant's waiter says it the fixed way from then on. Only Qravy changes it (Cortex):
+// a restaurant SENDS A REQUEST from its Settings → AI Waiter, and Qravy accepts it (as sent or edited) or declines it.
+// Each word keeps its history (who changed it, from what, when), so a bad change can be undone.
 //   /public/pronounce?text=sholo        what the voice will read ("শোলো") — the live preview while typing
-//   /pronunciations                      a restaurant's view: the dictionary; add / improve / remove its own words
-//   /cortex/pronunciations               Qravy's view: everything + who / history / lock / revert / remove
+//   /pronunciations                      a restaurant's view: the dictionary (read-only) + its requests
+//   /cortex/pronunciations               Qravy's view: everything + who / history / revert / remove + the requests
 // The storefront gets the dictionary with the restaurant's info (publicRoutes), the waiter reads it (server.py).
 import express, { type Request, type Response, type NextFunction } from 'express';
 import { ObjectId } from 'mongodb';
@@ -17,21 +17,50 @@ import { toSpoken } from '../utils/pronounce.js';
 
 const router: express.Router = express.Router();
 
-type Actor = { kind: 'qravy' | 'restaurant'; tenantId?: string; tenantName?: string; by?: string };
+// kind 'restaurant' only on words moved from the old per-restaurant lists; an accepted request is Qravy's, with `requestedBy`
+type Actor = {
+  kind: 'qravy' | 'restaurant';
+  tenantId?: string;
+  tenantName?: string;
+  by?: string;
+  requestedBy?: { tenantId: string; tenantName: string };
+};
 type Change = { sayAs: string; spoken: string; at: Date; actor: Actor; action: 'set' | 'remove' | 'revert' };
 export type LexEntry = {
   _id: string; // the word in lower case
   word: string;
   sayAs: string;
   spoken: string;
-  locked: boolean;
+  locked: boolean; // from when restaurants changed words directly; nothing reads it now
   removed?: boolean;
   actor: Actor;
   updatedAt: Date;
   history: Change[];
 };
 
+/** A restaurant's request to add or change a word; Qravy accepts it (maybe edited) or declines it. */
+export type PronounceRequest = {
+  _id?: ObjectId;
+  key: string; // the word in lower case
+  word: string;
+  sayAs: string;
+  spoken: string;
+  note?: string; // the restaurant's note
+  tenantId: string;
+  tenantName: string;
+  by: string; // who at the restaurant
+  status: 'pending' | 'accepted' | 'declined';
+  createdAt: Date;
+  updatedAt: Date;
+  decidedAt?: Date;
+  decidedBy?: string;
+  final?: { sayAs: string; spoken: string }; // what Qravy put in the dictionary (differs when edited)
+  reply?: string; // Qravy's note back
+};
+
 export const lexicon = () => client.db('authDB').collection<LexEntry>('lexicon');
+export const pronounceRequests = () => client.db('authDB').collection<PronounceRequest>('pronounceRequests');
+const MAX_PENDING = 50;
 const HISTORY = 30;
 const keyOf = (word: string) => word.trim().replace(/\s+/g, ' ').toLowerCase();
 
@@ -75,9 +104,6 @@ async function setWord(word: string, sayAs: string, actor: Actor, opts: { lock?:
   if (!spoken) throw new Refused(400, 'Type how to say it in English letters or in Bangla.');
   const _id = keyOf(w);
   const cur = await lexicon().findOne({ _id });
-  if (cur?.locked && !cur.removed && actor.kind !== 'qravy') {
-    throw new Refused(423, `“${cur.word}” is set by Qravy and can’t be changed here.`);
-  }
   const now = new Date();
   const locked = opts.lock ?? (actor.kind === 'qravy' ? true : cur?.removed ? false : (cur?.locked ?? false));
   const history = [
@@ -95,12 +121,6 @@ async function removeWord(word: string, actor: Actor): Promise<void> {
   const _id = keyOf(word);
   const cur = await lexicon().findOne({ _id });
   if (!cur || cur.removed) return;
-  if (actor.kind !== 'qravy') {
-    if (cur.locked) throw new Refused(423, `“${cur.word}” is set by Qravy and can’t be removed here.`);
-    if (cur.actor.tenantId !== actor.tenantId) {
-      throw new Refused(403, 'Only the restaurant that added a word (or Qravy) can remove it — you can improve it instead.');
-    }
-  }
   const history = [...cur.history, { sayAs: cur.sayAs, spoken: cur.spoken, at: cur.updatedAt, actor: cur.actor, action: 'set' as const }].slice(-HISTORY);
   await lexicon().updateOne({ _id }, { $set: { removed: true, actor, updatedAt: new Date(), history } });
   cache = null;
@@ -130,6 +150,23 @@ async function restaurantActor(req: Request): Promise<Actor> {
 }
 const restaurantGuard = [authenticateJWT, denyBranchSession];
 
+/** Who fixed it, as a restaurant sees it — another restaurant stays anonymous. */
+const byFor = (a: Actor, tenantId: string): 'qravy' | 'you' | 'another restaurant' =>
+  a.kind === 'restaurant' ? (a.tenantId === tenantId ? 'you' : 'another restaurant') : a.requestedBy?.tenantId === tenantId ? 'you' : 'qravy';
+
+const requestView = (r: PronounceRequest) => ({
+  id: String(r._id),
+  word: r.word,
+  sayAs: r.sayAs,
+  spoken: r.spoken,
+  note: r.note ?? '',
+  status: r.status,
+  createdAt: r.createdAt,
+  decidedAt: r.decidedAt ?? null,
+  final: r.final ?? null,
+  reply: r.reply ?? '',
+});
+
 router.get(
   '/pronunciations',
   ...restaurantGuard,
@@ -138,48 +175,77 @@ router.get(
     const docs = await lexicon().find({ removed: { $ne: true } }).sort({ updatedAt: -1 }).limit(2000).toArray();
     res.json({
       success: true,
-      items: docs.map((d) => ({
-        word: d.word,
-        sayAs: d.sayAs,
-        spoken: d.spoken,
-        locked: d.locked,
-        // who fixed it — another restaurant stays anonymous
-        by: d.actor.kind === 'qravy' ? 'qravy' : d.actor.tenantId === tenantId ? 'you' : 'another restaurant',
-        updatedAt: d.updatedAt,
-      })),
+      items: docs.map((d) => ({ word: d.word, sayAs: d.sayAs, spoken: d.spoken, by: byFor(d.actor, tenantId), updatedAt: d.updatedAt })),
     });
   })
 );
 
+/** This restaurant's requests, newest first (waiting, accepted, declined). */
+router.get(
+  '/pronunciations/requests',
+  ...restaurantGuard,
+  wrap(async (req, res) => {
+    const tenantId = String(req.user?.tenantId ?? '');
+    const docs = await pronounceRequests().find({ tenantId }).sort({ updatedAt: -1 }).limit(100).toArray();
+    res.json({ success: true, items: docs.map(requestView) });
+  })
+);
+
+/** Ask Qravy to add or change a word. Another request for the same word, while the first waits, replaces it. */
 router.put(
   '/pronunciations',
   ...restaurantGuard,
   wrap(async (req, res) => {
-    try {
-      const actor = await restaurantActor(req);
-      const { word, sayAs, previousWord } = req.body ?? {};
-      const doc = await setWord(String(word ?? ''), String(sayAs ?? ''), actor);
-      // renamed (the waiter's name): the old word goes if it was theirs
-      if (previousWord && keyOf(String(previousWord)) !== doc._id) {
-        await removeWord(String(previousWord), actor).catch(() => undefined);
-      }
-      res.json({ success: true, item: { word: doc.word, sayAs: doc.sayAs, spoken: doc.spoken, locked: doc.locked } });
-    } catch (e) {
-      send(res, e);
+    const actor = await restaurantActor(req);
+    const tenantId = actor.tenantId as string;
+    const w = String(req.body?.word ?? '').trim().replace(/\s+/g, ' ');
+    const s = String(req.body?.sayAs ?? '').trim().replace(/\s+/g, ' ');
+    const note = String(req.body?.note ?? '').trim().slice(0, 300);
+    if (!w || w.length > 60) return res.status(400).json({ success: false, message: 'The word must be 1–60 characters.' });
+    if (!s || s.length > 80) return res.status(400).json({ success: false, message: 'How to say it must be 1–80 characters.' });
+    const spoken = toSpoken(s);
+    if (!spoken) return res.status(400).json({ success: false, message: 'Type how to say it in English letters or in Bangla.' });
+    const key = keyOf(w);
+    const cur = await lexicon().findOne({ _id: key, removed: { $ne: true } });
+    if (cur && toSpoken(cur.sayAs) === spoken) {
+      return res.status(409).json({ success: false, message: `“${cur.word}” is already said that way.` });
     }
+    const now = new Date();
+    const mine = await pronounceRequests().findOne({ tenantId, key, status: 'pending' });
+    if (mine) {
+      await pronounceRequests().updateOne({ _id: mine._id }, { $set: { word: w, sayAs: s, spoken, note, by: actor.by ?? '', updatedAt: now } });
+      return res.json({ success: true, item: requestView({ ...mine, word: w, sayAs: s, spoken, note, updatedAt: now }) });
+    }
+    if ((await pronounceRequests().countDocuments({ tenantId, status: 'pending' })) >= MAX_PENDING) {
+      return res.status(429).json({ success: false, message: `You have ${MAX_PENDING} requests waiting — Qravy will review those first.` });
+    }
+    const doc: PronounceRequest = {
+      key,
+      word: w,
+      sayAs: s,
+      spoken,
+      note,
+      tenantId,
+      tenantName: actor.tenantName ?? '',
+      by: actor.by ?? '',
+      status: 'pending',
+      createdAt: now,
+      updatedAt: now,
+    };
+    const r = await pronounceRequests().insertOne(doc);
+    res.json({ success: true, item: requestView({ ...doc, _id: r.insertedId }) });
   })
 );
 
+/** Take back a request that's still waiting. */
 router.delete(
-  '/pronunciations/:word',
+  '/pronunciations/requests/:id',
   ...restaurantGuard,
   wrap(async (req, res) => {
-    try {
-      await removeWord(String(req.params.word ?? ''), await restaurantActor(req));
-      res.json({ success: true });
-    } catch (e) {
-      send(res, e);
-    }
+    const id = String(req.params.id ?? '');
+    if (!ObjectId.isValid(id)) return res.status(404).json({ success: false, message: 'No such request.' });
+    const r = await pronounceRequests().deleteOne({ _id: new ObjectId(id), tenantId: String(req.user?.tenantId ?? ''), status: 'pending' });
+    res.status(r.deletedCount ? 200 : 404).json({ success: !!r.deletedCount });
   })
 );
 
@@ -218,17 +284,6 @@ router.put(
   })
 );
 
-router.post(
-  '/cortex/pronunciations/lock',
-  requireCortex,
-  wrap(async (req, res) => {
-    const _id = keyOf(String(req.body?.word ?? ''));
-    const r = await lexicon().updateOne({ _id }, { $set: { locked: !!req.body?.locked } });
-    cache = null;
-    res.status(r.matchedCount ? 200 : 404).json({ success: !!r.matchedCount });
-  })
-);
-
 /** Back to the value before the current one (the current one goes into the history too, so a revert can be undone). */
 router.post(
   '/cortex/pronunciations/revert',
@@ -256,6 +311,82 @@ router.delete(
   requireCortex,
   wrap(async (req, res) => {
     await removeWord(String(req.params.word ?? ''), cortexActor(req));
+    res.json({ success: true });
+  })
+);
+
+/* ------------------------------------------------------------------ restaurants' requests (Cortex) */
+
+router.get(
+  '/cortex/pronunciations/requests',
+  requireCortex,
+  wrap(async (req, res) => {
+    const decided = req.query.status === 'decided';
+    const docs = await pronounceRequests()
+      .find(decided ? { status: { $ne: 'pending' } } : { status: 'pending' })
+      .sort(decided ? { decidedAt: -1 } : { createdAt: 1 })
+      .limit(decided ? 200 : 1000)
+      .toArray();
+    // what each word is now, to compare with
+    const now = await lexicon()
+      .find({ _id: { $in: [...new Set(docs.map((d) => d.key))] }, removed: { $ne: true } }, { projection: { sayAs: 1, spoken: 1, actor: 1 } })
+      .toArray();
+    const current = new Map(now.map((d) => [d._id, { sayAs: d.sayAs, spoken: d.spoken, actor: d.actor }]));
+    res.json({
+      success: true,
+      pending: decided ? await pronounceRequests().countDocuments({ status: 'pending' }) : docs.length,
+      items: docs.map((d) => ({ ...d, _id: String(d._id), current: current.get(d.key) ?? null })),
+    });
+  })
+);
+
+async function pendingRequest(id: string): Promise<PronounceRequest | null> {
+  return ObjectId.isValid(id) ? pronounceRequests().findOne({ _id: new ObjectId(id), status: 'pending' }) : null;
+}
+
+/** Accept — as the restaurant sent it, or with Qravy's own `sayAs`. It goes into the dictionary for every restaurant. */
+router.post(
+  '/cortex/pronunciations/requests/:id/accept',
+  requireCortex,
+  wrap(async (req, res) => {
+    const r = await pendingRequest(String(req.params.id ?? ''));
+    if (!r) return res.status(404).json({ success: false, message: 'This request was already handled or taken back.' });
+    try {
+      const sayAs = String(req.body?.sayAs ?? '').trim() || r.sayAs;
+      const qravy = cortexActor(req);
+      const doc = await setWord(r.word, sayAs, { ...qravy, requestedBy: { tenantId: r.tenantId, tenantName: r.tenantName } });
+      const at = new Date();
+      await pronounceRequests().updateOne(
+        { _id: r._id },
+        {
+          $set: {
+            status: 'accepted',
+            decidedAt: at,
+            decidedBy: qravy.by ?? '',
+            final: { sayAs: doc.sayAs, spoken: doc.spoken },
+            reply: String(req.body?.reply ?? '').trim().slice(0, 300),
+            updatedAt: at,
+          },
+        }
+      );
+      res.json({ success: true, item: doc });
+    } catch (e) {
+      send(res, e);
+    }
+  })
+);
+
+router.post(
+  '/cortex/pronunciations/requests/:id/decline',
+  requireCortex,
+  wrap(async (req, res) => {
+    const r = await pendingRequest(String(req.params.id ?? ''));
+    if (!r) return res.status(404).json({ success: false, message: 'This request was already handled or taken back.' });
+    const at = new Date();
+    await pronounceRequests().updateOne(
+      { _id: r._id },
+      { $set: { status: 'declined', decidedAt: at, decidedBy: cortexActor(req).by ?? '', reply: String(req.body?.reply ?? '').trim().slice(0, 300), updatedAt: at } }
+    );
     res.json({ success: true });
   })
 );
