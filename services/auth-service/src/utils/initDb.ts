@@ -451,6 +451,8 @@ export async function ensureUserIndexes(client: MongoClient): Promise<void> {
   // Quick-demo restaurants: looked up by their secret key, swept when expired
   await tenants.createIndex({ 'demo.key': 1 }, { unique: true, sparse: true, name: 'ux_tenants_demo_key' });
   await tenants.createIndex({ 'demo.expiresAt': 1 }, { sparse: true, name: 'ix_tenants_demo_expires' });
+  // a restaurant's own domain: one restaurant per domain, looked up on every page from that domain
+  await tenants.createIndex({ 'customDomain.host': 1 }, { unique: true, sparse: true, name: 'ux_tenants_custom_domain' });
 
   const memberships = db.collection('memberships');
   await memberships.createIndex({ tenantId: 1, userId: 1 }, { unique: true, name: 'ux_tenant_user' });

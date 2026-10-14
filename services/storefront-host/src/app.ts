@@ -5,6 +5,7 @@ import morgan from 'morgan';
 import { createProxyMiddleware, responseInterceptor } from 'http-proxy-middleware';
 import type { ClientRequest, IncomingMessage, ServerResponse } from 'http';
 import https from 'https';
+import { hostOf, lookupHost, redirectTarget } from './domains.js';
 
 const PORT = Number(process.env.PORT || 8090);
 const STOREFRONT_DOMAIN = (process.env.STOREFRONT_DOMAIN || '').toLowerCase();
@@ -60,6 +61,23 @@ const corsOrigin: CustomOrigin = (origin, cb) => {
   return cb(new Error('Not allowed by CORS'));
 };
 
+/** The page's own site calling its own /api (a restaurant's domain — "https://burgerhouse.com" on burgerhouse.com). */
+function sameOrigin(req: IncomingMessage, origin: string | undefined): boolean {
+  if (!origin) return false;
+  try {
+    return new URL(origin).hostname.toLowerCase() === hostOf(req.headers);
+  } catch {
+    return false;
+  }
+}
+
+/** Behind us the gateway checks Origin against Qravy's own sites; a same-site call needs none (it's not cross-origin). */
+function dropSameOrigin(proxyReq: ClientRequest, req: IncomingMessage): void {
+  if (sameOrigin(req, req.headers.origin)) proxyReq.removeHeader('origin');
+}
+
+const isQravyHost = (h: string) => ['qravy.com', 'onqravy.com'].some((r) => h === r || h.endsWith(`.${r}`));
+
 export function createApp(): Application {
   if (!TASTEBUD_DEV_URL) {
     // Fail fast with a helpful message instead of silently pointing at the wrong place.
@@ -84,7 +102,10 @@ export function createApp(): Application {
 
   app.set('trust proxy', 1);
   app.use(morgan('dev'));
-  app.use(cors({ origin: corsOrigin, credentials: true }));
+  // a restaurant's own domain calling its own /api is same-site; everything else goes through the allow-list
+  app.use((req, res, next) =>
+    cors({ origin: (o, cb) => (sameOrigin(req, o) ? cb(null, true) : corsOrigin(o, cb)), credentials: true })(req, res, next)
+  );
   app.use(express.json());
 
   console.log(
@@ -104,7 +125,8 @@ export function createApp(): Application {
     if (PLATFORM_HOSTS.has(domain)) return res.status(200).end();
     const m = domain.match(/^([a-z0-9-]{1,63})\.qravy\.com$/);
     const sub = m?.[1];
-    if (!sub) return res.status(404).end();
+    // a restaurant's own domain ("burgerhouse.com", "www.burgerhouse.com"), once its owner has added it
+    if (!sub) return res.status((await lookupHost(GATEWAY_URL, domain)) ? 200 : 404).end();
     try {
       const r = await fetch(`${GATEWAY_URL}/api/v1/public/tenant?subdomain=${encodeURIComponent(sub)}`, {
         signal: AbortSignal.timeout(5000),
@@ -113,6 +135,23 @@ export function createApp(): Application {
     } catch {
       return res.status(503).end();
     }
+  });
+
+  /* ========================= A restaurant's own domain =========================
+   * Pages (not /api, the voice socket, files) on "burger-house.qravy.com" go to the restaurant's own domain once it's
+   * connected and secured (and the owner wants that); "www.burgerhouse.com" ↔ "burgerhouse.com" to the one they
+   * picked. Same path and query — branches, dine-in, the table and its key all come along. 302: if the owner removes
+   * the domain, guests' browsers haven't remembered a redirect to it.
+   */
+  const NOT_PAGES = /^\/(api|cart-api|azure|ws|internal|health)(\/|$)/;
+  app.use(async (req, res, next) => {
+    if ((req.method !== 'GET' && req.method !== 'HEAD') || NOT_PAGES.test(req.path)) return next();
+    if (!String(req.headers.accept || '').includes('text/html')) return next();
+    const host = hostOf(req.headers);
+    if (!host || PLATFORM_HOSTS.has(host) || host === STOREFRONT_DOMAIN) return next();
+    const to = redirectTarget(host, await lookupHost(GATEWAY_URL, host), isQravyHost(host));
+    if (!to) return next();
+    return res.redirect(302, `https://${to}${req.originalUrl}`);
   });
 
   /* ========================= API proxy -> Gateway =========================
@@ -142,6 +181,7 @@ export function createApp(): Application {
 
     on: {
       proxyReq(proxyReq: ClientRequest, req: IncomingMessage) {
+        dropSameOrigin(proxyReq, req);
         const eReq = req as unknown as Request & { body?: unknown };
 
         // Drop cookies/auth for public endpoints to avoid 431s
@@ -230,6 +270,7 @@ export function createApp(): Application {
     ws: false,
     secure: false,
     agent: isHttpsGateway ? new https.Agent({ rejectUnauthorized: false }) : undefined,
+    on: { proxyReq: dropSameOrigin },
   });
   app.use('/azure', azureProxy);
 
@@ -282,8 +323,9 @@ export function createApp(): Application {
           const pathname = (reqUrl.pathname || '/').toLowerCase();
           const search = reqUrl.searchParams;
 
-          // subdomain (prod via host) or /t/:subdomain (dev path)
-          const tenant = parseTenant(host, pathname);
+          // subdomain (prod via host) or /t/:subdomain (dev path) — or the restaurant's own domain ("burgerhouse.com")
+          const tenant =
+            parseTenant(host, pathname) ?? (await lookupHost(GATEWAY_URL, hostOf(req.headers)))?.subdomain ?? null;
 
           // channel from path or ?channel=
           const channel = parseChannel(pathname, search);

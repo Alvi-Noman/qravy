@@ -199,6 +199,9 @@ export interface TenantDTO {
     id: string;
     name: string;
     subdomain: string;
+    /** The restaurant's own domain when guests use it (connected, secured, set as the main address) — QR codes and links
+     *  point there; null → "<subdomain>.qravy.com" */
+    guestDomain?: string | null;
     onboardingCompleted: boolean;
     /** Menu-wide notes shown to customers (VAT, service hours, allergen info) */
     menuNotes?: string[];

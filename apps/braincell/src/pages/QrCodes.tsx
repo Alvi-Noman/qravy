@@ -400,7 +400,7 @@ export default function QrCodesPage(): JSX.Element {
   const savedTables = useMemo(() => tenant?.tables ?? [], [tenant?.tables]);
   const dineIn = !!tenant?.restaurantInfo?.dineInEnabled;
   const online = tenant?.restaurantInfo?.onlineSalesEnabled !== false;
-  const base = tenant?.subdomain ? storefrontBase(tenant.subdomain) : '';
+  const base = tenant?.subdomain ? storefrontBase(tenant.subdomain, tenant.guestDomain) : '';
   const restaurant = tenant?.name ?? '';
   const keys = tenant?.tableKeys ?? {}; // each table's secret, part of its QR code (made when tables are saved)
 

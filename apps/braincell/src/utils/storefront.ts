@@ -5,8 +5,10 @@
  * Used by the QR codes page and the quick demo, so both always open the same place.
  */
 
-/** Guest app base URL for a restaurant. Override with VITE_STOREFRONT_URL, e.g. "https://{subdomain}.qravy.com". */
-export function storefrontBase(subdomain: string): string {
+/** Guest app base URL for a restaurant: its own domain once guests use it (Settings → Domain), else its Qravy address.
+ *  Override the Qravy address with VITE_STOREFRONT_URL, e.g. "https://{subdomain}.qravy.com". */
+export function storefrontBase(subdomain: string, guestDomain?: string | null): string {
+  if (guestDomain) return `https://${guestDomain}`;
   const env = (import.meta.env.VITE_STOREFRONT_URL as string | undefined)?.trim();
   const template =
     env || (import.meta.env.DEV ? 'http://localhost:3007/t/{subdomain}' : 'https://{subdomain}.qravy.com');

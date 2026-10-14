@@ -140,6 +140,12 @@ export function toCategoryDTO(doc: CategoryDoc): CategoryDTOWithExtras {
 /**
  * Map a TenantDoc into a TenantDTO.
  */
+type GuestDomainSource = { primary?: string; status?: string; https?: boolean; redirect?: boolean };
+
+/** The restaurant's own domain, once guests use it (Settings → Domain: connected, HTTPS working, the main address). */
+const guestDomainOf = (cd?: GuestDomainSource): string | null =>
+  cd?.primary && cd.status === 'connected' && cd.https && cd.redirect ? cd.primary : null;
+
 export function toTenantDTO(doc: TenantDoc): v1.TenantDTO {
   const paymentUpdatedAt =
     doc.payment?.updatedAt instanceof Date
@@ -152,6 +158,7 @@ export function toTenantDTO(doc: TenantDoc): v1.TenantDTO {
     id: toId(doc._id),
     name: doc.name,
     subdomain: doc.subdomain,
+    guestDomain: guestDomainOf((doc as { customDomain?: GuestDomainSource }).customDomain),
     onboardingCompleted: !!doc.onboardingCompleted,
     menuNotes: doc.menuNotes ?? [],
     waiterKnowledge: doc.waiterKnowledge ?? [],
