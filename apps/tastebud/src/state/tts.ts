@@ -1,5 +1,6 @@
 // apps/tastebud/src/state/tts.ts
 import * as sdk from "microsoft-cognitiveservices-speech-sdk";
+import { forSpeech, fromSpeech } from "./speechWords";
 
 type QueueItem = { id: string; text: string; resolve: () => void; reject: (e: any) => void };
 
@@ -155,25 +156,8 @@ type Pipeline = {
   builtAt: number;
 };
 
-/* ---------- Bangla pronunciation fixes ---------- */
-// The Bangla voice guesses the unwritten "o" (inherent vowel) wrong on some words: "স্বাগতম" → "shagtom",
-// "ঝাল" → "jhalo". It is fed a respelling that forces the right sound (explicit ো / hasant ্); the word
-// events are mapped back so the screen still shows the normal spelling. Whole words only.
-const BN_SAY: Array<[written: string, said: string]> = [
-  ["স্বাগতম", "স্বাগোতম"], // shagotom, not shagtom
-  ["ঝাল", "ঝাল্"], // jhal, not jhalo
-];
-const BN_LETTER = "ঀ-৿";
-const wholeWord = (w: string) => new RegExp(`(?<![${BN_LETTER}])${w}(?![${BN_LETTER}])`, "g");
-const BN_SAY_RE = BN_SAY.map(([written, said]) => ({ to: wholeWord(written), said, back: wholeWord(said), written }));
-
-function forSpeech(text: string): string {
-  return BN_SAY_RE.reduce((t, r) => t.replace(r.to, r.said), text);
-}
-
-function fromSpeech(word: string): string {
-  return BN_SAY_RE.reduce((t, r) => t.replace(r.back, r.written), word);
-}
+/* ---------- Bangla pronunciation fixes: utils in ./speechWords (built-ins + what restaurants / Qravy taught) ---------- */
+export { setPronunciations } from "./speechWords";
 
 /* ---------- SSML helpers ---------- */
 function isLikelySsml(s: string) {

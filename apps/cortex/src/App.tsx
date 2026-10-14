@@ -13,6 +13,7 @@ import Sessions from './pages/Sessions';
 import SessionDetail from './pages/SessionDetail';
 import Conversations from './pages/Conversations';
 import Orders from './pages/Orders';
+import Pronunciation from './pages/Pronunciation';
 import LiveTranscripts from './pages/LiveTranscripts';
 
 export default function App() {
@@ -64,6 +65,7 @@ export default function App() {
           <Route path="transcripts" element={<LiveTranscripts />} />
           <Route path="conversations" element={<Conversations />} />
           <Route path="orders" element={<Orders />} />
+          <Route path="pronunciation" element={<Pronunciation />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>
       </Routes>

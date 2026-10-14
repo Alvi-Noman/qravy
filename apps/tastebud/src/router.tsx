@@ -7,6 +7,7 @@ import KeepTableInUrl from './components/KeepTableInUrl';
 import DineInGate from './components/DineInGate';
 import BranchGate from './components/BranchGate';
 import TrackPageViews from './components/TrackPageViews';
+import StoreBranding from './components/StoreBranding';
 
 const Home = lazy(() => import('./pages/Directory'));
 const Restaurant = lazy(() => import('./pages/DigitalMenu'));
@@ -33,6 +34,8 @@ export default function AppRouter() {
         <KeepTableInUrl />
         {/* page views, QR scans, time on page — for the company's Cortex panel (utils/track.ts) */}
         <TrackPageViews />
+        {/* the restaurant's tab title and icon, and its waiter's voice (Settings → Branding / AI Waiter) */}
+        <StoreBranding />
         <Suspense fallback={<div className="p-6 text-sm text-gray-500">Loading…</div>}>
           <Routes>
             {/* Demo routes */}

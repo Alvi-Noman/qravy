@@ -17,6 +17,11 @@ export interface TenantDoc {
   waiterLanguage?: 'bn' | 'en';
   /** The restaurant's logo (uploaded in Settings → Branding); the guest app's start screen shows it */
   logoUrl?: string | null;
+  faviconUrl?: string | null;
+  waiterName?: string | null;
+  waiterVoice?: 'female' | 'male';
+  customAnswers?: Array<{ question: string; answer: string }>;
+  pronunciations?: Array<{ word: string; sayAs: string; spoken: string }>;
 
   /** IANA time zone used for all hours (default Asia/Dhaka) */
   timezone?: string;

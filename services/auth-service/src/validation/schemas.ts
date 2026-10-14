@@ -474,6 +474,17 @@ export const tenantUpdateSchema = z
     mainBranchId: z.string().regex(/^[a-f0-9]{24}$/i, 'Invalid branch').nullable().optional(),
     // The restaurant's logo (an uploaded image's URL) — the guest app's start screen shows it; null removes it
     logoUrl: z.string().trim().url('Logo must be an image link').max(1000).nullable().optional(),
+    // the browser tab's icon on the restaurant's site (falls back to the logo)
+    faviconUrl: z.string().trim().url('Favicon must be an image link').max(1000).nullable().optional(),
+    // the AI waiter: its name ("Pixie" when unset), its voice, and the owner's own answers to common questions
+    waiterName: z.string().trim().min(1, 'Give your waiter a name').max(30).nullable().optional(),
+    waiterVoice: z.enum(['female', 'male']).optional(),
+    // words the voice says wrong, and how to say them ("ষোল" → "sholo")
+    pronunciations: z.array(z.object({ word: z.string().trim().min(1).max(60), sayAs: z.string().trim().min(1).max(80) })).max(100).optional(),
+    customAnswers: z
+      .array(z.object({ question: z.string().trim().min(2).max(200), answer: z.string().trim().min(1).max(800) }))
+      .max(50)
+      .optional(),
   })
   .superRefine((data, ctx) => {
     if (data.restaurantInfo) {

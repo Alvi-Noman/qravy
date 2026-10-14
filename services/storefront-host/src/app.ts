@@ -5,7 +5,7 @@ import morgan from 'morgan';
 import { createProxyMiddleware, responseInterceptor } from 'http-proxy-middleware';
 import type { ClientRequest, IncomingMessage, ServerResponse } from 'http';
 import https from 'https';
-import { hostOf, lookupHost, redirectTarget } from './domains.js';
+import { brandHead, hostOf, lookupHost, redirectTarget, tenantCard } from './domains.js';
 
 const PORT = Number(process.env.PORT || 8090);
 // the restaurant dashboard (braincell) — "burgerhouse.com/admin" opens it
@@ -350,7 +350,11 @@ export function createApp(): Application {
           const tableRaw = (search.get('table') || '').trim();
           const table = /^[A-Za-z0-9-]{1,12}$/.test(tableRaw) ? tableRaw : null;
 
-          const html = injectRuntime(raw, {
+          // the restaurant's own title, icon and link-preview tags (WhatsApp / Facebook read them before any script runs)
+          const card = tenant ? await tenantCard(GATEWAY_URL, tenant) : null;
+          const branded = card ? brandHead(raw, card, channel === 'dine-in', reqUrl.toString()) : raw;
+
+          const html = injectRuntime(branded, {
             subdomain: tenant,
             channel,
             branch,

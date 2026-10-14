@@ -23,6 +23,7 @@ import eventsRoutes from './routes/eventsRoutes.js';
 import cortexRoutes from './routes/cortexRoutes.js';
 import insightsRoutes from './routes/insightsRoutes.js';
 import domainRoutes from './routes/domainRoutes.js';
+import pronounceRoutes from './routes/pronounceRoutes.js';
 import tenantRoutes from './routes/tenantRoutes.js';
 import userRoutes from './routes/userRoutes.js';
 import locationRoutes from './routes/locationRoutes.js';
@@ -175,6 +176,7 @@ app.use('/api/v1', publicRoutes);          // ✅ fixed mount
 app.use('/api/v1', eventsRoutes); // POST /public/events — what guests do in the storefront (for Cortex)
 app.use('/api/v1', cortexRoutes); // /cortex/* — the company admin panel (apps/cortex)
 app.use('/api/v1', insightsRoutes); // /insights/* — a restaurant's own performance (dashboard → Insights)
+app.use('/api/v1', pronounceRoutes); // the waiter's pronunciation learner: /public/pronounce, /cortex/pronunciations
 app.use('/api/v1', domainRoutes); // /tenants/me/domain — the restaurant's own domain; /public/domain — which restaurant a host is
 app.use('/api/v1/auth', handoverRoutes); // app.qravy.com → admin.qravy.com: sign-in and paired devices carry over
 app.use('/api/v1/auth', authRoutes);

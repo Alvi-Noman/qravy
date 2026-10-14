@@ -261,6 +261,16 @@ export interface TenantDTO {
   waiterKnowledge?: string[];
   /** Language the virtual waiter speaks by default; guests can switch it on the storefront */
   waiterLanguage?: WaiterLanguage;
+  /** The browser tab's icon on the restaurant's site (null → the logo, then Qravy's) */
+  faviconUrl?: string | null;
+  /** The AI waiter's name (null → "Pixie") */
+  waiterName?: string | null;
+  /** The AI waiter's voice */
+  waiterVoice?: 'female' | 'male';
+  /** The owner's own answers: when guests ask something like `question`, the waiter answers with `answer` */
+  customAnswers?: Array<{ question: string; answer: string }>;
+  /** Words the waiter's voice says wrong, and how to say them ("ষোল" → "sholo" → "শোলো") */
+  pronunciations?: Array<{ word: string; sayAs: string; spoken: string }>;
   /** The restaurant's logo (Settings → Branding); shown on the guest app's start screen */
   logoUrl?: string | null;
   /** IANA time zone for all hours (e.g. "Asia/Dhaka") */

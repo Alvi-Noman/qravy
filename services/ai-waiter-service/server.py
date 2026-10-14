@@ -275,6 +275,40 @@ def _cart_cors_headers() -> Dict[str, str]:
     }
 
 
+# ------------------------------------------------------------------ the pronunciation learner (English-letter words)
+_LEARNED: Dict[str, Tuple[float, List[Tuple["re.Pattern[str]", str]]]] = {}
+
+
+def _say_learned(text: str, tenant: Optional[str]) -> str:
+    """'Sholo Aana' → 'শোলো আনা' in the voice text: the restaurant's own words, over Qravy's (Cortex). Kept a minute.
+    Bangla-script words are applied by the guest's app as it speaks (apps/tastebud/src/state/tts.ts)."""
+    if not text or not tenant:
+        return text
+    now = time.time()
+    hit = _LEARNED.get(tenant)
+    if not hit or now - hit[0] > 60:
+        rules: List[Tuple["re.Pattern[str]", str]] = []
+        try:
+            db = _CLIENT[MENU_DB_NAME]
+            platform = (db["pronunciations"].find_one({"_id": "platform"}) or {}).get("list") or []
+            tid = resolve_tenant_id(tenant)
+            own = ((db["tenants"].find_one({"_id": tid}, {"pronunciations": 1}) or {}).get("pronunciations") or []) if tid else []
+            merged: Dict[str, str] = {}
+            for x in list(platform) + list(own):
+                w, sp = str(x.get("word") or "").strip(), str(x.get("spoken") or "").strip()
+                if w and sp and re.fullmatch(r"[A-Za-z][A-Za-z' -]*", w):
+                    merged[w.lower()] = sp
+            for w in sorted(merged, key=len, reverse=True):
+                rules.append((re.compile(r"(?<![A-Za-z])" + re.escape(w) + r"(?![A-Za-z])", re.I), merged[w]))
+        except Exception as e:  # never break a reply over this
+            print("[pronounce] load failed:", str(e)[:120])
+        hit = (now, rules)
+        _LEARNED[tenant] = hit
+    for pat, spoken in hit[1]:
+        text = pat.sub(spoken, text)
+    return text
+
+
 async def handle_cart_load(request: web.Request) -> web.StreamResponse:
     try:
         tenant = request.query.get("tenant") or "unknown"
@@ -1410,7 +1444,7 @@ def fetch_restaurant_profile(tenant: Optional[str], branch: Optional[str] = None
             menu_db = _CLIENT[MENU_DB_NAME]
             t = menu_db["tenants"].find_one(
                 {"_id": tenant_oid},
-                {"name": 1, "restaurantInfo": 1, "menuNotes": 1, "waiterKnowledge": 1, "timezone": 1, "openingHours": 1, "servicePeriods": 1, "kitchen": 1, "waiterLanguage": 1},
+                {"name": 1, "restaurantInfo": 1, "menuNotes": 1, "waiterKnowledge": 1, "timezone": 1, "openingHours": 1, "servicePeriods": 1, "kitchen": 1, "waiterLanguage": 1, "waiterName": 1, "customAnswers": 1},
             ) or {}
             info = t.get("restaurantInfo") or {}
             opening = t.get("openingHours") or []
@@ -1424,6 +1458,13 @@ def fetch_restaurant_profile(tenant: Optional[str], branch: Optional[str] = None
                     "online": bool(info.get("onlineSalesEnabled")),
                     "menuNotes": [n for n in (t.get("menuNotes") or []) if n],
                     "knowledge": [k for k in (t.get("waiterKnowledge") or []) if k],
+                    # the waiter's own name (Settings → AI Waiter) and the owner's answers to common questions
+                    "waiterName": (str(t.get("waiterName") or "").strip() or "Pixie")[:30],
+                    "customAnswers": [
+                        {"q": str(x.get("question") or "")[:200], "a": str(x.get("answer") or "")[:800]}
+                        for x in (t.get("customAnswers") or [])[:50]
+                        if isinstance(x, dict) and x.get("question") and x.get("answer")
+                    ],
                     "tz": t.get("timezone") or DEFAULT_TZ,
                     "periods": t.get("servicePeriods") if isinstance(t.get("servicePeriods"), list) else DEFAULT_PERIODS,
                     "kitchen": wait_time.kitchen_settings(t),
@@ -1867,7 +1908,9 @@ async def run_text_turn(
         drop = len(code_letters) == 1
         # the voice is built from the reply itself — names and numbers converted by fixed rules
         # (the model's own spoken version misspelled numbers: "পঁইশ" for 25)
-        voice_src = reply_text
+        # words the restaurant (or Qravy) taught the voice, written in English letters ("Sholo" → "শোলো"), before the
+        # names are spelled in Bangla by rule
+        voice_src = _say_learned(reply_text, tenant)
         reply_text = to_bangla_script(reply_text, drop_code_letter=drop)
         meta["voiceReplyText"] = to_bangla_script(voice_src, spoken=True, drop_code_letter=drop)
     # H: the waiter's offers and what became of them, for the restaurant's upsell stats (never breaks a reply)

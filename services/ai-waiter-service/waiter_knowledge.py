@@ -396,6 +396,8 @@ def render_restaurant(profile: Optional[Dict[str, Any]]) -> str:
     name = p.get("name")
     if name:
         lines.append(f"Name: {name}" + (f" ({p['type']})" if p.get("type") else ""))
+    # the waiter's own name — it introduces itself by it, and answers to it
+    lines.append(f"Your name (the virtual waiter): {p.get('waiterName') or 'Pixie'}")
     if p.get("branch"):
         lines.append(f"Branch: {p['branch']}")
     if p.get("address"):
@@ -417,6 +419,16 @@ def render_restaurant(profile: Optional[Dict[str, Any]]) -> str:
         lines.append(f"Menu note: {note}")
     for fact in p.get("knowledge") or []:
         lines.append(f"House info: {fact}")
+    # the owner's own answers: a guest asking the same thing in other words (or in Bangla / English) gets this answer,
+    # in the guest's language and the waiter's own voice — its facts exactly as written, nothing added
+    answers = [x for x in (p.get("customAnswers") or []) if x.get("q") and x.get("a")]
+    if answers:
+        lines.append(
+            "Owner's answers (when the guest asks something that MEANS the same as a question here — any wording, "
+            "any language — give this answer: same facts, nothing added, in the guest's language, short and natural):"
+        )
+        for x in answers:
+            lines.append(f"  Q: {x['q']} → A: {x['a']}")
     lines.append(
         "Staff paging: "
         + (

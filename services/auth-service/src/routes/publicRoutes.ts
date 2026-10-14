@@ -11,6 +11,8 @@ import type { ItemAvailabilityDoc } from '../models/ItemAvailability.js';
 import { DEFAULT_TIMEZONE, resolveWindows, tenantServicePeriods } from '../utils/availability.js';
 import { resolveBranchLocationId } from '../controllers/categoriesController.js';
 import { branchForUnnamed, publicBranches } from '../utils/branches.js';
+import { mergePronunciations, platformPronunciations } from './pronounceRoutes.js';
+import type { Pronunciation } from '../utils/pronounce.js';
 
 const router: express.Router = express.Router();
 
@@ -52,7 +54,8 @@ async function findTenantBySubdomain(subdomain: string): Promise<TenantDoc | nul
 function toPublicTenantItem(
   tenant: TenantDoc,
   fallbackSub: string,
-  { branches, mainBranch }: Awaited<ReturnType<typeof publicBranches>>
+  { branches, mainBranch }: Awaited<ReturnType<typeof publicBranches>>,
+  platformList: Pronunciation[] = []
 ) {
   return {
     id: tenant._id!.toString(),
@@ -71,6 +74,15 @@ function toPublicTenantItem(
       (tenant as any).branding?.primaryColor ??
       (tenant as any).brandColor ??
       null,
+    // the browser tab's icon (the logo when there's no favicon)
+    faviconUrl: (tenant as any).faviconUrl ?? null,
+    // the waiter's voice reads these words this way (Qravy's list, then the restaurant's own)
+    pronunciations: mergePronunciations(platformList, (tenant as any).pronunciations),
+    // the AI waiter: its name and voice
+    waiter: {
+      name: String((tenant as any).waiterName || '').trim() || 'Pixie',
+      voice: (tenant as any).waiterVoice === 'female' ? 'female' : 'male',
+    },
     menuNotes: Array.isArray(tenant.menuNotes) ? tenant.menuNotes : [],
     // The virtual waiter's default language (the guest can switch it)
     waiterLanguage: tenant.waiterLanguage === 'en' ? 'en' : 'bn',
@@ -113,7 +125,7 @@ router.get('/public/tenant', async (req: Request, res: Response, next: NextFunct
       return res.status(404).json({ message: 'Tenant not found' });
     }
 
-    const item = toPublicTenantItem(tenant, subdomain, await publicBranches(tenant._id, tenant.mainBranchId));
+    const item = toPublicTenantItem(tenant, subdomain, await publicBranches(tenant._id, tenant.mainBranchId), await platformPronunciations());
     return res.json({ item });
   } catch (err) {
     logger.error(`[PUBLIC TENANT] ${String((err as Error)?.message || err)}`);
@@ -139,7 +151,7 @@ router.get(
         return res.status(404).json({ message: 'Tenant not found' });
       }
 
-      const item = toPublicTenantItem(tenant, subdomain, await publicBranches(tenant._id, tenant.mainBranchId));
+      const item = toPublicTenantItem(tenant, subdomain, await publicBranches(tenant._id, tenant.mainBranchId), await platformPronunciations());
       return res.json({ item });
     } catch (err) {
       logger.error(

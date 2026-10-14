@@ -27,18 +27,22 @@ import WaiterSheets from '../waiter/WaiterSheets';
 const WELCOME_BN =
   'স্বাগতম! আমি পিক্সি - আপনার ভার্চুয়াল ওয়েটার। মেনু থেকে যেকোনো কিছু জানতে চাইলে কিংবা অর্ডার করতে আমাকে বলুন।';
 // "{Restaurant}-এ স্বাগতম, আমি পিক্সি…" — plain "স্বাগতম!" until the restaurant's name has loaded
-function welcomeText(lang: 'bn' | 'en', restaurant?: string | null): string {
+// the waiter's name is the restaurant's own (Settings → AI Waiter); "Pixie" (পিক্সি) when they haven't named it
+function welcomeText(lang: 'bn' | 'en', restaurant?: string | null, waiter?: string | null): string {
   const name = (restaurant || '').trim();
+  const own = (waiter || '').trim();
+  const named = own && !/^pixie$/i.test(own) ? own : '';
   if (lang === 'en') {
-    return `${name ? `Welcome to ${name}!` : 'Welcome!'} I'm Pixie, your virtual waiter. Ask me anything about the menu, or tell me what you'd like to order.`;
+    return `${name ? `Welcome to ${name}!` : 'Welcome!'} I'm ${named || 'Pixie'}, your virtual waiter. Ask me anything about the menu, or tell me what you'd like to order.`;
   }
-  if (!name) return WELCOME_BN;
+  const base = named ? WELCOME_BN.replace('আমি পিক্সি', `আমি ${named}`) : WELCOME_BN;
+  if (!name) return base;
 
   const isBurgerHouse = /^burger[\s-]+house$/i.test(name);
   const banglaGreeting = isBurgerHouse
     ? 'বার্গার হাউসে স্বাগতম'
     : `${name}-এ স্বাগতম`;
-  return WELCOME_BN.replace('স্বাগতম! আমি', `${banglaGreeting}, আমি`);
+  return base.replace('স্বাগতম! আমি', `${banglaGreeting}, আমি`);
 }
 
 // A bottom-bar action beside the mic: brand-tinted icon chip over a short label. The label wraps (2 lines max)
@@ -149,7 +153,7 @@ export default function AiWaiterHome() {
   } = w;
   const tenantInfo = useTenantInfo(resolvedSub);
   const [tableNo] = useTable(resolvedSub);
-  const WELCOME_TEXT = welcomeText(selectedLang === 'en' ? 'en' : 'bn', tenantInfo?.name);
+  const WELCOME_TEXT = welcomeText(selectedLang === 'en' ? 'en' : 'bn', tenantInfo?.name, (tenantInfo as { waiter?: { name?: string } } | undefined)?.waiter?.name);
   const { items: cartItems } = useCart();
 
   // ---- coming back to this page: never an old line or a leftover error — a short line for right now
