@@ -30,7 +30,11 @@ export async function platformPronunciations(): Promise<Pronunciation[]> {
 /** What the storefront's voice uses: Qravy's list, then the restaurant's own (same word → the restaurant's). */
 export function mergePronunciations(platform: Pronunciation[], own: Pronunciation[] | undefined): Array<{ word: string; spoken: string }> {
   const m = new Map<string, { word: string; spoken: string }>();
-  for (const p of [...platform, ...(own ?? [])]) if (p?.word && p?.spoken) m.set(p.word.toLowerCase(), { word: p.word, spoken: p.spoken });
+  for (const p of [...platform, ...(own ?? [])]) {
+    // spelled again from what they typed, so a better converter fixes words saved before it
+    const spoken = (p?.sayAs && toSpoken(p.sayAs)) || p?.spoken;
+    if (p?.word && spoken) m.set(p.word.toLowerCase(), { word: p.word, spoken });
+  }
   return [...m.values()];
 }
 

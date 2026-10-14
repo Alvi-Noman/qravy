@@ -1,6 +1,6 @@
 // apps/tastebud/src/state/tts.ts
 import * as sdk from "microsoft-cognitiveservices-speech-sdk";
-import { forSpeech, fromSpeech } from "./speechWords";
+import { speechPlan, wordToShow, type SpeechPlan } from "./speechWords";
 
 type QueueItem = { id: string; text: string; resolve: () => void; reject: (e: any) => void };
 
@@ -414,7 +414,10 @@ class TTSManager implements TTSPublicAPI {
   private _emitStart(text: string) {
     this.listeners.forEach(h => { h.onStart?.(text); });
   }
-  private _emitWord(word: string, offsetMs?: number) {
+  // the utterance being spoken: which stretches of its text stand for a different written word (speechWords)
+  private plan: SpeechPlan | null = null;
+
+  private _emitWord(word: string, offsetMs?: number, textOffset?: number) {
     if (!word) return;
     // the speech engine reports SSML-escaped text ("&amp;") — show what was actually said
     const shown = word
@@ -423,7 +426,10 @@ class TTSManager implements TTSPublicAPI {
       .replace(/&gt;/g, '>')
       .replace(/&quot;/g, '"')
       .replace(/&apos;/g, "'");
-    this.listeners.forEach(h => { h.onWord?.(fromSpeech(shown), offsetMs); });
+    // a learned word said as several ("ষোলআনা" → "শোলো আনা") shows once, as written; its other spoken words show nothing
+    const word2 = wordToShow(this.plan, shown, textOffset);
+    if (!word2) return;
+    this.listeners.forEach(h => { h.onWord?.(word2, offsetMs); });
   }
   private _emitEnd() {
     this.listeners.forEach(h => { h.onEnd?.(); });
@@ -562,7 +568,9 @@ class TTSManager implements TTSPublicAPI {
                 ? (wb as any).offset
                 : undefined;
 
-          if (token) this._emitWord(token, offsetMs);
+          // where the word is in the text the voice was given (to map a learned respelling back to its written word)
+          const textOffset = typeof (wb as any).textOffset === "number" ? (wb as any).textOffset : undefined;
+          if (token) this._emitWord(token, offsetMs, textOffset);
         } catch {}
       };
 
@@ -718,11 +726,14 @@ class TTSManager implements TTSPublicAPI {
 
           if (isLikelySsml(input)) {
             // Use SSML verbatim, but sanitize to single-language
+            this.plan = null;
             const singleLang = sanitizeSingleLanguageSsml(input);
             this.synthesizer!.speakSsmlAsync(singleLang, onSuccess, onError);
           } else {
             // 🔁 Plain text path to avoid SSML language-validation errors
-            this.synthesizer!.speakTextAsync(forSpeech(input), onSuccess, onError);
+            const plan = speechPlan(input);
+            this.plan = plan;
+            this.synthesizer!.speakTextAsync(plan.spoken, onSuccess, onError);
           }
         });
       }

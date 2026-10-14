@@ -7,6 +7,11 @@ describe('toSpoken', () => {
     expect(toSpoken('shol')).toBe('শোল্');
   });
 
+  it('a doubled h adds nothing — "shholo" is "sholo"', () => {
+    expect(toSpoken('shholo aana')).toBe('শোলো আনা');
+    expect(toSpoken('khhichuri')).toBe('খিচুরি');
+  });
+
   it('spells common Bangla words the way they are typed', () => {
     expect(toSpoken('kacchi')).toBe('কাচ্চি');
     expect(toSpoken('borhani')).toBe('বোর্হানি');
