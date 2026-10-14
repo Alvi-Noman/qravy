@@ -19,6 +19,7 @@ export interface TenantDoc {
   logoUrl?: string | null;
   faviconUrl?: string | null;
   logoBackground?: 'white' | 'black';
+  guestMessages?: Record<string, { bn?: string; en?: string }>;
   waiterName?: string | null;
   waiterVoice?: 'female' | 'male';
   customAnswers?: Array<{ question: string; answer: string }>;

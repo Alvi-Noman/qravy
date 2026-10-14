@@ -4,6 +4,9 @@
 import { z } from 'zod';
 import { RESERVED_SUBDOMAINS } from '../utils/subdomains.js';
 
+/** What a restaurant can reword for its guests (Settings → Guest messages). */
+export const GUEST_MESSAGE_KEYS = ['welcome', 'dineInTitle', 'dineInBody', 'deliveryTitle', 'deliveryBody', 'pickupTitle', 'pickupBody', 'waiterCall'] as const;
+
 const objectId = z.string().regex(/^[a-fA-F0-9]{24}$/, 'Invalid id');
 export const channelEnum = z.enum(['dine-in', 'online']);
 // NEW: category channel can also allow "both"
@@ -478,6 +481,15 @@ export const tenantUpdateSchema = z
     faviconUrl: z.string().trim().url('Favicon must be an image link').max(1000).nullable().optional(),
     // the tile behind the logo on the waiter's start screen (a white logo needs black)
     logoBackground: z.enum(['white', 'black']).optional(),
+    // the restaurant's own words for what guests see (empty = Qravy's default): the intro, the thank-you after a
+    // dine-in / delivery / pickup order, the waiter-call confirmation — each in Bangla and English
+    guestMessages: z
+      .object(
+        Object.fromEntries(
+          GUEST_MESSAGE_KEYS.map((k) => [k, z.object({ bn: z.string().trim().max(400).optional(), en: z.string().trim().max(400).optional() }).optional()])
+        ) as Record<(typeof GUEST_MESSAGE_KEYS)[number], z.ZodOptional<z.ZodObject<{ bn: z.ZodOptional<z.ZodString>; en: z.ZodOptional<z.ZodString> }>>>
+      )
+      .optional(),
     // the AI waiter: its name ("Pixie" when unset), its voice, and the owner's own answers to common questions
     waiterName: z.string().trim().min(1, 'Give your waiter a name').max(30).nullable().optional(),
     waiterVoice: z.enum(['female', 'male']).optional(),

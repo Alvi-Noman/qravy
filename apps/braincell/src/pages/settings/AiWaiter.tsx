@@ -11,7 +11,7 @@ import { toastError, toastSuccess } from '../../components/Toaster';
 import WaiterLanguageCard from '../../components/settings/WaiterLanguageCard';
 import { WaiterKnowledgeCard } from '../MenuLayout';
 import PronunciationCard from '../../components/settings/PronunciationCard';
-import { speak, VOICES as AZURE } from '../../utils/speech';
+import { speak, spokenFor, VOICES as AZURE } from '../../utils/speech';
 
 const card = 'rounded-xl border border-[#ececec] bg-white p-4 shadow-sm';
 
@@ -30,15 +30,48 @@ function NameCard() {
   const qc = useQueryClient();
   const { data: tenant } = useTenant();
   const saved = tenant?.waiterName || '';
+  const list = (tenant?.pronunciations ?? []) as Array<{ word: string; sayAs: string; spoken?: string }>;
+  // how the name sounds = the name's own entry in the pronunciation list (the voice uses that list)
+  const savedSayAs = list.find((p) => p.word.toLowerCase() === (saved || 'pixie').toLowerCase())?.sayAs ?? '';
   const [name, setName] = useState(saved);
+  const [sayAs, setSayAs] = useState(savedSayAs);
+  const [spoken, setSpoken] = useState('');
   const [saving, setSaving] = useState(false);
+  const [playing, setPlaying] = useState(false);
   useEffect(() => setName(saved), [saved]);
+  useEffect(() => setSayAs(savedSayAs), [savedSayAs]);
+  useEffect(() => {
+    if (!sayAs.trim()) return setSpoken('');
+    const ctl = new AbortController();
+    const id = window.setTimeout(() => spokenFor(sayAs, ctl.signal).then(setSpoken).catch(() => undefined), 250);
+    return () => (ctl.abort(), window.clearTimeout(id));
+  }, [sayAs]);
   const shown = name.trim() || 'Pixie';
+  const voice = tenant?.waiterVoice === 'female' ? AZURE.female : AZURE.male;
+  const dirty = name.trim() !== saved || sayAs.trim() !== savedSayAs;
+
+  const listen = async () => {
+    const text = spoken || shown;
+    setPlaying(true);
+    try {
+      const a = await speak(voice, `আমি ${text}`);
+      a.onended = () => setPlaying(false);
+    } catch {
+      toastError('Could not play it');
+      setPlaying(false);
+    }
+  };
 
   const save = async () => {
     setSaving(true);
     try {
-      await updateTenant({ waiterName: name.trim() || null }, token as string);
+      // the old name's and the new name's entries go; the new one comes back with how it sounds (if given)
+      const drop = new Set([(saved || 'pixie').toLowerCase(), shown.toLowerCase()]);
+      const pronunciations = [
+        ...list.filter((p) => !drop.has(p.word.toLowerCase())).map((p) => ({ word: p.word, sayAs: p.sayAs })),
+        ...(sayAs.trim() ? [{ word: shown, sayAs: sayAs.trim() }] : []),
+      ];
+      await updateTenant({ waiterName: name.trim() || null, pronunciations }, token as string);
       await qc.invalidateQueries({ queryKey: ['tenant', token] });
       toastSuccess(`Your waiter is now called ${shown}`);
     } catch (e: any) {
@@ -52,24 +85,54 @@ function NameCard() {
     <div className={card}>
       <div className="text-[14px] font-semibold text-slate-900">Name</div>
       <p className="mt-0.5 text-[12px] text-slate-500">What your waiter calls itself when it greets guests. Leave it empty to keep “Pixie”.</p>
-      <div className="mt-3 flex max-w-md flex-wrap gap-2">
-        <input
-          value={name}
-          maxLength={30}
-          onChange={(e) => setName(e.target.value)}
-          placeholder="Pixie"
-          aria-label="Waiter name"
-          className="min-w-0 flex-1 rounded-md border border-[#e2e2e2] px-3 py-2 text-sm"
-        />
+      <div className="mt-3 grid max-w-xl gap-3 sm:grid-cols-2">
+        <label className="grid gap-1">
+          <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Name</span>
+          <input
+            value={name}
+            maxLength={30}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="Pixie"
+            aria-label="Waiter name"
+            className="rounded-md border border-[#e2e2e2] px-3 py-2 text-sm"
+          />
+        </label>
+        <label className="grid gap-1">
+          <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Sounds like</span>
+          <input
+            value={sayAs}
+            maxLength={80}
+            onChange={(e) => setSayAs(e.target.value)}
+            placeholder="e.g. mitu  (optional)"
+            aria-label="How the name sounds"
+            className="rounded-md border border-[#e2e2e2] px-3 py-2 text-sm"
+          />
+        </label>
+      </div>
+      <div className="mt-2 flex max-w-xl flex-wrap items-center gap-2 text-[12px] text-slate-600">
+        <span>
+          Voice says: <b className="text-[14px] text-slate-900">{spoken || shown}</b>
+        </span>
+        <button
+          type="button"
+          onClick={listen}
+          disabled={playing}
+          className="inline-flex items-center gap-1 rounded-md border border-[#e5e5e5] bg-white px-2 py-1 text-[12px] text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+        >
+          <SpeakerWaveIcon className={`h-3.5 w-3.5 ${playing ? 'animate-pulse' : ''}`} /> Listen
+        </button>
         <button
           type="button"
           onClick={save}
-          disabled={saving || name.trim() === saved}
-          className="rounded-md bg-[#2e2e30] px-4 py-2 text-sm text-white disabled:opacity-50"
+          disabled={saving || !dirty}
+          className="ml-auto rounded-md bg-[#2e2e30] px-4 py-1.5 text-sm text-white disabled:opacity-50"
         >
           {saving ? 'Saving…' : 'Save'}
         </button>
       </div>
+      <p className="mt-1 text-[11px] text-slate-400">
+        Type how it sounds in English letters, the way you’d type Bangla (every letter is said), or in Bangla — only if the voice says the name wrong.
+      </p>
       <div className="mt-4 max-w-xl rounded-2xl bg-[#FFF5F7] px-4 py-3 text-[13px] text-slate-800">
         <span className="text-[11px] font-medium uppercase tracking-wide text-[#FA2851]">Guests see</span>
         <p className="mt-1">
