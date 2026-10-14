@@ -20,9 +20,12 @@ type Props = {
   lang: UiLang;
   /** the guest's name (online orders) — "Thank you, Rahim!" */
   name?: string;
+  /** the restaurant's own words (Settings → Guest messages), instead of the default title / line under it */
+  title?: string | null;
+  message?: string | null;
 };
 
-export default function OrderConfirmedModal({ open, onClose, orderNumber, where, total, minutesLeft, waiting, payNote, lang, name }: Props) {
+export default function OrderConfirmedModal({ open, onClose, orderNumber, where, total, minutesLeft, waiting, payNote, lang, name, title, message }: Props) {
   const first = (name || '').trim().split(/\s+/)[0];
   useEffect(() => {
     if (!open) return;
@@ -47,10 +50,10 @@ export default function OrderConfirmedModal({ open, onClose, orderNumber, where,
           </svg>
         </div>
         <h2 id="order-confirmed-title" className="text-xl font-bold text-gray-900">
-          {first ? tr(lang, `ধন্যবাদ, ${first}!`, `Thank you, ${first}!`) : tr(lang, 'ধন্যবাদ!', 'Thank you!')}
+          {title || (first ? tr(lang, `ধন্যবাদ, ${first}!`, `Thank you, ${first}!`) : tr(lang, 'ধন্যবাদ!', 'Thank you!'))}
         </h2>
         <p className="mt-1 text-sm font-medium text-gray-600">
-          {waiting ? tr(lang, 'অর্ডার পাঠানো হয়েছে', 'Your order has been sent') : tr(lang, 'অর্ডার কনফার্ম করা হয়েছে', 'Your order is confirmed')}
+          {message || (waiting ? tr(lang, 'অর্ডার পাঠানো হয়েছে', 'Your order has been sent') : tr(lang, 'অর্ডার কনফার্ম করা হয়েছে', 'Your order is confirmed'))}
         </p>
         <div className="mt-3 text-5xl font-bold tracking-tight text-gray-900">#{orderNumber}</div>
         <p className="mt-3 text-sm text-gray-600">

@@ -199,7 +199,8 @@ export default function Dashboard(): JSX.Element {
   const menuQuery = useQuery({ queryKey: ['menu-items', token], queryFn: () => getMenuItems(token as string), enabled: !!token });
   const catQuery = useQuery({ queryKey: ['categories', token], queryFn: () => getCategories(token as string), enabled: !!token });
 
-  if (tenantQuery.isLoading) {
+  // wait until we know whether there is a menu yet — otherwise the full dashboard flashes before the setup screen
+  if (tenantQuery.isLoading || menuQuery.isLoading || catQuery.isLoading) {
     return (
       <div className="flex h-full items-center justify-center">
         <div className="flex flex-col items-center">

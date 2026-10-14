@@ -3,6 +3,8 @@
 // Completed (or Cancelled). The ready time moves live when cooking starts or the kitchen adjusts it.
 import { useEffect, useRef, useState } from 'react';
 import { Link, useLocation, useParams } from 'react-router-dom';
+import { ownMessage } from '../utils/guestMessages';
+import { useGuestMessages } from '../utils/useGuestMessages';
 import { followOrder, getOrder, type OrderStatus, type PublicOrder } from '../api/orders';
 import OrderConfirmedModal from '../components/ai-waiter/OrderConfirmedModal';
 import OrderCountdown from '../components/OrderCountdown';
@@ -37,6 +39,7 @@ export default function OrderStatusPage() {
   const location = useLocation();
   const store = typeof window !== 'undefined' ? (window as any).__STORE__ : undefined;
   const sub = params.subdomain ?? store?.subdomain ?? null;
+  const guest = useGuestMessages(sub);
   const linkBranch = params.branchSlug ?? params.branch ?? store?.branch ?? null;
   const token = params.token ?? '';
   const lang: UiLang = 'en'; // the order page is always English
@@ -102,6 +105,15 @@ export default function OrderStatusPage() {
   const online = order.channel === 'online';
   const delivery = online && order.fulfillment === 'delivery';
   const whereLabel = !online ? tr(lang, 'টেবিল', 'Table') : delivery ? tr(lang, 'ডেলিভারি', 'Delivery') : tr(lang, 'পিকআপ', 'Pickup');
+  // the restaurant's own thank-you (Settings → Guest messages) for this kind of order
+  const thanksKind = (!online ? 'dineIn' : delivery ? 'delivery' : 'pickup') as 'dineIn' | 'delivery' | 'pickup';
+  const thanksVars = {
+    restaurant: guest.restaurant,
+    waiter: guest.waiter,
+    name: (order.customer?.name || '').trim().split(/\s+/)[0],
+    table: order.table,
+    order: order.orderNumber,
+  };
   const whereShort = !online ? tr(lang, `টেবিল ${order.table}`, `Table ${order.table}`) : whereLabel;
   const currentIdx = STEPS.indexOf(order.status);
   const at = (s: OrderStatus) => order.statusHistory.find((h) => h.status === s)?.at;
@@ -252,6 +264,8 @@ export default function OrderStatusPage() {
         }
         lang={lang}
         name={online ? order.customer?.name : undefined}
+        title={ownMessage(guest.messages, `${thanksKind}Title`, lang, thanksVars)}
+        message={ownMessage(guest.messages, `${thanksKind}Body`, lang, thanksVars)}
       />
     </div>
   );

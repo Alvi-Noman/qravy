@@ -738,6 +738,15 @@ export async function updateMyTenant(req: Request, res: Response, next: NextFunc
     if (parsed.logoUrl !== undefined) update.logoUrl = parsed.logoUrl || null;
     if (parsed.faviconUrl !== undefined) update.faviconUrl = parsed.faviconUrl || null;
     if (parsed.logoBackground) update.logoBackground = parsed.logoBackground;
+    if (parsed.guestMessages) {
+      // only what they wrote: an empty text means "use the default"
+      const msgs: Record<string, { bn?: string; en?: string }> = {};
+      for (const [k, v] of Object.entries(parsed.guestMessages)) {
+        const m = { ...(v?.bn?.trim() ? { bn: v.bn.trim() } : {}), ...(v?.en?.trim() ? { en: v.en.trim() } : {}) };
+        if (m.bn || m.en) msgs[k] = m;
+      }
+      update.guestMessages = msgs;
+    }
     if (parsed.waiterName !== undefined) update.waiterName = parsed.waiterName?.trim() || null;
     if (parsed.waiterVoice) update.waiterVoice = parsed.waiterVoice;
     if (parsed.pronunciations) update.pronunciations = cleanList(parsed.pronunciations);

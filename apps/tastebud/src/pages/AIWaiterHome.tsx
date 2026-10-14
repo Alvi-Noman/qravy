@@ -22,6 +22,7 @@ import StartScreen from '../components/ai-waiter/StartScreen';
 import HoldToTalkCoach, { holdCoachSeen, markHoldCoachSeen } from '../components/ai-waiter/HoldToTalkCoach';
 import { useWaiterSession, markWelcomeInteraction, WELCOME_INTERACT_KEY, WELCOME_INACTIVITY_MS } from '../waiter/useWaiterSession';
 import WaiterSheets from '../waiter/WaiterSheets';
+import { ownMessage, type GuestMessages } from '../utils/guestMessages';
 
 // ✅ Welcome text, in the waiter's language
 const WELCOME_BN =
@@ -153,7 +154,13 @@ export default function AiWaiterHome() {
   } = w;
   const tenantInfo = useTenantInfo(resolvedSub);
   const [tableNo] = useTable(resolvedSub);
-  const WELCOME_TEXT = welcomeText(selectedLang === 'en' ? 'en' : 'bn', tenantInfo?.name, (tenantInfo as { waiter?: { name?: string } } | undefined)?.waiter?.name);
+  // the restaurant's own intro (Settings → Guest messages), else the default greeting
+  const waiterName = (tenantInfo as { waiter?: { name?: string } } | undefined)?.waiter?.name;
+  const WELCOME_TEXT =
+    ownMessage((tenantInfo as { guestMessages?: GuestMessages } | undefined)?.guestMessages, 'welcome', selectedLang === 'en' ? 'en' : 'bn', {
+      restaurant: tenantInfo?.name,
+      waiter: waiterName || 'Pixie',
+    }) ?? welcomeText(selectedLang === 'en' ? 'en' : 'bn', tenantInfo?.name, waiterName);
   const { items: cartItems } = useCart();
 
   // ---- coming back to this page: never an old line or a leftover error — a short line for right now

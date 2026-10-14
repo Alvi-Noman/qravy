@@ -9,6 +9,8 @@ import { useLocation } from 'react-router-dom';
 import { callForService, getServiceRequest, type ServiceKind, type ServiceStatus } from '../api/serviceRequests';
 import { isDineInPath, normalizeTable, storeSubFromPath, useTable } from '../utils/table';
 import { tr, uiLang, type UiLang } from '../utils/ui-lang';
+import { ownMessage } from '../utils/guestMessages';
+import { useGuestMessages } from '../utils/useGuestMessages';
 import { track } from '../utils/track';
 
 type Active = Partial<Record<ServiceKind, { token: string; status: ServiceStatus; at: number }>>;
@@ -69,6 +71,7 @@ export default function CallWaiterButton({
   const table = normalizeTable(tableProp) ?? (isDineInPath(location.pathname) ? urlTable : null);
   const lang = langProp ?? uiLang();
   const t = (bn: string, en: string) => tr(lang, bn, en);
+  const guest = useGuestMessages(sub);
 
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState<Active>(() => (sub && table ? readActive(sub, table) : {}));
@@ -235,7 +238,8 @@ export default function CallWaiterButton({
 
             {sent && (
               <p role="status" className="mb-4 rounded-2xl bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
-                {t('স্টাফকে জানানো হয়েছে — কেউ এখনই আপনার টেবিলে আসছেন।', "We've let the staff know — someone will be at your table shortly.")}
+                {ownMessage(guest.messages, 'waiterCall', lang === 'en' ? 'en' : 'bn', { table, restaurant: guest.restaurant, waiter: guest.waiter }) ??
+                  t('স্টাফকে জানানো হয়েছে — কেউ এখনই আপনার টেবিলে আসছেন।', "We've let the staff know — someone will be at your table shortly.")}
               </p>
             )}
 
