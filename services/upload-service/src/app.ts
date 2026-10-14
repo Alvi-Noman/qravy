@@ -184,7 +184,14 @@ app.post(['/images', '/api/uploads/images'], auth, async (req, res) => {
     if (hasCode(err) && err.code === 'ETOOBIG') {
       return res.status(413).json({ error: 'File too large (max 20MB)' });
     }
-    return res.status(500).json({ error: 'Upload failed' });
+    // say WHY (the storage's error name: "AccessDenied", "NoSuchBucket", "InvalidAccessKeyId"… — never a key or secret)
+    const e = err as { name?: string; Code?: string; code?: string; message?: string; $metadata?: { httpStatusCode?: number } };
+    const reason = String(e?.Code || e?.name || e?.code || 'Error');
+    console.error(
+      `[upload] failed: ${reason} (storage HTTP ${e?.$metadata?.httpStatusCode ?? '-'}) — ${String(e?.message || '').slice(0, 200)}` +
+        ` · bucket set: ${Boolean(BUCKET)} · endpoint set: ${Boolean(process.env.R2_ENDPOINT)} · keys set: ${Boolean(process.env.R2_ACCESS_KEY_ID && process.env.R2_SECRET_ACCESS_KEY)}`
+    );
+    return res.status(500).json({ error: 'Upload failed', reason });
   }
 });
 
