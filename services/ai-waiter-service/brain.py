@@ -876,8 +876,11 @@ def _asked_count(transcript: str) -> Optional[int]:
     return n if n and 1 <= n <= 8 else None
 _SEE_MENU = re.compile(
     r"\b(show|see|open|view|look at|check)\b.{0,15}\bmenu\b|\bfull menu\b|\bmenu (please|card)\b"
-    r"|মেনু(টা|টি)?\s*(একটু\s*)?(দেখান|দেখাও|দেখাবেন|দেখতে চাই|দেখি|খুলুন|দিন|দেন)|মেনু কার্ড"
-    r"|\bmenu\s*(ta\s*)?(dekhan|dekhao|dekhi|dekhte chai|den|din)\b",
+    # "মেনু দেখতে চাচ্ছি / চাইছিলাম", "মেনুটা দেখব", "মেনু দেখাতে পারবেন?", "মেনু কোথায়?" — every way of asking to see it
+    r"|মেনু(টা|টি|গুলো)?\s*(একটু\s*)?(দেখান|দেখাও|দেখাবেন|দেখাবে|দেখাতে\s*পারবেন|দেখাতে\s*পারেন"
+    r"|দেখতে\s*(চাই|চাচ্ছি|চাচ্ছিলাম|চাইছি|চাইছিলাম|চেয়েছিলাম|পারি)|দেখবো?|দেখতাম|দেখা\s*যাবে|দেখি"
+    r"|খুলুন|খোলেন|দিন|দেন)|মেনু কার্ড|মেনু(টা)?\s*কোথায়"
+    r"|\bmenu\s*(ta\s*)?(dekhan|dekhao|dekhaben|dekhi|dekhbo?|dekhte\s*(chai|chacchi|chachhi|caichi|chaichi)|den|din)\b",
     re.I,
 )
 # "ঝালের তথ্য নেই", "মেনুতে উল্লেখ নেই", "the menu doesn't list its heat" — a data gap, meaningless to a guest
