@@ -7,6 +7,8 @@ import { useState } from 'react';
 type Props = {
   name?: string | null;
   logoUrl?: string | null;
+  /** the tile behind the logo (Settings → Branding): white by default, black for a white logo */
+  logoBackground?: 'white' | 'black' | null;
   /** dine-in: the guest's table ("12") */
   table?: string | null;
   lang: 'bn' | 'en';
@@ -30,11 +32,12 @@ function initialsOf(name: string): string {
   );
 }
 
-export default function StartScreen({ name, logoUrl, table, lang, onStart, branch, onChangeBranch }: Props) {
+export default function StartScreen({ name, logoUrl, logoBackground, table, lang, onStart, branch, onChangeBranch }: Props) {
   const [logoFailed, setLogoFailed] = useState(false);
   const loaded = !!name;
   const showLogo = !!logoUrl && !logoFailed;
   const en = lang === 'en';
+  const dark = logoBackground === 'black';
 
   return (
     <div
@@ -47,7 +50,8 @@ export default function StartScreen({ name, logoUrl, table, lang, onStart, branc
       <div className="flex flex-1 flex-col items-center justify-center text-center">
         <div
           className={
-            'grid place-items-center overflow-hidden rounded-[28px] bg-white shadow-[0_12px_32px_rgba(250,40,81,0.14)] ring-1 ring-black/[0.04] ' +
+            'grid place-items-center overflow-hidden rounded-[28px] ' +
+            (dark ? 'bg-black shadow-[0_12px_32px_rgba(0,0,0,0.28)] ring-1 ring-black ' : 'bg-white shadow-[0_12px_32px_rgba(250,40,81,0.14)] ring-1 ring-black/[0.04] ') +
             (loaded ? 'qv-start-in' : 'animate-pulse')
           }
           style={{ width: LOGO, height: LOGO }}
@@ -60,7 +64,7 @@ export default function StartScreen({ name, logoUrl, table, lang, onStart, branc
               onError={() => setLogoFailed(true)}
             />
           ) : loaded ? (
-            <span className="text-[34px] font-semibold tracking-tight text-[#FA2851]">{initialsOf(name as string)}</span>
+            <span className={'text-[34px] font-semibold tracking-tight ' + (dark ? 'text-white' : 'text-[#FA2851]')}>{initialsOf(name as string)}</span>
           ) : null}
         </div>
 

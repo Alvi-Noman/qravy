@@ -47,6 +47,7 @@ export default function SettingsBranding(): JSX.Element {
   }
 
   const shownName = name.trim() || tenant?.name || 'Your restaurant';
+  const logoBg = tenant?.logoBackground === 'black' ? 'black' : 'white';
   return (
     <div className="grid gap-4">
       <div className="rounded-xl border border-[#ececec] bg-white p-4 shadow-sm">
@@ -70,8 +71,10 @@ export default function SettingsBranding(): JSX.Element {
         token={token as string}
         onSaved={refresh}
         preview={(src) =>
-          src ? <img src={src} alt="" className="h-full w-full object-contain" /> : <Initials name={shownName} />
+          src ? <img src={src} alt="" className="h-full w-full object-contain p-2" /> : <Initials name={shownName} dark={logoBg === 'black'} />
         }
+        previewClassName={logoBg === 'black' ? 'bg-black' : 'bg-[#FFF5F7]'}
+        extra={<LogoBackground value={logoBg} token={token as string} onSaved={refresh} />}
       />
 
       <ImageCard
@@ -108,14 +111,14 @@ export default function SettingsBranding(): JSX.Element {
   );
 }
 
-function Initials({ name }: { name: string }) {
+function Initials({ name, dark = false }: { name: string; dark?: boolean }) {
   const initials = (name || '?')
     .split(/\s+/)
     .filter(Boolean)
     .slice(0, 2)
     .map((w) => w[0]?.toUpperCase())
     .join('');
-  return <span className="text-2xl font-semibold text-[#FA2851]">{initials}</span>;
+  return <span className={'text-2xl font-semibold ' + (dark ? 'text-white' : 'text-[#FA2851]')}>{initials}</span>;
 }
 
 /** What the guest's browser tab looks like. */
@@ -145,6 +148,8 @@ function ImageCard({
   onSaved,
   preview,
   wide = false,
+  previewClassName = 'bg-[#FFF5F7]',
+  extra,
 }: {
   field: 'logoUrl' | 'faviconUrl';
   title: string;
@@ -155,6 +160,9 @@ function ImageCard({
   onSaved: () => Promise<unknown> | void;
   preview: (src: string | null) => ReactNode;
   wide?: boolean;
+  /** the preview tile's background (the logo: white or black) */
+  previewClassName?: string;
+  extra?: ReactNode;
 }) {
   const fileRef = useRef<HTMLInputElement | null>(null);
   const [busy, setBusy] = useState<'upload' | 'remove' | null>(null);
@@ -209,7 +217,7 @@ function ImageCard({
           className={
             wide
               ? 'w-full max-w-sm overflow-hidden rounded-lg border border-[#ececec]'
-              : 'grid h-24 w-24 shrink-0 place-items-center overflow-hidden rounded-[22px] border border-[#ececec] bg-[#FFF5F7]'
+              : `grid h-24 w-24 shrink-0 place-items-center overflow-hidden rounded-[22px] border border-[#ececec] ${previewClassName}`
           }
         >
           {preview(url)}
@@ -246,6 +254,47 @@ function ImageCard({
           )}
         </div>
       </div>
+      {extra}
+    </div>
+  );
+}
+
+/** The tile behind the logo on the AI waiter's start screen: white (default) or black (for a white or light logo). */
+function LogoBackground({ value, token, onSaved }: { value: 'white' | 'black'; token: string; onSaved: () => Promise<unknown> | void }) {
+  const [saving, setSaving] = useState<'white' | 'black' | null>(null);
+  const choose = async (v: 'white' | 'black') => {
+    if (v === value || saving) return;
+    setSaving(v);
+    try {
+      await updateTenant({ logoBackground: v }, token);
+      await onSaved();
+      toastSuccess(v === 'black' ? 'Logo background: black' : 'Logo background: white');
+    } catch (e: any) {
+      toastError(e?.response?.data?.message || 'Could not save the background');
+    } finally {
+      setSaving(null);
+    }
+  };
+  const active = saving ?? value;
+  return (
+    <div className="mt-4 flex flex-wrap items-center gap-3">
+      <span className="text-[12px] font-medium text-slate-700">Background behind the logo</span>
+      <div role="radiogroup" aria-label="Logo background" className="inline-flex rounded-lg border border-[#e2e2e2] bg-slate-50 p-1">
+        {(['white', 'black'] as const).map((v) => (
+          <button
+            key={v}
+            type="button"
+            role="radio"
+            aria-checked={active === v}
+            onClick={() => choose(v)}
+            className={`flex items-center gap-1.5 rounded-md px-3 py-1 text-[13px] ${active === v ? 'bg-white font-medium text-slate-900 shadow-sm' : 'text-slate-600'}`}
+          >
+            <span className={`h-3 w-3 rounded-sm border border-slate-300 ${v === 'black' ? 'bg-black' : 'bg-white'}`} />
+            {v === 'white' ? 'White' : 'Black'}
+          </button>
+        ))}
+      </div>
+      <span className="text-[12px] text-slate-500">Pick black if your logo is white or very light.</span>
     </div>
   );
 }

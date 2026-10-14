@@ -263,6 +263,8 @@ export interface TenantDTO {
   waiterLanguage?: WaiterLanguage;
   /** The browser tab's icon on the restaurant's site (null → the logo, then Qravy's) */
   faviconUrl?: string | null;
+  /** The tile behind the logo on the waiter's start screen (default white) */
+  logoBackground?: 'white' | 'black';
   /** The AI waiter's name (null → "Pixie") */
   waiterName?: string | null;
   /** The AI waiter's voice */

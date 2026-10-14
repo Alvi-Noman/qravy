@@ -76,6 +76,8 @@ function toPublicTenantItem(
       null,
     // the browser tab's icon (the logo when there's no favicon)
     faviconUrl: (tenant as any).faviconUrl ?? null,
+    // the tile behind the logo on the waiter's start screen
+    logoBackground: (tenant as any).logoBackground === 'black' ? 'black' : 'white',
     // the waiter's voice reads these words this way (Qravy's list, then the restaurant's own)
     pronunciations: mergePronunciations(platformList, (tenant as any).pronunciations),
     // the AI waiter: its name and voice
