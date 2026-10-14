@@ -6,6 +6,7 @@ import {
   mergeChunks,
   nameKey,
   parsePrice,
+  priceDigitsOf,
   rawItemToDraft,
   toAsciiDigits,
 } from '../normalize.js';
@@ -265,6 +266,35 @@ describe('menu import normalize', () => {
         { menu: { currency: null, notes: [], categories: [{ name: '', description: null, addOnGroups: [], hours: [], items: [rawItem()] }] }, pageOffset: 0 },
       ]);
       expect(draft.categories[0].name).toBe('Other');
+    });
+
+    const menuWithPrices = (...texts: Array<string | null>): RawMenu => ({
+      currency: 'BDT',
+      notes: [],
+      categories: [
+        { name: 'Mains', description: null, addOnGroups: [], hours: [], items: texts.map((t, i) => rawItem({ name: `Dish ${i}`, priceText: t })) },
+      ],
+    });
+
+    it('notices a menu printed with Bangla prices', () => {
+      expect(mergeChunks([{ menu: menuWithPrices('৳ ২৫০', '৩২০/-', 'Tk 90'), pageOffset: 0 }]).priceDigits).toBe('bn');
+      expect(mergeChunks([{ menu: menuWithPrices('Tk 250', '320/-', '৳ ৯০'), pageOffset: 0 }]).priceDigits).toBe('latin');
+    });
+
+    it('does not guess from fewer than two printed prices', () => {
+      expect(mergeChunks([{ menu: menuWithPrices('৳ ২৫০', null), pageOffset: 0 }]).priceDigits).toBeUndefined();
+    });
+  });
+
+  describe('priceDigitsOf', () => {
+    it.each([
+      ['৳ ২৫০', 'bn'],
+      ['২৫০ / ৩৫০', 'bn'],
+      ['Tk. 1,200', 'latin'],
+      ['MP', undefined],
+      [null, undefined],
+    ])('%p → %p', (text, digits) => {
+      expect(priceDigitsOf(text)).toBe(digits);
     });
   });
 

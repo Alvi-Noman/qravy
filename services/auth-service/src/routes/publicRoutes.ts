@@ -78,6 +78,7 @@ function toPublicTenantItem(
     faviconUrl: (tenant as any).faviconUrl ?? null,
     // the tile behind the logo on the waiter's start screen
     logoBackground: (tenant as any).logoBackground === 'black' ? 'black' : 'white',
+    priceDigits: (tenant as any).priceDigits === 'bn' ? 'bn' : 'latin',
     // the restaurant's own words for the intro, thank-you and waiter-call messages (missing = the default)
     guestMessages: (tenant as any).guestMessages ?? {},
     // the waiter's voice reads these words this way — Qravy's dictionary, the same for every restaurant

@@ -10,6 +10,7 @@ import ModifierPicker, {
   type ModifierGroup,
   type ModifierPicks,
 } from './ModifierPicker';
+import { priceNumber } from '../utils/ui-lang';
 
 export type ModalProps = {
   open: boolean;
@@ -48,9 +49,8 @@ export type ModalProps = {
   dismissible?: boolean;
 };
 
-const BDT = new Intl.NumberFormat('en-BD');
 const formatBDT = (n?: number | null) =>
-  typeof n === 'number' ? `৳ ${BDT.format(n)}` : undefined;
+  typeof n === 'number' ? `৳ ${priceNumber(n)}` : undefined;
 
 function cx(...parts: Array<string | false | null | undefined>) {
   return parts.filter(Boolean).join(' ');

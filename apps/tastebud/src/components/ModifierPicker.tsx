@@ -6,6 +6,7 @@
  */
 import React from 'react';
 import type { CartModifier } from '../context/CartContext';
+import { priceNumber } from '../utils/ui-lang';
 
 export type ModifierGroup = {
   id: string;
@@ -18,8 +19,7 @@ export type ModifierGroup = {
 /** groupId → chosen optionIds */
 export type ModifierPicks = Record<string, string[]>;
 
-const BDT = new Intl.NumberFormat('en-BD');
-const formatBDT = (n: number) => `৳ ${BDT.format(n)}`;
+const formatBDT = (n: number) => `৳ ${priceNumber(n)}`;
 
 function cx(...parts: Array<string | false | null | undefined>) {
   return parts.filter(Boolean).join(' ');

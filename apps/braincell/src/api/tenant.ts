@@ -161,6 +161,7 @@ export async function updateTenant(
     logoUrl?: string | null;
     faviconUrl?: string | null;
     logoBackground?: 'white' | 'black';
+    priceDigits?: 'latin' | 'bn';
     guestMessages?: Record<string, { bn?: string; en?: string }>;
     waiterName?: string | null;
     waiterVoice?: 'female' | 'male';

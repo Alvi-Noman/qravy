@@ -166,6 +166,7 @@ export function toTenantDTO(doc: TenantDoc): v1.TenantDTO {
     logoUrl: doc.logoUrl ?? null,
     faviconUrl: doc.faviconUrl ?? null,
     logoBackground: doc.logoBackground === 'black' ? 'black' : 'white',
+    priceDigits: doc.priceDigits === 'bn' ? 'bn' : 'latin',
     guestMessages: doc.guestMessages ?? {},
     waiterName: doc.waiterName ?? null,
     waiterVoice: doc.waiterVoice === 'female' ? 'female' : 'male',

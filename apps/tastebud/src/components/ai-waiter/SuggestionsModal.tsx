@@ -8,6 +8,7 @@ import PopupHeader, { POPUP_PAGE_CLASS } from './PopupHeader';
 import type { AiReplyMeta, WaiterIntent } from '../../types/waiter-intents';
 import { isDineInPath, withTable } from '../../utils/table';
 import { normalizeIntent, localHeuristicIntent } from '../../utils/intent-routing';
+import { priceNumber } from '../../utils/ui-lang';
 
 type MinimalMenuItem = {
   id?: string;
@@ -77,10 +78,9 @@ function resolveIntent(meta?: AiReplyMeta, replyText?: string): WaiterIntent {
   return localHeuristicIntent(replyText || '');
 }
 
-const BDT = new Intl.NumberFormat('en-BD');
 function formatCurrency(n?: number) {
   if (typeof n !== 'number') return undefined;
-  return `৳ ${BDT.format(n)}`;
+  return `৳ ${priceNumber(n)}`;
 }
 
 /* ---------- Inline Product Card (minimal) ---------- */

@@ -12,7 +12,7 @@ import { orderPath, storeBasePath } from '../utils/checkout-flow';
 import { useOrderChannel, useStoreBranch } from '../utils/order-mode';
 import { track } from '../utils/track';
 import { getOrder, recentOrders } from '../api/orders';
-import { uiLang } from '../utils/ui-lang';
+import { money, uiLang } from '../utils/ui-lang';
 import { useTenantInfo } from '../utils/waiter-lang';
 import LangSwitch from '../components/LangSwitch';
 import ScrollText from '../components/ai-waiter/ScrollText';
@@ -454,7 +454,7 @@ export default function AiWaiterHome() {
                 className="max-w-full truncate rounded-full border border-rose-200 bg-white px-4 py-2.5 text-[15px] font-semibold text-gray-800 shadow-sm transition active:scale-95 hover:border-rose-300"
               >
                 {c.label}
-                {typeof c.price === 'number' && <span className="ml-1.5 font-normal text-gray-500">৳{c.price}</span>}
+                {typeof c.price === 'number' && <span className="ml-1.5 font-normal text-gray-500">{money(c.price)}</span>}
               </button>
             ))}
           </div>

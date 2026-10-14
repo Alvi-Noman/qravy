@@ -89,6 +89,8 @@ export default function SettingsBranding(): JSX.Element {
         wide
       />
 
+      <PriceDigits value={tenant?.priceDigits === 'bn' ? 'bn' : 'latin'} token={token as string} onSaved={refresh} />
+
       {dirty && (
         <div className="sticky bottom-4 z-10 mx-auto w-full max-w-2xl rounded-xl border border-[#ececec] bg-white/95 p-3 shadow-md backdrop-blur">
           <div className="flex items-center justify-between">
@@ -295,6 +297,50 @@ function LogoBackground({ value, token, onSaved }: { value: 'white' | 'black'; t
         ))}
       </div>
       <span className="text-[12px] text-slate-500">Pick black if your logo is white or very light.</span>
+    </div>
+  );
+}
+
+/** The digits guests see prices in: 250 or ২৫০. A menu import sets it from how the menu prints its prices. */
+function PriceDigits({ value, token, onSaved }: { value: 'latin' | 'bn'; token: string; onSaved: () => Promise<unknown> | void }) {
+  const [saving, setSaving] = useState<'latin' | 'bn' | null>(null);
+  const choose = async (v: 'latin' | 'bn') => {
+    if (v === value || saving) return;
+    setSaving(v);
+    try {
+      await updateTenant({ priceDigits: v }, token);
+      await onSaved();
+      toastSuccess(v === 'bn' ? 'Prices show as ৳২৫০' : 'Prices show as ৳250');
+    } catch (e: any) {
+      toastError(e?.response?.data?.message || 'Could not save it');
+    } finally {
+      setSaving(null);
+    }
+  };
+  const active = saving ?? value;
+  return (
+    <div className="rounded-xl border border-[#ececec] bg-white p-4 shadow-sm">
+      <div className="text-[14px] font-semibold text-slate-900">Price digits</div>
+      <p className="mt-0.5 text-[12px] text-slate-500">
+        How guests see prices on your menu, cart and checkout. Importing a menu sets this from how the menu prints its prices.
+      </p>
+      <div role="radiogroup" aria-label="Price digits" className="mt-3 inline-flex rounded-lg border border-[#e2e2e2] bg-slate-50 p-1">
+        {([
+          ['latin', 'English · ৳1,250'],
+          ['bn', 'Bangla · ৳১,২৫০'],
+        ] as const).map(([v, label]) => (
+          <button
+            key={v}
+            type="button"
+            role="radio"
+            aria-checked={active === v}
+            onClick={() => choose(v)}
+            className={`rounded-md px-3 py-1 text-[13px] ${active === v ? 'bg-white font-medium text-slate-900 shadow-sm' : 'text-slate-600'}`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
     </div>
   );
 }

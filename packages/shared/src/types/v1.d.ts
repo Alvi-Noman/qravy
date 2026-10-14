@@ -213,6 +213,8 @@ export interface TenantDTO {
     faviconUrl?: string | null;
     /** The tile behind the logo on the waiter's start screen (default white) */
     logoBackground?: 'white' | 'black';
+    /** the digits prices are shown in: 'bn' → ৳২৫০ */
+    priceDigits?: 'latin' | 'bn';
     /** The restaurant's own words for guests (Settings → Guest messages); a missing one = the default */
     guestMessages?: Record<string, { bn?: string; en?: string }>;
     /** The AI waiter's name (null → "Pixie") */

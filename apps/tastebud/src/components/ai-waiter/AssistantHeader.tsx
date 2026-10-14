@@ -6,6 +6,7 @@
 import React from 'react';
 import TenminOrb from './TenminOrb';
 import type { ChooseOption } from '../../utils/handsfree';
+import { money } from '../../utils/ui-lang';
 
 type OrbMode = 'idle' | 'listening' | 'thinking' | 'talking';
 
@@ -70,7 +71,7 @@ export default function AssistantHeader({ mode, level, paused, lang, status, onT
               className="max-w-full truncate rounded-full border border-rose-200 bg-white px-3.5 py-2 text-sm font-semibold text-gray-800 shadow-sm active:scale-95"
             >
               {c.label}
-              {typeof c.price === 'number' && <span className="ml-1.5 font-normal text-gray-500">৳{c.price}</span>}
+              {typeof c.price === 'number' && <span className="ml-1.5 font-normal text-gray-500">{money(c.price)}</span>}
             </button>
           ))}
         </div>

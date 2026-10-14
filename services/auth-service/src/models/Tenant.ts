@@ -19,6 +19,8 @@ export interface TenantDoc {
   logoUrl?: string | null;
   faviconUrl?: string | null;
   logoBackground?: 'white' | 'black';
+  /** the digits prices are shown in: 'bn' → ৳২৫০ (set by a menu import that prints Bangla prices) */
+  priceDigits?: 'latin' | 'bn';
   guestMessages?: Record<string, { bn?: string; en?: string }>;
   waiterName?: string | null;
   waiterVoice?: 'female' | 'male';

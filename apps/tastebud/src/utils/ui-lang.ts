@@ -21,5 +21,19 @@ export function waiterLang(): 'bn' | 'en' {
 
 export const tr = (lang: UiLang, bn: string, en: string) => (lang === 'bn' ? bn : en);
 
+/* ------------------------------------------------------------------ prices */
+
+// The digits prices are shown in — the restaurant's setting (a menu printed "৳ ২৫০" → Bangla), set by StoreBranding.
+let digits: 'latin' | 'bn' = 'latin';
+export function setPriceDigits(d: unknown): void {
+  digits = d === 'bn' ? 'bn' : 'latin';
+}
+
+const BN = '০১২৩৪৫৬৭৮৯';
 const BDT = new Intl.NumberFormat('en-BD', { maximumFractionDigits: 2 });
-export const money = (n: number) => `৳${BDT.format(Math.round(n * 100) / 100)}`;
+/** 1250 → "1,250", or "১,২৫০" for a restaurant whose prices are in Bangla. */
+export const priceNumber = (n: number): string => {
+  const s = BDT.format(Math.round(n * 100) / 100);
+  return digits === 'bn' ? s.replace(/[0-9]/g, (d) => BN[Number(d)]) : s;
+};
+export const money = (n: number) => `৳${priceNumber(n)}`;
