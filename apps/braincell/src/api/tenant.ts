@@ -160,6 +160,7 @@ export async function updateTenant(
     /** uploaded logo URL; null removes it */
     logoUrl?: string | null;
     faviconUrl?: string | null;
+    logoBackground?: 'white' | 'black';
     waiterName?: string | null;
     waiterVoice?: 'female' | 'male';
     customAnswers?: Array<{ question: string; answer: string }>;

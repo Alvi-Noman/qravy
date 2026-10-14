@@ -520,6 +520,7 @@ export default function AiWaiterHome() {
         <StartScreen
           name={tenantInfo?.name}
           logoUrl={tenantInfo?.logoUrl}
+          logoBackground={(tenantInfo as { logoBackground?: 'white' | 'black' } | undefined)?.logoBackground}
           table={resolvedChannel === 'dine-in' ? tableNo : null}
           branch={here?.name}
           onChangeBranch={here && resolvedChannel === 'online' ? () => navigate({ search: '?choose=1' }) : undefined}

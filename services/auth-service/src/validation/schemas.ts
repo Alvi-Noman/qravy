@@ -476,6 +476,8 @@ export const tenantUpdateSchema = z
     logoUrl: z.string().trim().url('Logo must be an image link').max(1000).nullable().optional(),
     // the browser tab's icon on the restaurant's site (falls back to the logo)
     faviconUrl: z.string().trim().url('Favicon must be an image link').max(1000).nullable().optional(),
+    // the tile behind the logo on the waiter's start screen (a white logo needs black)
+    logoBackground: z.enum(['white', 'black']).optional(),
     // the AI waiter: its name ("Pixie" when unset), its voice, and the owner's own answers to common questions
     waiterName: z.string().trim().min(1, 'Give your waiter a name').max(30).nullable().optional(),
     waiterVoice: z.enum(['female', 'male']).optional(),

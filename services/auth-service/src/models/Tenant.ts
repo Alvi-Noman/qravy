@@ -18,6 +18,7 @@ export interface TenantDoc {
   /** The restaurant's logo (uploaded in Settings → Branding); the guest app's start screen shows it */
   logoUrl?: string | null;
   faviconUrl?: string | null;
+  logoBackground?: 'white' | 'black';
   waiterName?: string | null;
   waiterVoice?: 'female' | 'male';
   customAnswers?: Array<{ question: string; answer: string }>;
