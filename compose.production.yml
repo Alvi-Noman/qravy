@@ -96,6 +96,8 @@ services:
       HOST: 0.0.0.0
       STOREFRONT_DOMAIN: ${STOREFRONT_DOMAIN:?Set STOREFRONT_DOMAIN in .env.production}
       # Caddy's certificate check (/internal/tls-ask) says yes to these besides real restaurants
+      # "<restaurant domain>/admin" opens the dashboard
+      ADMIN_DOMAIN: ${ADMIN_DOMAIN}
       PLATFORM_HOSTS: ${ADMIN_DOMAIN},${STOREFRONT_DOMAIN},${CORTEX_DOMAIN:-cortex.qravy.com},${LEGACY_ADMIN_DOMAIN:-app.qravy.com}
       TASTEBUD_DEV_URL: http://tastebud:80
       GATEWAY_URL: http://api-gateway:8080

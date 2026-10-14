@@ -389,6 +389,9 @@ function Connecting({ domain, qravyAddress, onChange }: { domain: Domain; qravyA
               )}
             </span>
           </label>
+          <p className="mt-3 text-[12px] text-emerald-900">
+            Tip: you and your staff can open this dashboard from <b>{domain.primary}/admin</b>.
+          </p>
         </div>
       )}
 

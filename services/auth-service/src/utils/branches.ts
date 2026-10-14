@@ -13,6 +13,7 @@ const locationsCol = () => client.db('authDB').collection<LocationDoc>('location
 const RESERVED = new Set([
   'menu', 'checkout', 'order', 'orders', 'confirmation', 'dine-in', 'online', 't', 'branch',
   'api', 'cart-api', 'azure', 'ws', 'internal', 'assets', 'health', 'waiter', 'i',
+  'admin', // <restaurant>/admin → the dashboard (storefront-host)
 ]);
 
 /** "Gulshan 2 (Main)" → "gulshan-2-main". Empty when the name has no latin letters or digits. */

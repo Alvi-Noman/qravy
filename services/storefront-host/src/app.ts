@@ -8,6 +8,8 @@ import https from 'https';
 import { hostOf, lookupHost, redirectTarget } from './domains.js';
 
 const PORT = Number(process.env.PORT || 8090);
+// the restaurant dashboard (braincell) — "burgerhouse.com/admin" opens it
+const ADMIN_DOMAIN = (process.env.ADMIN_DOMAIN || 'admin.qravy.com').toLowerCase();
 const STOREFRONT_DOMAIN = (process.env.STOREFRONT_DOMAIN || '').toLowerCase();
 
 // IMPORTANT:
@@ -143,6 +145,17 @@ export function createApp(): Application {
    * picked. Same path and query — branches, dine-in, the table and its key all come along. 302: if the owner removes
    * the domain, guests' browsers haven't remembered a redirect to it.
    */
+  // "burgerhouse.com/admin" (or "burger-house.qravy.com/admin") → the dashboard; "/admin/orders" → its orders page
+  app.use((req, res, next) => {
+    if (req.method !== 'GET' && req.method !== 'HEAD') return next();
+    const m = /^\/admin(\/.*)?$/i.exec(req.path);
+    if (!m) return next();
+    const host = hostOf(req.headers);
+    if (!host || PLATFORM_HOSTS.has(host) || host === STOREFRONT_DOMAIN || host === ADMIN_DOMAIN) return next();
+    const q = req.originalUrl.indexOf('?');
+    return res.redirect(302, `https://${ADMIN_DOMAIN}${m[1] || '/'}${q >= 0 ? req.originalUrl.slice(q) : ''}`);
+  });
+
   const NOT_PAGES = /^\/(api|cart-api|azure|ws|internal|health)(\/|$)/;
   app.use(async (req, res, next) => {
     if ((req.method !== 'GET' && req.method !== 'HEAD') || NOT_PAGES.test(req.path)) return next();
