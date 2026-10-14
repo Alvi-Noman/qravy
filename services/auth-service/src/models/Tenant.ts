@@ -21,6 +21,7 @@ export interface TenantDoc {
   waiterName?: string | null;
   waiterVoice?: 'female' | 'male';
   customAnswers?: Array<{ question: string; answer: string }>;
+  pronunciations?: Array<{ word: string; sayAs: string; spoken: string }>;
 
   /** IANA time zone used for all hours (default Asia/Dhaka) */
   timezone?: string;

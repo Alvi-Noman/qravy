@@ -10,14 +10,15 @@ import { updateTenant } from '../../api/tenant';
 import { toastError, toastSuccess } from '../../components/Toaster';
 import WaiterLanguageCard from '../../components/settings/WaiterLanguageCard';
 import { WaiterKnowledgeCard } from '../MenuLayout';
+import PronunciationCard from '../../components/settings/PronunciationCard';
+import { speak, VOICES as AZURE } from '../../utils/speech';
 
-const API_BASE = (import.meta.env.VITE_API_URL as string) || '';
 const card = 'rounded-xl border border-[#ececec] bg-white p-4 shadow-sm';
 
 // the storefront's voices (apps/tastebud/src/components/StoreBranding.tsx) — Bangladeshi Bangla, they read English too
 const VOICES = [
-  { id: 'female' as const, label: 'Female', azure: 'bn-BD-NabanitaNeural' },
-  { id: 'male' as const, label: 'Male', azure: 'bn-BD-PradeepNeural' },
+  { id: 'female' as const, label: 'Female', azure: AZURE.female },
+  { id: 'male' as const, label: 'Male', azure: AZURE.male },
 ];
 
 const MAX_ANSWERS = 50;
@@ -82,27 +83,6 @@ function NameCard() {
 
 /* ------------------------------------------------------------------ voice */
 
-/** Plays a few words in an Azure voice (the same voices and speech service the storefront uses). */
-async function speakSample(voice: string, text: string, signal: AbortSignal): Promise<HTMLAudioElement> {
-  const t = await fetch(`${API_BASE}/azure/speech-token`, { signal }).then((r) => r.json());
-  if (!t?.token || !t?.region) throw new Error('speech unavailable');
-  const ssml = `<speak version="1.0" xml:lang="bn-BD"><voice name="${voice}">${text}</voice></speak>`;
-  const r = await fetch(`https://${t.region}.tts.speech.microsoft.com/cognitiveservices/v1`, {
-    method: 'POST',
-    signal,
-    headers: {
-      Authorization: `Bearer ${t.token}`,
-      'Content-Type': 'application/ssml+xml',
-      'X-Microsoft-OutputFormat': 'audio-24khz-48kbitrate-mono-mp3',
-    },
-    body: ssml,
-  });
-  if (!r.ok) throw new Error('speech failed');
-  const audio = new Audio(URL.createObjectURL(await r.blob()));
-  await audio.play();
-  return audio;
-}
-
 function VoiceCard() {
   const { token } = useAuthContext();
   const qc = useQueryClient();
@@ -132,7 +112,7 @@ function VoiceCard() {
         ? `Welcome${restaurant ? ` to ${restaurant}` : ''}! I'm ${waiter}, your virtual waiter. What would you like today?`
         : `${restaurant ? `${restaurant}-এ ` : ''}স্বাগতম! আমি ${waiter === 'Pixie' ? 'পিক্সি' : waiter}, আপনার ভার্চুয়াল ওয়েটার। আজ কী খেতে চান?`;
     try {
-      audio.current = await speakSample(v.azure, text.replace(/[<&>]/g, ''), ctl.signal);
+      audio.current = await speak(v.azure, text, ctl.signal);
       audio.current.onended = () => setPlaying(null);
     } catch (e) {
       if ((e as Error).name !== 'AbortError') toastError('Could not play the sample');
@@ -332,6 +312,7 @@ export default function SettingsAiWaiter(): JSX.Element {
       <NameCard />
       <WaiterLanguageCard />
       <VoiceCard />
+      <PronunciationCard />
       <AnswersCard />
       <WaiterKnowledgeCard />
     </div>

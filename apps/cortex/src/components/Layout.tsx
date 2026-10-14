@@ -9,6 +9,7 @@ import {
   SignalIcon,
   ArrowRightOnRectangleIcon,
   MicrophoneIcon,
+  SpeakerWaveIcon,
 } from '@heroicons/react/24/outline';
 import { setToken } from '../api';
 
@@ -20,6 +21,7 @@ const NAV = [
   { to: '/transcripts', label: 'Live transcripts', icon: MicrophoneIcon },
   { to: '/conversations', label: 'AI conversations', icon: ChatBubbleLeftRightIcon },
   { to: '/orders', label: 'Orders', icon: ReceiptPercentIcon },
+  { to: '/pronunciation', label: 'Pronunciation', icon: SpeakerWaveIcon },
 ];
 
 export default function Layout({ email, onSignOut }: { email: string; onSignOut: () => void }) {

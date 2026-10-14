@@ -163,6 +163,7 @@ export async function updateTenant(
     waiterName?: string | null;
     waiterVoice?: 'female' | 'male';
     customAnswers?: Array<{ question: string; answer: string }>;
+    pronunciations?: Array<{ word: string; sayAs: string }>;
   },
   token: string
 ): Promise<TenantDTO> {

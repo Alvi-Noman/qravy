@@ -8,7 +8,7 @@ import { useLocation } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { getTenant } from '../api/storefront';
 import { isDineInPath, storeSubFromPath } from '../utils/table';
-import { getTTS } from '../state/tts';
+import { getTTS, setPronunciations } from '../state/tts';
 
 // Azure's Bangladeshi Bangla voices — they read English too
 export const VOICES = { female: 'bn-BD-NabanitaNeural', male: 'bn-BD-PradeepNeural' } as const;
@@ -41,7 +41,10 @@ export default function StoreBranding() {
     staleTime: 300_000,
     refetchOnWindowFocus: false,
   });
-  const t = data as { name?: string; logoUrl?: string | null; faviconUrl?: string | null; waiter?: { voice?: string } } | null | undefined;
+  const t = data as
+    | { name?: string; logoUrl?: string | null; faviconUrl?: string | null; waiter?: { voice?: string }; pronunciations?: Array<{ word: string; spoken: string }> }
+    | null
+    | undefined;
   const dineIn = isDineInPath(pathname);
 
   useEffect(() => {
@@ -52,6 +55,8 @@ export default function StoreBranding() {
 
   useEffect(() => {
     if (!t) return;
+    // the words this restaurant (and Qravy) taught the voice to say right
+    setPronunciations(t.pronunciations);
     const voice = t.waiter?.voice === 'female' ? VOICES.female : VOICES.male;
     try {
       const tts = getTTS();
