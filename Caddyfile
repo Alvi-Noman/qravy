@@ -82,9 +82,17 @@
 }
 
 # Online shop: <restaurant>.qravy.com — dine-in: <restaurant>.qravy.com/dine-in?table=12
-*.qravy.com {
+# Every other host name, with a certificate per restaurant on its first visit — the on_demand_tls check (storefront-host
+# /internal/tls-ask) only says yes to real restaurants (and Qravy's own hosts). Not "*.qravy.com": Caddy then treats
+# app / menu / cortex as covered by that wildcard and never gives them their own certificates.
+https:// {
 	tls {
 		on_demand
 	}
 	import storefront
+}
+
+# Plain http for those hosts → https (the named sites above get this automatically)
+http:// {
+	redir https://{host}{uri} 308
 }
