@@ -17,6 +17,7 @@ import morgan from 'morgan';
 import cors from 'cors';
 
 import authRoutes from './routes/authRoutes.js';
+import handoverRoutes from './routes/handoverRoutes.js';
 import menuRoutes from './routes/menuItemsRoutes.js';
 import eventsRoutes from './routes/eventsRoutes.js';
 import cortexRoutes from './routes/cortexRoutes.js';
@@ -175,6 +176,7 @@ app.use('/api/v1', eventsRoutes); // POST /public/events — what guests do in t
 app.use('/api/v1', cortexRoutes); // /cortex/* — the company admin panel (apps/cortex)
 app.use('/api/v1', insightsRoutes); // /insights/* — a restaurant's own performance (dashboard → Insights)
 app.use('/api/v1', domainRoutes); // /tenants/me/domain — the restaurant's own domain; /public/domain — which restaurant a host is
+app.use('/api/v1/auth', handoverRoutes); // app.qravy.com → admin.qravy.com: sign-in and paired devices carry over
 app.use('/api/v1/auth', authRoutes);
 app.use('/api/v1/menu', menuRoutes);
 app.use('/api/v1/tenant', tenantRoutes);

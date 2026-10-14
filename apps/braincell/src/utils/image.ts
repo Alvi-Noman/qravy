@@ -10,7 +10,7 @@ export type ImgOpts = {
 
 const API =
   (import.meta.env.VITE_API_URL as string | undefined) ||
-  (typeof window !== 'undefined' ? window.location.origin : 'https://app.qravy.com');
+  (typeof window !== 'undefined' ? window.location.origin : 'https://admin.qravy.com');
 
 /**
  * Build an ImageKit URL via your backend redirect (/i/:key).

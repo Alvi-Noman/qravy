@@ -5,6 +5,8 @@ services:
       ADMIN_DOMAIN: ${ADMIN_DOMAIN:?Set ADMIN_DOMAIN in .env.production}
       STOREFRONT_DOMAIN: ${STOREFRONT_DOMAIN:?Set STOREFRONT_DOMAIN in .env.production}
       CORTEX_DOMAIN: ${CORTEX_DOMAIN:-cortex.qravy.com}
+      # the dashboard's old address — forwards to ADMIN_DOMAIN (Caddyfile)
+      LEGACY_ADMIN_DOMAIN: ${LEGACY_ADMIN_DOMAIN:-app.qravy.com}
       TLS_EMAIL: ${TLS_EMAIL:?Set TLS_EMAIL in .env.production}
     ports:
       - "80:80"
@@ -94,7 +96,7 @@ services:
       HOST: 0.0.0.0
       STOREFRONT_DOMAIN: ${STOREFRONT_DOMAIN:?Set STOREFRONT_DOMAIN in .env.production}
       # Caddy's certificate check (/internal/tls-ask) says yes to these besides real restaurants
-      PLATFORM_HOSTS: ${ADMIN_DOMAIN},${STOREFRONT_DOMAIN},${CORTEX_DOMAIN:-cortex.qravy.com}
+      PLATFORM_HOSTS: ${ADMIN_DOMAIN},${STOREFRONT_DOMAIN},${CORTEX_DOMAIN:-cortex.qravy.com},${LEGACY_ADMIN_DOMAIN:-app.qravy.com}
       TASTEBUD_DEV_URL: http://tastebud:80
       GATEWAY_URL: http://api-gateway:8080
       AI_WAITER_URL: http://ai-waiter-service:7071
