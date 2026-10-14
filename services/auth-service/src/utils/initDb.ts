@@ -453,6 +453,8 @@ export async function ensureUserIndexes(client: MongoClient): Promise<void> {
   await tenants.createIndex({ 'demo.expiresAt': 1 }, { sparse: true, name: 'ix_tenants_demo_expires' });
   // a restaurant's own domain: one restaurant per domain, looked up on every page from that domain
   await tenants.createIndex({ 'customDomain.host': 1 }, { unique: true, sparse: true, name: 'ux_tenants_custom_domain' });
+  // app.qravy.com → admin.qravy.com one-time codes (routes/handoverRoutes.ts): gone after a few minutes
+  await db.collection('handovers').createIndex({ createdAt: 1 }, { expireAfterSeconds: 300, name: 'ttl_handovers' });
 
   const memberships = db.collection('memberships');
   await memberships.createIndex({ tenantId: 1, userId: 1 }, { unique: true, name: 'ux_tenant_user' });

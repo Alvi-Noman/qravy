@@ -62,6 +62,44 @@
 	}
 }
 
+# The dashboard's old address (it moved to {$ADMIN_DOMAIN}). Pages go through the handover (auth-service
+# routes/handoverRoutes.ts), which carries the sign-in and a paired branch tablet across, then lands on the same page
+# at the new address. The API, images, voice and waiter paths keep answering here — saved image links, tabs still open.
+{$LEGACY_ADMIN_DOMAIN:app.qravy.com} {
+	@api path /api/*
+	handle @api {
+		reverse_proxy api-gateway:8080
+	}
+
+	@voice path /ws/voice
+	handle @voice {
+		reverse_proxy api-gateway:8080
+	}
+
+	@alertTrigger path /waiter/internal/alert/trigger
+	handle @alertTrigger {
+		respond "Not Found" 404
+	}
+
+	handle_path /waiter/* {
+		reverse_proxy ai-waiter-service:7081
+	}
+
+	@images path /i/*
+	handle @images {
+		reverse_proxy upload-service:4010
+	}
+
+	@azure path /azure/*
+	handle @azure {
+		reverse_proxy api-gateway:8080
+	}
+
+	handle {
+		redir https://{host}/api/v1/auth/handover{uri} 302
+	}
+}
+
 # Cortex — the company admin panel (Qravy staff only: its own sign-in). Not for search engines.
 {$CORTEX_DOMAIN:cortex.qravy.com} {
 	header X-Robots-Tag "noindex, nofollow"

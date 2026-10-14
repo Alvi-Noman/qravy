@@ -116,7 +116,7 @@ function getMagicLinkBaseUrl(req: Request): { baseUrl: string; fallbackLink?: st
     .map(s => s.trim().replace(/\/$/, ''))
     .filter(Boolean);
 
-  const primaryBase = (process.env.FRONTEND_URL || 'https://app.qravy.com').trim().replace(/\/$/, '');
+  const primaryBase = (process.env.FRONTEND_URL || 'https://admin.qravy.com').trim().replace(/\/$/, '');
   const useDev = !!requestOrigin && allowed.includes(requestOrigin);
   const baseUrl = useDev ? requestOrigin : primaryBase;
 

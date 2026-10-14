@@ -161,7 +161,7 @@ const BRAND_NAME = process.env.BRAND_NAME || 'Qravy';
 const BRAND_LOGO = process.env.BRAND_LOGO_URL || 'https://i.imgur.com/pI3F6pG.png';
 const BRAND_PRIMARY = (process.env.BRAND_PRIMARY || '#111111').trim();
 const SUPPORT_EMAIL = process.env.SUPPORT_EMAIL || 'support@qravy.com';
-const APP_DOMAIN = process.env.APP_DOMAIN || 'app.qravy.com';
+const APP_DOMAIN = process.env.APP_DOMAIN || 'admin.qravy.com';
 
 function renderShell(opts: {
   preheader: string;
