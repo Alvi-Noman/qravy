@@ -2,9 +2,9 @@
 import React from 'react';
 import { useLocation } from 'react-router-dom';
 import { useCart } from '../../context/CartContext';
+import { priceNumber } from '../../utils/ui-lang';
 
-const BDT = new Intl.NumberFormat('en-BD');
-const formatBDT = (n: number) => `৳${BDT.format(n)}`;
+const formatBDT = (n: number) => `৳${priceNumber(n)}`;
 
 type CartFabProps = {
   /** Whether the tray is currently open. If open, we hide the FAB. */

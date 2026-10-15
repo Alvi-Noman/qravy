@@ -12,7 +12,7 @@ import WaiterLanguageCard from '../../components/settings/WaiterLanguageCard';
 import { WaiterKnowledgeCard } from '../MenuLayout';
 import PronunciationCard from '../../components/settings/PronunciationCard';
 import { speak, spokenFor, VOICES as AZURE } from '../../utils/speech';
-import { listWords, removeWord, saveWord } from '../../api/pronunciations';
+import { listRequests, listWords, requestWord } from '../../api/pronunciations';
 
 const card = 'rounded-xl border border-[#ececec] bg-white p-4 shadow-sm';
 
@@ -31,10 +31,14 @@ function NameCard() {
   const qc = useQueryClient();
   const { data: tenant } = useTenant();
   const saved = tenant?.waiterName || '';
-  // how the name sounds = the name's word in Qravy's pronunciation dictionary (every restaurant's voice uses it)
+  // how the name sounds = the name's word in Qravy's pronunciation dictionary (every restaurant's voice uses it);
+  // a change is a request Qravy reviews, so the field shows the request while it waits
   const dict = useQuery({ queryKey: ['dictionary'], queryFn: listWords });
-  const entry = (dict.data ?? []).find((p) => p.word.toLowerCase() === (saved || 'pixie').toLowerCase());
-  const savedSayAs = entry?.sayAs ?? '';
+  const requests = useQuery({ queryKey: ['dictionary-requests'], queryFn: listRequests });
+  const nameKey = (saved || 'pixie').toLowerCase();
+  const entry = (dict.data ?? []).find((p) => p.word.toLowerCase() === nameKey);
+  const asked = (requests.data ?? []).find((r) => r.status === 'pending' && r.word.toLowerCase() === nameKey);
+  const savedSayAs = asked?.sayAs ?? entry?.sayAs ?? '';
   const [name, setName] = useState(saved);
   const [sayAs, setSayAs] = useState(savedSayAs);
   const [spoken, setSpoken] = useState('');
@@ -68,15 +72,13 @@ function NameCard() {
     setSaving(true);
     try {
       await updateTenant({ waiterName: name.trim() || null }, token as string);
-      // how it sounds goes into the dictionary (renamed: the old name's word goes, if this restaurant added it)
-      if (sayAs.trim() && (sayAs.trim() !== savedSayAs || shown !== (saved || 'Pixie'))) {
-        await saveWord(shown, sayAs.trim(), saved && saved !== shown ? saved : null);
-      } else if (!sayAs.trim() && entry?.by === 'you') {
-        await removeWord(entry.word);
-      }
+      // how it sounds: a request to Qravy (unless the dictionary already says it that way)
+      const current = (dict.data ?? []).find((p) => p.word.toLowerCase() === shown.toLowerCase());
+      const ask = !!sayAs.trim() && (sayAs.trim() !== savedSayAs || shown !== (saved || 'Pixie')) && spoken !== current?.spoken;
+      if (ask) await requestWord(shown, sayAs.trim(), 'Our waiter’s name');
       await qc.invalidateQueries({ queryKey: ['tenant', token] });
-      await qc.invalidateQueries({ queryKey: ['dictionary'] });
-      toastSuccess(`Your waiter is now called ${shown}`);
+      await qc.invalidateQueries({ queryKey: ['dictionary-requests'] });
+      toastSuccess(ask ? `Saved — Qravy will review how “${shown}” sounds` : `Your waiter is now called ${shown}`);
     } catch (e: any) {
       toastError(e?.response?.data?.message || 'Could not save the name');
     } finally {
@@ -135,7 +137,13 @@ function NameCard() {
       </div>
       <p className="mt-1 text-[11px] text-slate-400">
         Type how it sounds in English letters, the way you’d type Bangla (every letter is said), or in Bangla — only if the voice says the name wrong.
+        Qravy reviews it before the waiter says it that way.
       </p>
+      {asked && (
+        <p className="mt-1 text-[12px] text-amber-700">
+          Waiting for Qravy: “{asked.word}” → {asked.spoken}. Until then guests hear {entry?.spoken || asked.word}.
+        </p>
+      )}
       <div className="mt-4 max-w-xl rounded-2xl bg-[#FFF5F7] px-4 py-3 text-[13px] text-slate-800">
         <span className="text-[11px] font-medium uppercase tracking-wide text-[#FA2851]">Guests see</span>
         <p className="mt-1">

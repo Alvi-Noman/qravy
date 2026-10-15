@@ -3,6 +3,7 @@ import React from 'react';
 import type { v1 } from '../../../../packages/shared/src/types';
 import Modal from './Modal';
 import { minutesLabel, prepRange } from '../utils/wait-time';
+import { priceNumber } from '../utils/ui-lang';
 
 export type ProductCardProps = {
   item: v1.MenuItemDTO;
@@ -19,7 +20,6 @@ export function visibleTags(item: any, max = 3): string[] {
 }
 
 /* ---------- Perf: cache formatter once ---------- */
-const BDT = new Intl.NumberFormat('en-BD');
 
 /* ---------- Helpers (pure) ---------- */
 function getMinFromVariations(
@@ -58,7 +58,7 @@ function isUnavailable(item: any): boolean {
 
 function formatCurrency(n?: number) {
   if (typeof n !== 'number') return undefined;
-  return `৳ ${BDT.format(n)}`;
+  return `৳ ${priceNumber(n)}`;
 }
 
 /* ---------- Component ---------- */

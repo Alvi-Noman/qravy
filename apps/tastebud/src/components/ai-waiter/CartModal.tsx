@@ -15,7 +15,7 @@ import OnlineOrderDetails, { CONTACT_MESSAGES, FulfillmentToggle } from '../Onli
 import type { Channel } from '../../api/storefront';
 import { orderPath } from '../../utils/checkout-flow';
 import { getStableSessionId } from '../../utils/ws';
-import { tr, uiLang } from '../../utils/ui-lang';
+import { priceNumber, tr, uiLang } from '../../utils/ui-lang';
 import { useCart, cartLineKey, type CartItem, type CartWarning } from '../../context/CartContext';
 import WaitEstimateLine from '../WaitEstimateLine';
 import SheetScrollArea, { useBodyScrollLock } from '../SheetScroll';
@@ -61,8 +61,7 @@ type Props = {
 };
 
 
-const BDT = new Intl.NumberFormat('en-BD');
-const formatBDT = (n: number) => `৳${BDT.format(n)}`;
+const formatBDT = (n: number) => `৳${priceNumber(n)}`;
 
 function resolveIntent(meta?: AiReplyMeta, replyText?: string): WaiterIntent {
   if (meta?.intent) return normalizeIntent(meta.intent);

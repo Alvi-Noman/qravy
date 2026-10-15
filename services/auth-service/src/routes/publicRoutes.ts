@@ -77,7 +77,10 @@ function toPublicTenantItem(
     // the browser tab's icon (the logo when there's no favicon)
     faviconUrl: (tenant as any).faviconUrl ?? null,
     // the tile behind the logo on the waiter's start screen
-    logoBackground: (tenant as any).logoBackground === 'black' ? 'black' : 'white',
+    logoBackground: ['black', 'none'].includes((tenant as any).logoBackground) ? (tenant as any).logoBackground : 'white',
+    logoRadius: typeof (tenant as any).logoRadius === 'number' ? (tenant as any).logoRadius : null,
+    logoSize: typeof (tenant as any).logoSize === 'number' ? (tenant as any).logoSize : null,
+    priceDigits: (tenant as any).priceDigits === 'bn' ? 'bn' : 'latin',
     // the restaurant's own words for the intro, thank-you and waiter-call messages (missing = the default)
     guestMessages: (tenant as any).guestMessages ?? {},
     // the waiter's voice reads these words this way — Qravy's dictionary, the same for every restaurant

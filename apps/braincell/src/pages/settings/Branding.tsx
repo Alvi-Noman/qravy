@@ -1,5 +1,6 @@
 // apps/braincell/src/pages/settings/Branding.tsx — Settings → Organization & Branding: how the restaurant looks to guests.
-// Its name, its logo (the AI waiter's start screen, link previews) and its browser-tab icon (favicon). The AI waiter's
+// Its name, its logo (link previews, and the AI waiter's start screen — with or without a shape behind it, its
+// corners and size), its browser-tab icon (favicon) and the digits its prices show in. The AI waiter's
 // own name, voice and answers are under Settings → AI Waiter.
 import { useState, useEffect, useRef, type ReactNode } from 'react';
 import { toastError, toastSuccess } from '../../components/Toaster';
@@ -47,7 +48,7 @@ export default function SettingsBranding(): JSX.Element {
   }
 
   const shownName = name.trim() || tenant?.name || 'Your restaurant';
-  const logoBg = tenant?.logoBackground === 'black' ? 'black' : 'white';
+  const logoBg = tenant?.logoBackground === 'black' || tenant?.logoBackground === 'none' ? tenant.logoBackground : 'white';
   return (
     <div className="grid gap-4">
       <div className="rounded-xl border border-[#ececec] bg-white p-4 shadow-sm">
@@ -74,7 +75,14 @@ export default function SettingsBranding(): JSX.Element {
           src ? <img src={src} alt="" className="h-full w-full object-contain p-2" /> : <Initials name={shownName} dark={logoBg === 'black'} />
         }
         previewClassName={logoBg === 'black' ? 'bg-black' : 'bg-[#FFF5F7]'}
-        extra={<LogoBackground value={logoBg} token={token as string} onSaved={refresh} />}
+      />
+
+      <StartScreenLogo
+        logoUrl={tenant?.logoUrl ?? null}
+        name={shownName}
+        saved={{ background: logoBg, radius: tenant?.logoRadius ?? RADIUS, size: tenant?.logoSize ?? SIZE }}
+        token={token as string}
+        onSaved={refresh}
       />
 
       <ImageCard
@@ -88,6 +96,8 @@ export default function SettingsBranding(): JSX.Element {
         preview={(src) => <TabPreview icon={src || tenant?.logoUrl || '/qravy-icon.png'} name={shownName} />}
         wide
       />
+
+      <PriceDigits value={tenant?.priceDigits === 'bn' ? 'bn' : 'latin'} token={token as string} onSaved={refresh} />
 
       {dirty && (
         <div className="sticky bottom-4 z-10 mx-auto w-full max-w-2xl rounded-xl border border-[#ececec] bg-white/95 p-3 shadow-md backdrop-blur">
@@ -259,42 +269,200 @@ function ImageCard({
   );
 }
 
-/** The tile behind the logo on the AI waiter's start screen: white (default) or black (for a white or light logo). */
-function LogoBackground({ value, token, onSaved }: { value: 'white' | 'black'; token: string; onSaved: () => Promise<unknown> | void }) {
-  const [saving, setSaving] = useState<'white' | 'black' | null>(null);
-  const choose = async (v: 'white' | 'black') => {
+// the start screen's defaults (apps/tastebud/src/components/ai-waiter/StartScreen.tsx)
+const SIZE = 96;
+const RADIUS = 29; // % of the size
+
+type LogoLook = { background: 'white' | 'black' | 'none'; radius: number; size: number };
+
+/** The logo on the AI waiter's start screen: the shape behind it (white, black or none), how round its corners are, its size. */
+function StartScreenLogo({
+  logoUrl,
+  name,
+  saved,
+  token,
+  onSaved,
+}: {
+  logoUrl: string | null;
+  name: string;
+  saved: LogoLook;
+  token: string;
+  onSaved: () => Promise<unknown> | void;
+}) {
+  const [look, setLook] = useState<LogoLook>(saved);
+  const [saving, setSaving] = useState(false);
+  useEffect(() => setLook(saved), [saved.background, saved.radius, saved.size]); // eslint-disable-line react-hooks/exhaustive-deps
+  const dirty = look.background !== saved.background || look.radius !== saved.radius || look.size !== saved.size;
+  const set = (patch: Partial<LogoLook>) => setLook((l) => ({ ...l, ...patch }));
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      await updateTenant({ logoBackground: look.background, logoRadius: look.radius, logoSize: look.size }, token);
+      await onSaved();
+      toastSuccess('Start screen logo saved');
+    } catch (e: any) {
+      toastError(e?.response?.data?.message || 'Could not save it');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const bare = look.background === 'none';
+  const px = Math.round((look.size * look.radius) / 100);
+  const initials =
+    name
+      .split(/\s+/)
+      .filter(Boolean)
+      .slice(0, 2)
+      .map((w) => w[0]?.toUpperCase())
+      .join('') || '•';
+  const shapes = [
+    ['white', 'White shape'],
+    ['black', 'Black shape'],
+    ['none', 'No shape'],
+  ] as const;
+
+  return (
+    <div className="rounded-xl border border-[#ececec] bg-white p-4 shadow-sm">
+      <div className="text-[14px] font-semibold text-slate-900">Start screen logo</div>
+      <p className="mt-0.5 text-[12px] text-slate-500">How your logo sits on the AI waiter’s first screen, above “Get started”.</p>
+      <div className="mt-4 grid gap-5 md:grid-cols-[1fr_260px]">
+        <div className="grid content-start gap-4">
+          <div>
+            <div className="text-[12px] font-medium text-slate-700">Behind the logo</div>
+            <div role="radiogroup" aria-label="Behind the logo" className="mt-1.5 inline-flex flex-wrap rounded-lg border border-[#e2e2e2] bg-slate-50 p-1">
+              {shapes.map(([v, label]) => (
+                <button
+                  key={v}
+                  type="button"
+                  role="radio"
+                  aria-checked={look.background === v}
+                  onClick={() => set({ background: v })}
+                  className={`flex items-center gap-1.5 rounded-md px-3 py-1 text-[13px] ${look.background === v ? 'bg-white font-medium text-slate-900 shadow-sm' : 'text-slate-600'}`}
+                >
+                  <span
+                    className={`h-3 w-3 rounded-sm border ${v === 'black' ? 'border-slate-300 bg-black' : v === 'white' ? 'border-slate-300 bg-white' : 'border-dashed border-slate-400'}`}
+                  />
+                  {label}
+                </button>
+              ))}
+            </div>
+            <p className="mt-1 text-[12px] text-slate-500">
+              {bare ? 'Your logo alone, in its own shape — best for a logo with a transparent background.' : 'Pick black if your logo is white or very light.'}
+            </p>
+          </div>
+          <label className="grid gap-1">
+            <span className="flex justify-between text-[12px] font-medium text-slate-700">
+              {bare ? 'Logo corners' : 'Shape corners'}
+              <span className="font-normal text-slate-500">{look.radius === 0 ? 'Square' : look.radius >= 50 ? 'Circle' : `${look.radius}%`}</span>
+            </span>
+            <input type="range" min={0} max={50} value={look.radius} onChange={(e) => set({ radius: Number(e.target.value) })} aria-label="Corner roundness" />
+          </label>
+          <label className="grid gap-1">
+            <span className="flex justify-between text-[12px] font-medium text-slate-700">
+              Size
+              <span className="font-normal text-slate-500">{look.size}px</span>
+            </span>
+            <input type="range" min={56} max={200} step={4} value={look.size} onChange={(e) => set({ size: Number(e.target.value) })} aria-label="Logo size" />
+          </label>
+          <div className="flex flex-wrap items-center gap-2">
+            <button type="button" disabled={!dirty || saving} onClick={save} className="rounded-md bg-[#2e2e30] px-4 py-1.5 text-sm text-white disabled:opacity-50">
+              {saving ? 'Saving…' : 'Save'}
+            </button>
+            {dirty && (
+              <button type="button" onClick={() => setLook(saved)} className="rounded-md px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50">
+                Discard
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => setLook({ background: 'white', radius: RADIUS, size: SIZE })}
+              className="ml-auto text-[12px] text-slate-500 underline-offset-2 hover:underline"
+            >
+              Back to default
+            </button>
+          </div>
+        </div>
+
+        {/* what guests see */}
+        <div className="flex h-[360px] flex-col items-center overflow-hidden rounded-[28px] border-[6px] border-slate-900 bg-gradient-to-b from-[#FFF1F4] via-white to-white px-4">
+          <div className="flex flex-1 flex-col items-center justify-center text-center">
+            {bare && logoUrl ? (
+              <img src={logoUrl} alt="" style={{ height: look.size, width: 'auto', maxWidth: 220, objectFit: 'contain', borderRadius: px }} />
+            ) : (
+              <div
+                className={
+                  'grid place-items-center overflow-hidden ' +
+                  (bare
+                    ? 'bg-[#FA2851]/10'
+                    : look.background === 'black'
+                      ? 'bg-black shadow-[0_12px_32px_rgba(0,0,0,0.28)]'
+                      : 'bg-white shadow-[0_12px_32px_rgba(250,40,81,0.14)] ring-1 ring-black/[0.04]')
+                }
+                style={{ width: look.size, height: look.size, borderRadius: px }}
+              >
+                {logoUrl ? (
+                  <img src={logoUrl} alt="" className="h-full w-full object-contain" style={{ padding: Math.round(look.size * (0.083 + look.radius / 500)) }} />
+                ) : (
+                  <span
+                    className={`font-semibold ${look.background === 'black' ? 'text-white' : 'text-[#FA2851]'}`}
+                    style={{ fontSize: Math.round(look.size * 0.35) }}
+                  >
+                    {initials}
+                  </span>
+                )}
+              </div>
+            )}
+            <div className="mt-3 max-w-[200px] text-[17px] font-semibold leading-tight text-[#1F1F1F]">{name}</div>
+          </div>
+          <div className="mb-5 h-9 w-full rounded-full bg-[#FA2851] text-center text-[13px] font-semibold leading-9 text-white">Get started</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** The digits guests see prices in: 250 or ২৫০. A menu import sets it from how the menu prints its prices. */
+function PriceDigits({ value, token, onSaved }: { value: 'latin' | 'bn'; token: string; onSaved: () => Promise<unknown> | void }) {
+  const [saving, setSaving] = useState<'latin' | 'bn' | null>(null);
+  const choose = async (v: 'latin' | 'bn') => {
     if (v === value || saving) return;
     setSaving(v);
     try {
-      await updateTenant({ logoBackground: v }, token);
+      await updateTenant({ priceDigits: v }, token);
       await onSaved();
-      toastSuccess(v === 'black' ? 'Logo background: black' : 'Logo background: white');
+      toastSuccess(v === 'bn' ? 'Prices show as ৳২৫০' : 'Prices show as ৳250');
     } catch (e: any) {
-      toastError(e?.response?.data?.message || 'Could not save the background');
+      toastError(e?.response?.data?.message || 'Could not save it');
     } finally {
       setSaving(null);
     }
   };
   const active = saving ?? value;
   return (
-    <div className="mt-4 flex flex-wrap items-center gap-3">
-      <span className="text-[12px] font-medium text-slate-700">Background behind the logo</span>
-      <div role="radiogroup" aria-label="Logo background" className="inline-flex rounded-lg border border-[#e2e2e2] bg-slate-50 p-1">
-        {(['white', 'black'] as const).map((v) => (
+    <div className="rounded-xl border border-[#ececec] bg-white p-4 shadow-sm">
+      <div className="text-[14px] font-semibold text-slate-900">Price digits</div>
+      <p className="mt-0.5 text-[12px] text-slate-500">
+        How guests see prices on your menu, cart and checkout. Importing a menu sets this from how the menu prints its prices.
+      </p>
+      <div role="radiogroup" aria-label="Price digits" className="mt-3 inline-flex rounded-lg border border-[#e2e2e2] bg-slate-50 p-1">
+        {([
+          ['latin', 'English · ৳1,250'],
+          ['bn', 'Bangla · ৳১,২৫০'],
+        ] as const).map(([v, label]) => (
           <button
             key={v}
             type="button"
             role="radio"
             aria-checked={active === v}
             onClick={() => choose(v)}
-            className={`flex items-center gap-1.5 rounded-md px-3 py-1 text-[13px] ${active === v ? 'bg-white font-medium text-slate-900 shadow-sm' : 'text-slate-600'}`}
+            className={`rounded-md px-3 py-1 text-[13px] ${active === v ? 'bg-white font-medium text-slate-900 shadow-sm' : 'text-slate-600'}`}
           >
-            <span className={`h-3 w-3 rounded-sm border border-slate-300 ${v === 'black' ? 'bg-black' : 'bg-white'}`} />
-            {v === 'white' ? 'White' : 'Black'}
+            {label}
           </button>
         ))}
       </div>
-      <span className="text-[12px] text-slate-500">Pick black if your logo is white or very light.</span>
     </div>
   );
 }

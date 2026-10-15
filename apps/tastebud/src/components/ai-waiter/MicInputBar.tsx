@@ -12,6 +12,7 @@ import RecordingRing from "./RecordingRing";
 import {
   FOLLOW_UP_LISTEN_MS, PENDING_AUDIO_MAX, chooseOptionsOf, handsFreeOn, wantsFollowUp,
 } from "../../utils/handsfree";
+import { money } from '../../utils/ui-lang';
 
 type Lang = "bn" | "en" | "auto";
 
@@ -991,7 +992,7 @@ export default function MicInputBar({
               >
                 {c.label}
                 {typeof c.price === "number" && (
-                  <span className="ml-1.5 font-normal text-gray-500">৳{c.price}</span>
+                  <span className="ml-1.5 font-normal text-gray-500">{money(c.price)}</span>
                 )}
               </button>
             ))}

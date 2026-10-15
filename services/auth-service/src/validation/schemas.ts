@@ -480,7 +480,11 @@ export const tenantUpdateSchema = z
     // the browser tab's icon on the restaurant's site (falls back to the logo)
     faviconUrl: z.string().trim().url('Favicon must be an image link').max(1000).nullable().optional(),
     // the tile behind the logo on the waiter's start screen (a white logo needs black)
-    logoBackground: z.enum(['white', 'black']).optional(),
+    // the start screen's logo: the shape behind it (or none), its corner roundness (% of the size: 0 square → 50 circle), its size (px)
+    logoBackground: z.enum(['white', 'black', 'none']).optional(),
+    logoRadius: z.number().int().min(0).max(50).optional(),
+    logoSize: z.number().int().min(56).max(200).optional(),
+    priceDigits: z.enum(['latin', 'bn']).optional(),
     // the restaurant's own words for what guests see (empty = Qravy's default): the intro, the thank-you after a
     // dine-in / delivery / pickup order, the waiter-call confirmation — each in Bangla and English
     guestMessages: z

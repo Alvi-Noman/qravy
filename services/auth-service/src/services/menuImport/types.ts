@@ -117,6 +117,8 @@ export type DraftCategory = {
 
 export type DraftMenu = {
   currency?: string;
+  /** the digits the menu prints its prices in ("৳ ২৫০" → 'bn'); the storefront shows prices the same way */
+  priceDigits?: 'latin' | 'bn';
   /** Menu-wide notes to show customers */
   notes?: string[];
   categories: DraftCategory[];

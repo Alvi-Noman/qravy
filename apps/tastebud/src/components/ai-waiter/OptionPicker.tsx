@@ -5,7 +5,7 @@
 // in the same held order. The last missing pick adds it, with the quantity the guest ordered.
 import React from 'react';
 import type { PickOption } from '../../utils/handsfree';
-import { tr } from '../../utils/ui-lang';
+import { priceNumber, tr } from '../../utils/ui-lang';
 
 type Props = {
   picks: PickOption[];
@@ -15,8 +15,7 @@ type Props = {
   onAnswer: (say: string) => void;
 };
 
-const BDT = new Intl.NumberFormat('en-BD');
-const money = (n: number) => `৳${BDT.format(n)}`;
+const money = (n: number) => `৳${priceNumber(n)}`;
 
 type Sel = { variant: string; choices: string[] };
 

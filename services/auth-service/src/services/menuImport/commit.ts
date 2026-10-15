@@ -145,6 +145,15 @@ export async function commitDraft(ctx: WriteCtx, job: MenuImportDoc): Promise<Co
   const tenantOid = new ObjectId(ctx.tenantId);
   const locationId = job.locationId ? String(job.locationId) : null;
 
+  // prices printed in Bangla ("৳ ২৫০") are shown to guests in Bangla too, and the other way round
+  if (job.draft?.priceDigits) {
+    await client
+      .db('authDB')
+      .collection('tenants')
+      .updateOne({ _id: tenantOid }, { $set: { priceDigits: job.draft.priceDigits, updatedAt: new Date() } })
+      .catch((err) => logger.warn(`[menu-import] could not save price digits: ${errMessage(err)}`));
+  }
+
   for (const cat of job.draft?.categories ?? []) {
     const active = cat.items.filter((i) => i.action !== 'skip');
     result.itemsSkipped += cat.items.length - active.length;

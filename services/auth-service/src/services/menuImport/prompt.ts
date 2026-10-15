@@ -25,7 +25,7 @@ ITEMS
 - BILINGUAL menus: when the same dish is printed in two languages (e.g. English and Bangla), output ONE item. Use the name in the menu's main language (the language of most headings) and start the description with the other-language name in parentheses.
 - description: the descriptive text printed with the item (ingredients, serving note). null if none. Do not invent descriptions.
 - price: the selling price as a plain number using ASCII digits (convert Bangla digits ০১২৩৪৫৬৭৮৯, remove currency symbols/words like ৳, Tk, BDT, $, "/-"). null if the item has no single price.
-- priceText: the price exactly as printed (for verification). null if none.
+- priceText: the price exactly as printed, in the menu's own digits — keep Bangla digits as Bangla ("৳ ২৫০", "Tk 250"). For an item priced by size/portion, the printed prices ("২৫০ / ৩৫০"). null if no price is printed.
 - compareAtPrice: when TWO prices are shown for the same item and one is struck-through, labelled "was", "regular", "MRP", or shown as the old price next to a discounted price, put the higher/old price here and the current price in price. Otherwise null.
 - "MP", "Market price", "Seasonal price", "Ask your server": price null, add tag "Market price" and issue "Market price — set a price".
 - Price ranges ("250–300"): use the lower number and add issue "Price range 250–300".

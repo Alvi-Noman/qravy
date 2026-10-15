@@ -8,6 +8,7 @@ import { ballOf, flyOrb, settle, type Flight } from './orbFlight';
 import ScrollText from './ScrollText';
 import { useIsMobile } from '../../hooks/useIsMobile';
 import type { ChooseOption } from '../../utils/handsfree';
+import { money } from '../../utils/ui-lang';
 
 type OrbMode = 'idle' | 'listening' | 'thinking' | 'talking';
 
@@ -87,7 +88,7 @@ export default function AssistantDock({ mode, status, subtitle, orbProps, origin
             className="max-w-full truncate rounded-full bg-white px-3.5 py-1.5 text-[13px] font-semibold text-gray-800 shadow-sm ring-1 ring-[#FA2851]/15 active:scale-95"
           >
             {c.label}
-            {typeof c.price === 'number' && <span className="ml-1.5 font-normal text-gray-500">৳{c.price}</span>}
+            {typeof c.price === 'number' && <span className="ml-1.5 font-normal text-gray-500">{money(c.price)}</span>}
           </button>
         ))}
       </div>

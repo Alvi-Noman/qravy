@@ -459,6 +459,9 @@ export async function ensureUserIndexes(client: MongoClient): Promise<void> {
   // the pronunciation dictionary is global now: the old per-restaurant and Cortex lists move into it (once)
   const moved = await migrateOldPronunciations();
   if (moved) logger.info(`Moved ${moved} pronunciations into the global dictionary`);
+  // restaurants' requests to change it: Cortex's queue (oldest first), a restaurant's own list
+  await db.collection('pronounceRequests').createIndex({ status: 1, createdAt: 1 }, { name: 'ix_pronounce_requests_status' });
+  await db.collection('pronounceRequests').createIndex({ tenantId: 1, key: 1, status: 1 }, { name: 'ix_pronounce_requests_tenant' });
 
   const memberships = db.collection('memberships');
   await memberships.createIndex({ tenantId: 1, userId: 1 }, { unique: true, name: 'ux_tenant_user' });

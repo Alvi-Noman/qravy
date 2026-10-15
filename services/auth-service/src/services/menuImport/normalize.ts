@@ -78,6 +78,15 @@ export function stripItemNumber(name: string): string {
 
 /* --------------------------------- Prices ---------------------------------- */
 
+/** Which digits a printed price uses: "৳ ২৫০" → 'bn', "Tk 250" → 'latin', no digits → undefined. */
+export function priceDigitsOf(text: unknown): 'latin' | 'bn' | undefined {
+  if (typeof text !== 'string') return undefined;
+  const bn = (text.match(/[০-৯]/g) ?? []).length;
+  const latin = (text.match(/[0-9]/g) ?? []).length;
+  if (!bn && !latin) return undefined;
+  return bn > latin ? 'bn' : 'latin';
+}
+
 /**
  * Parses a price from a number or printed text.
  * Handles "৳ ২৫০", "250/-", "Tk. 1,200", "$12.50", "12,50".
@@ -299,6 +308,7 @@ export function mergeChunks(chunks: Array<{ menu: RawMenu; pageOffset: number }>
   const byKey = new Map<string, DraftCategory>();
   const order: DraftCategory[] = [];
   const currencyVotes = new Map<string, number>();
+  const digitVotes = { latin: 0, bn: 0 };
   const notes: string[] = [];
   const seenNotes = new Set<string>();
 
@@ -315,6 +325,10 @@ export function mergeChunks(chunks: Array<{ menu: RawMenu; pageOffset: number }>
     if (cur) currencyVotes.set(cur, (currencyVotes.get(cur) ?? 0) + 1);
 
     for (const rawCat of Array.isArray(menu?.categories) ? menu.categories : []) {
+      for (const it of Array.isArray(rawCat?.items) ? rawCat.items : []) {
+        const d = priceDigitsOf(it?.priceText);
+        if (d) digitVotes[d]++;
+      }
       const cat = rawCategoryToDraft(rawCat, pageOffset);
       if (!cat.items.length) continue;
       const key = nameKey(cat.name);
@@ -347,8 +361,11 @@ export function mergeChunks(chunks: Array<{ menu: RawMenu; pageOffset: number }>
   }
 
   const currency = [...currencyVotes.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
+  // the digits most printed prices use (a few prices are enough to tell)
+  const priceDigits = digitVotes.bn + digitVotes.latin >= 2 ? (digitVotes.bn > digitVotes.latin ? 'bn' : 'latin') : undefined;
   return {
     ...(currency ? { currency } : {}),
+    ...(priceDigits ? { priceDigits } : {}),
     ...(notes.length ? { notes } : {}),
     categories: order,
   };
