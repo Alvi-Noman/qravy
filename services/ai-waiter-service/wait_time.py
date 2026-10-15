@@ -4,7 +4,7 @@ Wait-time estimation for the virtual waiter — mirrors services/auth-service/sr
 
     dish time   = the variation's prepMinutes → the item's → the restaurant default
     line time   = dish time + ~20% per extra portion (max double)
-    order prep  = the slowest line + 1 min per extra dish (max 5)
+    order prep  = the slowest line (a quick dish is made within the slow one's time and adds nothing)
     queue       = orders ahead scheduled onto `parallelOrders` kitchen stations; start on the first free one
 
 Plus the guest-facing words: "about 20 minutes", "কুড়ি মিনিটের মতো", and a detector for time questions.
@@ -84,7 +84,7 @@ def order_prep_minutes(lines: Iterable[Tuple[int, int]]) -> int:
     rows = list(lines)
     if not rows:
         return 0
-    return max(line_minutes(p, q) for p, q in rows) + min(5, len(rows) - 1)
+    return max(line_minutes(p, q) for p, q in rows)
 
 
 def _ts(v: Any) -> Optional[float]:

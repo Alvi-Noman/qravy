@@ -41,12 +41,14 @@ describe('wait time: dishes and lines', () => {
     expect(lineMinutes(2, 4)).toBe(4);
   });
 
-  it('an order takes as long as its slowest dish plus a minute per extra dish (max 5)', () => {
+  it('an order takes as long as its slowest dish — quicker ones are made alongside it', () => {
     expect(orderPrepMinutes([])).toBe(0);
     expect(orderPrepMinutes([{ prepMinutes: 18, qty: 1 }])).toBe(18);
-    expect(orderPrepMinutes([{ prepMinutes: 18, qty: 1 }, { prepMinutes: 3, qty: 2 }, { prepMinutes: 10, qty: 1 }])).toBe(20);
+    expect(orderPrepMinutes([{ prepMinutes: 18, qty: 1 }, { prepMinutes: 3, qty: 2 }, { prepMinutes: 10, qty: 1 }])).toBe(18);
+    // a 20-minute dish and a 3-minute juice: still 20
+    expect(orderPrepMinutes([{ prepMinutes: 20, qty: 1 }, { prepMinutes: 3, qty: 1 }])).toBe(20);
     const many = Array.from({ length: 9 }, () => ({ prepMinutes: 5, qty: 1 }));
-    expect(orderPrepMinutes(many)).toBe(10);
+    expect(orderPrepMinutes(many)).toBe(5);
   });
 });
 
@@ -96,8 +98,8 @@ describe('wait time: the kitchen queue', () => {
       settings: { defaultPrepMinutes: 15, parallelOrders: 1 },
       now: NOW,
     });
-    expect(e).toMatchObject({ prepMinutes: 23, queueMinutes: 6, totalMinutes: 29, estimated: true });
-    expect(e.readyAt.toISOString()).toBe(at(29).toISOString());
+    expect(e).toMatchObject({ prepMinutes: 22, queueMinutes: 6, totalMinutes: 28, estimated: true });
+    expect(e.readyAt.toISOString()).toBe(at(28).toISOString());
   });
 
   it('reads kitchen settings with safe defaults', () => {

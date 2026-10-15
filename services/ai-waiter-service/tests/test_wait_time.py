@@ -34,8 +34,9 @@ def test_dish_and_line_minutes():
     assert [wt.clamp_prep(v) for v in (7.6, "20", 0, -3, 999, None)] == [8, 20, None, None, 240, None]
     assert [wt.line_minutes(20, 1), wt.line_minutes(20, 3), wt.line_minutes(10, 20), wt.line_minutes(2, 4)] == [20, 28, 20, 4]
     assert wt.order_prep_minutes([]) == 0
-    assert wt.order_prep_minutes([(18, 1), (3, 2), (10, 1)]) == 20
-    assert wt.order_prep_minutes([(5, 1)] * 9) == 10
+    assert wt.order_prep_minutes([(18, 1), (3, 2), (10, 1)]) == 18
+    assert wt.order_prep_minutes([(20, 1), (3, 1)]) == 20  # a juice with a 20-minute dish: still 20
+    assert wt.order_prep_minutes([(5, 1)] * 9) == 5
 
 
 def test_kitchen_queue():
@@ -57,7 +58,7 @@ def test_kitchen_queue():
     e = wt.estimate([({"prepMinutes": 18}, None, 2), ({}, None, 1)],
                     [{"status": "preparing", "prepMinutes": 10, "readyAt": at(6)}],
                     {"defaultPrepMinutes": 15, "parallelOrders": 1}, NOW)
-    assert e == {"prepMinutes": 23, "queueMinutes": 6, "totalMinutes": 29, "estimated": True}
+    assert e == {"prepMinutes": 22, "queueMinutes": 6, "totalMinutes": 28, "estimated": True}
     assert wt.kitchen_settings(None) == {"defaultPrepMinutes": 15, "parallelOrders": 3}
     assert wt.kitchen_settings({"kitchen": {"parallelOrders": 0}})["parallelOrders"] == 3
     assert [wt.busy_level(q) for q in (0, 10, 25)] == ["quiet", "normal", "busy"]
@@ -192,7 +193,7 @@ def test_how_long_for_my_tray():
     cart = [{"itemId": "kb", "quantity": 2, "price": 780, "variation": "Full"}, {"itemId": "sr", "quantity": 1, "price": 230}]
     out, calls = run("how long will my order take?", cart=cart, kitchen=KITCHEN_BUSY)
     assert not calls
-    # Full kacchi 14 min × 2 → 17, +1 for the second dish = 18 prep, +12 queue = 30
+    # Full kacchi 14 min × 2 → 17 prep (the spring roll is made alongside), +12 queue = 29 → "about 30"
     assert out["replyText"].startswith("If you order now, your food should be ready in about 30 minutes — the Kacchi Biryani")
     assert "orders ahead" in out["replyText"] and out["meta"]["cartOps"] == []
 
