@@ -18,7 +18,10 @@ export interface TenantDoc {
   /** The restaurant's logo (uploaded in Settings → Branding); the guest app's start screen shows it */
   logoUrl?: string | null;
   faviconUrl?: string | null;
-  logoBackground?: 'white' | 'black';
+  /** the start screen's logo: the shape behind it ('none': the logo alone), corner roundness (% of size), size (px) */
+  logoBackground?: 'white' | 'black' | 'none';
+  logoRadius?: number;
+  logoSize?: number;
   /** the digits prices are shown in: 'bn' → ৳২৫০ (set by a menu import that prints Bangla prices) */
   priceDigits?: 'latin' | 'bn';
   guestMessages?: Record<string, { bn?: string; en?: string }>;

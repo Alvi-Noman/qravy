@@ -212,7 +212,11 @@ export interface TenantDTO {
     /** The browser tab's icon on the restaurant's site (null → the logo, then Qravy's) */
     faviconUrl?: string | null;
     /** The tile behind the logo on the waiter's start screen (default white) */
-    logoBackground?: 'white' | 'black';
+    logoBackground?: 'white' | 'black' | 'none';
+    /** the start screen logo's corner roundness, % of its size (0 square → 50 circle); null: the default */
+    logoRadius?: number | null;
+    /** the start screen logo's size in px; null: the default (96) */
+    logoSize?: number | null;
     /** the digits prices are shown in: 'bn' → ৳২৫০ */
     priceDigits?: 'latin' | 'bn';
     /** The restaurant's own words for guests (Settings → Guest messages); a missing one = the default */

@@ -527,7 +527,9 @@ export default function AiWaiterHome() {
         <StartScreen
           name={tenantInfo?.name}
           logoUrl={tenantInfo?.logoUrl}
-          logoBackground={(tenantInfo as { logoBackground?: 'white' | 'black' } | undefined)?.logoBackground}
+          logoBackground={(tenantInfo as { logoBackground?: 'white' | 'black' | 'none' } | undefined)?.logoBackground}
+          logoRadius={(tenantInfo as { logoRadius?: number | null } | undefined)?.logoRadius}
+          logoSize={(tenantInfo as { logoSize?: number | null } | undefined)?.logoSize}
           table={resolvedChannel === 'dine-in' ? tableNo : null}
           branch={here?.name}
           onChangeBranch={here && resolvedChannel === 'online' ? () => navigate({ search: '?choose=1' }) : undefined}

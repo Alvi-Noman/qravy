@@ -737,6 +737,8 @@ export async function updateMyTenant(req: Request, res: Response, next: NextFunc
     if (parsed.logoUrl !== undefined) update.logoUrl = parsed.logoUrl || null;
     if (parsed.faviconUrl !== undefined) update.faviconUrl = parsed.faviconUrl || null;
     if (parsed.logoBackground) update.logoBackground = parsed.logoBackground;
+    if (parsed.logoRadius !== undefined) update.logoRadius = parsed.logoRadius;
+    if (parsed.logoSize !== undefined) update.logoSize = parsed.logoSize;
     if (parsed.priceDigits) update.priceDigits = parsed.priceDigits;
     if (parsed.guestMessages) {
       // only what they wrote: an empty text means "use the default"

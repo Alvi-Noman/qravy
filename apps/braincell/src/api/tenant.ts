@@ -160,7 +160,9 @@ export async function updateTenant(
     /** uploaded logo URL; null removes it */
     logoUrl?: string | null;
     faviconUrl?: string | null;
-    logoBackground?: 'white' | 'black';
+    logoBackground?: 'white' | 'black' | 'none';
+    logoRadius?: number | null;
+    logoSize?: number | null;
     priceDigits?: 'latin' | 'bn';
     guestMessages?: Record<string, { bn?: string; en?: string }>;
     waiterName?: string | null;

@@ -7,8 +7,12 @@ import { useState } from 'react';
 type Props = {
   name?: string | null;
   logoUrl?: string | null;
-  /** the tile behind the logo (Settings → Branding): white by default, black for a white logo */
-  logoBackground?: 'white' | 'black' | null;
+  /** the shape behind the logo (Settings → Branding): white by default, black for a white logo, 'none' for the logo alone */
+  logoBackground?: 'white' | 'black' | 'none' | null;
+  /** corner roundness, % of the size: 0 square → 50 circle (the shape's corners, or the logo's own without one) */
+  logoRadius?: number | null;
+  /** the logo's size in px (the shape's side, or the logo's height without one) */
+  logoSize?: number | null;
   /** dine-in: the guest's table ("12") */
   table?: string | null;
   lang: 'bn' | 'en';
@@ -19,7 +23,9 @@ type Props = {
   onChangeBranch?: () => void;
 };
 
-const LOGO = 96; // px — a launch-screen app icon
+const LOGO = 96; // px — a launch-screen app icon, unless the restaurant sets its own size
+const RADIUS = 29; // % of the size — the app-icon look (28px on 96)
+const clamp = (n: unknown, lo: number, hi: number, d: number) => (typeof n === 'number' && Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : d);
 
 function initialsOf(name: string): string {
   return (
@@ -32,12 +38,18 @@ function initialsOf(name: string): string {
   );
 }
 
-export default function StartScreen({ name, logoUrl, logoBackground, table, lang, onStart, branch, onChangeBranch }: Props) {
+export default function StartScreen({ name, logoUrl, logoBackground, logoRadius, logoSize, table, lang, onStart, branch, onChangeBranch }: Props) {
   const [logoFailed, setLogoFailed] = useState(false);
   const loaded = !!name;
   const showLogo = !!logoUrl && !logoFailed;
   const en = lang === 'en';
   const dark = logoBackground === 'black';
+  const bare = logoBackground === 'none';
+  const size = clamp(logoSize, 56, 200, LOGO);
+  const roundness = clamp(logoRadius, 0, 50, RADIUS);
+  const radius = Math.round((size * roundness) / 100);
+  // room around the logo inside the shape: more as the corners round, so a square logo isn't clipped by a circle
+  const pad = Math.round(size * (0.083 + roundness / 500));
 
   return (
     <div
@@ -48,25 +60,43 @@ export default function StartScreen({ name, logoUrl, logoBackground, table, lang
     >
       {/* the brand, centred */}
       <div className="flex flex-1 flex-col items-center justify-center text-center">
-        <div
-          className={
-            'grid place-items-center overflow-hidden rounded-[28px] ' +
-            (dark ? 'bg-black shadow-[0_12px_32px_rgba(0,0,0,0.28)] ring-1 ring-black ' : 'bg-white shadow-[0_12px_32px_rgba(250,40,81,0.14)] ring-1 ring-black/[0.04] ') +
-            (loaded ? 'qv-start-in' : 'animate-pulse')
-          }
-          style={{ width: LOGO, height: LOGO }}
-        >
-          {showLogo ? (
-            <img
-              src={logoUrl as string}
-              alt=""
-              className="h-full w-full object-contain p-2"
-              onError={() => setLogoFailed(true)}
-            />
-          ) : loaded ? (
-            <span className={'text-[34px] font-semibold tracking-tight ' + (dark ? 'text-white' : 'text-[#FA2851]')}>{initialsOf(name as string)}</span>
-          ) : null}
-        </div>
+        {bare && showLogo ? (
+          // the logo alone: its own shape and width, as tall as the size, its own corners rounded
+          <img
+            src={logoUrl as string}
+            alt=""
+            className={loaded ? 'qv-start-in' : 'animate-pulse'}
+            style={{ height: size, width: 'auto', maxWidth: 'min(85vw, 320px)', objectFit: 'contain', borderRadius: radius }}
+            onError={() => setLogoFailed(true)}
+          />
+        ) : (
+          <div
+            className={
+              'grid place-items-center overflow-hidden ' +
+              (bare
+                ? 'bg-[#FA2851]/10 '
+                : dark
+                  ? 'bg-black shadow-[0_12px_32px_rgba(0,0,0,0.28)] ring-1 ring-black '
+                  : 'bg-white shadow-[0_12px_32px_rgba(250,40,81,0.14)] ring-1 ring-black/[0.04] ') +
+              (loaded ? 'qv-start-in' : 'animate-pulse')
+            }
+            style={{ width: size, height: size, borderRadius: radius }}
+          >
+            {showLogo ? (
+              <img
+                src={logoUrl as string}
+                alt=""
+                className="h-full w-full object-contain"
+                style={{ padding: pad }}
+                onError={() => setLogoFailed(true)}
+              />
+            ) : loaded ? (
+              <span className={'font-semibold tracking-tight ' + (dark ? 'text-white' : 'text-[#FA2851]')} style={{ fontSize: Math.round(size * 0.35) }}>
+                {initialsOf(name as string)}
+              </span>
+            ) : null}
+          </div>
+        )}
 
         <h1
           className={
