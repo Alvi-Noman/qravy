@@ -4,7 +4,7 @@
 // a restaurant SENDS A REQUEST from its Settings → AI Waiter, and Qravy accepts it (as sent or edited) or declines it.
 // Each word keeps its history (who changed it, from what, when), so a bad change can be undone.
 //   /public/pronounce?text=sholo        what the voice will read ("শোলো") — the live preview while typing
-//   /pronunciations                      a restaurant's view: the dictionary (read-only) + its requests
+//   /pronunciations                      a restaurant's view: only its own words and requests (waiting / approved / declined)
 //   /cortex/pronunciations               Qravy's view: everything + who / history / revert / remove + the requests
 // The storefront gets the dictionary with the restaurant's info (publicRoutes), the waiter reads it (server.py).
 import express, { type Request, type Response, type NextFunction } from 'express';
@@ -172,7 +172,13 @@ router.get(
   ...restaurantGuard,
   wrap(async (req, res) => {
     const tenantId = String(req.user?.tenantId ?? '');
-    const docs = await lexicon().find({ removed: { $ne: true } }).sort({ updatedAt: -1 }).limit(2000).toArray();
+    // a restaurant sees only its own words (ones Qravy accepted from it, or moved from its old list) — the dictionary
+    // itself is Qravy's, and other restaurants' words stay private
+    const docs = await lexicon()
+      .find({ removed: { $ne: true }, $or: [{ 'actor.requestedBy.tenantId': tenantId }, { 'actor.kind': 'restaurant', 'actor.tenantId': tenantId }] })
+      .sort({ updatedAt: -1 })
+      .limit(500)
+      .toArray();
     res.json({
       success: true,
       items: docs.map((d) => ({ word: d.word, sayAs: d.sayAs, spoken: d.spoken, by: byFor(d.actor, tenantId), updatedAt: d.updatedAt })),

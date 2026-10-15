@@ -141,7 +141,11 @@ function jsonProxyToAuth() {
 
       const hasBody =
         req.body && Object.keys(req.body as Record<string, unknown>).length > 0;
-      if (!hasBody) return;
+      if (!hasBody) {
+        // an empty JSON body ("{}") was already read by express.json: say so, or the service waits for bytes that never come
+        if ((req as { _body?: boolean })._body) proxyReq.setHeader('content-length', '0');
+        return;
+      }
 
       const ct =
         (proxyReq.getHeader('content-type') as string | undefined) || '';
@@ -199,7 +203,11 @@ function publicProxyToAuth() {
 
       const hasBody =
         req.body && Object.keys(req.body as Record<string, unknown>).length > 0;
-      if (!hasBody) return;
+      if (!hasBody) {
+        // an empty JSON body ("{}") was already read by express.json: say so, or the service waits for bytes that never come
+        if ((req as { _body?: boolean })._body) proxyReq.setHeader('content-length', '0');
+        return;
+      }
 
       const ct =
         (proxyReq.getHeader('content-type') as string | undefined) || '';
