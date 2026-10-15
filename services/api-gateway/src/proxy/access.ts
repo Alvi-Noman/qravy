@@ -20,7 +20,11 @@ export default function registerAccessProxy(app: Application) {
       if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) return;
 
       const hasBody = req.body && Object.keys(req.body as object).length > 0;
-      if (!hasBody) return;
+      if (!hasBody) {
+        // an empty JSON body ("{}") was already read by express.json: say so, or the service waits for bytes that never come
+        if ((req as { _body?: boolean })._body) proxyReq.setHeader('content-length', '0');
+        return;
+      }
 
       const contentType = (proxyReq.getHeader('content-type') as string | undefined) || '';
       if (!contentType.includes('application/json')) return;

@@ -75,7 +75,12 @@ function NameCard() {
       // how it sounds: a request to Qravy (unless the dictionary already says it that way)
       const current = (dict.data ?? []).find((p) => p.word.toLowerCase() === shown.toLowerCase());
       const ask = !!sayAs.trim() && (sayAs.trim() !== savedSayAs || shown !== (saved || 'Pixie')) && spoken !== current?.spoken;
-      if (ask) await requestWord(shown, sayAs.trim(), 'Our waiter’s name');
+      if (ask) {
+        // 409: the waiter already says it that way — nothing to ask for
+        await requestWord(shown, sayAs.trim(), 'Our waiter’s name').catch((e) => {
+          if (e?.response?.status !== 409) throw e;
+        });
+      }
       await qc.invalidateQueries({ queryKey: ['tenant', token] });
       await qc.invalidateQueries({ queryKey: ['dictionary-requests'] });
       toastSuccess(ask ? `Saved — Qravy will review how “${shown}” sounds` : `Your waiter is now called ${shown}`);
