@@ -3,7 +3,8 @@
  *
  *   dish time   = the variation's prepMinutes → the item's → the restaurant's default
  *   line time   = dish time + a little per extra portion (a pot of 3 biryanis isn't 3× one)
- *   order prep  = the slowest line (dishes cook side by side) + 1 min per extra dish for plating
+ *   order prep  = the slowest line — dishes cook side by side, so a quick one (a juice) is made within the
+ *                 slow one's time and adds nothing
  *   queue       = the kitchen cooks `parallelOrders` orders at once; orders ahead are scheduled onto
  *                 those stations first (list scheduling), and this order starts on the first free one
  *   ready at    = now + queue + order prep
@@ -93,12 +94,10 @@ export function lineMinutes(prep: number, qty: number): number {
   return Math.min(prep * 2, prep + extra);
 }
 
-/** Cooking time of a whole order (no queue). */
+/** Cooking time of a whole order (no queue): its slowest dish — everything else is made alongside it. */
 export function orderPrepMinutes(lines: TimedLine[]): number {
   if (!lines.length) return 0;
-  const slowest = Math.max(...lines.map((l) => lineMinutes(l.prepMinutes, l.qty)));
-  const plating = Math.min(5, lines.length - 1);
-  return slowest + plating;
+  return Math.max(...lines.map((l) => lineMinutes(l.prepMinutes, l.qty)));
 }
 
 /**
