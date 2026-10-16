@@ -553,7 +553,7 @@ function History({ token, onPrint }: { token: string | null; onPrint: PrintFn })
 }
 
 export default function Orders() {
-  const { orders, loading, connected, soundOn, setSoundOn, refresh, setStatus, adjustEta } = useOrdersLive();
+  const { orders, loading, connected, soundOn, setSoundOn, soundBlocked, refresh, setStatus, adjustEta } = useOrdersLive();
   const { token } = useAuthContext();
   const { has } = usePermissions();
   const canUpdate = has('orders:update');
@@ -668,6 +668,13 @@ export default function Orders() {
           </button>
         </div>
       </div>
+      {soundBlocked && (
+        // the browser keeps sound off after the page loads until someone clicks it — any click turns it on
+        <div className="flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+          <BellAlertIcon className="h-4 w-4 shrink-0" />
+          Click anywhere on this page so new orders can ring — the browser keeps sound off until you do.
+        </div>
+      )}
 
       {buzzerActive && (
         <div className="flex items-center justify-between gap-4 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3">

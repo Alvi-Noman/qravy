@@ -1,7 +1,7 @@
 // apps/tastebud/src/components/ai-waiter/TrayModal.tsx
 import React from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { OrderApiError, cartIdempotencyKey, placeOrder, rememberOrder } from '../../api/orders';
+import { OrderApiError, cartIdempotencyKey, orderAttemptDone, placeOrder, rememberOrder } from '../../api/orders';
 import { normalizeTable, useTable } from '../../utils/table';
 import {
   missingContactField,
@@ -212,6 +212,7 @@ export default function TrayModal({
           : { ...common, channel: 'dine-in', table: t as string },
       );
       clear({ silent: true });
+      orderAttemptDone(sid, items); // ordering the same again later is a new order
       rememberOrder(placeSub, order);
       onClose();
       navigate(orderPath(order.token, placeSub, placeBranch), { state: { justPlaced: true } });

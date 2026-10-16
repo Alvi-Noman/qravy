@@ -8,7 +8,7 @@ import { useCart, cartLineKey } from '../context/CartContext';
 // THE WAITER — the same one as on the home screen and the menu page (src/waiter); never handle its replies here
 import { useWaiterSession } from '../waiter/useWaiterSession';
 import WaiterSheets, { WaiterDock } from '../waiter/WaiterSheets';
-import { OrderApiError, cartIdempotencyKey, placeOrder, rememberOrder } from '../api/orders';
+import { OrderApiError, cartIdempotencyKey, orderAttemptDone, placeOrder, rememberOrder } from '../api/orders';
 import { normalizeTable, useTable, withTable } from '../utils/table';
 import {
   missingContactField,
@@ -120,6 +120,7 @@ export default function CheckoutPage() {
           : { ...common, channel: 'dine-in', table: effectiveTable as string },
       );
       clear({ silent: true });
+      orderAttemptDone(sid, items); // ordering the same again later is a new order
       rememberOrder(sub, order);
       navigate(orderPath(order.token, sub, branch), { replace: true, state: { justPlaced: true } });
     } catch (e) {
