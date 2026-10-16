@@ -4,6 +4,7 @@
 // Waiting calls first; the ones done in the last hour below.
 import { useEffect, useMemo, useState } from 'react';
 import { ArrowPathIcon, BellAlertIcon, BellSlashIcon, CheckIcon, ExclamationTriangleIcon } from '@heroicons/react/24/outline';
+import BuzzerBanner from '../components/BuzzerBanner';
 import PageFrame, { HEADER_BUTTON, LiveBadge, Segmented } from '../components/PageFrame';
 import { useOrdersLive } from '../context/OrdersLiveContext';
 import { usePermissions } from '../context/PermissionsContext';
@@ -33,7 +34,7 @@ export default function ServiceRequests() {
   const canUpdate = has('orders:update');
   const { activeLocationId } = useScope();
   const { data: tenant } = useTenant();
-  const { active: buzzerActive, dismiss: dismissBuzzer } = useBuzzerAlert(
+  const { active: buzzerActive, kind: buzzerKind, deviceOffline, deviceSeenAgo, dismiss: dismissBuzzer } = useBuzzerAlert(
     (tenant as { subdomain?: string } | undefined)?.subdomain,
     activeLocationId
   );
@@ -90,24 +91,13 @@ export default function ServiceRequests() {
           Click anywhere on this page so table calls can ring — the browser keeps sound off until you do.
         </div>
       )}
-      {buzzerActive && (
-        <div className="flex items-center justify-between gap-4 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3">
-          <div className="flex items-center gap-3">
-            <span className="relative flex h-3 w-3">
-              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber-400 opacity-75" />
-              <span className="relative inline-flex h-3 w-3 rounded-full bg-amber-500" />
-            </span>
-            <span className="text-sm font-medium text-amber-800">Counter buzzer is ringing — a table is calling, or a new order</span>
-          </div>
-          <button
-            type="button"
-            onClick={() => void dismissBuzzer()}
-            className="shrink-0 whitespace-nowrap rounded-md bg-amber-100 px-3 py-1.5 text-sm font-medium text-amber-800 hover:bg-amber-200 active:scale-95"
-          >
-            Silence buzzer
-          </button>
-        </div>
-      )}
+      <BuzzerBanner
+        active={buzzerActive}
+        kind={buzzerKind}
+        deviceOffline={deviceOffline}
+        deviceSeenAgo={deviceSeenAgo}
+        onSilence={() => void dismissBuzzer()}
+      />
 
       <Segmented<View>
         label="Which calls"

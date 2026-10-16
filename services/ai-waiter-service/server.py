@@ -235,24 +235,89 @@ def turn_place(tenant: Optional[str], branch: Optional[str], channel: Optional[s
 # { (tenant_subdomain, location_id or ""): {"active": bool, "since": float | None} } — "" = an order without a branch.
 # A buzzer set up for a branch (?branch=<slug or id>) rings for that branch's orders (and branch-less ones); one
 # without a branch (older devices, the owner's "All locations") rings for every order of the restaurant.
-_ALERT_STATE: Dict[Tuple[str, str], Dict[str, Any]] = defaultdict(lambda: {"active": False, "since": None})
+# "since" = when it last rang (the ring that's on), "last" = the latest ring of all (a new order while it's already
+# ringing moves it — the device can beep again), "kind" = what that was ("order" / "call": a table calling for staff).
+_ALERT_STATE: Dict[Tuple[str, str], Dict[str, Any]] = defaultdict(
+    lambda: {"active": False, "since": None, "last": None, "kind": None})
+# kept in the database too: a restart (every deploy) must not silence a buzzer that's ringing, or lose a ring
+_ALERTS = DB["buzzer_alerts"]
+# the devices' last check-in (the ESP32 polls every 2 s): the dashboard warns when a buzzer has gone quiet
+_DEVICE_SEEN: Dict[Tuple[str, str], float] = {}
 
 
-def _set_alert(tenant: str, active: bool, location: Optional[str] = None) -> None:
+def _alert_key_id(key: Tuple[str, str]) -> str:
+    return f"{key[0]}|{key[1]}"
+
+
+def _persist_alerts(keys: List[Tuple[str, str]]) -> None:
+    """Save these buzzers' state (blocking — call it in a thread)."""
+    for key in keys:
+        st = _ALERT_STATE.get(key)
+        if st is None:
+            continue
+        try:
+            _ALERTS.update_one({"_id": _alert_key_id(key)},
+                               {"$set": {"tenant": key[0], "location": key[1], **st, "at": time.time()}}, upsert=True)
+        except Exception as e:
+            print("[alert] ⚠️ could not save the buzzer state:", repr(e))
+
+
+def _load_alerts() -> None:
+    """At start: the buzzers that were ringing (or rang) before the restart."""
+    try:
+        for d in _ALERTS.find({}):
+            key = (str(d.get("tenant") or ""), str(d.get("location") or ""))
+            if key[0]:
+                _ALERT_STATE[key].update(active=bool(d.get("active")), since=d.get("since"), last=d.get("last"),
+                                         kind=d.get("kind"))
+        on = sum(1 for st in _ALERT_STATE.values() if st["active"])
+        if on:
+            print(f"[alert] 🔔 {on} buzzer(s) still ringing after the restart")
+    except Exception as e:
+        print("[alert] ⚠️ could not load the buzzer state:", repr(e))
+
+
+def _set_alert(tenant: str, active: bool, location: Optional[str] = None, *, kind: str = "order",
+               until: Optional[float] = None) -> List[Tuple[str, str]]:
     """On: that branch's buzzer (location) — or the restaurant's for an order without one. Off with a location: that
-    branch's (and branch-less orders'); off without one: all of the restaurant's."""
+    branch's (and branch-less orders'); off without one: all of the restaurant's. `until`: only what rang at or
+    before that moment goes off — a ring that came in after the staff looked keeps ringing.
+    Returns the buzzers it changed (to save)."""
+    now = time.time()
     if active:
-        _ALERT_STATE[(tenant, location or "")].update(active=True, since=time.time())
-        return
+        key = (tenant, location or "")
+        _ALERT_STATE[key].update(active=True, since=now, last=now, kind=kind)
+        return [key]
+    changed = []
     for key in [k for k in _ALERT_STATE if k[0] == tenant and (location is None or k[1] in (location, ""))]:
-        _ALERT_STATE[key].update(active=False, since=None)
+        st = _ALERT_STATE[key]
+        if until is not None and st["active"] and (st["since"] or 0) > until + 0.001:
+            continue  # rang after what the staff saw — they haven't seen this one
+        if st["active"]:
+            st.update(active=False, since=None)
+            changed.append(key)
+    return changed
 
 
 def _alert_state(tenant: str, location: Optional[str] = None) -> Dict[str, Any]:
     """Is the buzzer on? A branch hears its own orders and branch-less ones; no branch → any of the restaurant's."""
-    on = [s for (t, loc), s in list(_ALERT_STATE.items())
-          if t == tenant and s["active"] and (location is None or loc in (location, ""))]
-    return {"active": bool(on), "since": min((s["since"] for s in on if s["since"]), default=None)}
+    mine = [st for (t, loc), st in list(_ALERT_STATE.items()) if t == tenant and (location is None or loc in (location, ""))]
+    on = [st for st in mine if st["active"]]
+    latest = max(on, key=lambda st: st["last"] or 0, default=None)
+    return {
+        "active": bool(on),
+        "since": min((st["since"] for st in on if st["since"]), default=None),
+        # the newest ring (also while it was already ringing) and what it was
+        "last": max((st["last"] for st in on if st["last"]), default=None),
+        "kind": latest["kind"] if latest else None,
+    }
+
+
+def _device_seen_ago(tenant: str, location: Optional[str] = None) -> Optional[float]:
+    """Seconds since a buzzer of this restaurant (this branch's, or one for every branch) last checked in. None:
+    no buzzer has checked in since this service started (a restaurant without one)."""
+    seen = [at for (t, loc), at in list(_DEVICE_SEEN.items()) if t == tenant and (location is None or loc in (location, ""))]
+    return round(time.time() - max(seen), 1) if seen else None
 
 
 def _alert_location(tenant: str, branch: str) -> Optional[str]:
@@ -447,15 +512,23 @@ async def require_staff_of(request: web.Request, tenant: str, roles: Optional[Tu
 # ---------- Buzzer alert HTTP handlers ----------
 
 async def handle_alert_get(request: web.Request) -> web.Response:
-    """GET /alert?tenant=<subdomain>[&branch=<slug or id>]  — polled by the ESP32 every 2 s (and the dashboard)."""
-    tenant = request.rel_url.query.get("tenant", "")
-    branch = request.rel_url.query.get("branch", "")
+    """GET /alert?tenant=<subdomain>[&branch=<slug or id>][&device=1]  — polled by the ESP32 every 2 s (and the
+    dashboard). {"alert", "since", "last", "kind", "device"}: "last" moves with every new ring (a new order or table
+    call while it's already ringing → the device can beep again), "kind" = "order" / "call", "device" = seconds since
+    a buzzer last checked in (for the dashboard: null when the restaurant has none)."""
+    q = request.rel_url.query
+    tenant = q.get("tenant", "").strip()
+    branch = q.get("branch", "")
     location = await asyncio.to_thread(_alert_location, tenant, branch) if tenant and branch else None
-    state = _alert_state(tenant, location) if tenant else {"active": False, "since": None}
+    # a buzzer checking in: it says so (device=1), or it's not a browser (no Origin header — the dashboard sends one)
+    if tenant and (q.get("device") == "1" or not request.headers.get("Origin")):
+        _DEVICE_SEEN[(tenant, location or "")] = time.time()
+    state = _alert_state(tenant, location) if tenant else {"active": False, "since": None, "last": None, "kind": None}
     return web.Response(
         content_type="application/json",
-        text=json.dumps({"alert": state["active"], "since": state["since"]}),
-        headers={"Access-Control-Allow-Origin": "*"},
+        text=json.dumps({"alert": state["active"], "since": state["since"], "last": state["last"],
+                         "kind": state["kind"], "device": _device_seen_ago(tenant, location) if tenant else None}),
+        headers={"Access-Control-Allow-Origin": "*", "Cache-Control": "no-store"},
     )
 
 async def handle_alert_dismiss(request: web.Request) -> web.Response:
@@ -474,7 +547,13 @@ async def handle_alert_dismiss(request: web.Request) -> web.Response:
     own = await staff_branch(request)
     if own:
         location = own.lower()
-    _set_alert(tenant, False, location)
+    # what the staff saw ringing (its "since"): only that goes off — a ring that came in after keeps ringing
+    try:
+        until = float(request.rel_url.query.get("until", ""))
+    except ValueError:
+        until = None
+    changed = _set_alert(tenant, False, location, until=until)
+    await asyncio.to_thread(_persist_alerts, changed)
     print(f"[alert] ✅ buzzer dismissed for {tenant}{' / ' + branch if branch else ''}")
     return web.Response(
         content_type="application/json",
@@ -497,8 +576,10 @@ async def handle_alert_trigger(request: web.Request) -> web.Response:
     if not tenant:
         return web.json_response({"ok": False, "error": "tenant required"}, status=400)
     location = str(data.get("location") or "").strip().lower() or None  # the order's branch (auth-service)
-    _set_alert(tenant, True, location)
-    print(f"[alert] 🔔 new order for {tenant}{' / ' + location if location else ''} — buzzer triggered")
+    kind = "call" if data.get("kind") == "call" else "order"  # a table calling for staff, or a new order
+    changed = _set_alert(tenant, True, location, kind=kind)
+    await asyncio.to_thread(_persist_alerts, changed)
+    print(f"[alert] 🔔 new {'table call' if kind == 'call' else 'order'} for {tenant}{' / ' + location if location else ''} — buzzer triggered")
     return web.json_response({"ok": True})
 
 async def handle_upsell_stats(request: web.Request) -> web.Response:
@@ -575,6 +656,7 @@ async def handle_alert_options(request: web.Request) -> web.Response:
 
 
 async def start_http_server():
+    await asyncio.to_thread(_load_alerts)  # buzzers that were ringing before this restart keep ringing
     app = web.Application()
 
     # CORS / preflight
