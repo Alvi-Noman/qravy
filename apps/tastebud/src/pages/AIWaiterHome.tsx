@@ -375,7 +375,7 @@ export default function AiWaiterHome() {
         />
       </div>
 
-      {/* ORB — it is the mic: hold to talk, release to send (a tap only says "Hold to talk") */}
+      {/* ORB — it is the mic: tap or hold to talk (a hold sends on release, a tap when they stop talking) */}
       <div
         ref={orbRef}
         // above the "Hold to talk" coachmark while it shows — the only bright thing on the screen, and holdable
@@ -390,15 +390,15 @@ export default function AiWaiterHome() {
             {...orbPressProps}
             className="pointer-events-auto relative rounded-full select-none touch-none focus:outline-none focus-visible:ring-4 focus-visible:ring-[#FA2851]/25"
             style={{ width: ORB_SIZE * 0.44, height: ORB_SIZE * 0.44, WebkitTapHighlightColor: 'transparent' }}
-            aria-label={listening ? 'Listening — release to send' : 'Hold to talk'}
-            title="Hold to talk"
+            aria-label={listening ? 'Listening — tap or let go to send' : 'Tap or hold to talk'}
+            title="Tap or hold to talk"
           >
             <span className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
               <TenminOrb mode={orbMode} size={Math.round((ORB_SIZE * 0.44) / 0.76)} level={listening ? micLevel : 0} />
             </span>
           </button>
 
-          {/* "Hold to Talk" — under the orb until the first hold; a tap brings it back with a wiggle */}
+          {/* "Tap or Hold to Talk" — under the orb until the guest first talks to it */}
           {showHoldPill && !coachOpen && (
             <span
               key={holdHint}

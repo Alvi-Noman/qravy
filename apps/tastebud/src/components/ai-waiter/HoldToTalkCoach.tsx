@@ -24,8 +24,8 @@ export function markHoldCoachSeen(): void {
 }
 
 const COPY = {
-  bn: { title: 'চেপে ধরে বলুন', sub: 'বৃত্তটা চেপে ধরে বলুন, তারপর ছেড়ে দিন', gotIt: 'বুঝেছি' },
-  en: { title: 'Hold to talk', sub: 'Press and hold the circle, speak, then let go', gotIt: 'Got it' },
+  bn: { title: 'ট্যাপ করুন বা চেপে ধরে বলুন', sub: 'বৃত্তটায় ট্যাপ করে বলুন — অথবা চেপে ধরে বলুন, তারপর ছেড়ে দিন', gotIt: 'বুঝেছি' },
+  en: { title: 'Tap or hold to talk', sub: 'Tap the circle and speak — or hold it, speak, then let go', gotIt: 'Got it' },
 } as const;
 
 export default function HoldToTalkCoach({

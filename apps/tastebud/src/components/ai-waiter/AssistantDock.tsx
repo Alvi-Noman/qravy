@@ -18,7 +18,7 @@ type Props = {
   status: string;
   /** what the waiter is saying (grows word by word while it speaks) */
   subtitle?: string;
-  /** press handlers that make the orb the mic (hold to talk) */
+  /** press handlers that make the orb the mic (tap or hold to talk) */
   orbProps: React.ButtonHTMLAttributes<HTMLButtonElement>;
   /** the home screen's orb (the ball) — this orb starts there, at its size, and travels into the dock */
   originRef?: React.RefObject<HTMLElement | null>;
@@ -128,12 +128,12 @@ export default function AssistantDock({ mode, status, subtitle, orbProps, origin
         </div>
       </div>
 
-      {/* the orb on the panel's top edge — it IS the mic: hold to talk */}
+      {/* the orb on the panel's top edge — it IS the mic: tap or hold to talk */}
       <button
         ref={orbRef}
         type="button"
         {...orbProps}
-        aria-label={mode === 'listening' ? 'Listening — release to send' : 'Hold to talk'}
+        aria-label={mode === 'listening' ? 'Listening — tap or let go to send' : 'Tap or hold to talk'}
         className="absolute left-1/2 top-0 z-10 select-none touch-none rounded-full focus:outline-none focus-visible:ring-2 focus-visible:ring-[#FA2851]/40"
         style={{
           width: ORB,
