@@ -18,7 +18,7 @@ import { applyVoiceCartOps } from '../utils/voice-cart';
 import { claimReveal, ownsReveal } from '../state/reveal-owner';
 import { useCheckoutFlow } from '../utils/checkout-flow';
 import { getTableKey, useTable } from '../utils/table';
-import { contactMissingNow, fulfillmentNow, useFulfillment } from '../utils/order-mode';
+import { clearOrderNote, contactMissingNow, fulfillmentNow, readOrderNote, useFulfillment } from '../utils/order-mode';
 import type { Channel } from '../api/storefront';
 import { useWaiterLang } from '../utils/waiter-lang';
 import {
@@ -909,6 +909,8 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
                 table: tableRef.current ?? undefined,
                 tableKey: getTableKey(resolvedSub, tableRef.current) ?? undefined, // its QR key → a verified table
                 cart: cartItemsRef.current,
+                // the tray's "Note for the kitchen" — goes with an order the guest confirms by voice
+                orderNote: readOrderNote(resolvedSub) || undefined,
                 shown: shownIdsRef.current, // the cards / picks on screen — "which of these…" is about them
                 // online: which of name / phone / address the checkout form still lacks — the waiter only asks for those
                 contactMissing: channelRef.current === 'online' ? contactMissingNow(resolvedSub) : undefined,
@@ -1093,6 +1095,7 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
             if (serviceCall?.token) window.dispatchEvent(new CustomEvent('qravy:service-call', { detail: serviceCall }));
 
             // order placed → clear the tray and open the live order page
+            if (meta?.decision?.orderPlaced) clearOrderNote(resolvedSub); // its note went with it
             if (meta?.decision?.orderPlaced && handleCheckout(meta)) {
               return;
             }
