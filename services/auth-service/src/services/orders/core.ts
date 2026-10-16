@@ -12,6 +12,7 @@ import { DEFAULT_TIMEZONE } from '../../utils/availability.js';
 import type { Fulfillment, OrderChannel, OrderCustomer, OrderDoc, OrderLine, OrderStatus } from '../../models/Order.js';
 import type { OrderEta } from '../../models/Order.js';
 import { publishOrder, publishTenant } from './events.js';
+import { saveCustomerFromOrder } from '../customers.js';
 import { branchInfo, tableBook } from '../../utils/branches.js';
 import {
   DEFAULT_PREP_MINUTES,
@@ -325,6 +326,8 @@ export async function createOrderCore(input: {
   }
 
   publishTenant(input.tenantOid.toHexString(), { type: 'order.created', order: toAdminOrder(doc) });
+  // an online order's guest → the restaurant's Customers (name, phone, and the address for delivery)
+  if (doc.online) void saveCustomerFromOrder(doc).catch((e) => console.warn('[orders] could not save the customer:', e));
   const tenantSubdomain = tenant?.subdomain;
   if (typeof tenantSubdomain === 'string' && tenantSubdomain) {
     const waiterUrl = process.env.AI_WAITER_HTTP_URL || 'http://ai-waiter-service:7081';

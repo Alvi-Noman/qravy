@@ -11,7 +11,8 @@ import OrderCountdown from '../components/OrderCountdown';
 import CallWaiterButton from '../components/CallWaiterButton';
 import { storeBasePath } from '../utils/checkout-flow';
 import { withTable } from '../utils/table';
-import { useStoreBranch } from '../utils/order-mode';
+import { usePickupPlace, useStoreBranch } from '../utils/order-mode';
+import { PickupNotice } from '../components/OnlineOrderDetails';
 import { money, tr, type UiLang } from '../utils/ui-lang';
 
 const STEPS: OrderStatus[] = ['placed', 'accepted', 'preparing', 'ready', 'completed'];
@@ -83,6 +84,7 @@ export default function OrderStatusPage() {
   const branch = linkBranch ?? order?.branch ?? null;
   const backHref = withTable(storeBasePath(sub, branch) || '/', sub); // (the table stays on the link)
   const here = useStoreBranch(sub, branch); // two or more branches: which one (pickup: where to collect)
+  const pickupAt = usePickupPlace(sub, branch);
 
   if (missing) {
     return (
@@ -156,6 +158,19 @@ export default function OrderStatusPage() {
             <div className="font-semibold text-gray-900">{here.name}</div>
             {here.address && <div className="mt-0.5 text-gray-600">{here.address}</div>}
           </section>
+        )}
+
+        {/* pickup: they come for it — where, and that the page says "Ready" when it is */}
+        {online && !delivery && !cancelled && order.status !== 'completed' && (
+          order.status === 'ready' ? (
+            <section className="mt-3 rounded-3xl bg-emerald-50 px-6 py-4 text-sm text-emerald-900 shadow-sm">
+              <div className="font-semibold">{tr(lang, 'আপনার খাবার প্রস্তুত — এসে নিয়ে যান!', 'Your order is ready — come and collect it!')}</div>
+              <div className="mt-0.5">{tr(lang, `কাউন্টারে অর্ডার নম্বর #${order.orderNumber} বলবেন।`, `Quote order #${order.orderNumber} at the counter.`)}</div>
+              {(pickupAt.name || pickupAt.address) && <div className="mt-1">📍 {[pickupAt.name, pickupAt.address].filter(Boolean).join(' · ')}</div>}
+            </section>
+          ) : (
+            <PickupNotice place={pickupAt} className="mt-3 rounded-3xl px-6 py-4 shadow-sm" />
+          )
         )}
 
         {online && order.customer && (
@@ -259,7 +274,11 @@ export default function OrderStatusPage() {
           delivery
             ? tr(lang, 'ক্যাশ অন ডেলিভারি।', 'Cash on delivery.')
             : online
-            ? tr(lang, 'নেওয়ার সময় পরিশোধ করবেন — এই নম্বরটা বলবেন।', 'Pay when you pick it up — just quote this number.')
+            ? tr(
+                lang,
+                'খাবার তৈরি হলে রেস্টুরেন্ট থেকে নিয়ে যাবেন — তখন এই নম্বরটা বলে পরিশোধ করবেন।',
+                'Collect it from the restaurant when it\'s ready — quote this number and pay there.'
+              )
             : tr(lang, 'বিল কাউন্টারে দেবেন — এই নম্বরটা বলবেন।', 'Pay at the counter — just quote this number.')
         }
         lang={lang}

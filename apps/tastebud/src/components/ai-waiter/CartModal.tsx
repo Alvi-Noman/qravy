@@ -11,7 +11,8 @@ import {
   useStoreChannels,
   type GuestContact,
 } from '../../utils/order-mode';
-import OnlineOrderDetails, { CONTACT_MESSAGES, FulfillmentToggle } from '../OnlineOrderDetails';
+import OnlineOrderDetails, { CONTACT_MESSAGES, FulfillmentToggle, PickupNotice } from '../OnlineOrderDetails';
+import { usePickupPlace } from '../../utils/order-mode';
 import type { Channel } from '../../api/storefront';
 import { orderPath } from '../../utils/checkout-flow';
 import { getStableSessionId } from '../../utils/ws';
@@ -357,6 +358,7 @@ export default function TrayModal({
   const effectiveOpen = open && (hasItems || waiting);
   // "Ready in about N min" — only asked while the tray is open
   const wait = useCartWait({ subdomain: placeSub, branch: placeBranch, items: effectiveOpen ? items : [] });
+  const pickupAt = usePickupPlace(placeSub, placeBranch); // pickup: where they collect it
 
   React.useEffect(() => {
     if (open && !hasItems && !waiting) onClose?.();
@@ -445,6 +447,7 @@ export default function TrayModal({
                       Change
                     </button>
                   </div>
+                  {fulfillment === 'pickup' && <PickupNotice place={pickupAt} className="mt-3" />}
                   <p className="mt-2 text-[11px] text-gray-400">
                     {fulfillment === 'delivery' ? 'Cash on delivery' : 'Pay when you pick it up'}
                   </p>
@@ -457,6 +460,7 @@ export default function TrayModal({
                   contact={contact}
                   onContact={setContact}
                   focusField={contactFocus}
+                  pickupAt={pickupAt}
                 />
               )}
               {noteOpen || orderNote ? (

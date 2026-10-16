@@ -19,6 +19,7 @@ import {
   type GuestContact,
 } from '../utils/order-mode';
 import OnlineOrderDetails, { CONTACT_MESSAGES } from '../components/OnlineOrderDetails';
+import { usePickupPlace } from '../utils/order-mode';
 import { track } from '../utils/track';
 import { orderPath, storeBasePath } from '../utils/checkout-flow';
 import { getStableSessionId } from '../utils/ws';
@@ -45,6 +46,7 @@ export default function CheckoutPage() {
   const channel = useOrderChannel(sub);
   const online = channel === 'online';
   const wait = useCartWait({ subdomain: sub, branch, items });
+  const pickupAt = usePickupPlace(sub, branch); // pickup: where they collect it
   const [table, saveTable] = useTable(sub);
   const [fulfillment, setFulfillment] = useFulfillment(sub);
   const [contact, setContact] = useGuestContact(sub);
@@ -179,6 +181,7 @@ export default function CheckoutPage() {
                   contact={contact}
                   onContact={setContact}
                   focusField={contactFocus}
+                  pickupAt={pickupAt}
                 />
               ) : (
               <div className="flex items-center justify-between gap-3">

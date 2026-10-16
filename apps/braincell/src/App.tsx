@@ -18,6 +18,7 @@ import SettingsLayout from './layout/SettingsLayout';
 // Lazy-loaded pages
 const Dashboard = lazy(() => import('./pages/Dashboard'));
 const Orders = lazy(() => import('./pages/Orders'));
+const Customers = lazy(() => import('./pages/Customers'));
 const Categories = lazy(() => import('./pages/Categories'));
 const MenuItemsPage = lazy(() => import('./pages/MenuItems'));
 const MenuImportPage = lazy(() => import('./pages/MenuImport'));
@@ -302,7 +303,14 @@ function App() {
                 {/* Add stubs for routes so the layout persists (no blank pages) */}
                 <Route path="/service-requests" element={<div className="p-6 text-sm text-slate-700">Service Requests coming soon</div>} />
                 <Route path="/offers" element={<div className="p-6 text-sm text-slate-700">Offers coming soon</div>} />
-                <Route path="/customers" element={<div className="p-6 text-sm text-slate-700">Customers coming soon</div>} />
+                <Route
+                  path="/customers"
+                  element={
+                    <Suspense fallback={null}>
+                      <Customers />
+                    </Suspense>
+                  }
+                />
                 <Route path="/digital-menu" element={<div className="p-6 text-sm text-slate-700">Digital Menu coming soon</div>} />
                 <Route path="/qravy-store" element={<div className="p-6 text-sm text-slate-700">Qravy Store coming soon</div>} />
 

@@ -476,7 +476,42 @@ function OrderCard({
   );
 }
 
-function History({ token, onPrint }: { token: string | null; onPrint: PrintFn }) {
+/* ------------------------------------------------------------------ the kind filter */
+
+type Kind = 'all' | 'dine-in' | 'delivery' | 'pickup';
+const KINDS: Array<{ id: Kind; label: string }> = [
+  { id: 'all', label: 'All' },
+  { id: 'dine-in', label: 'Dine-in' },
+  { id: 'delivery', label: 'Delivery' },
+  { id: 'pickup', label: 'Pickup' },
+];
+const KIND_KEY = 'orders:kind';
+/** Dine-in, or an online order's delivery / pickup. */
+const kindOf = (o: AdminOrder): Exclude<Kind, 'all'> =>
+  o.channel === 'online' ? (o.fulfillment === 'pickup' ? 'pickup' : 'delivery') : 'dine-in';
+const ofKind = (kind: Kind) => (o: AdminOrder) => kind === 'all' || kindOf(o) === kind;
+
+function KindFilter({ value, onChange, counts }: { value: Kind; onChange: (k: Kind) => void; counts?: Record<Kind, number> }) {
+  return (
+    <div className="flex w-fit flex-wrap gap-1 rounded-md bg-[#f1f2f4] p-1" role="tablist" aria-label="Kind of order">
+      {KINDS.map((k) => (
+        <button
+          key={k.id}
+          type="button"
+          role="tab"
+          aria-selected={value === k.id}
+          onClick={() => onChange(k.id)}
+          className={`rounded px-3 py-1.5 text-sm ${value === k.id ? 'bg-white text-[#2e2e30] shadow-sm' : 'text-[#6b6b70]'}`}
+        >
+          {k.label}
+          {counts && <span className="ml-1 text-xs text-[#9a9aa0]">{counts[k.id]}</span>}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function History({ token, onPrint, kind }: { token: string | null; onPrint: PrintFn; kind: Kind }) {
   const [rows, setRows] = useState<AdminOrder[] | null>(null);
   const { activeLocationId } = useScope();
   const branchOf = useBranchLabel(); // order numbers are per branch: "#12 · Gulshan"
@@ -497,10 +532,15 @@ function History({ token, onPrint }: { token: string | null; onPrint: PrintFn })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
 
-  const visible = (rows ?? []).filter((o) => !activeLocationId || !o.locationId || o.locationId === activeLocationId);
+  const visible = (rows ?? [])
+    .filter((o) => !activeLocationId || !o.locationId || o.locationId === activeLocationId)
+    .filter(ofKind(kind));
 
   if (rows === null) return <div className="h-40 animate-pulse rounded-lg bg-[#f6f6f6]" />;
-  if (!visible.length) return <p className="py-10 text-center text-sm text-[#6b6b70]">No orders in the last 48 hours.</p>;
+  if (!visible.length) {
+    const what = kind === 'all' ? 'orders' : `${KINDS.find((k) => k.id === kind)?.label.toLowerCase()} orders`;
+    return <p className="py-10 text-center text-sm text-[#6b6b70]">No {what} in the last 48 hours.</p>;
+  }
 
   return (
     <div className="overflow-x-auto rounded-lg border border-[#ececec] bg-white">
@@ -558,6 +598,23 @@ export default function Orders() {
   const { has } = usePermissions();
   const canUpdate = has('orders:update');
   const [tab, setTab] = useState<'active' | 'history'>('active');
+  // all, or one kind of order — remembered on this device (a delivery desk keeps "Delivery")
+  const [kind, setKindState] = useState<Kind>(() => {
+    try {
+      const k = localStorage.getItem(KIND_KEY);
+      return KINDS.some((x) => x.id === k) ? (k as Kind) : 'all';
+    } catch {
+      return 'all';
+    }
+  });
+  const setKind = (k: Kind) => {
+    setKindState(k);
+    try {
+      localStorage.setItem(KIND_KEY, k);
+    } catch {
+      /* storage blocked */
+    }
+  };
   const [now, setNow] = useState(() => Date.now());
   const { data: tenant } = useTenant();
   const tenantSubdomain = (tenant as { subdomain?: string } | undefined)?.subdomain;
@@ -607,11 +664,18 @@ export default function Orders() {
     return () => window.clearInterval(id);
   }, []);
 
+  const kindCounts = useMemo(() => {
+    const c: Record<Kind, number> = { all: orders.length, 'dine-in': 0, delivery: 0, pickup: 0 };
+    for (const o of orders) c[kindOf(o)] += 1;
+    return c;
+  }, [orders]);
+  const shown = useMemo(() => orders.filter(ofKind(kind)), [orders, kind]);
+
   const byStatus = useMemo(() => {
     const m = new Map<OrderStatus, AdminOrder[]>();
-    for (const o of orders) m.set(o.status, [...(m.get(o.status) ?? []), o]);
+    for (const o of shown) m.set(o.status, [...(m.get(o.status) ?? []), o]);
     return m;
-  }, [orders]);
+  }, [shown]);
 
   const onMove = async (o: AdminOrder, to: OrderStatus) => {
     try {
@@ -700,6 +764,7 @@ export default function Orders() {
       {/* tables calling for staff ("Call waiter") — only while one is waiting or someone's on the way */}
       <WaiterCalls hideWhenEmpty />
 
+      <div className="flex flex-wrap items-center gap-2">
       <div className="flex gap-1 rounded-md bg-[#f1f2f4] p-1 w-fit" role="tablist">
         {(['active', 'history'] as const).map((t) => (
           <button
@@ -713,9 +778,11 @@ export default function Orders() {
           </button>
         ))}
       </div>
+      <KindFilter value={kind} onChange={setKind} counts={tab === 'active' ? kindCounts : undefined} />
+      </div>
 
       {tab === 'history' ? (
-        <History token={token} onPrint={onPrint} />
+        <History token={token} onPrint={onPrint} kind={kind} />
       ) : (
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
           {COLUMNS.map((col) => {

@@ -2,6 +2,7 @@
 // Online checkout details: Delivery / Pickup, then name, phone and (for delivery) address.
 import React from 'react';
 import type { Fulfillment, GuestContact } from '../utils/order-mode';
+import { tr, uiLang } from '../utils/ui-lang';
 
 type Props = {
   fulfillment: Fulfillment;
@@ -11,7 +12,31 @@ type Props = {
   /** Field to highlight + focus (e.g. after the server said it's missing) */
   focusField?: keyof GuestContact | null;
   compact?: boolean;
+  /** pickup: where it's collected (the restaurant / branch and its address) */
+  pickupAt?: { name: string; address: string } | null;
 };
+
+/** Pickup: the guest collects it from the restaurant once it's ready — said before they order, and on the order page. */
+export function PickupNotice({ place, className }: { place?: { name: string; address: string } | null; className?: string }) {
+  const lang = uiLang();
+  return (
+    <div className={'rounded-xl bg-amber-50 px-3 py-2.5 text-[13px] text-amber-900 ' + (className ?? '')}>
+      <div className="font-semibold">{tr(lang, 'আপনি নিজে এসে নিয়ে যাবেন', "You'll collect it from the restaurant")}</div>
+      <div className="mt-0.5">
+        {tr(
+          lang,
+          'খাবার তৈরি হলে রেস্টুরেন্ট থেকে নিয়ে যাবেন — অর্ডার পেজে "প্রস্তুত" দেখালেই চলে আসুন। আমরা ডেলিভারি করব না।',
+          'Come and pick it up when it\'s ready — your order page will say "Ready". It won\'t be delivered.'
+        )}
+      </div>
+      {(place?.name || place?.address) && (
+        <div className="mt-1.5 text-amber-800">
+          📍 {[place?.name, place?.address].filter(Boolean).join(' · ')}
+        </div>
+      )}
+    </div>
+  );
+}
 
 export function FulfillmentToggle({
   value,
@@ -48,7 +73,7 @@ export function FulfillmentToggle({
   );
 }
 
-export default function OnlineOrderDetails({ fulfillment, onFulfillment, contact, onContact, focusField, compact }: Props) {
+export default function OnlineOrderDetails({ fulfillment, onFulfillment, contact, onContact, focusField, compact, pickupAt }: Props) {
   const refs = {
     name: React.useRef<HTMLInputElement | null>(null),
     phone: React.useRef<HTMLInputElement | null>(null),
@@ -120,6 +145,8 @@ export default function OnlineOrderDetails({ fulfillment, onFulfillment, contact
           />
         </div>
       )}
+
+      {fulfillment === 'pickup' && <PickupNotice place={pickupAt} className="mt-3" />}
 
       <p className="mt-2 text-[11px] text-gray-400">
         {fulfillment === 'delivery' ? 'Cash on delivery' : 'Pay when you pick it up'}
