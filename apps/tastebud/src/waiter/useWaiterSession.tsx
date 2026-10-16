@@ -256,6 +256,29 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
       // (still "speaking" until the audio has really finished — see onPlaybackEnd)
     }, wait);
   };
+  // the guest cut in: the rest of what the waiter was saying shows at once (its voice fades out). The reply's whole
+  // text is already here — the word-by-word reveal only follows the voice — so nothing waits; the words still
+  // scheduled are dropped (their reveal is over).
+  const revealAllNowRef = useRef<() => void>(() => {});
+  revealAllNowRef.current = () => {
+    if (!inSpeechRef.current) return; // nothing being revealed (or it already finished)
+    const full = String(startedTextRef.current || '').trim();
+    speakGenRef.current += 1; // the scheduled words see a new generation and do nothing
+    inSpeechRef.current = false;
+    queuedWordsRef.current = [];
+    finishPendingRef.current = false;
+    if (anchorFallbackRef.current) window.clearTimeout(anchorFallbackRef.current);
+    anchorFallbackRef.current = null;
+    try {
+      startTtsReveal(''); // (the half-revealed line goes)
+    } catch {}
+    try {
+      if (full) setAi(full);
+      else finishTtsReveal();
+    } catch {}
+    setWelcomePending(false); // (the welcome shows only words already said — now it's all said)
+  };
+
   const anchorRevealRef = useRef<() => void>(() => {});
   anchorRevealRef.current = () => {
     if (playAnchorRef.current !== null || !inSpeechRef.current) return;
@@ -1466,6 +1489,7 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
     // reopen the mic on its own when it stops (this press is the guest's turn)
     if (speakingRef.current) {
       followUpRef.current = false;
+      revealAllNowRef.current(); // the rest of its sentence shows at once, not word by word after the voice stopped
       try {
         tts.fadeOut();
       } catch {}
