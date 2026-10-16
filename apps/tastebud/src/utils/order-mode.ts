@@ -172,3 +172,53 @@ export function contactMissingNow(sub?: string | null): (keyof GuestContact)[] {
   if (!c.address.trim()) out.push('address');
   return out;
 }
+
+/* ------------------------------------------------------------------ the kitchen note */
+
+// "Note for the kitchen" for the order being put together — one per restaurant, the same in the tray, on the
+// checkout page and for the voice waiter (it goes with an order the guest confirms by voice too); kept for the tab's
+// life (moving between pages keeps it) and cleared once the order is placed (it never rides along on the next one)
+const noteKey = (sub?: string | null) => `qravy:order-note:${sub || ''}`;
+const NOTE_EVENT = 'qravy:order-note';
+const memoryNotes: Record<string, string> = {};
+
+export function readOrderNote(sub?: string | null): string {
+  try {
+    return sessionStorage.getItem(noteKey(sub)) ?? memoryNotes[noteKey(sub)] ?? '';
+  } catch {
+    return memoryNotes[noteKey(sub)] ?? '';
+  }
+}
+
+export function setOrderNote(sub: string | null | undefined, note: string): void {
+  const k = noteKey(sub);
+  memoryNotes[k] = note;
+  try {
+    if (note) sessionStorage.setItem(k, note);
+    else sessionStorage.removeItem(k);
+  } catch {
+    /* storage blocked — the memory copy does */
+  }
+  try {
+    window.dispatchEvent(new CustomEvent(NOTE_EVENT, { detail: k }));
+  } catch {
+    /* no window */
+  }
+}
+
+/** The order was placed: its note is done. */
+export const clearOrderNote = (sub?: string | null) => setOrderNote(sub, '');
+
+export function useOrderNote(sub?: string | null): [string, (note: string) => void] {
+  const [note, setNote] = useState(() => readOrderNote(sub));
+  useEffect(() => {
+    setNote(readOrderNote(sub));
+    const on = (e: Event) => {
+      if ((e as CustomEvent).detail === noteKey(sub)) setNote(readOrderNote(sub));
+    };
+    window.addEventListener(NOTE_EVENT, on);
+    return () => window.removeEventListener(NOTE_EVENT, on);
+  }, [sub]);
+  const update = useCallback((v: string) => setOrderNote(sub, v), [sub]);
+  return [note, update];
+}

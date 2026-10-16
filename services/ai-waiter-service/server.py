@@ -1659,6 +1659,8 @@ async def place_order_via_api(
         "source": "ai-waiter",
         "idempotencyKey": f"waiter:{(session_id or 'anon')[:60]}:{draft.get('signature') or ''}"[:100],
     }
+    if draft.get("notes"):
+        body["notes"] = str(draft["notes"])[:500]  # the guest's "Note for the kitchen" (from the tray)
     if branch:
         body["branch"] = branch
     try:
@@ -1741,6 +1743,7 @@ async def run_text_turn(
     shown: Optional[List[str]] = None,
     contact_missing: Optional[List[str]] = None,
     fulfillment: Optional[str] = None,
+    order_note: Optional[str] = None,
     lock_language: bool = False,
 ) -> Dict[str, Any]:
     """
@@ -1852,6 +1855,9 @@ async def run_text_turn(
         # the table's QR key goes with the order — only for the table it belongs to (not one the guest said instead)
         if table_key and table and str(draft.get("table") or "").strip().lstrip("#").upper() == str(table).strip().lstrip("#").upper():
             draft["tableKey"] = table_key
+        # the tray's "Note for the kitchen" goes with it (the guest typed it, then confirmed by voice)
+        if order_note and not draft.get("notes"):
+            draft["notes"] = order_note
         placer = place_order or place_order_via_api
         res = await placer(tenant=tenant, branch=branch, session_id=session_id, draft=draft)
         lang_out = meta.get("language") or lang
@@ -1951,6 +1957,7 @@ async def handle_conn(ws: WebSocketServerProtocol):
     table_key_hint: Optional[str] = None
     contact_missing_hint: Optional[List[str]] = None  # online: the checkout form's empty fields
     fulfillment_hint: Optional[str] = None  # online: delivery / pickup, as the toggle shows it
+    order_note_hint: Optional[str] = None  # the tray's "Note for the kitchen" (goes with an order confirmed by voice)
     cart_hint: Optional[List[Dict[str, Any]]] = None  # None → the saved cart (load_cart)
     shown_hint: List[str] = []  # ids of the dishes on the guest's screen ("which of these…")
 
@@ -2199,6 +2206,8 @@ async def handle_conn(ws: WebSocketServerProtocol):
                     contact_missing_hint = [str(x) for x in data["contactMissing"] if x in ("name", "phone", "address")]
                 if data.get("fulfillment") in ("pickup", "delivery"):
                     fulfillment_hint = data["fulfillment"]
+                if isinstance(data.get("orderNote"), str):
+                    order_note_hint = data["orderNote"].strip()[:500] or None
 
                 # hands-free: end the turn when the guest stops talking; `listenMs` = a listen window after a
                 # question (nobody speaks → closed quietly)
@@ -2491,6 +2500,7 @@ async def handle_conn(ws: WebSocketServerProtocol):
                         shown=shown_hint,
                         contact_missing=contact_missing_hint,
                         fulfillment=fulfillment_hint,
+                        order_note=order_note_hint,
                         # the storefront's language (restaurant default or the guest's switch) decides the reply
                         lock_language=session_lang in ("bn", "en"),
                     )

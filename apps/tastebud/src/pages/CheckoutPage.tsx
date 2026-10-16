@@ -19,7 +19,7 @@ import {
   type GuestContact,
 } from '../utils/order-mode';
 import OnlineOrderDetails, { CONTACT_MESSAGES } from '../components/OnlineOrderDetails';
-import { usePickupPlace } from '../utils/order-mode';
+import { clearOrderNote, useOrderNote, usePickupPlace } from '../utils/order-mode';
 import { track } from '../utils/track';
 import { orderPath, storeBasePath } from '../utils/checkout-flow';
 import { getStableSessionId } from '../utils/ws';
@@ -52,7 +52,7 @@ export default function CheckoutPage() {
   const [fulfillment, setFulfillment] = useFulfillment(sub);
   const [contact, setContact] = useGuestContact(sub);
   const [contactFocus, setContactFocus] = useState<keyof GuestContact | null>(null);
-  const [orderNotes, setOrderNotes] = useState('');
+  const [orderNotes, setOrderNotes] = useOrderNote(sub); // the same note as in the tray (and for the voice waiter)
   const [placing, setPlacing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // the waiter (shared): cart changes, the picker, offers… all as on the other pages. Its read-back / "which table?" /
@@ -111,6 +111,7 @@ export default function CheckoutPage() {
           : { ...common, channel: 'dine-in', table: effectiveTable as string },
       );
       clear({ silent: true });
+      clearOrderNote(sub); // this order's note — never the next one's
       orderAttemptDone(sid, items); // ordering the same again later is a new order
       rememberOrder(sub, order);
       navigate(orderPath(order.token, sub, branch), { replace: true, state: { justPlaced: true } });

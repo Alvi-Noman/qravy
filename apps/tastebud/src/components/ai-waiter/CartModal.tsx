@@ -12,7 +12,7 @@ import {
   type GuestContact,
 } from '../../utils/order-mode';
 import OnlineOrderDetails, { CONTACT_MESSAGES, FulfillmentToggle, PickupNotice } from '../OnlineOrderDetails';
-import { usePickupPlace } from '../../utils/order-mode';
+import { clearOrderNote, useOrderNote, usePickupPlace } from '../../utils/order-mode';
 import type { Channel } from '../../api/storefront';
 import { orderPath } from '../../utils/checkout-flow';
 import { getStableSessionId } from '../../utils/ws';
@@ -128,7 +128,7 @@ export default function TrayModal({
   const [contact, setContact] = useGuestContact(placeSub);
   const [contactFocus, setContactFocus] = React.useState<keyof GuestContact | null>(null);
   const [noteOpen, setNoteOpen] = React.useState(false);
-  const [orderNote, setOrderNote] = React.useState('');
+  const [orderNote, setOrderNote] = useOrderNote(placeSub); // shared with the checkout page and the voice waiter
   const [placing, setPlacing] = React.useState(false);
   const [placeError, setPlaceError] = React.useState<string | null>(null);
   // ONLINE is two steps: the tray (what you're ordering) → "Checkout" → the details form (delivery / pickup, name,
@@ -198,6 +198,8 @@ export default function TrayModal({
           : { ...common, channel: 'dine-in', table: t as string },
       );
       clear({ silent: true });
+      clearOrderNote(placeSub); // this order's note — never the next one's
+      setNoteOpen(false);
       orderAttemptDone(sid, items); // ordering the same again later is a new order
       rememberOrder(placeSub, order);
       onClose();
@@ -607,9 +609,9 @@ export default function TrayModal({
                 <span className="text-right text-[12px] font-medium text-amber-700">Scan the QR code on your table</span>
               )}
             </div>
-            {noteOpen ? (
+            {noteOpen || orderNote ? (
               <input
-                autoFocus
+                autoFocus={noteOpen && !orderNote}
                 value={orderNote}
                 onChange={(e) => setOrderNote(e.target.value)}
                 maxLength={300}
