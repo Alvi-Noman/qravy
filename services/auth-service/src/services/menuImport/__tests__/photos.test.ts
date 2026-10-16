@@ -1,6 +1,9 @@
 import sharp from 'sharp';
 import { inspectPhoto, photoGrid, preparePhoto, sniffPhoto } from '../photos.js';
 
+// big photos take a few seconds to encode on a slow CI machine (the default 5 s limit isn't enough there)
+const BIG_PHOTO_MS = 30_000;
+
 const solid = (width: number, height: number) =>
   sharp({ create: { width, height, channels: 3, background: '#ffffff' } });
 
@@ -17,7 +20,7 @@ describe('menu photos', () => {
   it('honours phone rotation (EXIF) when reporting size', async () => {
     const sideways = await solid(4000, 3000).jpeg().withMetadata({ orientation: 6 }).toBuffer();
     expect(await inspectPhoto(sideways)).toEqual({ width: 3000, height: 4000 });
-  });
+  }, BIG_PHOTO_MS);
 
   it('turns a big phone photo into one upright, capped JPEG', async () => {
     const sideways = await solid(4000, 3000).jpeg().withMetadata({ orientation: 6 }).toBuffer();
@@ -28,7 +31,7 @@ describe('menu photos', () => {
     expect(meta.format).toBe('jpeg');
     expect(meta.height).toBe(2400); // portrait after rotation, capped
     expect(meta.width).toBe(1800);
-  });
+  }, BIG_PHOTO_MS);
 
   it('cuts a dense photo into overlapping tiles with an overview', async () => {
     const board = await solid(4800, 2400).png().toBuffer();
@@ -49,7 +52,7 @@ describe('menu photos', () => {
     expect(first.width).toBe(Math.ceil(1600 + 96));
     expect(first.height).toBe(Math.ceil(1200 + 72));
     expect((await sharp(out.overview!).metadata()).width).toBe(1024);
-  });
+  }, BIG_PHOTO_MS);
 
   it('uses a 2×2 grid for portrait pages', () => {
     expect(photoGrid(3000, 4000)).toEqual({ cols: 2, rows: 2 });
