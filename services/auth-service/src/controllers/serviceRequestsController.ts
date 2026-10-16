@@ -152,7 +152,7 @@ export async function createServiceRequest(req: Request, res: Response, next: Ne
       const doc = ((bumped as unknown as { value?: ServiceRequestDoc })?.value ?? bumped) as ServiceRequestDoc | null;
       if (doc) {
         publish(doc, 'service.updated');
-        ringBuzzer(b.subdomain, locationId, `table ${table} called again`); // called again → it rings again
+        ringBuzzer(b.subdomain, locationId, `table ${table} called again`, 'call'); // called again → it rings again
         logger.info(`SERVICE again ${doc.kind} tenant=${tenantOid} table=${table} calls=${doc.calls}`);
         return res.ok({ request: toPublicRequest(doc), created: false });
       }
@@ -176,7 +176,7 @@ export async function createServiceRequest(req: Request, res: Response, next: Ne
     const ins = await col().insertOne(doc);
     doc._id = ins.insertedId;
     publish(doc, 'service.created');
-    ringBuzzer(b.subdomain, locationId, `table ${table}: ${doc.kind}`); // a table calling for staff rings the counter
+    ringBuzzer(b.subdomain, locationId, `table ${table}: ${doc.kind}`, 'call'); // a table calling for staff rings the counter
     logger.info(`SERVICE ${doc.kind} tenant=${tenantOid} table=${table}${tableVerified ? '' : ' (unverified)'}`);
     return res.ok({ request: toPublicRequest(doc), created: true }, 201);
   } catch (e) {

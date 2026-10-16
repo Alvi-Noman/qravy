@@ -16,6 +16,7 @@ import {
   type TicketKind,
 } from '../utils/thermalPrint';
 import { useOrdersLive } from '../context/OrdersLiveContext';
+import BuzzerBanner from '../components/BuzzerBanner';
 import PageFrame, { HEADER_BUTTON, LiveBadge, Segmented } from '../components/PageFrame';
 import { Link } from 'react-router-dom';
 import { useAuthContext } from '../context/AuthContext';
@@ -624,7 +625,7 @@ export default function Orders() {
   const { data: tenant } = useTenant();
   const tenantSubdomain = (tenant as { subdomain?: string } | undefined)?.subdomain;
   const { activeLocationId } = useScope(); // one branch selected → its buzzer only
-  const { active: buzzerActive, dismiss: dismissBuzzer } = useBuzzerAlert(tenantSubdomain, activeLocationId);
+  const { active: buzzerActive, kind: buzzerKind, deviceOffline, deviceSeenAgo, dismiss: dismissBuzzer } = useBuzzerAlert(tenantSubdomain, activeLocationId);
   const [printSettings, setPrintSettings] = useState<PrintSettings>(loadPrintSettings);
   const updatePrintSettings = (s: PrintSettings) => {
     setPrintSettings(s);
@@ -726,24 +727,13 @@ export default function Orders() {
         </div>
       )}
 
-      {buzzerActive && (
-        <div className="flex items-center justify-between gap-4 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3">
-          <div className="flex items-center gap-3">
-            <span className="relative flex h-3 w-3">
-              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber-400 opacity-75" />
-              <span className="relative inline-flex h-3 w-3 rounded-full bg-amber-500" />
-            </span>
-            <span className="text-sm font-medium text-amber-800">Counter buzzer is ringing — a new order, or a table calling</span>
-          </div>
-          <button
-            type="button"
-            onClick={() => void dismissBuzzer()}
-            className="shrink-0 whitespace-nowrap rounded-md bg-amber-100 px-3 py-1.5 text-sm font-medium text-amber-800 hover:bg-amber-200 active:scale-95"
-          >
-            Silence buzzer
-          </button>
-        </div>
-      )}
+      <BuzzerBanner
+        active={buzzerActive}
+        kind={buzzerKind}
+        deviceOffline={deviceOffline}
+        deviceSeenAgo={deviceSeenAgo}
+        onSilence={() => void dismissBuzzer()}
+      />
 
       {/* tables calling for staff — answered on Service Requests */}
       {openCallCount > 0 && (
