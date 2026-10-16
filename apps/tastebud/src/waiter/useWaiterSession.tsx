@@ -756,7 +756,8 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
   // → the server closes it quietly). `typed`: a tapped "which one?" answer, sent as the guest's words (no mic).
   // `silent`: a button that asks the waiter something ("AI suggestions") — its reply shows (text + cards) but is
   // never spoken, and the mic doesn't reopen after it: the guest tapped, they didn't start a conversation
-  async function startListening(opts?: { listenMs?: number; typed?: string; afterStop?: boolean; silent?: boolean }) {
+  // `tap`: the orb was tapped, not held — it listens until the guest taps again (never ended by a pause in their speech)
+  async function startListening(opts?: { listenMs?: number; typed?: string; afterStop?: boolean; silent?: boolean; tap?: boolean }) {
     const followUp = !!opts?.listenMs;
     const typed = opts?.typed?.trim() || '';
     // inside the guest's tap (hold / pill): unlock sound — on the menu page this is the first tap (iPhone, tts.ts)
@@ -913,7 +914,8 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
                 contactMissing: channelRef.current === 'online' ? contactMissingNow(resolvedSub) : undefined,
                 fulfillment: channelRef.current === 'online' ? fulfillmentNow(resolvedSub) : undefined,
                 // hands-free: the server ends the turn when the guest stops talking / closes a quiet listen window
-                autoEnd: !typed && handsFreeOn(),
+                // (never for a tapped orb: only the guest's second tap sends it)
+                autoEnd: !typed && !opts?.tap && handsFreeOn(),
                 listenMs: opts?.listenMs,
                 ...(extra || {}),
               }),
@@ -1436,8 +1438,12 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
   const startRef = useRef(startListening);
   startRef.current = startListening;
 
-  // Push-to-talk on the orb: only a HOLD listens (release = send). A tap never opens the mic — it says "Hold to talk".
+  // Talking to the orb: TAP or HOLD.
+  //   hold (200 ms+) → listens while the finger is down; letting go sends (push-to-talk)
+  //   tap            → listens until the guest taps again (that tap sends) — a pause in their speech doesn't end it
+  //   a press while it's already listening → sends what was said
   const HOLD_MS = 200;
+  const stopPressRef = useRef(false); // this press sends what was said — its release does nothing more
   const orbBallRef = useRef<HTMLButtonElement | null>(null); // the home orb: the popups' orb starts here and travels into their dock
   const holdTimerRef = useRef<number | null>(null);
   const holdingRef = useRef(false); // this hold started the mic
@@ -1445,21 +1451,20 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
   // in that gap (the voice already stopped) the orb used to look idle and play the talking → idle doze-off
   const [holding, setHolding] = useState(false);
   const stopWhenOpenRef = useRef(false); // released while the mic was still opening → stop the moment it's open
-  const [holdHint, setHoldHint] = useState(0); // bumps on every tap → the hint flashes
-  const holdHintTimerRef = useRef<number | null>(null);
+  const holdHint = 0; // the hint's animation key (a tap used to bump it to flash "Hold to talk"; a tap talks now)
   const [holdHintOn, setHoldHintOn] = useState(false);
-  const [heldOnce, setHeldOnce] = useState(false); // "Hold to Talk" shows until the first hold (then only after a tap)
-  const flashHoldHint = () => {
-    setHoldHint((n) => n + 1);
-    setHoldHintOn(true);
-    if (holdHintTimerRef.current) window.clearTimeout(holdHintTimerRef.current);
-    holdHintTimerRef.current = window.setTimeout(() => setHoldHintOn(false), 1800);
-  };
+  const [heldOnce, setHeldOnce] = useState(false); // "Tap or Hold to Talk" shows until the guest first talks to the orb
   const orbPressStart = (e: React.PointerEvent<HTMLElement>) => {
     if (e.pointerType === 'mouse' && e.button !== 0) return;
     try {
       e.currentTarget.setPointerCapture(e.pointerId); // a finger drifting off the orb mid-sentence keeps talking
     } catch {}
+    // already listening (a tap, or the mic reopened by itself) → this press sends what they said
+    if (listening && !holdingRef.current) {
+      stopPressRef.current = true;
+      void stopListening();
+      return;
+    }
     if (holdTimerRef.current) window.clearTimeout(holdTimerRef.current);
     holdTimerRef.current = window.setTimeout(() => {
       holdTimerRef.current = null;
@@ -1472,11 +1477,17 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
     }, HOLD_MS);
   };
   const orbPressEnd = () => {
+    if (stopPressRef.current) {
+      stopPressRef.current = false;
+      return;
+    }
     if (holdTimerRef.current) {
-      // let go before the hold kicked in → a tap
+      // let go before the hold kicked in → a tap: listen until they tap again
       window.clearTimeout(holdTimerRef.current);
       holdTimerRef.current = null;
-      flashHoldHint();
+      setHoldHintOn(false);
+      setHeldOnce(true);
+      void startListening({ tap: true });
       return;
     }
     if (!holdingRef.current) return;
@@ -1498,7 +1509,7 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
     onPointerCancel: orbPressEnd,
     onContextMenu: (e: React.MouseEvent) => e.preventDefault(), // holding must not open the long-press menu
   };
-  const holdHintText = selectedLang === 'en' ? 'Hold to Talk' : 'চেপে ধরে বলুন';
+  const holdHintText = selectedLang === 'en' ? 'Tap or Hold to Talk' : 'ট্যাপ করুন বা চেপে ধরে বলুন';
   const showHoldPill = !listening && (holdHintOn || !heldOnce);
 
   // what the pill shows
