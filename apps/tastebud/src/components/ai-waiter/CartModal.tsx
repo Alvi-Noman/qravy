@@ -1,8 +1,8 @@
 // apps/tastebud/src/components/ai-waiter/TrayModal.tsx
 import React from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { OrderApiError, cartIdempotencyKey, placeOrder, rememberOrder } from '../../api/orders';
-import { normalizeTable, useTable } from '../../utils/table';
+import { OrderApiError, cartIdempotencyKey, orderAttemptDone, placeOrder, rememberOrder } from '../../api/orders';
+import { useTable } from '../../utils/table';
 import {
   missingContactField,
   useFulfillment,
@@ -11,7 +11,8 @@ import {
   useStoreChannels,
   type GuestContact,
 } from '../../utils/order-mode';
-import OnlineOrderDetails, { CONTACT_MESSAGES, FulfillmentToggle } from '../OnlineOrderDetails';
+import OnlineOrderDetails, { CONTACT_MESSAGES, FulfillmentToggle, PickupNotice } from '../OnlineOrderDetails';
+import { usePickupPlace } from '../../utils/order-mode';
 import type { Channel } from '../../api/storefront';
 import { orderPath } from '../../utils/checkout-flow';
 import { getStableSessionId } from '../../utils/ws';
@@ -121,23 +122,15 @@ export default function TrayModal({
   // ---- the tray is the checkout: table (dine-in) or pickup/delivery details (online), note, place the order here
   const lang = uiLang();
   const navigate = useNavigate();
-  const [table, saveTable] = useTable(placeSub);
+  // the table the guest scanned (its QR code) — shown, never changed here: a typed number could be any table
+  const [table] = useTable(placeSub);
   const [fulfillment, setFulfillment] = useFulfillment(placeSub);
   const [contact, setContact] = useGuestContact(placeSub);
   const [contactFocus, setContactFocus] = React.useState<keyof GuestContact | null>(null);
-  const [tableDraft, setTableDraft] = React.useState(table ?? '');
-  const [editingTable, setEditingTable] = React.useState(!table);
-  const tableInputRef = React.useRef<HTMLInputElement | null>(null);
   const [noteOpen, setNoteOpen] = React.useState(false);
   const [orderNote, setOrderNote] = React.useState('');
   const [placing, setPlacing] = React.useState(false);
   const [placeError, setPlaceError] = React.useState<string | null>(null);
-  React.useEffect(() => {
-    if (table) {
-      setTableDraft(table);
-      setEditingTable(false);
-    }
-  }, [table]);
   // ONLINE is two steps: the tray (what you're ordering) → "Checkout" → the details form (delivery / pickup, name,
   // phone, address, note) with the Confirm order button. By voice the waiter leads the same way: its read-back
   // ("…shall I confirm the order?") shows the tray, a yes opens the form. Saved details show as one card — never
@@ -161,12 +154,8 @@ export default function TrayModal({
       // the waiter's read-back → the tray; its "fill in the form" → the form
       if (askTable) goDetails();
       else if (askAt) setStep('tray');
-      return;
     }
-    // the waiter asked "which table?" → put the cursor there
-    if (!askTable) return;
-    setEditingTable(true);
-    window.setTimeout(() => tableInputRef.current?.focus(), 150);
+    // (dine-in: the table is the scanned one — nothing to fill in)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, askTable, askAt, online]);
   // switched to delivery with no address saved → the form opens (it never flips back to the card while typing)
@@ -178,7 +167,7 @@ export default function TrayModal({
   const placeNow = async () => {
     setPlaceError(null);
     setContactFocus(null);
-    const t = editingTable ? normalizeTable(tableDraft) : table;
+    const t = table;
     if (online) {
       const missing = missingContactField(fulfillment, contact);
       if (missing) {
@@ -188,13 +177,10 @@ export default function TrayModal({
         return;
       }
     } else if (!t) {
-      setEditingTable(true);
-      window.setTimeout(() => tableInputRef.current?.focus(), 50);
-      setPlaceError(tr(lang, 'আপনার টেবিল নম্বরটা লিখুন।', 'Please enter your table number.'));
+      setPlaceError(tr(lang, 'টেবিলের QR কোডটা আবার স্ক্যান করুন — তারপর অর্ডার দিতে পারবেন।', 'Please scan the QR code on your table again, then order.'));
       return;
     }
     if (!placeSub || !items.length) return;
-    if (!online && t) saveTable(t);
     setPlacing(true);
     try {
       const sid = getStableSessionId();
@@ -212,12 +198,17 @@ export default function TrayModal({
           : { ...common, channel: 'dine-in', table: t as string },
       );
       clear({ silent: true });
+      orderAttemptDone(sid, items); // ordering the same again later is a new order
       rememberOrder(placeSub, order);
       onClose();
       navigate(orderPath(order.token, placeSub, placeBranch), { state: { justPlaced: true } });
     } catch (e) {
       const err = e as OrderApiError;
-      if (err?.needs === 'table') setEditingTable(true);
+      if (err?.needs === 'table') {
+        // the restaurant doesn't know that table (renamed / removed since it was scanned) → scan it again
+        setPlaceError(tr(lang, 'টেবিলের QR কোডটা আবার স্ক্যান করুন — তারপর অর্ডার দিতে পারবেন।', 'Please scan the QR code on your table again, then order.'));
+        return;
+      }
       if (err?.needs === 'name' || err?.needs === 'phone' || err?.needs === 'address') {
         setEditContact(true); // (the saved-details card would hide the field to fix)
         setContactFocus(err.needs);
@@ -356,6 +347,7 @@ export default function TrayModal({
   const effectiveOpen = open && (hasItems || waiting);
   // "Ready in about N min" — only asked while the tray is open
   const wait = useCartWait({ subdomain: placeSub, branch: placeBranch, items: effectiveOpen ? items : [] });
+  const pickupAt = usePickupPlace(placeSub, placeBranch); // pickup: where they collect it
 
   React.useEffect(() => {
     if (open && !hasItems && !waiting) onClose?.();
@@ -444,6 +436,7 @@ export default function TrayModal({
                       Change
                     </button>
                   </div>
+                  {fulfillment === 'pickup' && <PickupNotice place={pickupAt} className="mt-3" />}
                   <p className="mt-2 text-[11px] text-gray-400">
                     {fulfillment === 'delivery' ? 'Cash on delivery' : 'Pay when you pick it up'}
                   </p>
@@ -456,6 +449,7 @@ export default function TrayModal({
                   contact={contact}
                   onContact={setContact}
                   focusField={contactFocus}
+                  pickupAt={pickupAt}
                 />
               )}
               {noteOpen || orderNote ? (
@@ -594,33 +588,23 @@ export default function TrayModal({
             })}
           </div>
 
+          {/* the waiter's picks — right after the order, before the table + note */}
+          <TrayPicks
+            picks={shownPicks}
+            onAdd={addPick}
+            registerRef={(id, el) => (pickEls.current[id] = el)}
+            highlightIds={highlightIds}
+          />
+
           {/* dine-in: the table + note — the tray is the checkout (online: the form is step 2); always English */}
           {!online && (
           <div className="mt-4 rounded-2xl bg-white px-4 py-3 ring-1 ring-gray-100">
             <div className="flex items-center justify-between gap-3">
               <span className="text-[13px] text-gray-600">Table</span>
-              {!editingTable && table ? (
-                <button type="button" onClick={() => setEditingTable(true)} className="flex items-center gap-2 text-[15px] font-semibold text-gray-900">
-                  {table}
-                  <span className="text-[12px] font-medium text-[#FA2851]">Change</span>
-                </button>
+              {table ? (
+                <span className="text-[15px] font-semibold text-gray-900">{table}</span>
               ) : (
-                <input
-                  ref={tableInputRef}
-                  value={tableDraft}
-                  onChange={(e) => setTableDraft(e.target.value)}
-                  onBlur={() => {
-                    const t = normalizeTable(tableDraft);
-                    if (t) {
-                      saveTable(t);
-                      setEditingTable(false);
-                    }
-                  }}
-                  maxLength={12}
-                  placeholder="e.g. 12"
-                  aria-label="Table number"
-                  className="w-24 rounded-xl border border-gray-200 px-3 py-1.5 text-right text-[15px] font-semibold focus:outline-none focus:ring-2 focus:ring-[#FA2851]/40"
-                />
+                <span className="text-right text-[12px] font-medium text-amber-700">Scan the QR code on your table</span>
               )}
             </div>
             {noteOpen ? (
@@ -640,13 +624,6 @@ export default function TrayModal({
             <p className="mt-2 text-[11px] text-gray-400">You pay at the counter</p>
           </div>
           )}
-
-          <TrayPicks
-            picks={shownPicks}
-            onAdd={addPick}
-            registerRef={(id, el) => (pickEls.current[id] = el)}
-            highlightIds={highlightIds}
-          />
         </SheetScrollArea>
         )}
 

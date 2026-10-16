@@ -28,6 +28,8 @@ export function useStoreChannels(sub?: string | null): {
   branches: StoreBranch[];
   /** the branch the main link orders from (the owner's choice); null → the guest picks */
   mainBranch: string | null;
+  /** the restaurant's name and address (Settings) */
+  restaurant: { name: string; address: string };
 } {
   const { data, isFetched } = useQuery({
     queryKey: ['tenantInfo', sub],
@@ -44,7 +46,15 @@ export function useStoreChannels(sub?: string | null): {
   const tables = Array.isArray((data as any)?.tables) ? ((data as any).tables as string[]) : [];
   const branches = Array.isArray((data as any)?.branches) ? ((data as any).branches as StoreBranch[]) : [];
   const mainBranch = typeof (data as any)?.mainBranch === 'string' ? ((data as any).mainBranch as string) : null;
-  return { dineIn: ch?.dineIn !== false, online: ch?.online !== false, loaded: isFetched, tables, branches, mainBranch };
+  const restaurant = { name: String((data as any)?.name ?? ''), address: String((data as any)?.address ?? '') };
+  return { dineIn: ch?.dineIn !== false, online: ch?.online !== false, loaded: isFetched, tables, branches, mainBranch, restaurant };
+}
+
+/** Where a pickup order is collected: its branch (or the only branch) with its address, else the restaurant itself. */
+export function usePickupPlace(sub?: string | null, slug?: string | null): { name: string; address: string } {
+  const { branches, restaurant } = useStoreChannels(sub);
+  const b = (slug ? branches.find((x) => x.slug === slug) : null) ?? (branches.length === 1 ? branches[0] : null);
+  return { name: restaurant.name || b?.name || '', address: b?.address || restaurant.address || '' };
 }
 
 /** The guest's branch (name, address) at a restaurant with two or more — shown at checkout and on the order page

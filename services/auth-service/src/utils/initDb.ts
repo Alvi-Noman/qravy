@@ -1,6 +1,7 @@
 // services/auth-service/src/utils/initDb.ts
 import { MongoClient } from 'mongodb';
 import { migrateOldPronunciations } from '../routes/pronounceRoutes.js';
+import { backfillCustomers } from '../services/customers.js';
 import logger from './logger.js';
 import { ensureCortexAdmin } from './cortexAuth.js';
 
@@ -462,6 +463,12 @@ export async function ensureUserIndexes(client: MongoClient): Promise<void> {
   // restaurants' requests to change it: Cortex's queue (oldest first), a restaurant's own list
   await db.collection('pronounceRequests').createIndex({ status: 1, createdAt: 1 }, { name: 'ix_pronounce_requests_status' });
   await db.collection('pronounceRequests').createIndex({ tenantId: 1, key: 1, status: 1 }, { name: 'ix_pronounce_requests_tenant' });
+  // customers (online guests): one per phone number per restaurant, listed newest order first
+  await db.collection('customers').createIndex({ tenantId: 1, key: 1 }, { unique: true, name: 'ux_customers_tenant_key' });
+  await db.collection('customers').createIndex({ tenantId: 1, lastOrderAt: -1 }, { name: 'ix_customers_tenant_last' });
+  await db.collection('orders').createIndex({ tenantId: 1, 'online.customer.phone': 1 }, { name: 'ix_orders_tenant_customer_phone', sparse: true });
+  const fromOrders = await backfillCustomers();
+  if (fromOrders) logger.info(`Saved customers from ${fromOrders} earlier online orders`);
 
   const memberships = db.collection('memberships');
   await memberships.createIndex({ tenantId: 1, userId: 1 }, { unique: true, name: 'ux_tenant_user' });

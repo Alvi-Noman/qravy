@@ -102,12 +102,53 @@ export function toOrderLines(items: CartItem[]) {
   }));
 }
 
-/** Same cart → same key, so a double tap never creates two orders. */
-export function cartIdempotencyKey(sessionId: string, items: CartItem[]): string {
+// the attempt's random part, per cart — kept for the tab's life (a reload mid-retry keeps it), dropped once placed
+const ATTEMPTS_KEY = 'qravy:order-attempts';
+const memoryAttempts: Record<string, string> = {};
+function readAttempts(): Record<string, string> {
+  try {
+    return { ...memoryAttempts, ...JSON.parse(sessionStorage.getItem(ATTEMPTS_KEY) || '{}') };
+  } catch {
+    return { ...memoryAttempts };
+  }
+}
+function writeAttempts(a: Record<string, string>) {
+  Object.keys(memoryAttempts).forEach((k) => delete memoryAttempts[k]);
+  Object.assign(memoryAttempts, a);
+  try {
+    sessionStorage.setItem(ATTEMPTS_KEY, JSON.stringify(a));
+  } catch {
+    /* storage blocked — the memory copy does */
+  }
+}
+const cartBase = (sessionId: string, items: CartItem[]) => {
   const s = JSON.stringify(toOrderLines(items));
   let h = 5381;
   for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0;
-  return `web:${sessionId}:${(h >>> 0).toString(36)}:${items.length}`.slice(0, 100);
+  return `web:${sessionId}:${(h >>> 0).toString(36)}:${items.length}`;
+};
+
+/**
+ * The order's idempotency key: the same for every retry of THIS order (a double tap, a dropped connection), so it's
+ * never placed twice — and a new one after it's placed (orderAttemptDone), so ordering the same dishes again later is
+ * a new order, not the old one handed back.
+ */
+export function cartIdempotencyKey(sessionId: string, items: CartItem[]): string {
+  const base = cartBase(sessionId, items);
+  const attempts = readAttempts();
+  let nonce = attempts[base];
+  if (!nonce) {
+    nonce = Math.random().toString(36).slice(2, 10);
+    writeAttempts({ ...attempts, [base]: nonce });
+  }
+  return `${base}:${nonce}`.slice(0, 90);
+}
+
+/** The order went through: the next order of this cart is a new one (a new key). */
+export function orderAttemptDone(sessionId: string, items: CartItem[]): void {
+  const attempts = readAttempts();
+  delete attempts[cartBase(sessionId, items)];
+  writeAttempts(attempts);
 }
 
 export async function placeOrder(

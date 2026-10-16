@@ -91,6 +91,8 @@ function toPublicTenantItem(
       voice: (tenant as any).waiterVoice === 'female' ? 'female' : 'male',
     },
     menuNotes: Array.isArray(tenant.menuNotes) ? tenant.menuNotes : [],
+    // where the restaurant is (pickup orders are collected here, unless they're for a branch with its own address)
+    address: String(tenant.restaurantInfo?.address ?? '').trim() || null,
     // The virtual waiter's default language (the guest can switch it)
     waiterLanguage: tenant.waiterLanguage === 'en' ? 'en' : 'bn',
     // Which ways guests can order (missing = on)
