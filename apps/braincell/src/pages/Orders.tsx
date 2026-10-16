@@ -16,7 +16,8 @@ import {
   type TicketKind,
 } from '../utils/thermalPrint';
 import { useOrdersLive } from '../context/OrdersLiveContext';
-import WaiterCalls from '../components/Dashboard/WaiterCalls';
+import PageFrame, { HEADER_BUTTON, LiveBadge, Segmented } from '../components/PageFrame';
+import { Link } from 'react-router-dom';
 import { useAuthContext } from '../context/AuthContext';
 import { usePermissions } from '../context/PermissionsContext';
 import { useScope } from '../context/ScopeContext';
@@ -122,8 +123,8 @@ function PrintSettingsButton({ value, onChange, onTest }: { value: PrintSettings
         type="button"
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
-        className={`inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm hover:bg-[#fafafa] ${
-          value.autoPrint ? 'border-emerald-300 bg-emerald-50 text-emerald-800' : 'border-[#e2e2e2] bg-white text-[#2e2e30]'
+        className={`inline-flex items-center gap-2 rounded-md border px-4 py-2 text-sm hover:bg-[#f5f5f5] ${
+          value.autoPrint ? 'border-emerald-300 bg-emerald-50 text-emerald-800' : 'border-[#cecece] bg-white text-[#2e2e30]'
         }`}
       >
         <PrinterIcon className="h-4 w-4" />
@@ -246,8 +247,8 @@ function EtaStrip({
 
   return (
     <div className="mt-3">
-      <div className="flex items-center justify-between gap-2 text-xs">
-        <span className={`inline-flex items-center gap-1 font-medium ${late ? 'text-red-600' : left <= 3 ? 'text-amber-700' : 'text-[#2e2e30]'}`}>
+      <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+        <span className={`inline-flex min-w-0 flex-wrap items-center gap-1 font-medium ${late ? 'text-red-600' : left <= 3 ? 'text-amber-700' : 'text-[#2e2e30]'}`}>
           <ClockIcon className="h-3.5 w-3.5" aria-hidden="true" />
           {waiting ? (
             <>
@@ -262,7 +263,7 @@ function EtaStrip({
           )}
         </span>
         {canUpdate && (
-          <span className="inline-flex overflow-hidden rounded-md border border-[#e2e2e2]">
+          <span className="inline-flex shrink-0 overflow-hidden rounded-md border border-[#e2e2e2]">
             <button
               type="button"
               disabled={busy || left <= 1}
@@ -342,8 +343,21 @@ function OrderCard({
       aria-label={`Order ${order.orderNumber}, ${orderWhere(order)}`}
     >
       <header className="flex items-start justify-between gap-2">
-        <div>
-          <div className="text-lg font-semibold text-[#2e2e30]">#{order.orderNumber}</div>
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-lg font-semibold text-[#2e2e30]">#{order.orderNumber}</span>
+            {order.channel === 'online' ? (
+              <span
+                className={`rounded px-1.5 py-0.5 text-[11px] font-semibold ${
+                  order.fulfillment === 'delivery' ? 'bg-sky-50 text-sky-700' : 'bg-violet-50 text-violet-700'
+                }`}
+              >
+                {orderWhere(order)}
+              </span>
+            ) : (
+              <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[11px] font-semibold text-slate-700">Table {order.table}</span>
+            )}
+          </div>
           {branch && (
             <div
               title={branch}
@@ -353,14 +367,7 @@ function OrderCard({
             </div>
           )}
           {order.channel === 'online' ? (
-            <div className="text-sm text-[#2e2e30]">
-              <span
-                className={`mr-1.5 rounded px-1.5 py-0.5 text-[11px] font-semibold ${
-                  order.fulfillment === 'delivery' ? 'bg-sky-50 text-sky-700' : 'bg-violet-50 text-violet-700'
-                }`}
-              >
-                {orderWhere(order)}
-              </span>
+            <div className="mt-1 text-sm text-[#2e2e30]">
               <span className="font-semibold">{order.customer?.name}</span>
               {order.customer?.phone && (
                 <a href={`tel:${order.customer.phone}`} className="block text-xs text-[#6b6b70] hover:underline">
@@ -373,7 +380,6 @@ function OrderCard({
             </div>
           ) : (
             <div className="text-sm text-[#2e2e30]">
-              Table <span className="font-semibold">{order.table}</span>
               {order.tableVerified === false && (
                 <div
                   className="mt-1 inline-block rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800"
@@ -385,16 +391,16 @@ function OrderCard({
             </div>
           )}
         </div>
-        <div className="text-right">
-          <div className={`text-xs ${isNew && waitingMins >= 5 ? 'font-semibold text-red-600' : 'text-[#6b6b70]'}`}>
-            {age(order.createdAt, now)}
+        <div className="flex shrink-0 items-start gap-1.5">
+          <div className="text-right">
+            <div className={`whitespace-nowrap text-xs ${isNew && waitingMins >= 5 ? 'font-semibold text-red-600' : 'text-[#6b6b70]'}`}>
+              {age(order.createdAt, now)}
+            </div>
+            <div className="mt-0.5 whitespace-nowrap text-[11px] text-[#9a9aa0]">{SOURCE_LABEL[order.source] ?? order.source}</div>
           </div>
-          <div className="mt-1 text-[11px] text-[#6b6b70]">{SOURCE_LABEL[order.source] ?? order.source}</div>
+          <PrintMenu order={order} onPrint={onPrint} compact />
         </div>
       </header>
-      <div className="mt-2 flex justify-end">
-        <PrintMenu order={order} onPrint={onPrint} compact />
-      </div>
 
       <ul className="mt-3 space-y-1.5 text-sm">
         {order.items.map((l, i) => {
@@ -430,7 +436,7 @@ function OrderCard({
       </div>
 
       {canUpdate && (
-        <div className="mt-3 flex gap-2">
+        <div className="mt-3 flex flex-wrap gap-2">
           {confirmCancel ? (
             <>
               <button
@@ -493,21 +499,20 @@ const ofKind = (kind: Kind) => (o: AdminOrder) => kind === 'all' || kindOf(o) ==
 
 function KindFilter({ value, onChange, counts }: { value: Kind; onChange: (k: Kind) => void; counts?: Record<Kind, number> }) {
   return (
-    <div className="flex w-fit flex-wrap gap-1 rounded-md bg-[#f1f2f4] p-1" role="tablist" aria-label="Kind of order">
-      {KINDS.map((k) => (
-        <button
-          key={k.id}
-          type="button"
-          role="tab"
-          aria-selected={value === k.id}
-          onClick={() => onChange(k.id)}
-          className={`rounded px-3 py-1.5 text-sm ${value === k.id ? 'bg-white text-[#2e2e30] shadow-sm' : 'text-[#6b6b70]'}`}
-        >
-          {k.label}
-          {counts && <span className="ml-1 text-xs text-[#9a9aa0]">{counts[k.id]}</span>}
-        </button>
-      ))}
-    </div>
+    <Segmented<Kind>
+      label="Kind of order"
+      value={value}
+      onChange={onChange}
+      options={KINDS.map((k) => ({
+        id: k.id,
+        label: (
+          <>
+            {k.label}
+            {counts && <span className="ml-1 text-xs text-[#9a9aa0]">{counts[k.id]}</span>}
+          </>
+        ),
+      }))}
+    />
   );
 }
 
@@ -593,7 +598,7 @@ function History({ token, onPrint, kind }: { token: string | null; onPrint: Prin
 }
 
 export default function Orders() {
-  const { orders, loading, connected, soundOn, setSoundOn, soundBlocked, refresh, setStatus, adjustEta } = useOrdersLive();
+  const { orders, loading, connected, soundOn, setSoundOn, soundBlocked, refresh, setStatus, adjustEta, openCallCount } = useOrdersLive();
   const { token } = useAuthContext();
   const { has } = usePermissions();
   const canUpdate = has('orders:update');
@@ -697,41 +702,22 @@ export default function Orders() {
   };
 
   return (
-    <div className="space-y-5">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-3">
-          <h1 className="text-2xl font-semibold text-[#2e2e30]">Orders</h1>
-          <span
-            className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs ring-1 ${
-              connected ? 'bg-emerald-50 text-emerald-700 ring-emerald-200' : 'bg-slate-50 text-slate-500 ring-slate-200'
-            }`}
-            title={connected ? 'New orders appear instantly' : 'Reconnecting…'}
-          >
-            <span className={`h-1.5 w-1.5 rounded-full ${connected ? 'bg-emerald-500' : 'bg-slate-400'}`} />
-            {connected ? 'Live' : 'Reconnecting'}
-          </span>
-        </div>
-        <div className="flex items-center gap-2">
+    <PageFrame
+      title="Orders"
+      badge={<LiveBadge connected={connected} />}
+      actions={
+        <>
           <PrintSettingsButton value={printSettings} onChange={updatePrintSettings} onTest={testPrint} />
-          <button
-            type="button"
-            onClick={() => setSoundOn(!soundOn)}
-            aria-pressed={soundOn}
-            className="inline-flex items-center gap-2 rounded-md border border-[#e2e2e2] bg-white px-3 py-2 text-sm text-[#2e2e30] hover:bg-[#fafafa]"
-          >
+          <button type="button" onClick={() => setSoundOn(!soundOn)} aria-pressed={soundOn} className={HEADER_BUTTON}>
             {soundOn ? <BellAlertIcon className="h-4 w-4" /> : <BellSlashIcon className="h-4 w-4" />}
             {soundOn ? 'Sound on' : 'Sound off'}
           </button>
-          <button
-            type="button"
-            onClick={() => void refresh()}
-            className="inline-flex items-center gap-2 rounded-md border border-[#e2e2e2] bg-white px-3 py-2 text-sm text-[#2e2e30] hover:bg-[#fafafa]"
-            aria-label="Refresh"
-          >
+          <button type="button" onClick={() => void refresh()} className={HEADER_BUTTON} aria-label="Refresh">
             <ArrowPathIcon className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
           </button>
-        </div>
-      </div>
+        </>
+      }
+    >
       {soundBlocked && (
         // the browser keeps sound off after the page loads until someone clicks it — any click turns it on
         <div className="flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
@@ -747,48 +733,53 @@ export default function Orders() {
               <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber-400 opacity-75" />
               <span className="relative inline-flex h-3 w-3 rounded-full bg-amber-500" />
             </span>
-            <span className="text-sm font-medium text-amber-800">
-              🔔 New order — counter buzzer is ringing
-            </span>
+            <span className="text-sm font-medium text-amber-800">Counter buzzer is ringing — a new order, or a table calling</span>
           </div>
           <button
             type="button"
             onClick={() => void dismissBuzzer()}
-            className="rounded-md bg-amber-100 px-3 py-1.5 text-sm font-medium text-amber-800 hover:bg-amber-200 active:scale-95"
+            className="shrink-0 whitespace-nowrap rounded-md bg-amber-100 px-3 py-1.5 text-sm font-medium text-amber-800 hover:bg-amber-200 active:scale-95"
           >
             Silence buzzer
           </button>
         </div>
       )}
 
-      {/* tables calling for staff ("Call waiter") — only while one is waiting or someone's on the way */}
-      <WaiterCalls hideWhenEmpty />
+      {/* tables calling for staff — answered on Service Requests */}
+      {openCallCount > 0 && (
+        <Link
+          to="/service-requests"
+          className="flex items-center justify-between gap-3 rounded-lg border border-pink-200 bg-pink-50 px-4 py-3 text-sm text-pink-800 hover:bg-pink-100"
+        >
+          <span className="flex items-center gap-2 font-medium">
+            <BellAlertIcon className="h-4 w-4 animate-pulse" />
+            {openCallCount === 1 ? 'A table is calling for staff' : `${openCallCount} tables are calling for staff`}
+          </span>
+          <span className="font-semibold">Answer →</span>
+        </Link>
+      )}
 
       <div className="flex flex-wrap items-center gap-2">
-      <div className="flex gap-1 rounded-md bg-[#f1f2f4] p-1 w-fit" role="tablist">
-        {(['active', 'history'] as const).map((t) => (
-          <button
-            key={t}
-            role="tab"
-            aria-selected={tab === t}
-            onClick={() => setTab(t)}
-            className={`rounded px-3 py-1.5 text-sm ${tab === t ? 'bg-white text-[#2e2e30] shadow-sm' : 'text-[#6b6b70]'}`}
-          >
-            {t === 'active' ? `Active (${orders.length})` : 'Last 48 hours'}
-          </button>
-        ))}
-      </div>
-      <KindFilter value={kind} onChange={setKind} counts={tab === 'active' ? kindCounts : undefined} />
+        <Segmented<'active' | 'history'>
+          label="Active or past orders"
+          value={tab}
+          onChange={setTab}
+          options={[
+            { id: 'active', label: `Active (${orders.length})` },
+            { id: 'history', label: 'Last 48 hours' },
+          ]}
+        />
+        <KindFilter value={kind} onChange={setKind} counts={tab === 'active' ? kindCounts : undefined} />
       </div>
 
       {tab === 'history' ? (
         <History token={token} onPrint={onPrint} kind={kind} />
       ) : (
-        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+        <div className="grid grid-cols-[repeat(auto-fill,minmax(270px,1fr))] gap-4">
           {COLUMNS.map((col) => {
             const list = byStatus.get(col.status) ?? [];
             return (
-              <section key={col.status} className="rounded-lg bg-[#f6f6f6] p-3" aria-label={col.title}>
+              <section key={col.status} className="rounded-lg border border-[#ececec] bg-[#f7f7f8] p-3" aria-label={col.title}>
                 <h2 className="mb-3 flex items-center justify-between text-sm font-semibold text-[#2e2e30]">
                   {col.title}
                   <span className="rounded-full bg-white px-2 py-0.5 text-xs text-[#6b6b70] ring-1 ring-[#ececec]">{list.length}</span>
@@ -805,6 +796,6 @@ export default function Orders() {
           })}
         </div>
       )}
-    </div>
+    </PageFrame>
   );
 }

@@ -11,6 +11,7 @@ import { client } from '../db.js';
 import logger from '../utils/logger.js';
 import { resolveBranchLocationId } from './categoriesController.js';
 import { publishTenant } from '../services/orders/events.js';
+import { ringBuzzer } from '../utils/buzzer.js';
 import { branchForUnnamed, branchName, tableBook } from '../utils/branches.js';
 import type { SERVICE_REQUEST_KINDS } from '../validation/schemas.js';
 
@@ -151,6 +152,7 @@ export async function createServiceRequest(req: Request, res: Response, next: Ne
       const doc = ((bumped as unknown as { value?: ServiceRequestDoc })?.value ?? bumped) as ServiceRequestDoc | null;
       if (doc) {
         publish(doc, 'service.updated');
+        ringBuzzer(b.subdomain, locationId, `table ${table} called again`); // called again → it rings again
         logger.info(`SERVICE again ${doc.kind} tenant=${tenantOid} table=${table} calls=${doc.calls}`);
         return res.ok({ request: toPublicRequest(doc), created: false });
       }
@@ -174,6 +176,7 @@ export async function createServiceRequest(req: Request, res: Response, next: Ne
     const ins = await col().insertOne(doc);
     doc._id = ins.insertedId;
     publish(doc, 'service.created');
+    ringBuzzer(b.subdomain, locationId, `table ${table}: ${doc.kind}`); // a table calling for staff rings the counter
     logger.info(`SERVICE ${doc.kind} tenant=${tenantOid} table=${table}${tableVerified ? '' : ' (unverified)'}`);
     return res.ok({ request: toPublicRequest(doc), created: true }, 201);
   } catch (e) {

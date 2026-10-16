@@ -13,6 +13,7 @@ import type { Fulfillment, OrderChannel, OrderCustomer, OrderDoc, OrderLine, Ord
 import type { OrderEta } from '../../models/Order.js';
 import { publishOrder, publishTenant } from './events.js';
 import { saveCustomerFromOrder } from '../customers.js';
+import { ringBuzzer } from '../../utils/buzzer.js';
 import { branchInfo, tableBook } from '../../utils/branches.js';
 import {
   DEFAULT_PREP_MINUTES,
@@ -328,24 +329,8 @@ export async function createOrderCore(input: {
   publishTenant(input.tenantOid.toHexString(), { type: 'order.created', order: toAdminOrder(doc) });
   // an online order's guest → the restaurant's Customers (name, phone, and the address for delivery)
   if (doc.online) void saveCustomerFromOrder(doc).catch((e) => console.warn('[orders] could not save the customer:', e));
-  const tenantSubdomain = tenant?.subdomain;
-  if (typeof tenantSubdomain === 'string' && tenantSubdomain) {
-    const waiterUrl = process.env.AI_WAITER_HTTP_URL || 'http://ai-waiter-service:7081';
-    void fetch(`${waiterUrl.replace(/\/$/, '')}/internal/alert/trigger`, {
-      method: 'POST',
-      // the shared key: only auth-service may set a restaurant's buzzer off
-      headers: { 'Content-Type': 'application/json', 'X-Internal-Key': process.env.INTERNAL_API_KEY ?? '' },
-      // the order's branch: that branch's buzzer rings (a buzzer set up without a branch rings for every order)
-      body: JSON.stringify({ tenant: tenantSubdomain, location: input.locationId ? input.locationId.toHexString() : null }),
-      signal: AbortSignal.timeout(1500),
-    })
-      .then((response) => {
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      })
-      .catch((error: unknown) => {
-        console.warn(`[orders] could not trigger buzzer for ${tenantSubdomain}:`, error);
-      });
-  }
+  // the counter buzzer rings (the order's branch's)
+  ringBuzzer(tenant?.subdomain as string | undefined, input.locationId, `order #${doc.orderNumber}`);
   return { order: doc, created: true };
 }
 
