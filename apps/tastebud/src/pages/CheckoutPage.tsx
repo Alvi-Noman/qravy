@@ -9,7 +9,7 @@ import { useCart, cartLineKey } from '../context/CartContext';
 import { useWaiterSession } from '../waiter/useWaiterSession';
 import WaiterSheets, { WaiterDock } from '../waiter/WaiterSheets';
 import { OrderApiError, cartIdempotencyKey, orderAttemptDone, placeOrder, rememberOrder } from '../api/orders';
-import { normalizeTable, useTable, withTable } from '../utils/table';
+import { useTable, withTable } from '../utils/table';
 import {
   missingContactField,
   useFulfillment,
@@ -47,12 +47,11 @@ export default function CheckoutPage() {
   const online = channel === 'online';
   const wait = useCartWait({ subdomain: sub, branch, items });
   const pickupAt = usePickupPlace(sub, branch); // pickup: where they collect it
-  const [table, saveTable] = useTable(sub);
+  // the table the guest scanned — shown, never changed here (a typed number could be any table)
+  const [table] = useTable(sub);
   const [fulfillment, setFulfillment] = useFulfillment(sub);
   const [contact, setContact] = useGuestContact(sub);
   const [contactFocus, setContactFocus] = useState<keyof GuestContact | null>(null);
-  const [tableDraft, setTableDraft] = useState(table ?? '');
-  const [editingTable, setEditingTable] = useState(!table);
   const [orderNotes, setOrderNotes] = useState('');
   const [placing, setPlacing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -65,18 +64,10 @@ export default function CheckoutPage() {
     onCheckoutStep: (askTable) => {
       if (!askTable) return;
       if (online) setContactFocus(missingContactField(fulfillment, contact));
-      else setEditingTable(true);
     },
   });
 
-  useEffect(() => {
-    if (table) {
-      setTableDraft(table);
-      setEditingTable(false);
-    }
-  }, [table]);
-
-  const effectiveTable = editingTable ? normalizeTable(tableDraft) : table;
+  const effectiveTable = table;
   const backHref = withTable(storeBasePath(sub, branch) || '/', sub); // (the table stays on the link)
 
   const lines = useMemo(
@@ -100,11 +91,9 @@ export default function CheckoutPage() {
         return setError(CONTACT_MESSAGES[missing]);
       }
     } else if (!effectiveTable) {
-      setEditingTable(true);
-      return setError(tr(lang, 'আপনার টেবিল নম্বরটা লিখুন।', 'Please enter your table number.'));
+      return setError(tr(lang, 'টেবিলের QR কোডটা আবার স্ক্যান করুন — তারপর অর্ডার দিতে পারবেন।', 'Please scan the QR code on your table again, then order.'));
     }
     if (!items.length) return;
-    if (!online && effectiveTable) saveTable(effectiveTable);
     setPlacing(true);
     try {
       const sid = getStableSessionId();
@@ -127,7 +116,7 @@ export default function CheckoutPage() {
       navigate(orderPath(order.token, sub, branch), { replace: true, state: { justPlaced: true } });
     } catch (e) {
       const err = e as OrderApiError;
-      if (err?.needs === 'table') setEditingTable(true);
+      if (err?.needs === 'table') return setError(tr(lang, 'টেবিলের QR কোডটা আবার স্ক্যান করুন — তারপর অর্ডার দিতে পারবেন।', 'Please scan the QR code on your table again, then order.'));
       if (err?.needs === 'name' || err?.needs === 'phone' || err?.needs === 'address') setContactFocus(err.needs);
       setError(err?.message || tr(lang, 'অর্ডার দেওয়া যায়নি। আবার চেষ্টা করুন।', "Couldn't place the order. Please try again."));
     } finally {
@@ -186,24 +175,12 @@ export default function CheckoutPage() {
               ) : (
               <div className="flex items-center justify-between gap-3">
                 <div className="text-sm text-gray-600">{tr(lang, 'টেবিল', 'Table')}</div>
-                {!editingTable && table ? (
-                  <div className="flex items-center gap-3">
-                    <span className="text-lg font-semibold text-gray-900">{table}</span>
-                    <button type="button" className="text-sm text-[#FA2851] font-medium" onClick={() => setEditingTable(true)}>
-                      {tr(lang, 'বদলান', 'Change')}
-                    </button>
-                  </div>
+                {table ? (
+                  <span className="text-lg font-semibold text-gray-900">{table}</span>
                 ) : (
-                  <input
-                    value={tableDraft}
-                    onChange={(e) => setTableDraft(e.target.value)}
-                    onBlur={() => normalizeTable(tableDraft) && saveTable(normalizeTable(tableDraft))}
-                    inputMode="text"
-                    maxLength={12}
-                    placeholder={tr(lang, 'যেমন 12', 'e.g. 12')}
-                    aria-label={tr(lang, 'টেবিল নম্বর', 'Table number')}
-                    className="w-28 rounded-xl border border-gray-200 px-3 py-2 text-right text-lg font-semibold focus:outline-none focus:ring-2 focus:ring-[#FA2851]/40"
-                  />
+                  <span className="text-right text-sm font-medium text-amber-700">
+                    {tr(lang, 'টেবিলের QR কোডটা স্ক্যান করুন', 'Scan the QR code on your table')}
+                  </span>
                 )}
               </div>
               )}
