@@ -787,7 +787,7 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
       pendingAudioRef.current = [];
       helloSentRef.current = false;
       try {
-        tts.stop();
+        tts.fadeOut(); // the guest is talking now: the waiter's voice fades out (≈0.2 s)
       } catch {}
 
       let src: MediaStreamAudioSourceNode | null = null;
@@ -1462,6 +1462,14 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
     try {
       e.currentTarget.setPointerCapture(e.pointerId); // a finger drifting off the orb mid-sentence keeps talking
     } catch {}
+    // cutting in while the waiter speaks: its voice fades out the moment the finger touches the orb — and it won't
+    // reopen the mic on its own when it stops (this press is the guest's turn)
+    if (speakingRef.current) {
+      followUpRef.current = false;
+      try {
+        tts.fadeOut();
+      } catch {}
+    }
     // already listening (a tap, or the mic reopened by itself) → this press sends what they said
     if (listening && !holdingRef.current) {
       stopPressRef.current = true;

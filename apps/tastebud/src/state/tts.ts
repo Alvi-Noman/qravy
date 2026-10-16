@@ -25,6 +25,8 @@ export type TTSPublicAPI = {
   /** Fetch the speech token ahead of time (safe before any tap — no audio is set up). */
   prefetch: () => void;
   stop: () => void;
+  /** The guest cut in: the voice fades out quickly (then stops, like stop()). Already silent → stop() at once. */
+  fadeOut: (ms?: number) => void;
   pause: () => void;
   resume: () => void;
   duck: () => void;     // ⬅️ NEW
@@ -346,7 +348,52 @@ class TTSManager implements TTSPublicAPI {
     this._warm().catch((e) => console.debug("[TTS] warm-up skipped", e));
   };
 
+  // a fade in progress (the guest cut in)
+  private fading: ReturnType<typeof setInterval> | null = null;
+
+  fadeOut(ms = 200) {
+    if (this.fading) return; // already fading
+    const sp = this.speaker;
+    let from = 0;
+    try {
+      from = sp ? Number(sp.volume) || 0 : 0;
+    } catch {
+      from = 0;
+    }
+    // nothing audible to fade (or no speaker) → stop now
+    if (!sp || from <= 0) return this.stop();
+    // nothing more after this sentence
+    const q = this.queue.splice(0);
+    q.forEach((it) => it.reject(new Error("stopped")));
+    // Azure's speaker takes 0..1, the iPhone one (SharedAudioSpeaker) 0..100
+    const scale = from > 1 ? 100 : 1;
+    const steps = 8;
+    const at = (i: number) => {
+      const v = from * Math.max(0, 1 - i / steps);
+      return scale === 100 ? Math.round(v) : v;
+    };
+    // iPhones ignore an <audio> element's volume: fading there would only delay the stop
+    try {
+      sp.volume = at(1);
+      if (Math.abs(Number(sp.volume) - from) < from * 0.05) return this.stop();
+    } catch {
+      return this.stop();
+    }
+    let i = 1;
+    this.fading = setInterval(() => {
+      i += 1;
+      try {
+        sp.volume = at(i);
+      } catch {}
+      if (i >= steps) this.stop();
+    }, Math.max(10, Math.round(ms / steps)));
+  }
+
   stop() {
+    if (this.fading) {
+      clearInterval(this.fading);
+      this.fading = null;
+    }
     // Cancel current + future items
     this.paused = false;
     const q = this.queue.splice(0);
