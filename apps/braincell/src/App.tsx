@@ -19,6 +19,7 @@ import SettingsLayout from './layout/SettingsLayout';
 const Dashboard = lazy(() => import('./pages/Dashboard'));
 const Orders = lazy(() => import('./pages/Orders'));
 const Customers = lazy(() => import('./pages/Customers'));
+const ServiceRequests = lazy(() => import('./pages/ServiceRequests'));
 const Categories = lazy(() => import('./pages/Categories'));
 const MenuItemsPage = lazy(() => import('./pages/MenuItems'));
 const MenuImportPage = lazy(() => import('./pages/MenuImport'));
@@ -301,7 +302,14 @@ function App() {
                 />
 
                 {/* Add stubs for routes so the layout persists (no blank pages) */}
-                <Route path="/service-requests" element={<div className="p-6 text-sm text-slate-700">Service Requests coming soon</div>} />
+                <Route
+                  path="/service-requests"
+                  element={
+                    <Suspense fallback={null}>
+                      <ServiceRequests />
+                    </Suspense>
+                  }
+                />
                 <Route path="/offers" element={<div className="p-6 text-sm text-slate-700">Offers coming soon</div>} />
                 <Route
                   path="/customers"
