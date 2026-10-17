@@ -36,6 +36,14 @@ const disabledInStarter = new Set([
 export default function StepPlanPricing({ value, onChange }: StepPlanPricingProps) {
   const [billingCycle, setBillingCycle] = useState<'monthly' | 'yearly'>('monthly');
   const [loadingPlan, setLoadingPlan] = useState<string | null>(null);
+  // a price agreed with Qravy (negotiated) — optional; Qravy sees it in Cortex next to the list price
+  const [customOpen, setCustomOpen] = useState(false);
+  const [customAmount, setCustomAmount] = useState('');
+  const [customCurrency, setCustomCurrency] = useState<'BDT' | 'USD'>('BDT');
+  const [customNote, setCustomNote] = useState('');
+  const customValue = Number(customAmount);
+  const customValid = customAmount.trim() !== '' && Number.isFinite(customValue) && customValue > 0;
+  const customBad = customOpen && customAmount.trim() !== '' && !customValid;
 
   const navigate = useNavigate();
   const { reloadUser } = useAuthContext();
@@ -73,6 +81,7 @@ export default function StepPlanPricing({ value, onChange }: StepPlanPricingProp
     const suffix = billingCycle === 'monthly' ? 'm' : 'y';
     const normalizedPlanId = `${base}_${suffix}`;
 
+    if (customBad) return;
     onChange({ planId: normalizedPlanId } as any);
     setLoadingPlan(id);
 
@@ -80,7 +89,12 @@ export default function StepPlanPricing({ value, onChange }: StepPlanPricingProp
     try {
       await api.post('/api/v1/auth/tenants/onboarding-step', {
         step: 'plan',
-        data: { planId: normalizedPlanId },
+        data: {
+          planId: normalizedPlanId,
+          ...(customOpen && customValid
+            ? { customPrice: { amount: customValue, currency: customCurrency, note: customNote.trim() } }
+            : {}),
+        },
       });
       await completeOnboarding();
       await reloadUser();
@@ -210,6 +224,70 @@ export default function StepPlanPricing({ value, onChange }: StepPlanPricingProp
             </motion.div>
           );
         })}
+      </div>
+
+      <div className="mx-auto mt-8 w-full max-w-md px-6">
+        {!customOpen ? (
+          <button
+            type="button"
+            onClick={() => setCustomOpen(true)}
+            className="w-full text-center text-sm text-[#555] underline underline-offset-4 hover:text-[#2e2e30]"
+          >
+            Agreed a different price with Qravy?
+          </button>
+        ) : (
+          <div className="rounded-2xl border border-[#e4e4e7] bg-white p-5 shadow-sm">
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-semibold text-[#2e2e30]">Your agreed price</h3>
+              <button
+                type="button"
+                onClick={() => {
+                  setCustomOpen(false);
+                  setCustomAmount('');
+                  setCustomNote('');
+                }}
+                className="text-xs text-[#777] hover:text-[#2e2e30]"
+              >
+                Remove
+              </button>
+            </div>
+            <p className="mt-1 text-xs text-[#777]">
+              Only if you settled a price with the Qravy team. It applies to the plan you start above.
+            </p>
+            <div className="mt-3 flex gap-2">
+              <select
+                value={customCurrency}
+                onChange={(e) => setCustomCurrency(e.target.value === 'USD' ? 'USD' : 'BDT')}
+                aria-label="Currency"
+                className="rounded-lg border border-[#e4e4e7] bg-white px-2 text-sm text-[#2e2e30] focus:outline-none focus:ring-2 focus:ring-[#2e2e30]/20"
+              >
+                <option value="BDT">৳ BDT</option>
+                <option value="USD">$ USD</option>
+              </select>
+              <input
+                type="number"
+                inputMode="decimal"
+                min={0}
+                value={customAmount}
+                onChange={(e) => setCustomAmount(e.target.value)}
+                placeholder="Amount"
+                aria-label="Agreed price"
+                className={`min-w-0 flex-1 rounded-lg border px-3 py-2 text-sm text-[#2e2e30] focus:outline-none focus:ring-2 focus:ring-[#2e2e30]/20 ${
+                  customBad ? 'border-red-400' : 'border-[#e4e4e7]'
+                }`}
+              />
+              <span className="self-center text-sm text-[#555]">/{billingCycle === 'monthly' ? 'mo' : 'yr'}</span>
+            </div>
+            {customBad && <p className="mt-1 text-xs text-red-500">Enter a price above 0.</p>}
+            <input
+              value={customNote}
+              onChange={(e) => setCustomNote(e.target.value.slice(0, 200))}
+              placeholder="Note (optional) — e.g. launch discount for 6 months"
+              aria-label="Note"
+              className="mt-2 w-full rounded-lg border border-[#e4e4e7] px-3 py-2 text-sm text-[#2e2e30] focus:outline-none focus:ring-2 focus:ring-[#2e2e30]/20"
+            />
+          </div>
+        )}
       </div>
     </div>
   );

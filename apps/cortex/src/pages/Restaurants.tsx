@@ -4,13 +4,14 @@ import { Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { api, type TenantRow } from '../api';
 import { Badge, Card, DaysSelect, Empty, ErrorBox, Loading, Td, Th, fmt } from '../components/ui';
+import { BillingBadge, PriceCell } from '../components/Billing';
 
-type SortKey = 'createdAt' | 'orders' | 'revenue' | 'sessions' | 'lastActivity' | 'visitToOrder';
+type SortKey = 'createdAt' | 'orders' | 'revenue' | 'sessions' | 'lastActivity' | 'visitToOrder' | 'expires';
 
 export default function Restaurants() {
   const [days, setDays] = useState(30);
   const [search, setSearch] = useState('');
-  const [show, setShow] = useState<'all' | 'onboarded' | 'not-onboarded' | 'demos'>('all');
+  const [show, setShow] = useState<'all' | 'onboarded' | 'not-onboarded' | 'due' | 'custom' | 'demos'>('all');
   const [sort, setSort] = useState<SortKey>('createdAt');
   const q = useQuery({ queryKey: ['tenants', days], queryFn: () => api<{ items: TenantRow[] }>(`/tenants?days=${days}`) });
 
@@ -20,8 +21,15 @@ export default function Restaurants() {
       if (show === 'demos' ? !t.demo : t.demo) return false;
       if (show === 'onboarded' && !t.onboarded) return false;
       if (show === 'not-onboarded' && t.onboarded) return false;
+      if (show === 'due' && t.billing?.status !== 'due' && t.billing?.status !== 'overdue') return false;
+      if (show === 'custom' && !t.billing?.customPrice) return false;
       return !s || [t.name, t.subdomain, t.owner ?? ''].some((v) => v.toLowerCase().includes(s));
     });
+    // expires: soonest first (overdue at the top), no date last
+    if (sort === 'expires') {
+      const e = (t: TenantRow) => (t.billing?.expiresAt ? new Date(t.billing.expiresAt).getTime() : Infinity);
+      return [...list].sort((a, b) => e(a) - e(b));
+    }
     const val = (t: TenantRow) =>
       sort === 'createdAt' || sort === 'lastActivity' ? new Date(t[sort] ?? 0).getTime() : Number(t[sort] ?? -1);
     return [...list].sort((a, b) => val(b) - val(a));
@@ -55,6 +63,8 @@ export default function Restaurants() {
           <option value="all">All restaurants</option>
           <option value="onboarded">Onboarded</option>
           <option value="not-onboarded">Not onboarded yet</option>
+          <option value="due">Due or overdue</option>
+          <option value="custom">Custom price</option>
           <option value="demos">Quick demos</option>
         </select>
         <span className="text-[12px] text-stone-500">{rows.length} shown</span>
@@ -70,6 +80,8 @@ export default function Restaurants() {
                   <tr>
                     <Th>Restaurant</Th>
                     <Th>Status</Th>
+                    <Th right>Price</Th>
+                    <SortTh k="expires">Expires</SortTh>
                     <Th right>Branches</Th>
                     <SortTh k="sessions">Sessions</SortTh>
                     <Th right>Scans</Th>
@@ -98,9 +110,13 @@ export default function Restaurants() {
                         <div className="flex flex-wrap gap-1">
                           {t.demo && <Badge tone="info">demo</Badge>}
                           {t.onboarded ? <Badge tone="good">onboarded</Badge> : <Badge tone="warn">onboarding</Badge>}
-                          {t.subscription === 'active' ? <Badge tone="good">paying</Badge> : t.trialEndsAt && new Date(t.trialEndsAt) > new Date() ? <Badge>trial</Badge> : <Badge>{t.subscription}</Badge>}
+                          <BillingBadge b={t.billing} />
                         </div>
                       </Td>
+                      <Td right>
+                        <PriceCell b={t.billing} />
+                      </Td>
+                      <Td right className="whitespace-nowrap">{fmt.date(t.billing?.expiresAt)}</Td>
                       <Td right>{t.branches}</Td>
                       <Td right>{fmt.n(t.sessions)}</Td>
                       <Td right>{fmt.n(t.scans)}</Td>

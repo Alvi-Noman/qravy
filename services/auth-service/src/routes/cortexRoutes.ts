@@ -23,6 +23,7 @@ import {
   type Filters,
   type SessionRow,
 } from '../services/cortex/analytics.js';
+import { addMonths, billingDTO, money, newPaymentId, parsePrice, type Billing } from '../services/billing.js';
 
 const router: express.Router = express.Router();
 
@@ -111,7 +112,7 @@ router.get(
     const f = filtersOf(req);
     const since = sinceOf(f.days);
     const ts = await tenantsCol()
-      .find({}, { projection: { name: 1, subdomain: 1, demo: 1, createdAt: 1, onboardingCompleted: 1, subscriptionStatus: 1, planInfo: 1, trialEndsAt: 1, ownerId: 1, restaurantInfo: 1 } })
+      .find({}, { projection: { name: 1, subdomain: 1, demo: 1, createdAt: 1, onboardingCompleted: 1, subscriptionStatus: 1, planInfo: 1, trialEndsAt: 1, billing: 1, ownerId: 1, restaurantInfo: 1 } })
       .sort({ createdAt: -1 })
       .toArray();
     const rows = await sessionRows({ ...f, tenantId: null, locationId: null });
@@ -169,6 +170,7 @@ router.get(
           subscription: t.subscriptionStatus ?? 'none',
           plan: t.planInfo?.planId ?? null,
           trialEndsAt: t.trialEndsAt ?? null,
+          billing: billingDTO(t),
           channels: { dineIn: t.restaurantInfo?.dineInEnabled !== false, online: t.restaurantInfo?.onlineSalesEnabled !== false },
           branches: brBy.get(id) ?? 0,
           lastActivity: lastSeen.length ? new Date(Math.max(...lastSeen)) : null,
@@ -254,6 +256,7 @@ router.get(
         subscription: t.subscriptionStatus ?? 'none',
         plan: t.planInfo?.planId ?? null,
         trialEndsAt: t.trialEndsAt ?? null,
+        billing: billingDTO(t),
         timezone: t.timezone ?? null,
         waiterLanguage: t.waiterLanguage ?? null,
         channels: { dineIn: t.restaurantInfo?.dineInEnabled !== false, online: t.restaurantInfo?.onlineSalesEnabled !== false },
@@ -308,6 +311,107 @@ router.get(
         createdAt: o.createdAt,
       })),
     });
+  })
+);
+
+/* ------------------------------------------------------------------ billing (kept by hand — services/billing.ts) */
+
+function billingView(t: Document) {
+  const b = (t.billing ?? {}) as Billing;
+  return {
+    ...billingDTO(t),
+    payments: [...(b.payments ?? [])].reverse(),
+    history: [...(b.history ?? [])].reverse().slice(0, 50),
+  };
+}
+
+router.get(
+  '/cortex/restaurants/:id/billing',
+  wrap(async (req, res) => {
+    const id = oid(req.params.id);
+    const t = id ? await tenantsCol().findOne({ _id: id }, { projection: { planInfo: 1, trialEndsAt: 1, billing: 1 } }) : null;
+    if (!t) return res.status(404).json({ success: false, message: 'Not found' });
+    res.json({ success: true, billing: billingView(t) });
+  })
+);
+
+/** Change (or clear) the agreed price; optionally correct "paid until". */
+router.put(
+  '/cortex/restaurants/:id/billing',
+  wrap(async (req, res) => {
+    const id = oid(req.params.id);
+    const t = id ? await tenantsCol().findOne({ _id: id }, { projection: { planInfo: 1, trialEndsAt: 1, billing: 1 } }) : null;
+    if (!t) return res.status(404).json({ success: false, message: 'Not found' });
+    const by = String(req.cortex?.email || 'Qravy');
+    const at = new Date();
+    const prev = (t.billing ?? {}) as Billing;
+    const next: Billing = { ...prev };
+    const what: string[] = [];
+    if ('customPrice' in (req.body ?? {})) {
+      if (req.body.customPrice === null) {
+        if (prev.customPrice) what.push(`custom price removed (was ${money(prev.customPrice)}) — list price applies`);
+        next.customPrice = null;
+      } else {
+        const p = parsePrice(req.body.customPrice);
+        if (!p) return res.status(400).json({ success: false, message: 'Enter a price above 0, in ৳ or $' });
+        next.customPrice = { ...p, setBy: by, at };
+        what.push(`custom price ${prev.customPrice ? `${money(prev.customPrice)} → ` : ''}${money(p)}${p.note ? ` — ${p.note}` : ''}`);
+      }
+    }
+    if ('paidUntil' in (req.body ?? {})) {
+      const d = req.body.paidUntil ? new Date(req.body.paidUntil) : null;
+      if (d && Number.isNaN(d.getTime())) return res.status(400).json({ success: false, message: 'Not a date' });
+      next.paidUntil = d;
+      what.push(d ? `paid until set to ${d.toISOString().slice(0, 10)}` : 'paid until cleared');
+    }
+    if (!what.length) return res.json({ success: true, billing: billingView(t) });
+    next.history = [...(prev.history ?? []), ...what.map((w) => ({ at, by, what: w }))].slice(-200);
+    await tenantsCol().updateOne({ _id: id! }, { $set: { billing: next, updatedAt: at } });
+    res.json({ success: true, billing: billingView({ ...t, billing: next }) });
+  })
+);
+
+/** A payment came in (bKash, bank, cash…): "paid until" moves on by `months` from today or from the current end, whichever is later. */
+router.post(
+  '/cortex/restaurants/:id/payments',
+  wrap(async (req, res) => {
+    const id = oid(req.params.id);
+    const t = id ? await tenantsCol().findOne({ _id: id }, { projection: { planInfo: 1, trialEndsAt: 1, billing: 1 } }) : null;
+    if (!t) return res.status(404).json({ success: false, message: 'Not found' });
+    const p = parsePrice(req.body);
+    if (!p) return res.status(400).json({ success: false, message: 'Enter the amount paid, in ৳ or $' });
+    const months = Math.round(Number(req.body?.months));
+    if (!Number.isFinite(months) || months < 1 || months > 36) return res.status(400).json({ success: false, message: 'Months: 1 to 36' });
+    const method = String(req.body?.method ?? '').trim().slice(0, 40) || 'other';
+    const reference = String(req.body?.reference ?? '').trim().slice(0, 100);
+    const by = String(req.cortex?.email || 'Qravy');
+    const at = new Date();
+    const prev = (t.billing ?? {}) as Billing;
+    const from = prev.paidUntil && new Date(prev.paidUntil) > at ? new Date(prev.paidUntil) : at;
+    const paidUntil = addMonths(from, months);
+    const payment = {
+      id: newPaymentId(),
+      amount: p.amount,
+      currency: p.currency,
+      at,
+      method,
+      ...(reference ? { reference } : {}),
+      ...(p.note ? { note: p.note } : {}),
+      by,
+      months,
+      paidUntil,
+    };
+    const next: Billing = {
+      ...prev,
+      paidUntil,
+      payments: [...(prev.payments ?? []), payment].slice(-500),
+      history: [
+        ...(prev.history ?? []),
+        { at, by, what: `payment ${money(p)} (${method}${reference ? ` ${reference}` : ''}) for ${months} month${months === 1 ? '' : 's'} — paid until ${paidUntil.toISOString().slice(0, 10)}` },
+      ].slice(-200),
+    };
+    await tenantsCol().updateOne({ _id: id! }, { $set: { billing: next, subscriptionStatus: 'active', updatedAt: at } });
+    res.json({ success: true, billing: billingView({ ...t, billing: next }) });
   })
 );
 

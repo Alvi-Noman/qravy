@@ -13,6 +13,8 @@ type MutableUser = {
   sessionType?: SessionType; // 'member' | 'branch'
   viewAs?: SessionType; // optional override from header
   capabilities?: string[];
+  /** a Qravy support session's id */
+  imp?: string;
 };
 
 /**
@@ -80,11 +82,15 @@ export async function applyScope(req: Request, res: Response, next: NextFunction
   }
 
   const effectiveType: SessionType = user.viewAs ?? user.sessionType;
-  user.capabilities = computeCapabilities({
-    role: user.role,
-    sessionType: effectiveType,
-    viewAs: user.viewAs,
-  });
+  // Qravy support (middleware/auth): everything the owner sees, unless viewing as a branch
+  user.capabilities =
+    user.imp && !user.viewAs
+      ? ['*']
+      : computeCapabilities({
+          role: user.role,
+          sessionType: effectiveType,
+          viewAs: user.viewAs,
+        });
 
   next();
 }

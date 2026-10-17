@@ -150,6 +150,9 @@ export async function authenticateJWT(req: Request, res: Response, next: NextFun
         imp,
         impBy: s.by,
         impUntil: s.expiresAt.toISOString(),
+        // Qravy support sees everything the owner sees (QR codes, digital menu, store…); the owner-only actions are
+        // refused above (supportDenied), not hidden
+        capabilities: ['*'],
       };
       // every change is logged (not "Exit" itself)
       if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method.toUpperCase()) && !/\/auth\/support\/end\b/.test(req.originalUrl)) {

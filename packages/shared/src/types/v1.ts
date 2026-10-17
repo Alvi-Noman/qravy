@@ -247,6 +247,23 @@ export interface RestaurantInfoDTO {
   dineInEnabled?: boolean;
 }
 
+export type BillingMoney = { amount: number; currency: 'BDT' | 'USD' };
+export interface TenantBilling {
+  planId: string | null;
+  plan: string | null;
+  interval: 'month' | 'year';
+  listPrice: BillingMoney | null;
+  customPrice: (BillingMoney & { note: string; setBy: string; at: string }) | null;
+  /** what they pay: the custom price when there is one, else the list price */
+  price: BillingMoney | null;
+  paidUntil: string | null;
+  trialEndsAt: string | null;
+  /** paidUntil, or the trial's end before the first payment */
+  expiresAt: string | null;
+  daysLeft: number | null;
+  status: 'none' | 'trial' | 'active' | 'due' | 'overdue';
+}
+
 export interface TenantDTO {
   id: string;
   name: string;
@@ -283,6 +300,9 @@ export interface TenantDTO {
   upsellRules?: Array<{ whenItemIds: string[]; whenCategories: string[]; offerItemIds: string[]; on: boolean }>;
   /** The owner's picks: a guest asks for one of these words → the waiter shows these dishes, in this order */
   suggestRules?: Array<{ phrases: string[]; itemIds: string[]; on: boolean }>;
+  /** The plan and what the restaurant pays Qravy (a custom price when one was agreed), until when, and the status
+   *  from the dates — the dashboard shows a reminder when it's due or overdue (nothing is locked) */
+  billing?: TenantBilling;
   /** The restaurant's logo (Settings → Branding); shown on the guest app's start screen */
   logoUrl?: string | null;
   /** IANA time zone for all hours (e.g. "Asia/Dhaka") */

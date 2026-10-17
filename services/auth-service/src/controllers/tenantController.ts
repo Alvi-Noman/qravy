@@ -14,6 +14,7 @@ import { missingTableKeys, tableKeysFor } from '../utils/tableKeys.js';
 import { checkSubdomain } from '../utils/subdomains.js';
 import type { v1 } from '@qravy/shared';
 import { restaurantOnboardingSchema, tenantUpdateSchema } from '../validation/schemas.js';
+import { money, parsePrice, type Billing } from '../services/billing.js';
 
 /* --------------------------------- Collections --------------------------------- */
 function tenantsCol() {
@@ -319,6 +320,18 @@ export async function saveOnboardingStep(req: Request, res: Response, next: Next
       update.onboardingCompleted = true;
 
       const t = await tenantsCol().findOne({ _id: new ObjectId(tenantId) });
+      // a price agreed with Qravy (typed here; Qravy can change it in Cortex) — kept with who set it and when
+      const custom = parsePrice(data?.customPrice);
+      if (custom) {
+        const by = `onboarding (${req.user?.email ?? 'owner'})`;
+        const at = new Date();
+        const prev = (t?.billing ?? {}) as Billing;
+        update.billing = {
+          ...prev,
+          customPrice: { ...custom, setBy: by, at },
+          history: [...(prev.history ?? []), { at, by, what: `custom price ${money(custom)}${custom.note ? ` — ${custom.note}` : ''}` }].slice(-200),
+        };
+      }
       if (t && (!t.trialStartedAt || !t.trialEndsAt)) {
         const start = t.trialStartedAt ?? t.createdAt ?? new Date();
         const end = t.trialEndsAt ?? addDays(start, DEFAULT_TRIAL_DAYS);

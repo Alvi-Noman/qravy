@@ -195,6 +195,20 @@ export interface RestaurantInfoDTO {
     onlineSalesEnabled?: boolean;
     dineInEnabled?: boolean;
 }
+export type BillingMoney = { amount: number; currency: 'BDT' | 'USD' };
+export interface TenantBilling {
+    planId: string | null;
+    plan: string | null;
+    interval: 'month' | 'year';
+    listPrice: BillingMoney | null;
+    customPrice: (BillingMoney & { note: string; setBy: string; at: string }) | null;
+    price: BillingMoney | null;
+    paidUntil: string | null;
+    trialEndsAt: string | null;
+    expiresAt: string | null;
+    daysLeft: number | null;
+    status: 'none' | 'trial' | 'active' | 'due' | 'overdue';
+}
 export interface TenantDTO {
     id: string;
     name: string;
@@ -231,6 +245,8 @@ export interface TenantDTO {
     upsellRules?: Array<{ whenItemIds: string[]; whenCategories: string[]; offerItemIds: string[]; on: boolean }>;
     /** The owner's picks: a guest asks for one of these words → the waiter shows these dishes, in this order */
     suggestRules?: Array<{ phrases: string[]; itemIds: string[]; on: boolean }>;
+    /** The plan and what the restaurant pays Qravy, until when, and the status (a reminder when due/overdue) */
+    billing?: TenantBilling;
     /** IANA time zone for all hours (e.g. "Asia/Dhaka") */
     timezone?: string;
     /** Restaurant opening hours; empty = always open */

@@ -7,12 +7,13 @@ import { Badge, Card, DaysSelect, Empty, ErrorBox, Loading, Stat, Td, Th, fmt } 
 import { FunnelBars, Trend } from '../components/charts';
 import { SessionsTable } from './Sessions';
 import { OpenDashboardButton, SupportHistory } from '../components/SupportAccess';
+import { BillingBadge, BillingCard, type BillingSummary } from '../components/Billing';
 
 type Detail = {
   days: number;
   tenant: {
     id: string; name: string; subdomain: string; demo: boolean; owner: string | null; createdAt: string | null; onboarded: boolean;
-    subscription: string; plan: string | null; trialEndsAt: string | null; timezone: string | null; waiterLanguage: string | null;
+    subscription: string; plan: string | null; trialEndsAt: string | null; billing: BillingSummary; timezone: string | null; waiterLanguage: string | null;
     channels: { dineIn: boolean; online: boolean }; tables: number;
   };
   branches: Array<{ id: string; name: string; slug: string | null; address: string; disabled: boolean; tables: number; main: boolean }>;
@@ -57,7 +58,7 @@ export default function RestaurantDetail() {
                 <span>· joined {fmt.date(d.tenant.createdAt)}</span>
                 {d.tenant.demo && <Badge tone="info">demo</Badge>}
                 {d.tenant.onboarded ? <Badge tone="good">onboarded</Badge> : <Badge tone="warn">onboarding</Badge>}
-                <Badge>{d.tenant.subscription}{d.tenant.plan ? ` · ${d.tenant.plan}` : ''}</Badge>
+                <BillingBadge b={d.tenant.billing} />
                 {d.tenant.channels.dineIn && <Badge>dine-in</Badge>}
                 {d.tenant.channels.online && <Badge>online</Badge>}
               </p>
@@ -67,6 +68,8 @@ export default function RestaurantDetail() {
               <DaysSelect value={days} onChange={setDays} />
             </div>
           </header>
+
+          <BillingCard tenantId={d.tenant.id} />
 
           <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
             <Stat label="Guest sessions" value={fmt.n(d.funnel.sessions)} sub={`${fmt.n(d.funnel.scans)} QR scans · ${fmt.n(d.funnel.pageViews)} page views`} />
