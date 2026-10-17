@@ -5,14 +5,23 @@ import { useEffect, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { SpeakerWaveIcon, StopIcon } from '@heroicons/react/24/outline';
 import { listOwnWords, resetOwnWord, setOwnWord, voiceTextFor } from '../../api/pronunciations';
+import api from '../../api/auth';
 import { speak, spokenFor, VOICES } from '../../utils/speech';
-import { useTenant } from '../../hooks/useTenant';
 import { toastError, toastSuccess } from '../Toaster';
+
+// the waiter's voice, looked up when something is first played (so a row needs no tenant context to render)
+let voiceOnce: Promise<string> | null = null;
+const waiterVoice = () =>
+  (voiceOnce ??= api
+    .get('/api/v1/auth/tenants/me')
+    .then((r) => (r.data?.item?.waiterVoice === 'female' ? VOICES.female : VOICES.male))
+    .catch(() => {
+      voiceOnce = null;
+      return VOICES.male;
+    }));
 
 /** Plays how the waiter says `text` (this restaurant's voice and words). Returns [playing, play, stop]. */
 export function useSayIt(): [boolean, (text: string, raw?: boolean) => Promise<void>, () => void] {
-  const { data: tenant } = useTenant();
-  const voice = tenant?.waiterVoice === 'female' ? VOICES.female : VOICES.male;
   const [playing, setPlaying] = useState(false);
   const audio = useRef<HTMLAudioElement | null>(null);
   const stop = () => {
@@ -26,7 +35,7 @@ export function useSayIt(): [boolean, (text: string, raw?: boolean) => Promise<v
     setPlaying(true);
     try {
       const said = raw ? text : await voiceTextFor(text);
-      const a = await speak(voice, said);
+      const a = await speak(await waiterVoice(), said);
       audio.current = a;
       a.onended = () => setPlaying(false);
     } catch {
