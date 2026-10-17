@@ -60,17 +60,27 @@ export function recordSupportAction(id: string, method: string, path: string): v
 }
 
 /** What a support session may NOT do — the owner's alone. */
-export const SUPPORT_DENIED: Array<{ method: string; path: RegExp; what: string }> = [
+export const SUPPORT_DENIED: Array<{ method: string; path: RegExp; what: string; billing?: true }> = [
   { method: 'POST', path: /\/access\/(invite-admin|resend-invite|revoke-admin)\b/, what: 'team changes' },
   { method: 'POST', path: /\/access\/select-tenant\b/, what: "switching to the owner's other restaurants" },
   { method: 'POST', path: /\/tenants$/, what: 'creating a restaurant' },
-  { method: 'POST', path: /\/tenants\/(subscribe|cancel|trial\/end|billing-profile)\b/, what: 'billing and the plan' },
-  { method: '*', path: /\/tenants\/payment-method\b/, what: 'the payment method' },
+  { method: 'POST', path: /\/tenants\/(subscribe|cancel|trial\/end|billing-profile)\b/, what: 'billing and the plan', billing: true },
+  { method: '*', path: /\/tenants\/payment-method\b/, what: 'the payment method', billing: true },
   { method: 'POST', path: /\/(logout-all|revoke-session)\b/, what: "signing the owner's devices out" },
 ];
 
+/**
+ * For now Qravy sets restaurants up itself — subscribing them, adding the card, changing the plan — so a support
+ * session MAY do billing (every change is still logged on the session, and the restaurant sees it in Settings →
+ * Security). To make billing the owner's alone again, set SUPPORT_CAN_BILL=0 in the auth-service env and restart.
+ */
+export const supportCanBill = (): boolean => process.env.SUPPORT_CAN_BILL !== '0';
+
 export function supportDenied(method: string, path: string): string | null {
   const m = method.toUpperCase();
-  const hit = SUPPORT_DENIED.find((d) => (d.method === '*' || d.method === m) && d.path.test(path.split('?')[0]));
+  const canBill = supportCanBill();
+  const hit = SUPPORT_DENIED.find(
+    (d) => (d.method === '*' || d.method === m) && d.path.test(path.split('?')[0]) && !(d.billing && canBill)
+  );
   return hit ? hit.what : null;
 }
