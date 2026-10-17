@@ -130,10 +130,59 @@ _HEAT = re.compile(
 _MILD = re.compile(r"\b(corn|lemon|sweet\s*&\s*sour|clear|cashew|oyster|mushroom|egg fried rice|finger|fry|fries)\b")
 
 
+# What's in a dish named in Bangla / Banglish (চিংড়ি মালাইকারি, গরুর মাংস ভুনা, Rui Kalia): the English words the checks
+# above look for. Erring towards "contains" is the safe side for an allergy or a diet.
+_BN_CONTENTS: Tuple[Tuple[Tuple[str, ...], str], ...] = (
+    (("চিকেন", "মুরগি", "মুরগী", "মোরগ"), "chicken"),
+    (("গরু", "গরুর", "বিফ", "গোশত", "গোস্ত", "কালাভুনা", "মেজবান", "মেজবানি", "নেহারি", "নিহারি"), "beef"),
+    (("খাসি", "মাটন", "ভেড়া", "ভেড়া", "ছাগল", "ল্যাম্ব"), "mutton"),
+    (("হাঁস", "হাস", "ডাক"), "duck"),
+    (("চিংড়ি", "চিংড়ি", "প্রন", "শ্রিম্প", "গলদা", "বাগদা"), "prawn"),
+    (("কাঁকড়া", "কাঁকড়া", "কাকড়া", "লবস্টার"), "crab"),
+    (("স্কুইড", "ক্যালামারি"), "squid"),
+    (("মাছ", "মাছের", "ফিশ", "ইলিশ", "রুই", "কাতলা", "পাবদা", "কই", "শিং", "মাগুর", "টেংরা", "টেঁইরা", "বোয়াল", "আইর", "চিতল",
+      "পাঙ্গাস", "তেলাপিয়া", "রূপচাঁদা", "রুপচাঁদা", "কোরাল", "ভেটকি", "লইট্টা", "শুটকি", "শুঁটকি", "বাইম", "গুলশা", "মলা",
+      "কাচকি", "পুঁটি", "পুটি", "বাইলা", "আইড়"), "fish"),
+    (("কাজু", "কাজুবাদাম", "বাদাম", "চিনাবাদাম", "পেস্তা", "আখরোট"), "nuts"),
+    (("ডিম", "ডিমের", "এগ", "অমলেট", "মামলেট"), "egg"),
+    (("দুধ", "দই", "ঘি", "মাখন", "পনির", "চিজ", "ক্রিম", "ক্ষীর", "পায়েস", "পায়েস", "ফিরনি", "রসমালাই", "লাচ্ছি", "লাস্সি",
+      "লাসসি", "বোরহানি", "মিল্ক", "মিল্কশেক", "শেক", "কুলফি", "আইসক্রিম", "ফালুদা", "মালাই"), "milk"),
+    (("মাশরুম",), "mushroom"),
+    (("রুটি", "পরোটা", "পরাটা", "নান", "লুচি", "পুরি", "নুডলস", "নুডুলস", "চাউমিন", "চাওমিন", "পাস্তা", "পাউরুটি",
+      "স্যান্ডউইচ", "বার্গার", "পিজ্জা", "পিৎজা", "সমুচা", "সামুচা", "সিঙ্গারা", "মোমো"), "noodles bread"),
+    (("সবজি", "সবজির", "ভেজ", "আলু", "বেগুন", "শাক", "ডাল", "লাউ", "পটল", "ফুলকপি", "বাঁধাকপি", "করলা", "ঢেঁড়স", "কুমড়া",
+      "কুমড়া", "টমেটো", "পেঁপে", "মটর", "ছোলা"), "vegetable"),
+)
+_LATIN_CONTENTS: Tuple[Tuple[str, str], ...] = (
+    (r"\bmurg[ih]?\b|\bmorog\b", "chicken"),
+    (r"\bgoru\b|\bgorur\b|\bgosht?\b|\bgosto?\b|kala ?bhuna|mezban|nehari|nihari", "beef"),
+    (r"\bkhas[hs]?i\b|\bkhashir\b", "mutton"),
+    (r"\bhash\b|\bhasher\b", "duck"),
+    (r"chingri|golda|bagda", "prawn"),
+    (r"\b(mach|maach|macher|maacher|rui|katla|pabda|koi|shing|magur|tengra|boal|ayre|air mach|chitol|pangas|rupchanda|"
+     r"koral|loitta|shutki|baim|kachki|puti|mola)\b", "fish"),
+    (r"\bkaju\b|\bbadam\b", "nuts"),
+    (r"\bdim\b|\bdimer\b|\bomelette?\b", "egg"),
+    (r"\bdudh\b|\bmakhon\b|\bponir\b|\bmalai\b|borhani|\bshake\b", "milk"),
+    (r"\bluchi\b|\bporota\b|\bporata\b|singara|samosa|somucha", "bread"),
+    (r"\b(sobji|shobji|sabzi|aloo|alu|begun|shak|dal|daal|lau|potol|chola)\b", "vegetable"),
+)
+# "ঝাল" / "jhal" / মরিচ / নাগা in the name. (Not 🌶: a menu put 🌶🌶🌶🌶 on an Oreo shake and a firni — there it marks
+# a favourite, not heat. The owner's "Spicy" tag is the fact.)
+_BN_HEAT: Tuple[Tuple[Tuple[str, ...], str], ...] = ((("ঝাল", "মরিচ", "নাগা", "বোম্বাই", "ঝালফ্রেজি"), "spicy"),)
+_LATIN_HEAT: Tuple[Tuple[str, str], ...] = ((r"\bjhal\b|morich|mirchi?\b", "spicy"),)
+
+
+def contents_text(text: str) -> str:
+    """Dish text + the English ingredient words its Bangla / Banglish words mean (for allergy / diet checks)."""
+    extra = _gloss(text, _BN_CONTENTS, _LATIN_CONTENTS)
+    return f"{text} {' '.join(extra)}" if extra else text
+
+
 def item_hints(it: Dict[str, Any]) -> Dict[str, Any]:
     """Best-effort dietary/heat hints. Menu tags are facts; name-based hints are marked as likely."""
     tags = [str(t).strip().lower() for t in (it.get("tags") or []) if t]
-    text = " ".join(str(x or "") for x in (it.get("name"), it.get("description"), it.get("category"))).lower()
+    text = contents_text(" ".join(str(x or "") for x in (it.get("name"), it.get("description"), it.get("category"))).lower())
     contains = []
     for pat, label in _CONTAINS:
         if re.search(pat, text) and label not in contains:
@@ -145,9 +194,10 @@ def item_hints(it: Dict[str, Any]) -> Dict[str, Any]:
     # set menu's component list ("…, Chicken Chili Onion, …" doesn't make the whole set spicy)
     own = " ".join(str(x or "") for x in (it.get("name"), it.get("category"))).lower()
     desc = str(it.get("description") or "").lower()
+    name_heat = _gloss(str(it.get("name") or "").lower(), _BN_HEAT, _LATIN_HEAT)
     if "spicy" in tags or "hot" in tags:
         heat = "spicy"
-    elif _HEAT.search(own) or re.search(r"\b(spicy|fiery|very hot)\b", desc):
+    elif name_heat or _HEAT.search(own) or re.search(r"\b(spicy|fiery|very hot)\b", desc):
         heat = "likely spicy"
     elif _MILD.search(own):
         heat = "likely mild"
@@ -159,8 +209,8 @@ def item_hints(it: Dict[str, Any]) -> Dict[str, Any]:
         diet = "vegan"
     elif "vegetarian" in tags:
         diet = "vegetarian"
-    elif not (set(contains) & _MEATY) and "egg" not in contains and _VEG_WORDS.search(name) and "soup" not in name:
-        diet = "likely vegetarian"
+    elif not (set(contains) & _MEATY) and "egg" not in contains and _VEG_WORDS.search(contents_text(name)) and "soup" not in kind_text({"name": name}):
+        diet = "likely vegetarian"  # (Bangla too: আলু ভর্তা, বেগুন ভাজা — never চিকেন ভর্তা)
     else:
         diet = ""
     return {"contains": contains, "heat": heat, "diet": diet, "tags": tags}
@@ -260,7 +310,7 @@ def render_catalog(index: MenuIndex, desc_chars: int = 160) -> str:
 _BN_KIND: Tuple[Tuple[Tuple[str, ...], str], ...] = (
     (("পানীয়", "পানীয়", "ড্রিংক", "ড্রিংকস", "বেভারেজ"), "drink"),
     (("লাচ্ছি", "লাস্সি", "লাসসি", "বোরহানি"), "lassi"),
-    (("জুস", "শরবত", "লেমোনেড", "মোজিতো", "মকটেল"), "juice"),
+    (("জুস", "শরবত", "লেমোনেড", "মোজিতো", "মকটেল", "রস", "রসনা", "লাইম", "লেমন", "লেবুজা", "লেমনেড"), "juice"),
     (("শেক", "মিল্কশেক", "স্মুদি"), "shake"),
     (("চা",), "tea"),
     (("কফি", "আমেরিকানো", "এসপ্রেসো", "ক্যাপুচিনো", "কাপুচিনো", "লাতে", "ল্যাতে", "ল্যাটে", "মোকা", "ফ্রাপে"), "coffee"),
@@ -277,7 +327,8 @@ _BN_KIND: Tuple[Tuple[Tuple[str, ...], str], ...] = (
     (("সালাদ",), "salad"),
     (("নাস্তা", "স্ন্যাকস", "স্ন্যাক্স", "পাকোড়া", "পাকোরা", "সিঙ্গারা", "সমুচা", "সামুচা", "চপ", "পুরি", "ফুচকা", "চটপটি",
       "বড়া", "রোল", "ফ্রাই", "উইংস", "নাগেট", "মোমো"), "snack"),
-    (("কাবাব", "কাবাবের", "টিক্কা", "তন্দুরি", "গ্রিল", "চাপ", "রোস্ট", "শাশলিক"), "kebab grill"),
+    (("কাবাব", "কাবাবের", "টিক্কা", "তন্দুরি", "শাশলিক"), "kebab grill"),
+    (("গ্রিল", "চাপ", "রোস্ট"), "grill main"),
     (("ভুনা", "রেজালা", "কোরমা", "দোপেয়াজা", "দোপিয়াজা", "কালিয়া", "ঝোল", "কারি", "তরকারি", "মাসালা", "মসলা", "ঝাল ফ্রাই",
       "কালাভুনা", "মালাইকারি"), "curry main"),
     (("মাছ", "মাছের", "ইলিশ", "রুই", "পাবদা", "চিংড়ি", "চিংড়ি", "কোরাল", "রূপচাঁদা", "ভেটকি", "শুটকি"), "fish"),
@@ -299,28 +350,44 @@ _LATIN_KIND: Tuple[Tuple[str, str], ...] = (
     (r"singara|samosa|somucha|\bpuri\b|fuchka|chotpoti|pakora|\bchop\b|\broll\b|momo|nugget|wings", "snack"),
 )
 _BN_WORD = re.compile(r"[ঀ-৿]+")
+_BN_SIGN = re.compile(r"[ঁ-ঃ়-ৗ]")  # vowel signs, virama, ঁ ং ঃ — never start a word
+
+
+def _gloss(text: str, bn: Tuple[Tuple[Tuple[str, ...], str], ...], latin: Tuple[Tuple[str, str], ...]) -> List[str]:
+    """The English words `text`'s Bangla / Banglish words mean, from a table of (Bangla words, English) + (Latin
+    pattern, English). Bangla: a word of 1–2 letters must be the whole word (চা, দই); of 3 the whole word or the start
+    of a longer compound (মাছ, মাছভাজা — not মাছি… which no menu has); longer ones may carry an ending (খাসির)."""
+    words = _BN_WORD.findall(text)
+    out: List[str] = []
+    if words:
+        stems = {re.sub(r"(য়ের|য়ের|ের|এর|র)$", "", w) for w in words}  # আলুর → আলু, ডালের → ডাল
+        for keys, gloss in bn:
+            for k in keys:
+                if " " in k:
+                    hit = k in text
+                elif len(k) <= 2:
+                    hit = k in words or k in stems
+                elif len(k) == 3:
+                    # a compound starts a new letter after the key (মাছ|ভাজা); a vowel sign means one word (সুপ|ার = super)
+                    hit = k in stems or any(
+                        w == k or (w.startswith(k) and len(w) >= len(k) + 2 and not _BN_SIGN.match(w[len(k):]))
+                        for w in words
+                    )
+                else:
+                    hit = any(w == k or w.startswith(k) for w in words)
+                if hit:
+                    out.append(gloss)
+                    break
+    for pat, gloss in latin:
+        if re.search(pat, text):
+            out.append(gloss)
+    return out
 
 
 def kind_text(it: Dict[str, Any]) -> str:
     """name + category, lower-case, + the English kind words its Bangla/Banglish words mean."""
     text = " ".join(str(x or "") for x in (it.get("name"), it.get("category"))).lower()
-    words = _BN_WORD.findall(text)
-    extra: List[str] = []
-    if words:
-        for keys, gloss in _BN_KIND:
-            for k in keys:
-                if " " in k:
-                    hit = k in text
-                elif len(k) <= 3:
-                    hit = k in words  # চা, নান, সস, সুপ: the whole word only (সুপার is not soup)
-                else:
-                    hit = any(w == k or w.startswith(k) for w in words)
-                if hit:
-                    extra.append(gloss)
-                    break
-    for pat, gloss in _LATIN_KIND:
-        if re.search(pat, text):
-            extra.append(gloss)
+    extra = _gloss(text, _BN_KIND, _LATIN_KIND)
     return f"{text} {' '.join(extra)}" if extra else text
 
 
@@ -642,7 +709,7 @@ _KINDS = {
     "burgers": r"burger|বার্গার",
     "biryani": r"biry?ani|kacchi|tehari|বিরিয়ানি|কাচ্চি|তেহারি",
     "breakfast items": r"breakfast|paratha|porota|omelet|omelette|toast|পরোটা|নাস্তা|ডিম ভাজি",
-    "alcohol": r"\bbeer\b|\bwine\b|alcohol|whisk(e)?y|vodka|cocktail",
+    "alcohol": r"\bbeer\b|\bwine\b|alcohol|whisk(e)?y|vodka|cocktail|বিয়ার|বিয়ার|ওয়াইন|ওয়াইন|মদ|অ্যালকোহল|এলকোহল|হুইস্কি",
     "kebabs": r"kebab|kabab|tikka|কাবাব",
 }
 
@@ -653,7 +720,9 @@ def _kind_patterns(pat: Any) -> Tuple[str, str]:
 
 
 def _item_text(it: Dict[str, Any]) -> str:
-    return " ".join(str(x or "") for x in (it.get("name"), it.get("category"), " ".join(it.get("tags") or []))).lower()
+    # (+ the English kind words of a Bangla name: a drinks list called "কলিজা ঠাণ্ডা" with আদা লেবু লাচ্ছি, মাল্টার জুস
+    # once read as "this menu has no drinks")
+    return f"{kind_text(it)} {' '.join(it.get('tags') or [])}".lower()
 
 
 def kind_items(text: str, index: MenuIndex) -> List[Tuple[str, List[Dict[str, Any]]]]:

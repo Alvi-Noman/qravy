@@ -21,7 +21,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from wait_time import asks_quickest, asks_time, clamp_prep
-from waiter_knowledge import MenuIndex, is_dessert, is_side, is_signature, item_hints, kind_text, time_fit
+from waiter_knowledge import MenuIndex, contents_text, is_dessert, is_side, is_signature, item_hints, kind_text, time_fit
 
 # ------------------------------------------------------------------ guest profile
 
@@ -299,7 +299,8 @@ def is_packaged(it: Dict[str, Any]) -> bool:
 
 def dish_facts(it: Dict[str, Any]) -> Dict[str, Any]:
     h = item_hints(it)
-    text = " ".join(str(x or "") for x in (it.get("name"), it.get("category"), it.get("description"))).lower()
+    # (+ the English words of its Bangla ones: "গরু খাই না" must also keep গরুর মাংস ভুনা away)
+    text = contents_text(" ".join(str(x or "") for x in (it.get("name"), it.get("category"), it.get("description"))).lower())
     contains = set(h["contains"])
     choice_all, choice_has_veg = _required_choice_contents(it)
     contains |= choice_all
@@ -331,6 +332,8 @@ def dish_facts(it: Dict[str, Any]) -> Dict[str, Any]:
         "main": bool(re.search(r"selection|sizzl|set menu|choice of|curry|fish|biry?ani|kacchi|tehari|main|kebab|grill", kind))
         and not re.search(r"soup|salad|appeti", kind),
         "kid_friendly": bool(re.search(r"fry|fries|finger|nugget|corn soup|egg fried rice|sweet ?& ?sour|fried chicken|wings", kind)),
+        # সাদা ভাত is plain rice even in a "মাছ…" (fish) category — judged by its own name
+        "plain_rice": "plain rice" in kind_text({"name": it.get("name")}),
         "side": is_side(it),
         "dessert": is_dessert(it),
     }
@@ -520,7 +523,9 @@ def _score(it: Dict[str, Any], f: Dict[str, Any], prof: GuestProfile, kinds: Lis
         s -= 1.5  # drinks are pairings, not answers to "what should I eat?"
     if f["rice"] and not f["complete_meal"] and not f["main"]:
         s -= 2.5  # plain rice / naan are sides — offered as a pairing, not as a recommendation
-    elif f["rice"] and not f["complete_meal"] and re.search(r"\b(plain|steamed|polao|pulao|naan|roti)\b", f["text"]):
+    elif f["rice"] and not f["complete_meal"] and (
+        f["plain_rice"] or re.search(r"\b(plain|steamed|polao|pulao|naan|roti)\b", f["text"])
+    ):
         s -= 2.5
     if f["side"] and not f["complete_meal"]:
         s -= 2.5  # a bhorta, a sauce, an add-on: goes with a meal, isn't one
@@ -618,6 +623,9 @@ def rank(
             if val > best_val:
                 best_i, best_val = i, val
         p, f = pool.pop(best_i)
+        # the same dish listed in two categories (গরুর লাল ভুনা under breakfast AND curries) is one pick
+        if any(str(q.item.get("name")).strip() == str(p.item.get("name")).strip() for q in picks):
+            continue
         picks.append(p)
         used_cat[str(p.item.get("category"))] = used_cat.get(str(p.item.get("category")), 0) + 1
         used_protein[f["protein"] or "-"] = used_protein.get(f["protein"] or "-", 0) + 1
