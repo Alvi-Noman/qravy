@@ -388,8 +388,13 @@ def test_budget_detection():
 def test_confirm_fast_path_without_model():
     history = [{"role": "assistant", "content": "Your order: 1 × Spring Roll — ৳230. Anything else, or shall I confirm your order?"}]
     ctx = {"cartItems": [{"itemId": "a1", "quantity": 1}], "table": "12"}
-    # yes to "anything else, or shall I confirm?" → a short check, no prices (nothing placed yet)
+    # yes to "anything else, or shall I confirm?" IS the confirmation → placed, naming it (no second question)
     out = asyncio.run(brain.generate_reply("yes please", menu_snapshot={"items": ITEMS}, history=history, context=dict(ctx)))
+    assert out["meta"]["decision"].get("placeOrder") is True
+    assert out["replyText"] == "Great — 1 × Spring Roll — placing your order now…"
+    # a softer "that's all" gets the short check first, no prices (nothing placed yet)
+    out = asyncio.run(brain.generate_reply("that's all", menu_snapshot={"items": ITEMS},
+                                           history=[{"role": "assistant", "content": "Added 1 × Spring Roll."}], context=dict(ctx)))
     assert out["meta"]["decision"].get("showCheckout") is True and not out["meta"]["decision"].get("placeOrder")
     assert out["replyText"] == "1 × Spring Roll — shall I place the order?"
     assert out["meta"]["checkout"]["stage"] == "readback"

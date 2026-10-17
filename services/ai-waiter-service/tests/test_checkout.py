@@ -105,7 +105,8 @@ def test_stage_machine():
     assert co.decide(text="place my order", stage="none", **{**base, "cart_changed_this_turn": True})[0] == "readback"
     assert co.decide(text="place my order", stage="none", **{**base, "table": None})[0] == "ask_table"
     assert co.decide(text="place my order", stage="none", **{**base, "cart_nonempty": False})[0] == "empty"
-    assert co.decide(text="yes", stage="none", **{**base, "asked_to_confirm": True})[0] == "readback"
+    # "yes" to "…or shall I confirm your order?" IS the confirmation — no second question
+    assert co.decide(text="yes", stage="none", **{**base, "asked_to_confirm": True})[0] == "place"
     assert co.decide(text="yes", stage="none", **base)[0] == "stay"                  # yes to what?
     assert co.decide(text="that's all", stage="none", **base)[0] == "readback"
     assert co.decide(text="that's all", stage="none", defer_done=True, **base)[0] == "stay"  # drink offer first
@@ -141,12 +142,17 @@ def test_send_it_places_straight_away_without_reading_prices():
 
 
 def test_full_flow_readback_then_yes_places():
-    # a softer signal — "yes" to "anything else, or shall I confirm?" — gets a short check: dishes, no prices
+    # "yes" to "anything else, or shall I confirm?" IS the confirmation: placed, naming what goes to the kitchen
+    # (it used to ask "…shall I place the order?" a second time)
     out, calls = _run("yes", history=[{"role": "assistant", "content": "Added 2 × Spring Roll. Anything else, or shall I confirm your order?"}])
+    assert not calls and out["meta"]["decision"].get("placeOrder") is True
+    assert out["replyText"] == "Great — 2 × Spring Roll — placing your order now…"
+    # a softer signal ("that's all") gets the short check first: dishes, no prices
+    out, calls = _run("no, that's all", history=[{"role": "assistant", "content": "Added 2 × Spring Roll. Anything else, or shall I confirm your order?"}])
     assert not calls  # deterministic, no model call
     d = out["meta"]["decision"]
     assert d.get("showCheckout") and not d.get("placeOrder")
-    assert out["replyText"] == "2 × Spring Roll — shall I place the order?"
+    assert out["replyText"] == "Alright — 2 × Spring Roll — shall I place the order?"
     state = {"checkout": out["meta"]["checkout"]}
     out2, _ = _run("yes", state=state, history=[{"role": "assistant", "content": out["replyText"]}])
     assert out2["meta"]["decision"].get("placeOrder") is True
@@ -164,7 +170,7 @@ def test_nothing_is_placed_without_the_guests_own_clear_words():
 
 
 def test_cart_changed_during_readback_reads_back_again():
-    out, _ = _run("yes", history=[{"role": "assistant", "content": "Anything else, or shall I confirm your order?"}])
+    out, _ = _run("no, that's all", history=[{"role": "assistant", "content": "Added 2 × Spring Roll. Anything else, or shall I confirm your order?"}])
     assert out["meta"]["checkout"]["stage"] == "readback"
     state = {"checkout": out["meta"]["checkout"]}
     # the guest added a drink in the UI before saying yes
@@ -182,7 +188,7 @@ def test_cart_changed_during_readback_reads_back_again():
 
 
 def test_no_wait_keeps_the_cart():
-    out, _ = _run("yes", history=[{"role": "assistant", "content": "Anything else, or shall I confirm your order?"}])
+    out, _ = _run("no, that's all", history=[{"role": "assistant", "content": "Added 2 × Spring Roll. Anything else, or shall I confirm your order?"}])
     out2, _ = _run("wait", state={"checkout": out["meta"]["checkout"]})
     assert out2["meta"]["checkout"]["stage"] == "none" and out2["meta"]["cartOps"] == []
     assert not out2["meta"]["clearCart"] and "won't place" in out2["replyText"]
@@ -295,17 +301,22 @@ def test_online_pickup_or_delivery_by_voice():
 def test_bangla_checkout():
     out, _ = _run("অর্ডারটা দিয়ে দিন", locale="bn")
     assert out["meta"]["decision"].get("placeOrder") is True
-    # "হ্যাঁ" to "আর কিছু লাগবে, নাকি অর্ডার কনফার্ম করব?" → a short check, then "হ্যাঁ" places
-    out, _ = _run("হ্যাঁ", locale="bn", history=[{"role": "assistant", "content": "যোগ করলাম। আর কিছু লাগবে, নাকি অর্ডার কনফার্ম করব?"}])
-    assert out["replyText"] == "2 × Spring Roll — অর্ডারটা দিয়ে দেব?"
+    # "হ্যাঁ" / "কনফার্ম করো" to "আর কিছু লাগবে, নাকি অর্ডার কনফার্ম করব?" → placed, naming the dishes (never asked twice)
+    for said in ("হ্যাঁ", "কনফার্ম করো."):
+        out, _ = _run(said, locale="bn", history=[{"role": "assistant", "content": "যোগ করলাম। আর কিছু লাগবে, নাকি অর্ডার কনফার্ম করব?"}])
+        assert out["meta"]["decision"].get("placeOrder") is True, said
+        assert out["replyText"] == "ঠিক আছে — 2 × Spring Roll — অর্ডারটা দিচ্ছি…", out["replyText"]
+    # "আর কিছু লাগবে না" (a softer signal) → one short check, then "হ্যাঁ" places
+    out, _ = _run("না, আর কিছু লাগবে না", locale="bn", history=[{"role": "assistant", "content": "যোগ করলাম। আর কিছু লাগবে, নাকি অর্ডার কনফার্ম করব?"}])
+    assert out["replyText"] == "ঠিক আছে, তাহলে 2 × Spring Roll — অর্ডারটা কনফার্ম করব?"
     out2, _ = _run("হ্যাঁ", locale="bn", state={"checkout": out["meta"]["checkout"]})
-    assert out2["meta"]["decision"].get("placeOrder") is True
+    assert out2["meta"]["decision"].get("placeOrder") is True and out2["replyText"] == "ঠিক আছে, অর্ডারটা দিচ্ছি…"
 
 
 def test_sizes_and_addons_travel_with_the_order():
     cart = [{"itemId": "kb", "quantity": 1, "price": 830, "variation": "Full",
              "modifiers": [{"groupId": "g1", "optionId": "o9", "name": "Extra Egg", "price": 50}], "notes": "less oil"}]
-    # the short check names the size, add-ons and note…
+    # confirming names the size, add-ons and note…
     out, _ = _run("yes", cart=cart, history=[{"role": "assistant", "content": "Anything else, or shall I confirm your order?"}])
     assert "Kacchi Biryani (Full, Extra Egg)" in out["replyText"] and "less oil" in out["replyText"]
     # …and "checkout" sends them all to the kitchen

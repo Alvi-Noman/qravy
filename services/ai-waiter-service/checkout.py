@@ -412,6 +412,13 @@ def decide(
             return "ask_table", "send now, table unknown"
         return "place", "send now — explicit command"
 
+    # stage none, we just asked "…নাকি অর্ডার কনফার্ম করব?" and they said "কনফার্ম করো" / "হ্যাঁ" → that WAS the
+    # confirmation: place it (online: the form) — never a second "…অর্ডারটা কনফার্ম করব?" (it asked twice)
+    if asked_to_confirm and cart_nonempty and not cart_changed_this_turn and says_yes(text) and not question:
+        if not table:
+            return "ask_table", "confirmed, table unknown"
+        return "place", "yes to 'shall I confirm?'"
+
     # stage none: does the guest want to order / check out now?
     done = is_done(text)
     if asked_to_confirm and wants_to_hold(text) and not wants_checkout(text) and not (done and len(text.split()) > 1):
