@@ -664,3 +664,28 @@ async function backfillSortOrder(db: ReturnType<MongoClient['db']>): Promise<voi
   }
   if (catTenants.length || groups.length) logger.info('Backfilled display order for categories/menu items');
 }
+
+/**
+ * Dishes keep their category's NAME (the dashboard's counts, the storefront and the AI waiter group by it). A category
+ * renamed before the rename carried over to its dishes left them pointing at a name that no longer exists ("No items").
+ * Puts every dish's category name back in line with its category (by categoryId). Idempotent — cheap when all match.
+ */
+export async function syncItemCategoryNames(client: MongoClient): Promise<number> {
+  const db = client.db('authDB');
+  const names = new Map(
+    (await db.collection('categories').find({}, { projection: { name: 1 } }).toArray()).map((c) => [String(c._id), String(c.name || '').trim()])
+  );
+  const fixes: Array<{ updateOne: { filter: Record<string, unknown>; update: Record<string, unknown> } }> = [];
+  const cur = db.collection('menuItems').find({ categoryId: { $exists: true } }, { projection: { categoryId: 1, category: 1 } });
+  for await (const it of cur) {
+    const want = names.get(String(it.categoryId));
+    if (want && String(it.category || '').trim() !== want) {
+      fixes.push({ updateOne: { filter: { _id: it._id }, update: { $set: { category: want } } } });
+    }
+  }
+  if (fixes.length) {
+    await db.collection('menuItems').bulkWrite(fixes as any, { ordered: false });
+    logger.info(`Re-linked ${fixes.length} menu item(s) to their renamed category`);
+  }
+  return fixes.length;
+}
