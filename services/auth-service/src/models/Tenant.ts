@@ -119,6 +119,8 @@ export interface TenantDoc {
 
   trialStartedAt?: Date;
   trialEndsAt?: Date;
+  /** what the restaurant pays Qravy, kept by hand: a custom price, paid until, payments, history (services/billing.ts) */
+  billing?: import('../services/billing.js').Billing;
 
   subscriptionStatus?: 'none' | 'active';
 

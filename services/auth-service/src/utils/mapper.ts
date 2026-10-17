@@ -7,6 +7,7 @@ import type { UserDoc } from '../models/User.js';
 import type { v1 } from '@qravy/shared';
 import { DEFAULT_RESET_TIME, DEFAULT_TIMEZONE, tenantServicePeriods } from './availability.js';
 import { kitchenSettings } from '../services/orders/waitTime.js';
+import { billingDTO } from '../services/billing.js';
 
 /** Convert a MongoDB ObjectId to a string. */
 function toId(id?: ObjectId): string {
@@ -173,6 +174,8 @@ export function toTenantDTO(doc: TenantDoc): v1.TenantDTO {
     waiterName: doc.waiterName ?? null,
     waiterVoice: doc.waiterVoice === 'female' ? 'female' : 'male',
     customAnswers: doc.customAnswers ?? [],
+    // the plan, its price (custom when agreed) and until when — for the restaurant's reminder (no payment records)
+    billing: billingDTO(doc),
     upsellRules: doc.upsellRules ?? [],
     suggestRules: doc.suggestRules ?? [],
     timezone: doc.timezone ?? DEFAULT_TIMEZONE,

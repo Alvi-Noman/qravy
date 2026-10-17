@@ -111,6 +111,9 @@ export type Overview = {
   topRestaurants: Array<{ tenantId: string; name: string; subdomain: string; orders: number; revenue: number }>;
 };
 
+export type { BillingSummary } from './components/Billing';
+import type { BillingSummary } from './components/Billing';
+
 export type TenantRow = {
   id: string;
   name: string;
@@ -122,6 +125,7 @@ export type TenantRow = {
   subscription: string;
   plan: string | null;
   trialEndsAt: string | null;
+  billing: BillingSummary;
   channels: { dineIn: boolean; online: boolean };
   branches: number;
   lastActivity: string | null;

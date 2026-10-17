@@ -7,6 +7,7 @@ import { useAuthContext } from '../context/AuthContext';
 // Trial UI
 import TrialToast from '../components/billing/TrialToast';
 import PaywallModal from '../components/billing/PaywallModal';
+import PlanReminder from '../components/billing/PlanReminder';
 import { useTrial } from '../hooks/useTrial';
 
 // NEW
@@ -132,22 +133,26 @@ export default function DashboardLayout(): JSX.Element {
   const isCanceled = !isSubscribed && !!(tenant?.cancelEffectiveAt || tenant?.cancelRequestedAt);
   const endedAt = tenant?.cancelEffectiveAt ?? tenant?.trialEndsAt ?? undefined;
   const hasCard = !!tenant?.hasCardOnFile;
+  // a price agreed with Qravy is paid to Qravy directly (recorded in Cortex): no card trial toast or paywall — the
+  // plan reminder says when it runs out, nothing is blocked
+  const manualBilling = !!tenant?.billing?.customPrice;
 
   // Show trial toast if trial ongoing and not subscribed
-  const showTrialToast = !!tenant && !tenantLoading && !isSubscribed && !trial.expired;
+  const showTrialToast = !!tenant && !tenantLoading && !isSubscribed && !manualBilling && !trial.expired;
 
   // Open paywall when trial ends OR when plan is canceled (immediate)
   useEffect(() => {
     if (
       !tenantLoading &&
       !isSubscribed &&
+      !manualBilling &&
       (trial.expired || isCanceled) &&
       !subscribing &&
       !skipPaywallOnce
     ) {
       setPaywallOpen(true);
     }
-  }, [tenantLoading, isSubscribed, trial.expired, isCanceled, subscribing, skipPaywallOnce]);
+  }, [tenantLoading, isSubscribed, manualBilling, trial.expired, isCanceled, subscribing, skipPaywallOnce]);
 
   // Clear the one-time suppression shortly after landing
   useEffect(() => {
@@ -196,6 +201,7 @@ export default function DashboardLayout(): JSX.Element {
               className={`flex h-full min-h-0 flex-col ${isSettingsPage ? '' : 'overflow-y-auto overscroll-contain'}`}
               style={isSettingsPage ? undefined : { scrollbarGutter: 'stable' }}
             >
+              {(isSubscribed || manualBilling) && !branchSession && <PlanReminder billing={tenant?.billing} />}
               <TopBar onAIClick={() => { setAiDismissed(false); setAiOpen(true); }} />
               <div className="flex-1 min-h-0 min-w-0 flex flex-col">
                 <Outlet />
