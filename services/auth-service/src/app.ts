@@ -146,26 +146,54 @@ const eventsLimiter = rateLimit({
   handler: (_req: Request, res: Response) => res.status(204).end(), // over budget: drop quietly (tracking only)
 });
 
-/** Tighter limiter only for risky auth endpoints */
-const authLimiter = rateLimit({
+/** "Too many attempts — try again in N minutes." (the limiter's own reset time, not a vague "later") */
+const tooMany = (what: string) => (req: Request, res: Response) => {
+  const reset = (req as Request & { rateLimit?: { resetTime?: Date } }).rateLimit?.resetTime;
+  const mins = reset ? Math.max(1, Math.ceil((reset.getTime() - Date.now()) / 60_000)) : 15;
+  res.status(429).json({ message: `Too many ${what}. Please try again in ${mins} minute${mins === 1 ? '' : 's'}.` });
+};
+const who = (req: Request) =>
+  String((req.body as { email?: unknown; login?: unknown } | undefined)?.email ?? (req.body as { login?: unknown })?.login ?? '')
+    .trim()
+    .toLowerCase();
+
+/**
+ * Sending codes / magic links and signing up cost an email each: per IP (sending only — opening the link is a GET and
+ * isn't counted). Each risky endpoint has its OWN budget: they used to share one, so a restaurant's staff logging in on
+ * the same Wi-Fi (and opening their links) locked the Cortex sign-in out for 15 minutes.
+ */
+const sendLimiter = rateLimit({
   windowMs,
   max: MAX_AUTH,
   standardHeaders: true,
   legacyHeaders: false,
-  skip: skipCommon,
-  message: { message: 'Too many requests, please try again later.' },
+  skip: (req, res) => skipCommon(req, res) || req.method !== 'POST',
   keyGenerator: (req: Request) => getClientIp(req),
+  handler: tooMany('login emails from this network'),
 });
 
 /**
- * IMPORTANT:
- * Do NOT wrap all /api/v1/auth with the tight limiter anymore.
- * Instead, target only the risky endpoints.
+ * Guessing protection: only FAILED attempts count, per IP + account (a right password / code never uses it up; one
+ * person's typos don't lock their colleagues out). The 5-digit email code had no limit at all.
  */
-app.use('/api/v1/auth/login', authLimiter);
-app.use('/api/v1/auth/signup', authLimiter);
-app.use('/api/v1/auth/magic-link', authLimiter);
-app.use('/api/v1/cortex/login', authLimiter); // the company admin panel's sign-in
+const failedAttempts = (what: string, max: number) =>
+  rateLimit({
+    windowMs: 15 * 60_000,
+    max,
+    standardHeaders: true,
+    legacyHeaders: false,
+    skip: skipCommon,
+    skipSuccessfulRequests: true,
+    keyGenerator: (req: Request) => `${getClientIp(req)}|${who(req)}`,
+    handler: tooMany(what),
+  });
+
+app.use('/api/v1/auth/login', sendLimiter);
+app.use('/api/v1/auth/signup', sendLimiter);
+app.use('/api/v1/auth/magic-link', sendLimiter);
+app.use('/api/v1/auth/otp/verify', failedAttempts('wrong codes', Number(process.env.RATE_LIMIT_MAX_CODE_FAILS ?? 10)));
+// the company admin panel's sign-in
+app.use('/api/v1/cortex/login', failedAttempts('failed sign-in attempts', Number(process.env.RATE_LIMIT_MAX_CORTEX_FAILS ?? 10)));
 
 /** Apply the mild limiter to the broader API surface */
 app.use('/api/v1/public/events', eventsLimiter);
