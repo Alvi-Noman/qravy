@@ -28,6 +28,10 @@ export interface TenantDoc {
   waiterName?: string | null;
   waiterVoice?: 'female' | 'male';
   customAnswers?: Array<{ question: string; answer: string }>;
+  /** the owner's upsells: a guest orders one of these dishes / a dish of these categories → the waiter offers these */
+  upsellRules?: Array<{ whenItemIds: string[]; whenCategories: string[]; offerItemIds: string[]; on: boolean }>;
+  /** the owner's picks: a guest asks for one of these words → the waiter shows these dishes, in this order */
+  suggestRules?: Array<{ phrases: string[]; itemIds: string[]; on: boolean }>;
   pronunciations?: Array<{ word: string; sayAs: string; spoken: string }>;
 
   /** IANA time zone used for all hours (default Asia/Dhaka) */

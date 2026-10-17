@@ -168,6 +168,8 @@ export async function updateTenant(
     waiterName?: string | null;
     waiterVoice?: 'female' | 'male';
     customAnswers?: Array<{ question: string; answer: string }>;
+    upsellRules?: Array<{ whenItemIds: string[]; whenCategories: string[]; offerItemIds: string[]; on: boolean }>;
+    suggestRules?: Array<{ phrases: string[]; itemIds: string[]; on: boolean }>;
   },
   token: string
 ): Promise<TenantDTO> {

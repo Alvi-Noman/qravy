@@ -3222,10 +3222,36 @@ _KIND_SAY = {k: {"bn": bn, "en": k} for k, bn in {
 }.items()}
 
 
+def _owner_pick(transcript: str, rules: Any, index: MenuIndex,
+                orderable: Dict[str, bool]) -> Optional[Tuple[str, List[str]]]:
+    """The owner's rule for what the guest is asking for: (the word they used, the rule's dishes that can be ordered
+    now, in the owner's order) — the longest matching word wins. None: no rule matches (the AI picks)."""
+    text = re.sub(r"\s+", " ", str(transcript or "").lower())
+    best: Optional[Tuple[str, List[str]]] = None
+    best_len = 0
+    for rule in rules if isinstance(rules, list) else []:
+        if not isinstance(rule, dict) or rule.get("on", True) is False:
+            continue
+        ids = [str(i) for i in rule.get("itemIds") or [] if str(i) in index.by_id and orderable.get(str(i), True)]
+        if not ids:
+            continue
+        for phrase in rule.get("phrases") or []:
+            w = re.sub(r"\s+", " ", str(phrase or "").strip().lower())
+            if len(w) < 2:
+                continue
+            # English words whole ("hot" isn't "hotel"); Bangla as written (it takes endings: "ঝালের", "ঝাল-টা")
+            hit = (re.search(rf"(?<![a-z]){re.escape(w)}(?![a-z])", text) if re.fullmatch(r"[a-z0-9 '&-]+", w)
+                   else w in text)
+            if hit and len(w) > best_len:
+                best, best_len = (str(phrase).strip(), ids), len(w)
+    return best
+
+
 def _fixed_reco(
     transcript: str, *, index: MenuIndex, orderable: Dict[str, bool], kinds: List[str], profile: GuestProfile,
     stats: OrderStats, rstate: RecoState, kind_scope: set, lang: str, stage: str, mode: str, about_shown: bool,
     cart_ids: List[str], in_tray: Optional[set] = None, understood: Optional[Dict[str, Any]] = None,
+    owner_pick: Optional[Tuple[str, List[str]]] = None,
 ) -> Optional[Tuple[str, List[Dict[str, Any]], str]]:
     """(reply, cards, note) in the waiter's fixed recommendation shape — or None when the turn needs the model.
     With a reading of the guest (`understood`): only when they want a recommendation, and its kind / taste /
@@ -3234,6 +3260,19 @@ def _fixed_reco(
     u = understood
     if stage != "none" or mode in ("quiet", "complement", "last_call") or about_shown:
         return None
+    # the owner chose what to show for this ask ("ঝাল কিছু আছে?" → their dishes, in their order)
+    if owner_pick and not _dishes_named(t, index) and not _NOT_WANT.search(t) and (
+            (u or {}).get("intent") == "recommend" or (_ASKING.search(t) and not _orders_now(t))):
+        word, ids = owner_pick
+        mine = [index.by_id[i] for i in ids if i in index.by_id and i not in (in_tray or set())] or \
+               [index.by_id[i] for i in ids if i in index.by_id]
+        n = _asked_count(t) or int((u or {}).get("count") or 0)
+        mine = mine[:n] if n else mine[:5]
+        if mine:
+            names = [re.sub(r"\s*\(.*?\)", "", str(it.get("name") or "")).strip() for it in mine]
+            # (no "very popular" — the owner chose them; that's not evidence of how often they're ordered)
+            text = reco_format.kind_text(word, names[:3], names[3:5], lang, popular=False)
+            return text, [_suggestion_row(it) for it in mine], "reco_owner"
     if u is not None and u.get("intent") != "recommend":
         return None
     if _ASKED_FOR_ONE.search(t) or _dishes_named(t, index) or missing_kinds(t, index):
@@ -3543,6 +3582,10 @@ async def _reply(
     kind_scope = _named_kind_ids(transcript, index)
     if kind_scope and not any(orderable.get(i, True) for i in kind_scope):
         kind_scope = set()  # none of them can be ordered now → the usual picks, the waiter says so
+    # the owner's picks (Settings → Upsell & picks): the guest asks for one of its words → its dishes are the picks
+    owner_pick = _owner_pick(transcript, (restaurant or {}).get("suggestRules"), index, orderable)
+    if owner_pick:
+        kind_scope = set(owner_pick[1])
     # already in the tray → never recommended back to them (they chose it) — unless they name it now
     in_tray = {i for i in cart_qty if cart_qty[i] > 0} - asked_ids
     asked_ids |= kind_scope
@@ -3569,6 +3612,9 @@ async def _reply(
         mode, mode_why = ("full" if u_intent == "recommend" else "answer"), "the reading: not a service request"
     elif u_intent == "recommend" and mode == "answer":
         mode, mode_why = "full", "the reading: wants a recommendation"
+    # the owner set this word as a suggestion ("ঠান্ডা কিছু" → their drinks): asking for it is not a complaint
+    if owner_pick and mode == "quiet" and mode_why == "service request or complaint" and _ASKING.search(transcript or ""):
+        mode, mode_why = "full", "the owner's word for a suggestion"
     # ---- the list on the guest's screen (suggestions pop-up / the tray's picks) — "which of these…" means THESE
     shown_ids = [str(x) for x in (ctx.get("shownItems") or []) if str(x) in index.by_id][:12]
     shown_on_screen = bool(shown_ids)
@@ -3644,7 +3690,8 @@ async def _reply(
             return None
         return offers.plan(moment, offers.Ctx(
             index=index, orderable=orderable, rows=rows_now, added=added, picks=[p.item for p in picks], stats=stats,
-            profile=profile, clash=clash, lang=lang, arm=arm, meal_kinds=kinds, done_types=rstate.gaps_offered))
+            profile=profile, clash=clash, lang=lang, arm=arm, meal_kinds=kinds, done_types=rstate.gaps_offered,
+            owner_rules=list((restaurant or {}).get("upsellRules") or [])))
 
     def hold_offer(o: offers.Offer) -> None:
         """Ask it: the guest's "হ্যাঁ" next turn applies its ops exactly (the offer answer below)."""
@@ -4011,7 +4058,7 @@ async def _reply(
     fixed = None if tstate.get("pending") else _fixed_reco(
         transcript, index=index, orderable=orderable, kinds=kinds, profile=profile, stats=stats, rstate=rstate,
         kind_scope=kind_scope, lang=lang, stage=stage, mode=mode, about_shown=about_shown,
-        cart_ids=list(cart_qty) + mentioned_now, in_tray=in_tray, understood=understood,
+        cart_ids=list(cart_qty) + mentioned_now, in_tray=in_tray, understood=understood, owner_pick=owner_pick,
     )
     if fixed:
         text, rows, note = fixed

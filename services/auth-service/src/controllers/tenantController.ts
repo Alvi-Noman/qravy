@@ -756,6 +756,26 @@ export async function updateMyTenant(req: Request, res: Response, next: NextFunc
         .map((x) => ({ question: x.question.trim(), answer: x.answer.trim() }))
         .filter((x) => x.question && x.answer);
     }
+    if (parsed.upsellRules) {
+      // a rule needs a "when" (a dish or a category) and something to offer
+      update.upsellRules = parsed.upsellRules
+        .filter((r) => (r.whenItemIds.length || r.whenCategories.length) && r.offerItemIds.length)
+        .map((r) => ({
+          whenItemIds: [...new Set(r.whenItemIds)],
+          whenCategories: [...new Set(r.whenCategories.map((c) => c.trim()))],
+          offerItemIds: [...new Set(r.offerItemIds)],
+          on: r.on !== false,
+        }));
+    }
+    if (parsed.suggestRules) {
+      update.suggestRules = parsed.suggestRules
+        .map((r) => ({
+          phrases: [...new Set(r.phrases.map((p) => p.trim()).filter(Boolean))],
+          itemIds: [...new Set(r.itemIds)],
+          on: r.on !== false,
+        }))
+        .filter((r) => r.phrases.length && r.itemIds.length);
+    }
     if (parsed.timezone) update.timezone = parsed.timezone;
     if (parsed.openingHours) update.openingHours = normalizeAvailability(parsed.openingHours);
     if (parsed.dailyResetTime) update.dailyResetTime = parsed.dailyResetTime;
