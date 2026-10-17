@@ -10,6 +10,7 @@ import LoadingScreen from './components/LoadingScreen';
 import { ProgressProvider } from './context/ProgressContext';
 import { OrdersLiveProvider } from './context/OrdersLiveContext';
 import { Toaster } from './components/Toaster';
+import SupportBar from './components/SupportBar';
 
 // IMPORTANT: import layouts synchronously to avoid first-visit layout jump
 import DashboardLayout from './layout/DashboardLayout';
@@ -169,6 +170,8 @@ function App() {
         <ScopeProvider>
           <ProgressProvider>
           <OrdersLiveProvider>
+            {/* Qravy support access (opened from Cortex): a bar on every screen, with Exit */}
+            <SupportBar />
             {/* No global Suspense around all Routes — avoids layout disappearing on first visit */}
             <Routes>
               {/* Dashboard shell with index route */}

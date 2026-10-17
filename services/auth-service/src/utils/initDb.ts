@@ -457,6 +457,9 @@ export async function ensureUserIndexes(client: MongoClient): Promise<void> {
   await tenants.createIndex({ 'customDomain.host': 1 }, { unique: true, sparse: true, name: 'ux_tenants_custom_domain' });
   // app.qravy.com → admin.qravy.com one-time codes (routes/handoverRoutes.ts): gone after a few minutes
   await db.collection('handovers').createIndex({ createdAt: 1 }, { expireAfterSeconds: 300, name: 'ttl_handovers' });
+  // Qravy support sessions: a restaurant's history (newest first) — kept a year
+  await db.collection('supportSessions').createIndex({ tenantId: 1, startedAt: -1 }, { name: 'ix_support_tenant' });
+  await db.collection('supportSessions').createIndex({ startedAt: 1 }, { expireAfterSeconds: 365 * 24 * 3600, name: 'ttl_support' });
   // the pronunciation dictionary is global now: the old per-restaurant and Cortex lists move into it (once)
   const moved = await migrateOldPronunciations();
   if (moved) logger.info(`Moved ${moved} pronunciations into the global dictionary`);

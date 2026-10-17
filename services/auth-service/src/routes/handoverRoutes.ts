@@ -12,8 +12,10 @@ import { client } from '../db.js';
 
 const router: express.Router = express.Router();
 const handovers = () => client.db('authDB').collection<Handover>('handovers');
+export const handoversCol = handovers;
 
-type Handover = { _id: string; refreshToken?: string; deviceKey?: string; ua: string; createdAt: Date };
+// `replace`: a Qravy support session (routes/supportRoutes.ts) — its sign-in replaces the one this browser has
+type Handover = { _id: string; refreshToken?: string; deviceKey?: string; ua: string; createdAt: Date; replace?: boolean };
 
 const TTL_MS = 2 * 60 * 1000;
 const ADMIN_BASE = (process.env.FRONTEND_URL || 'https://admin.qravy.com').trim().replace(/\/$/, '');
@@ -32,7 +34,7 @@ const wrap =
   (req: Request, res: Response, next: NextFunction) =>
     fn(req, res).catch(next);
 
-const uaHash = (req: Request) => crypto.createHash('sha256').update(String(req.headers['user-agent'] || '')).digest('hex');
+export const handoverUaHash = (req: Request) => crypto.createHash('sha256').update(String(req.headers['user-agent'] || '')).digest('hex');
 
 /** Only a page on the dashboard itself: "/orders?x=1" — never another site ("//evil.com", "https://…"). */
 function safePage(raw: unknown): string {
@@ -52,7 +54,7 @@ router.get(
     const deviceKey = typeof req.cookies?.deviceKey === 'string' ? req.cookies.deviceKey : undefined;
     if (!refreshToken && !deviceKey) return res.redirect(302, `${ADMIN_BASE}${page}`);
     const code = crypto.randomBytes(32).toString('base64url');
-    await handovers().insertOne({ _id: code, refreshToken, deviceKey, ua: uaHash(req), createdAt: new Date() });
+    await handovers().insertOne({ _id: code, refreshToken, deviceKey, ua: handoverUaHash(req), createdAt: new Date() });
     res.redirect(302, `${ADMIN_BASE}/api/v1/auth/handover-claim?code=${code}&to=${encodeURIComponent(page)}`);
   })
 );
@@ -65,8 +67,8 @@ router.get(
     const code = String(req.query.code || '');
     // once, by the same browser, within 2 minutes
     const h = code ? await handovers().findOneAndDelete({ _id: code }) : null;
-    if (h && h.ua === uaHash(req) && Date.now() - h.createdAt.getTime() < TTL_MS) {
-      if (h.refreshToken && !req.cookies?.refreshToken) res.cookie('refreshToken', h.refreshToken, REFRESH_OPTS);
+    if (h && h.ua === handoverUaHash(req) && Date.now() - h.createdAt.getTime() < TTL_MS) {
+      if (h.refreshToken && (h.replace || !req.cookies?.refreshToken)) res.cookie('refreshToken', h.refreshToken, REFRESH_OPTS);
       if (h.deviceKey && !req.cookies?.deviceKey) res.cookie('deviceKey', h.deviceKey, DEVICE_OPTS);
     }
     res.redirect(302, page);

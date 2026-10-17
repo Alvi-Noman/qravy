@@ -11,6 +11,7 @@ import logger from '../utils/logger.js';
 import crypto from 'crypto';
 import type { UserDoc, RefreshToken } from '../models/User.js';
 import { computeCapabilities } from '@qravy/shared/utils/policy';
+import { activeSupportSession, endSupportSession } from '../services/supportSessions.js';
 
 config();
 
@@ -466,6 +467,26 @@ export const refreshToken = async (req: Request, res: Response, next: NextFuncti
     const tenantIdFromRefresh: string | undefined =
       typeof (payload as any).tenantId === 'string' ? (payload as any).tenantId : undefined;
 
+    // Qravy support access: its own session (not one of the owner's sign-ins) — an admin of the restaurant until
+    // the session ends; the access token never outlives it
+    const impId = typeof (payload as any).imp === 'string' ? ((payload as any).imp as string) : null;
+    if (impId) {
+      const s = await activeSupportSession(impId);
+      if (!s) {
+        res.clearCookie(REFRESH_COOKIE_NAME, { httpOnly: true, secure: true, sameSite: 'none', path: REFRESH_COOKIE_OPTS.path });
+        res.fail(401, 'The Qravy support session has ended');
+        return;
+      }
+      const left = Math.floor((s.expiresAt.getTime() - Date.now()) / 1000);
+      const accessToken = jwt.sign(
+        { id: s.userId.toHexString(), email: (payload as any).email, tenantId: s.tenantId.toHexString(), role: 'admin', sessionType: 'member', imp: impId },
+        process.env.JWT_SECRET!,
+        { expiresIn: Math.max(30, Math.min(15 * 60, left)) }
+      );
+      res.ok({ token: accessToken });
+      return;
+    }
+
     const collection = await getUsersCollection();
     const user = await collection.findOne({ _id: new ObjectId((payload as any).id) });
     if (!user) {
@@ -582,6 +603,14 @@ export const logout = async (req: Request, res: Response, next: NextFunction): P
         sameSite: 'none',
         path: REFRESH_COOKIE_OPTS.path,
       });
+      res.ok({ message: 'Logged out' });
+      return;
+    }
+
+    // signing out of a Qravy support session ends it (the owner's own sign-ins are untouched)
+    if (typeof (payload as any).imp === 'string') {
+      await endSupportSession((payload as any).imp, 'exit');
+      res.clearCookie(REFRESH_COOKIE_NAME, { httpOnly: true, secure: true, sameSite: 'none', path: REFRESH_COOKIE_OPTS.path });
       res.ok({ message: 'Logged out' });
       return;
     }

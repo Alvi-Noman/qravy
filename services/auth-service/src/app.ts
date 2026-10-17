@@ -33,6 +33,7 @@ import publicRoutes from './routes/publicRoutes.js'; // ✅ added
 import menuImportsRoutes from './routes/menuImportsRoutes.js';
 import orderRoutes from './routes/orderRoutes.js';
 import customersRoutes from './routes/customersRoutes.js';
+import supportRoutes from './routes/supportRoutes.js';
 import serviceRequestRoutes from './routes/serviceRequestRoutes.js';
 import quickDemoRoutes from './routes/quickDemoRoutes.js';
 
@@ -188,6 +189,7 @@ app.use('/api/v1/locations', locationRoutes);
 app.use('/api/v1/access', accessRoutes);
 app.use('/api/v1/categories', categoriesRoutes);
 app.use('/api/v1', menuImportsRoutes); // /api/v1/menu-imports
+app.use('/api/v1', supportRoutes); // Qravy support access: Cortex opens a restaurant's dashboard as its admin
 app.use('/api/v1', customersRoutes); // /api/v1/customers — the restaurant's online customers
 app.use('/api/v1', orderRoutes); // /api/v1/public/orders (guests) + /api/v1/orders (staff)
 app.use('/api/v1', serviceRequestRoutes); // /api/v1/public/service-requests ("Call waiter") + /api/v1/service-requests (staff)

@@ -6,6 +6,7 @@ import { api, type AiStats, type Day, type Funnel, type OrderStats, type Session
 import { Badge, Card, DaysSelect, Empty, ErrorBox, Loading, Stat, Td, Th, fmt } from '../components/ui';
 import { FunnelBars, Trend } from '../components/charts';
 import { SessionsTable } from './Sessions';
+import { OpenDashboardButton, SupportHistory } from '../components/SupportAccess';
 
 type Detail = {
   days: number;
@@ -61,7 +62,10 @@ export default function RestaurantDetail() {
                 {d.tenant.channels.online && <Badge>online</Badge>}
               </p>
             </div>
-            <DaysSelect value={days} onChange={setDays} />
+            <div className="flex flex-wrap items-end justify-end gap-2">
+              <OpenDashboardButton tenantId={d.tenant.id} name={d.tenant.name} />
+              <DaysSelect value={days} onChange={setDays} />
+            </div>
           </header>
 
           <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
@@ -228,6 +232,8 @@ export default function RestaurantDetail() {
               </table>
             </div>
           </Card>
+
+          <SupportHistory tenantId={d.tenant.id} />
         </>
       )}
     </div>
