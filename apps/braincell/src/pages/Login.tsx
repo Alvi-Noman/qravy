@@ -6,11 +6,7 @@ import api, { sendMagicLink, verifyOtp } from '../api/auth';
 import { useAuthContext } from '../context/AuthContext';
 import { AnimatePresence, motion } from 'framer-motion';
 import Logo from '../components/Logo';
-
-type Workspace = { id: string; name: string };
-type DeviceLookup =
-  | { found: false }
-  | { found: true; tenantId: string; locationId: string | null; locationName: string | null };
+import { enterWorkspace, findAccess, type Workspace } from '../features/auth/afterLogin';
 
 type AuthUser = {
   id: string;
@@ -37,8 +33,13 @@ export default function Login() {
   const [verifiedUser, setVerifiedUser] = useState<AuthUser | null>(null);
   const [verifiedToken, setVerifiedToken] = useState<string>('');
 
+  // while a fresh login is still finding the person's restaurants (handleSuccessLogin), it decides where to go — this
+  // redirect once fired first and sent people with Restaurant Access to "create a restaurant"
+  const routing = useRef(false);
+
   // 🚨 Redirect if already authenticated
   useEffect(() => {
+    if (routing.current || workspaces.length) return;
     if (!loading && token && user) {
       if (!user.tenantId) {
         navigate('/create-restaurant', { replace: true });
@@ -46,7 +47,7 @@ export default function Login() {
         navigate('/dashboard', { replace: true });
       }
     }
-  }, [token, user, loading, navigate]);
+  }, [token, user, loading, navigate, workspaces.length]);
 
   // 🚨 Watch for cross-tab login events
   useEffect(() => {
@@ -65,78 +66,49 @@ export default function Login() {
   }, [navigate, user]);
 
   const handleSuccessLogin = async (accessToken: string, usr: AuthUser) => {
+    routing.current = true;
     login(accessToken, usr);
-    try {
-      // Device lookup (auto-select tenant if the device already belongs to one)
-      const lookupRes = await api.get<DeviceLookup>('/api/v1/access/devices/lookup', {
-        withCredentials: true,
-      });
-
-      if (lookupRes.status === 200) {
-        const lookup = lookupRes.data;
-        if (lookup && 'found' in lookup && lookup.found) {
-          const sel = await api.post<{ token?: string }>(
-            '/api/v1/access/select-tenant',
-            { tenantId: lookup.tenantId },
-            { withCredentials: true }
-          );
-          const nextToken = sel.data?.token as string | undefined;
-          if (nextToken) {
-            login(nextToken, { ...usr, tenantId: lookup.tenantId, isOnboarded: true });
-            await reloadUser();
-            navigate('/dashboard', { replace: true });
-            return;
-          }
-        }
-      }
-
-      // Otherwise show workspaces (for central email users), or route by tenantId
-      const wsRes = await api.get<{ items?: Workspace[] }>(
-        '/api/v1/access/workspaces',
-        { withCredentials: true }
-      );
-
-      if (wsRes.status === 200) {
-        const wsJson = wsRes.data;
-        const items: Workspace[] = wsJson?.items || [];
-        if (items.length > 0) {
-          setWorkspaces(items);
-          setVerifiedToken(accessToken);
-          setVerifiedUser(usr);
-          return;
-        }
-      }
-
+    const access = await findAccess();
+    if (access.kind === 'device') {
+      login(access.token, { ...usr, tenantId: access.tenantId, isOnboarded: true });
       await reloadUser();
-      navigate(usr.tenantId ? '/dashboard' : '/create-restaurant', { replace: true });
-    } catch {
-      await reloadUser();
-      navigate(usr.tenantId ? '/dashboard' : '/create-restaurant', { replace: true });
+      navigate('/dashboard', { replace: true });
+      return;
     }
+    if (access.kind === 'workspaces') {
+      // given access to exactly one restaurant and none of their own → straight in (no list to pick from)
+      if (access.items.length === 1 && !usr.tenantId) {
+        try {
+          await openWorkspace(access.items[0].id, usr);
+          return;
+        } catch {
+          /* show the list instead */
+        }
+      }
+      setWorkspaces(access.items);
+      setVerifiedToken(accessToken);
+      setVerifiedUser(usr);
+      return;
+    }
+    await reloadUser();
+    navigate(usr.tenantId ? '/dashboard' : '/create-restaurant', { replace: true });
+  };
+
+  /** Into a restaurant this email was given access to, then which branch this device is at. */
+  const openWorkspace = async (tenantId: string, usr: AuthUser) => {
+    const nextToken = await enterWorkspace(tenantId);
+    login(nextToken, { ...usr, tenantId, isOnboarded: true });
+    await reloadUser();
+    navigate('/access/select-location', { replace: true });
   };
 
   const onJoin = async (tenantId: string) => {
+    if (!verifiedUser || !verifiedToken) return;
+    setJoining(tenantId);
     try {
-      if (!verifiedUser || !verifiedToken) return;
-      setJoining(tenantId);
-
-      const sel = await api.post<{ token?: string }>(
-        '/api/v1/access/select-tenant',
-        { tenantId },
-        { withCredentials: true }
-      );
-      if (sel.status !== 200) throw new Error('Failed to join workspace');
-
-      const selJson = sel.data;
-      const nextToken = selJson?.token as string | undefined;
-      if (!nextToken) throw new Error('No token returned');
-
-      login(nextToken, { ...verifiedUser, tenantId, isOnboarded: true });
-      await reloadUser();
-
-      navigate('/access/select-location', { replace: true });
+      await openWorkspace(tenantId, verifiedUser);
     } catch {
-      setJoining(null);
+      /* stays on the list; they can try again */
     } finally {
       setJoining(null);
     }

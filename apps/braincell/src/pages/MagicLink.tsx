@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import api, { verifyMagicLink } from '../api/auth';
 import { useAuthContext } from '../context/AuthContext';
 import AuthErrorScreen from '../components/AuthErrorScreen';
+import { enterWorkspace, findAccess, type Workspace } from '../features/auth/afterLogin';
 
 type AuthUser = {
   id: string;
@@ -18,11 +19,6 @@ type VerifyResponse = {
   token: string;
   user: AuthUser;
 };
-
-type Workspace = { id: string; name: string };
-type DeviceLookup =
-  | { found: false }
-  | { found: true; tenantId: string; locationId: string | null; locationName: string | null };
 
 export default function MagicLink() {
   const [searchParams] = useSearchParams();
@@ -46,52 +42,36 @@ export default function MagicLink() {
   });
 
   // Shared post-login flow (used by both magic-link and admin-invite)
-  const runPostLogin = async (accessToken: string, user: AuthUser) => {
-    try {
-      // Device lookup (auto-select tenant if the device already belongs to one)
-      const lookupRes = await api.get<DeviceLookup>('/api/v1/access/devices/lookup', {
-        // Authorization header will be added by the axios interceptor after login()
-        withCredentials: true,
-      });
-
-      if (lookupRes.status === 200) {
-        const lookup = lookupRes.data;
-        if (lookup && 'found' in lookup && lookup.found) {
-          const sel = await api.post<{ token?: string }>(
-            '/api/v1/access/select-tenant',
-            { tenantId: lookup.tenantId },
-            { withCredentials: true }
-          );
-          const nextToken = sel.data?.token as string | undefined;
-          if (nextToken) {
-            await login(nextToken, { ...user, tenantId: lookup.tenantId, isOnboarded: true });
-            await reloadUser();
-            navigate('/dashboard', { replace: true });
-            return;
-          }
-        }
-      }
-
-      // Otherwise show workspaces (for central email users), or route by tenantId
-      const wsRes = await api.get<{ items?: Workspace[] }>(
-        '/api/v1/access/workspaces',
-        { withCredentials: true }
-      );
-
-      if (wsRes.status === 200) {
-        const wsJson = wsRes.data;
-        const items: Workspace[] = wsJson?.items || [];
-        if (items.length > 0) {
-          setWorkspaces(items);
-          return;
-        }
-      }
-
-      // Default: if user has tenantId go dashboard, else onboarding
-      navigate(user.tenantId ? '/dashboard' : '/create-restaurant', { replace: true });
-    } catch {
-      navigate(user.tenantId ? '/dashboard' : '/create-restaurant', { replace: true });
+  const runPostLogin = async (_accessToken: string, user: AuthUser) => {
+    const access = await findAccess();
+    if (access.kind === 'device') {
+      await login(access.token, { ...user, tenantId: access.tenantId, isOnboarded: true });
+      await reloadUser();
+      navigate('/dashboard', { replace: true });
+      return;
     }
+    if (access.kind === 'workspaces') {
+      // given access to exactly one restaurant and none of their own → straight in (no list to pick from)
+      if (access.items.length === 1 && !user.tenantId) {
+        try {
+          await openWorkspace(access.items[0].id, user);
+          return;
+        } catch {
+          /* show the list instead */
+        }
+      }
+      setWorkspaces(access.items);
+      return;
+    }
+    navigate(user.tenantId ? '/dashboard' : '/create-restaurant', { replace: true });
+  };
+
+  /** Into a restaurant this email was given access to, then which branch this device is at. */
+  const openWorkspace = async (tenantId: string, user: AuthUser) => {
+    const nextToken = await enterWorkspace(tenantId);
+    await login(nextToken, { ...user, tenantId, isOnboarded: true });
+    await reloadUser();
+    navigate('/access/select-location', { replace: true });
   };
 
   // 2) Handle success of normal magic-link
@@ -150,27 +130,12 @@ export default function MagicLink() {
   }, [isError, token]);
 
   const onJoin = async (tenantId: string) => {
+    if (!verifiedUser || !verifiedToken) return;
+    setJoining(tenantId);
     try {
-      if (!verifiedUser || !verifiedToken) return;
-      setJoining(tenantId);
-
-      const sel = await api.post<{ token?: string }>(
-        '/api/v1/access/select-tenant',
-        { tenantId },
-        { withCredentials: true }
-      );
-      if (sel.status !== 200) throw new Error('Failed to join workspace');
-
-      const selJson = sel.data;
-      const nextToken = selJson?.token as string | undefined;
-      if (!nextToken) throw new Error('No token returned');
-
-      await login(nextToken, { ...verifiedUser, tenantId, isOnboarded: true });
-      await reloadUser();
-
-      navigate('/access/select-location', { replace: true });
+      await openWorkspace(tenantId, verifiedUser);
     } catch {
-      setJoining(null);
+      /* stays on the list; they can try again */
     } finally {
       setJoining(null);
     }

@@ -55,7 +55,7 @@ function generateMagicLinkToken(): string {
 
 /** Consistent cookie options for refresh token (set and clear). */
 const REFRESH_COOKIE_NAME = 'refreshToken';
-const REFRESH_COOKIE_OPTS = {
+export const REFRESH_COOKIE_OPTS = {
   httpOnly: true as const,
   secure: true as const,             // always HTTPS; use mkcert for localhost during dev
   sameSite: 'none' as const,         // required for cross-site requests
@@ -466,6 +466,19 @@ export const refreshToken = async (req: Request, res: Response, next: NextFuncti
 
     const tenantIdFromRefresh: string | undefined =
       typeof (payload as any).tenantId === 'string' ? (payload as any).tenantId : undefined;
+    // in through Settings → Restaurant Access: still that restaurant's access email? (removing it there signs the
+    // person out of the restaurant at their next refresh)
+    const central = (payload as any).central === true && !!tenantIdFromRefresh;
+    if (central && ObjectId.isValid(tenantIdFromRefresh!)) {
+      const t = await client.db('authDB').collection('tenants')
+        .findOne({ _id: new ObjectId(tenantIdFromRefresh!) }, { projection: { 'accessSettings.centralEmail': 1 } });
+      const still = String((t as any)?.accessSettings?.centralEmail || '').toLowerCase() === String((payload as any).email || '').toLowerCase();
+      if (!still) {
+        res.clearCookie(REFRESH_COOKIE_NAME, { httpOnly: true, secure: true, sameSite: 'none', path: REFRESH_COOKIE_OPTS.path });
+        res.fail(401, 'Your access to this restaurant was removed');
+        return;
+      }
+    }
 
     // Qravy support access: its own session (not one of the owner's sign-ins) — an admin of the restaurant until
     // the session ends; the access token never outlives it
@@ -509,6 +522,7 @@ export const refreshToken = async (req: Request, res: Response, next: NextFuncti
       id: (user._id as ObjectId).toString(),
       email: user.email,
       ...(tenantIdFromRefresh ? { tenantId: tenantIdFromRefresh } : {}),
+      ...(central ? { central: true } : {}),
     });
     const tokenId = crypto.randomUUID();
     const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
@@ -533,7 +547,12 @@ export const refreshToken = async (req: Request, res: Response, next: NextFuncti
     );
 
     // Resolve role again (owner/admin/editor/viewer) from tenant/membership
-    const { role } = await resolveUserRoleAndTenantInfo(user);
+    // (the role belongs to the user's OWN restaurant: in another one — a Restaurant Access session, or a membership —
+    // the token carries none and each request looks the role up there; an owner of A was once "owner" in B)
+    const own = user.tenantId ? (user.tenantId as ObjectId).toString() : undefined;
+    const role = central || (tenantIdFromRefresh && tenantIdFromRefresh !== own)
+      ? undefined
+      : (await resolveUserRoleAndTenantInfo(user)).role;
     const lock = await lockedBranch(
       req,
       tenantIdFromRefresh ?? (user.tenantId ? (user.tenantId as ObjectId).toString() : undefined),
@@ -549,6 +568,7 @@ export const refreshToken = async (req: Request, res: Response, next: NextFuncti
         tenantId: tenantIdFromRefresh ?? (user.tenantId ? (user.tenantId as ObjectId).toString() : undefined),
         role,
         sessionType,
+        ...(central ? { central: true } : {}),
         ...(lock ? { locationId: lock } : {}),
       },
       process.env.JWT_SECRET!,
