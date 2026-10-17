@@ -1116,6 +1116,8 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
             // "bill please" / "call a waiter" said to the waiter → it called the staff; the bell button follows it
             const serviceCall = (meta as any)?.serviceCall;
             if (serviceCall?.token) window.dispatchEvent(new CustomEvent('qravy:service-call', { detail: serviceCall }));
+            // "আপনি কি ওয়েটার ডাকতে চাচ্ছেন?" → "হ্যাঁ" → the bell's options open (waiter / bill / water / clean the table)
+            if ((meta as any)?.decision?.openServiceSheet) window.dispatchEvent(new CustomEvent('qravy:open-service'));
 
             // order placed → clear the tray and open the live order page
             if (meta?.decision?.orderPlaced) clearOrderNote(resolvedSub); // its note went with it

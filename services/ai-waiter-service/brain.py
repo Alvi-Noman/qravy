@@ -218,6 +218,63 @@ MODE_INSTRUCTIONS = {
 }
 
 # "which of these", "এগুলোর মধ্যে", "সেগুলো", "কোনটা", "the second one" → the list on the guest's screen
+# a meal named in the question ("বিকেলের মেনুতে…", "দুপুরে কী খাওয়া যায়", "for breakfast") → that meal's kind
+_MEAL_WORDS = (
+    ("afternoon", r"বিকেল|বিকাল|বৈকাল|\bafternoon\b|\bbikel\b|evening snacks?|\bteatime\b"),
+    ("breakfast", r"সকাল|ভোর|নাশতা করতে|\bbreakfast\b|\bmorning\b|\bsokal\b"),
+    ("lunch", r"দুপুর|\blunch\b|\bdupur\b"),
+    ("dinner", r"রাতের খাবার|রাতে|রাত্রে|ডিনার|সন্ধ্যা|\bdinner\b|\bsupper\b|\bevening\b"),
+    ("late", r"মাঝরাত|গভীর রাত|\blate night\b|\bmidnight\b"),
+)
+
+
+def _meal_period(text: str) -> str:
+    """The meal the guest names ("বিকেলের নাস্তা" → afternoon; "রাতে" → dinner); "" when none. Late night before dinner.
+    A greeting isn't a meal ("good morning", "শুভ সকাল")."""
+    t = re.sub(r"good (morning|afternoon|evening|night)|শুভ (সকাল|বিকেল|সন্ধ্যা|রাত্রি)", " ", (text or "").lower())
+    for kind in ("late", "afternoon", "breakfast", "lunch", "dinner"):
+        if re.search(dict(_MEAL_WORDS)[kind], t):
+            return kind
+    return ""
+
+
+# "আপনারা কি কিছু সার্ভিস করবেন?", "কেউ আছেন?", "is anyone there?" — wants service, but which isn't clear (a clear
+# "bill please" / "call a waiter" is a service request as before)
+_VAGUE_SERVICE = re.compile(
+    r"সার্ভিস (কি )?(করবেন|করবে|দিবেন|দেবেন|দিবে|পাবো|পাব|পাওয়া যাবে|আছে|হবে)|কিছু সার্ভিস|সার্ভিস (দিচ্ছেন|দিচ্ছে) না|"
+    r"কেউ (কি )?(আছেন|আছে|আসবেন|আসবে)|কাউকে (কি )?(পাঠাবেন|পাঠান|পাওয়া যাবে)|"
+    r"\b(any(one|body) (there|here|around)|is there any service|do you (have|do) (table )?service|can someone come)\b",
+    re.I,
+)
+# soft-drink brands a guest asks for by name
+_BRANDS = re.compile(
+    r"\b(coke|coca[- ]?cola|pepsi|sprite|fanta|7 ?up|seven ?up|mojo|mountain dew|clemon|speed|red ?bull|mirinda)\b|"
+    r"কোক|কোকাকোলা|পেপসি|স্প্রাইট|ফান্টা|সেভেন ?আপ|মোজো|মাউন্টেন ডিউ|ক্লেমন|স্পিড|রেড ?বুল|মিরিন্ডা",
+    re.I,
+)
+# "সরা দইয়ের দাম কত?", "how much is…" — a price question
+_PRICE_Q = re.compile(r"দাম কত|দামটা কত|কত দাম|কত টাকা|দাম কেমন|প্রাইস কত|\bprice\b|\bhow much\b|\bcost\b|\bdam koto\b", re.I)
+# "…তাহলে তুমি সেট মেনু-২টা কেনো বললে?" / "why did you suggest that?" — the guest is unhappy with a suggestion
+_WHY_THAT = re.compile(
+    r"(কেনো|কেন|কিসের জন্য)[^?।]{0,40}(বললে|বললেন|বলছো|বলছেন|বলেছ|বলেছেন|সাজেস্ট|দিলে|দিলেন|দেখালে|দেখালেন)|"
+    r"(বললে|বললেন|সাজেস্ট (করলে|করলেন))[^?।]{0,20}(কেনো|কেন)|"
+    r"\bwhy (did|would) you (suggest|recommend|say|offer|show)\b",
+    re.I,
+)
+# "…খাবো না / চাই না / ছাড়া / বাদে", "no…, not…, without…" — what follows is a kind (or dish) the guest won't have
+_DONT_WANT = re.compile(
+    r"(খাবো|খাব|খাবনা|খাবোনা|খেতে চাই|চাই|লাগবে|নিবো|নিব|নেবো|নেব|দিও|দিবেন|দেবেন) ?না(?![ঀ-৿])|ছাড়া|বাদে|বাদ দিয়ে|বাদ দাও|"
+    r"\b(no more|don'?t want|do not want|not in the mood for|without|except|anything but|no)\b",
+    re.I,
+)
+# the guest turns the suggested dishes down and wants others — never "which of these" (they want none of these)
+_REJECTS_THESE = re.compile(
+    r"(ভালো|ভাল) (লাগছে|লাগতেছে|লাগে|লাগলো|লাগল) ?না|ভাল্লাগছে না|পছন্দ (হচ্ছে|হয়|হলো|হল|হয়নি|হয় নি) ?না|পছন্দ হচ্ছে না|"
+    r"অন্য কিছু|অন্যকিছু|অন্য কোন|অন্য আইটেম|অন্য খাবার|এগুলো? (চাই|লাগবে|খাবো|খাব) ?না|এগুলা (চাই|লাগবে|খাবো|খাব) ?না|"
+    r"\b(something else|other (options?|dishes|ones|suggestions)|don'?t (like|want) (these|those|them|any)|none of (these|them|those)|"
+    r"not (these|those)|onno kichu)\b",
+    re.I,
+)
 _REF_LIST = re.compile(
     r"এগুলো|এগুলা|এগুলি|সেগুলো|সেগুলা|সেগুলি|ওগুলো|ওগুলা|এর মধ্যে|এদের মধ্যে|এখান থেকে|এখানকার|"
     r"(?<![ঀ-৿])(কোনটা|কোনটি|কোনগুলো|কোনটায়|কোনটাতে|প্রথমটা|দ্বিতীয়টা|তৃতীয়টা|শেষেরটা|শেষটা)|"
@@ -689,6 +746,26 @@ def _turn_block(
         lines.append(
             "YOU JUST SUGGESTED (in this order — \"the first one\", \"the second\", \"the last one\", \"that one\" refer to these): "
             + "; ".join(f"{n}. {index.ref(it)} {it.get('name')}" for n, it in enumerate(just_suggested, start=1))
+        )
+    brands = sorted({m.group(0) for m in _BRANDS.finditer(transcript or "")})
+    if brands:
+        drinks = [it for it in index.items if dish_facts(it)["drink"] or is_packaged(it)]
+        listed = [str(it.get("name")) for it in drinks if _BRANDS.search(str(it.get("name") or ""))]
+        lines.append(
+            f"DRINK BRANDS ASKED: {', '.join(brands)}. "
+            + (f"Listed by brand on this MENU: {', '.join(listed)}. " if listed else "No drink is listed by brand on this MENU. ")
+            + "Its drinks: " + ", ".join(f"{it.get('name')} {_money(it.get('price'))}" for it in drinks[:12]) + ". "
+            "Answer exactly that: which of the asked brands we list, and for the rest say plainly they aren't on the menu "
+            "by name — offer the generic one (e.g. Soft Drinks) and that the staff can tell which flavours are in today. "
+            "Never call a juice or shake a kind of Coke."
+        )
+    if _WHY_THAT.search(transcript or ""):
+        # "আমি বলছি প্লেটার খাবো না, তাহলে তুমি সেট মেনু-২টা কেনো বললে?" got a defence of the dish
+        lines.append(
+            "THE GUEST IS UNHAPPY WITH YOUR LAST SUGGESTION (they ask why you suggested it): start with a short, sincere "
+            "apology and own the mistake plainly in ONE sentence — e.g. \"দুঃখিত, সেট মেনুও আসলে প্লেটারের মতোই — ওটা বলা "
+            "আমার ভুল হয়েছে।\" Never defend or justify that dish. Then offer 2–3 dishes that really fit what they said "
+            "(none of the kind they refused)."
         )
     lines.append("GUEST PROFILE (what we know about this table): " + (profile.summary() if profile else "nothing specific yet"))
     lines.append(
@@ -1539,7 +1616,11 @@ def _closest_to(kinds: List[str], index: MenuIndex, orderable: Dict[str, bool], 
     return out[:limit]
 
 
-_CHEAPER = re.compile(r"cheaper|less expensive|lower price|more affordable|budget option|কম দাম|কমদামি|সস্তা|sasta|kom dam", re.I)
+_CHEAPER = re.compile(
+    r"cheaper|less expensive|lower price|more affordable|budget option|too (expensive|pricey|costly)|"
+    r"কম দাম|কমদামি|কম দামি|সস্তা|অনেক দাম|দাম (বেশি|অনেক|বেশী)|বেশি দাম|বেশী দাম|দামি (হয়ে|লাগছে)|sasta|kom dam|onek dam",
+    re.I,
+)
 _TOTAL_CUE = re.compile(r"total|altogether|in all|comes to|adds up|সব মিলিয়ে|মোট|sob miliye|mot\b", re.I)
 _QTY_WORDS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "a": 1, "an": 1,
               "একটা": 1, "একটি": 1, "দুইটা": 2, "দুইটি": 2, "দুটো": 2, "দুটি": 2, "তিনটা": 3, "তিনটি": 3,
@@ -2859,7 +2940,13 @@ def _checkout_turn(
         return (lead + co.ask_table_text(lang), {"askTable": True, "checkoutStage": "table"},
                 {"stage": "table", "sig": "", "table": "", **({"direct": True} if direct else {})})
     if action == "place":
-        text = "ঠিক আছে, অর্ডারটা দিচ্ছি…" if lang == "bn" else "Great — placing your order now…"
+        if prev.get("stage") == "readback" or not rows:
+            text = "ঠিক আছে, অর্ডারটা দিচ্ছি…" if lang == "bn" else "Great — placing your order now…"
+        else:
+            # confirmed straight from "…নাকি অর্ডার কনফার্ম করব?" (no second question): say what's going to the kitchen
+            lines = ", ".join(co._line_label(r) for r in rows)
+            text = (f"ঠিক আছে — {lines} — অর্ডারটা দিচ্ছি…" if lang == "bn"
+                    else f"Great — {lines} — placing your order now…")
         return text, {"placeOrder": True, "checkoutStage": "placing"}, {"stage": "none", "sig": sig, "table": tbl}
     if action == "hold":
         text = None if "?" in transcript else lead + co.held_text(lang)
@@ -3325,10 +3412,43 @@ def _fixed_reco(
             # (no "very popular" — the owner chose them; that's not evidence of how often they're ordered)
             text = reco_format.kind_text(word, names[:3], names[3:5], lang, popular=False)
             return text, [_suggestion_row(it) for it in mine], "reco_owner"
-    if u is not None and u.get("intent") != "recommend":
+    period_q = bool(_meal_period(t) and _ASKING.search(t))  # "বিকেলের মেনুতে কি কি পাওয়া যায়?"
+    if u is not None and u.get("intent") != "recommend" and not period_q:
         return None
     if _ASKED_FOR_ONE.search(t) or _dishes_named(t, index) or missing_kinds(t, index):
         return None
+    if _BRANDS.search(t) or _PRICE_Q.search(t):
+        # "মোজো বা ফান্টা বা কোক আছে?" is about brands, not a kind ("কোকের মধ্যে আছে … জুস" was wrong); "সরা দইয়ের দাম
+        # কত?" wants a price ("সরা আইটেমের মধ্যে…" never said it) → the model, with the facts
+        return None
+    if _CHEAPER.search(t) and not _NOT_WANT.search(t) and not (
+            profile.allergies or profile.diet or profile.vegetarians_in_party):  # (those: the model adds the safety note)
+        # "এইগুলার অনেক দাম। একটু কম দামের মধ্যে সাজেস্ট করো" → cheaper than what they saw (profile.max_price), else the
+        # most affordable — said WITH the prices (it once answered with a plain "রাতের খাবারে … খুবই ভালো")
+        ranked, _ = rank(index, orderable, kinds, profile, stats=stats, context_ids=cart_ids, recent=rstate.recent,
+                         limit=len(index.items), only=kind_scope or None, exclude=set(in_tray or ()))
+        food, seen = [], set()
+        for p in ranked:
+            f = dish_facts(p.item)
+            key = re.sub(r"\s*\(.*?\)", "", str(p.item.get("name") or "")).strip().lower()
+            if (orderable.get(index.item_id(p.item), True) and _lowest_price(p.item) > 0 and key not in seen
+                    and (kind_scope or not (f["drink"] or f["side"] or f["dessert"] or is_packaged(p.item)))):
+                seen.add(key)
+                food.append(p)
+        if not profile.max_price:
+            food.sort(key=lambda p: _lowest_price(p.item))  # nothing to compare with: the most affordable
+        food = sorted(food[:5], key=lambda p: _lowest_price(p.item))
+        if food:
+            plain = lambda it: re.sub(r"\s*\(.*?\)", "", str(it.get("name") or "")).strip()  # noqa: E731
+            say = [f"{plain(p.item)} ({_money(_lowest_price(p.item))})" for p in food]
+            top, more = say[:3], say[3:]
+            if lang == "bn":
+                text = "কম দামের মধ্যে " + reco_format._join(top, "অথবা") + " নিতে পারেন" + (
+                    f", এছাড়াও {reco_format._join(more, 'কিংবা')}-ও আছে।" if more else "।")
+            else:
+                text = "For something more affordable: " + reco_format._join(top, "or") + (
+                    f" — or {reco_format._join(more, 'or')}." if more else ".")
+            return text, [_suggestion_row(p.item, "more affordable") for p in food], "reco_cheaper"
     if u is None and (_orders_now(t) or _ABOUT_MINE.search(t) or not _ASKING.search(t)):
         return None
     if u is not None:
@@ -3363,7 +3483,7 @@ def _fixed_reco(
         shape = "taste"
     elif kind_scope:
         shape = "kind"
-    elif _WANTS_A_PICK.search(t) or asks_for_recommendation(t) or u is not None:
+    elif _WANTS_A_PICK.search(t) or asks_for_recommendation(t) or u is not None or period_q:
         shape = "general"
     else:
         return None
@@ -3641,15 +3761,37 @@ async def _reply(
     kinds = ctx.get("mealKinds") or [
         {"breakfast": "breakfast", "lunch": "lunch", "evening": "dinner", "late": "late"}.get(str(ctx.get("timeOfDay")), "lunch")
     ]
+    # "বিকেলের মেনুতে কি কি পাওয়া যায়?" → suggestions for THAT meal ("বিকেলের নাস্তায় … ভালো"), not the menu page
+    period_asked = _meal_period(transcript)
+    if period_asked:
+        kinds = [period_asked]
     rstate = RecoState.from_dict((dialog_state or {}).get("reco"))
     profile = GuestProfile.from_dict(rstate.profile).merge(extract_prefs(transcript))
     if rstate.last_offered and is_decline(transcript) and rstate.turn - rstate.last_offer_turn <= 1:
         profile.declined = list(dict.fromkeys(profile.declined + rstate.last_offered))
         rstate.declined_turn = rstate.turn
+    # "না এগুলা ভালো লাগছে না, অন্য কিছু সাজেস্ট করো" → the dishes on screen / just suggested are turned down — every
+    # one of them (it once answered "এগুলোর মধ্যে সেট মেনু-6 সবচেয়ে ভালো হবে")
+    # "প্লেটার খাবো না" / "no sizzling" → every dish of that kind is out for the rest of the visit (a named dish: just it)
+    # (not in an order: "একটা বার্গার দাও, পেঁয়াজ ছাড়া" keeps the burger)
+    if _DONT_WANT.search(transcript or "") and not _orders_now(transcript):
+        named = _dishes_named(transcript, index, limit=3)
+        out_ids = [index.item_id(it) for it in named] if named else sorted(_kind_ids_in(transcript, index))
+        if out_ids:
+            profile.declined = list(dict.fromkeys(profile.declined + [i for i in out_ids if i not in cart_qty]))
+            rstate.declined_turn = rstate.turn
+    rejects_these = bool(_REJECTS_THESE.search(transcript or ""))
+    if rejects_these:
+        gone = [str(x) for x in (ctx.get("shownItems") or []) if str(x) in index.by_id] or (
+            rstate.last_offered if rstate.last_offered and rstate.turn - rstate.last_offer_turn <= 2 else [])
+        profile.declined = list(dict.fromkeys(profile.declined + [i for i in gone if i not in cart_qty]))
+        rstate.declined_turn = rstate.turn
     # "something cheaper" → a real ceiling: below the cheapest dish we just suggested
-    if _CHEAPER.search(transcript) and rstate.last_offered and rstate.turn - rstate.last_offer_turn <= 1:
-        prev = [float(index.by_id[i].get("price") or 0) for i in rstate.last_offered if i in index.by_id]
-        prev = [p for p in prev if p > 0]
+    # (what's on screen, else what we suggested in the last few turns — "এইগুলার অনেক দাম" two turns later too)
+    if _CHEAPER.search(transcript):
+        before = [str(x) for x in (ctx.get("shownItems") or []) if str(x) in index.by_id] or (
+            rstate.last_offered if rstate.last_offered and rstate.turn - rstate.last_offer_turn <= 3 else [])
+        prev = [p for p in (_lowest_price(index.by_id[i]) for i in before if i in index.by_id) if p > 0]
         if prev:
             profile.max_price = int(min(prev)) - 1
     stats = OrderStats(**(ctx.get("orderStats") or {})) if isinstance(ctx.get("orderStats"), dict) else OrderStats()
@@ -3706,7 +3848,8 @@ async def _reply(
         shown_ids, shown_on_screen = just_said[:12], False  # (→ they become the cards on screen, the pick first)
     shown = [index.by_id[i] for i in shown_ids]
     named_elsewhere = [it for it in _dishes_named(transcript, index, limit=4) if index.item_id(it) not in shown_ids]
-    about_shown = len(shown) >= 2 and bool(_REF_LIST.search(transcript)) and not named_elsewhere and stage == "none"
+    about_shown = (len(shown) >= 2 and bool(_REF_LIST.search(transcript)) and not named_elsewhere and stage == "none"
+                   and not rejects_these)  # "এগুলা ভালো লাগছে না" is not "which of these?"
     if about_shown:
         mode, mode_why = "compare", "guest asks about the dishes on their screen"
     plan = build_plan(picks, profile, index, blocked) if mode == "full" else None
@@ -3796,6 +3939,30 @@ async def _reply(
     said_number = _said_quantity(transcript)
     short_no = (len(transcript.split()) <= 3 and said_number is None
                 and (co.wants_to_hold(transcript) or is_decline(transcript)))
+    # (e0) "আপনারা কি কিছু সার্ভিস করবেন?" — vague: ask first ("আপনি কি ওয়েটার ডাকতে চাচ্ছেন?"); "হ্যাঁ" → the call
+    # options on screen (waiter / bill / water / clean the table). It once called staff AND said "no way to call staff".
+    if pending and pending.get("kind") == "call_waiter" and stage == "none":
+        tstate["pending"] = None
+        if co.says_yes(transcript) or is_affirmative(transcript) or _YES_START.search(transcript):
+            text = ("কোন কাজের জন্য ওয়েটার ডাকবেন? নিচে থেকে বেছে নিন — ওয়েটার, বিল, পানি বা টেবিল পরিষ্কার।" if bn
+                    else "What do you need the waiter for? Pick below — a waiter, the bill, water or cleaning the table.")
+            res = tray_done(text, [], False, cart_rows, "service_options", "other")
+            res["meta"].setdefault("decision", {})["openServiceSheet"] = True
+            return res
+        if short_no or upsell_engine._NO.search(transcript):
+            text = "ঠিক আছে! আর কিছু লাগলে বলবেন।" if bn else "Alright! Just tell me if you need anything."
+            return tray_done(text, [], False, cart_rows, "service_declined", "other")
+    if _VAGUE_SERVICE.search(transcript) and stage == "none" and not _names_food(transcript, index):
+        if online:
+            text = ("অনলাইন অর্ডারে ওয়েটার ডাকার ব্যবস্থা নেই — অর্ডার নিয়ে কিছু জানার থাকলে আমাকেই বলুন।" if bn
+                    else "Online orders don't have table service — but ask me anything about your order.")
+            return tray_done(text, [], False, cart_rows, "service_online", "other")
+        tstate["pending"] = {"kind": "call_waiter"}
+        text = "আপনি কি ওয়েটার ডাকতে চাচ্ছেন?" if bn else "Would you like me to call a waiter?"
+        buttons = ([{"label": "হ্যাঁ, ডাকুন", "say": "হ্যাঁ"}, {"label": "না", "say": "না"}] if bn
+                   else [{"label": "Yes, call one", "say": "yes"}, {"label": "No", "say": "no"}])
+        return _with_buttons(tray_done(text, [], False, cart_rows, "service_ask", "other"), buttons)
+
     # (e1) "অর্ডারগুলো ক্যান্সেল করুন, কিছু লাগবে না" / "সব ফাঁকা করেন" / "start over" → ALWAYS asked first ("সবগুলো
     # বাদ দিয়ে দেব?", with the two answers as buttons); "হ্যাঁ" empties it (the "clear" question, below). Said again
     # while the question is waiting = yes.
@@ -4088,6 +4255,7 @@ async def _reply(
         and not _ABOUT_MINE.search(transcript)
         and not re.search(r"নতুন|\bnew\b|\bnotun\b", transcript, re.I)
         and not reco_format.taste_asked(transcript)
+        and not period_asked  # "বিকেলের মেনুতে কী আছে?" → suggestions for the afternoon
         and extract_prefs(transcript).summary() == "nothing specific yet"
     ):
         text = ("এই যে আমাদের মেনু — দেখে বলুন, কোনটা অর্ডার করতে চান? নাকি আমি কিছু সাজেস্ট করব?" if bn

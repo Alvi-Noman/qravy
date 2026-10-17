@@ -105,6 +105,17 @@ export default function CallWaiterButton({
     return () => window.removeEventListener('qravy:service-call', onCall);
   }, [sub, table, save]);
 
+  // the AI waiter asked "আপনি কি ওয়েটার ডাকতে চাচ্ছেন?" and the guest said yes → open these options
+  useEffect(() => {
+    if (!sub || !table) return;
+    const onOpen = () => {
+      setError('');
+      setOpen(true);
+    };
+    window.addEventListener('qravy:open-service', onOpen);
+    return () => window.removeEventListener('qravy:open-service', onOpen);
+  }, [sub, table]);
+
   // follow the open calls: "On the way" once a staff member taps it, gone once they're done
   const tokens = Object.values(active)
     .map((v) => v!.token)

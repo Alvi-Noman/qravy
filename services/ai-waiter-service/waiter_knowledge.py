@@ -713,6 +713,11 @@ _KINDS = {
     "breakfast items": r"breakfast|paratha|porota|omelet|omelette|toast|পরোটা|নাস্তা|ডিম ভাজি",
     "alcohol": r"\bbeer\b|\bwine\b|alcohol|whisk(e)?y|vodka|cocktail|বিয়ার|বিয়ার|ওয়াইন|ওয়াইন|মদ|অ্যালকোহল|এলকোহল|হুইস্কি",
     "kebabs": r"kebab|kabab|tikka|কাবাব",
+    # a set menu IS a platter to a guest ("প্লেটার খাবো না" — and then it suggested Set Menu-2)
+    "platters": (
+        r"platter|set ?menu|combo|thali|প্লেটার|প্ল্যাটার|সেট ?মেনু|সেট ?মেন্যু|কম্বো|থালি",
+        r"platter|set ?menu|combo|thali|meal box|package|প্লেটার|সেট মেনু|কম্বো|থালি",
+    ),
 }
 
 
