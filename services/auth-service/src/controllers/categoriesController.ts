@@ -735,6 +735,19 @@ export async function updateCategory(req: Request, res: Response, next: NextFunc
       Object.keys(unsetFields).length ? { $set: updateSet, $unset: unsetFields } : { $set: updateSet }
     );
 
+    // Renamed → its dishes carry the new name too (they keep the category's name, and the dashboard's counts, the
+    // storefront and the AI waiter group by it — a rename once left the category showing "No items")
+    const oldName = String((before as any).name || '').trim();
+    if (updateSet.name && updateSet.name !== oldName) {
+      await menuItemsCol().updateMany(
+        {
+          tenantId: tenantOid,
+          $or: [{ categoryId: before._id }, ...(oldName ? [{ categoryId: { $exists: false }, category: oldName }] : [])],
+        },
+        { $set: { category: updateSet.name, categoryId: before._id, updatedAt: now } }
+      );
+    }
+
     // Per-branch hours override: replace (or remove with availability:null)
     if (branchAvailability && ObjectId.isValid(branchAvailability.locationId)) {
       const locOid = new ObjectId(branchAvailability.locationId);

@@ -2,7 +2,7 @@ import { env } from '@qravy/config/validateEnv';
 import app from './app.js';
 import { MongoClient } from 'mongodb';
 import logger from './utils/logger.js';
-import { ensureUserIndexes } from './utils/initDb.js';
+import { ensureUserIndexes, syncItemCategoryNames } from './utils/initDb.js';
 import { logEmailBootInfo } from './utils/email.js';
 import { failStaleImports } from './services/menuImport/pipeline.js';
 import { resumeSoldOutItems } from './controllers/menuItemsController.js';
@@ -24,6 +24,8 @@ async function startServer() {
 
     // Ensure indexes exist for performance and reliability
     await ensureUserIndexes(client);
+    // dishes of a category renamed earlier: back under its current name (a rename once left it showing 'No items')
+    await syncItemCategoryNames(client).catch((e) => logger.warn(`syncItemCategoryNames: ${(e as Error).message}`));
 
     // "Sold out until tomorrow": switch items back on at the daily reset (checked every minute)
     const resumeTick = () =>
