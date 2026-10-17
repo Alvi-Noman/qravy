@@ -20,10 +20,12 @@ import uuid
 from dataclasses import asdict, dataclass, field
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
+import bangla_meal
 import tray as _tray
 from recommender import GuestProfile, OrderStats, dish_facts, is_packaged
 from upsell import dish_roles
-from waiter_knowledge import MenuIndex, _money
+from upsell import of_bn as upsell_of_bn
+from waiter_knowledge import MenuIndex, _money, kind_text
 
 MAX_OFFERS = 2  # a visit
 MAX_DECLINES = 2  # two "no"s → no more offers this visit
@@ -184,6 +186,7 @@ def _best(kind: str, c: Ctx, ctx_ids: set, spicy: bool = False) -> Optional[Dict
     time (the ranked picks), made here rather than a bottle, a cold drink with spicy food; never a clash, a
     declined dish, or something already in the tray."""
     rank = {c.index.item_id(it): n for n, it in enumerate(c.picks)}
+    bhaat = kind == "rice" and bangla_meal.is_bhaat_house(c.index.items)
     best, best_s = None, -1e9
     for it in c.index.items:
         iid = c.index.item_id(it)
@@ -200,8 +203,10 @@ def _best(kind: str, c: Ctx, ctx_ids: set, spicy: bool = False) -> Optional[Dict
             s += 0.6 if not is_packaged(it) else 0.0
             s += 0.8 if spicy and _COLD.search(name) else 0.0
         if kind == "rice":
-            s += 1.0 if re.search(r"\brice\b", name, re.I) else 0.0  # fried rice: the classic partner for a curry
-            s += 0.5 if not re.search(r"special|prawn|mixed", name, re.I) else 0.0  # plain, affordable
+            s += 1.0 if re.search(r"\brice\b", kind_text({"name": name})) else 0.0  # fried rice: the classic partner for a curry
+            s += 0.5 if not re.search(r"special|prawn|mixed|স্পেশাল|মিক্স", name, re.I) else 0.0  # plain, affordable
+            if bhaat and bangla_meal.is_plain_rice(it):
+                s += 1.5  # a Bengali rice-and-curry place: সাদা ভাত with the ভুনা, not naan or fried rice
         s -= _price(it) / 1000.0  # the easier yes, all else equal
         if s > best_s:
             best, best_s = it, s
@@ -406,9 +411,17 @@ def _rice(moment: str, c: Ctx) -> Optional[Offer]:
     if not r:
         return None
     dish, name, p = str(it.get("name")), _label(r), _money(_price(r))
-    text = _say(c, f"{dish}-এর সাথে {name} ভালো যাবে ({p}) — দেব?",
-                f"{name} goes well with the {dish} ({p}) — shall I add it?",
-                f"{name} {p} — দেব?", f"{name} for {p}?")
+    if bangla_meal.is_plain_rice(r) and bangla_meal.is_bhaat_house(c.index.items):
+        # how a Bengali waiter asks: "গরুর লাল ভুনার সাথে ভাত দেব?" (the dish said plainly, no "-এর", no "(মিনিকেট…)")
+        d, rn = bangla_meal.said_name(it), bangla_meal.said_name(r)
+        poss = d + ("য়ের" if re.search(r"[িীইঈ]$", d) else "")
+        poss = poss if poss != d else upsell_of_bn(d)
+        text = _say(c, f"{poss} সাথে ভাত দেব? ({rn} {p})", f"Rice with the {d}? ({rn}, {p})",
+                    f"সাথে ভাত দেব? {p}", f"Rice with it? {p}")
+    else:
+        text = _say(c, f"{dish}-এর সাথে {name} ভালো যাবে ({p}) — দেব?",
+                    f"{name} goes well with the {dish} ({p}) — shall I add it?",
+                    f"{name} {p} — দেব?", f"{name} for {p}?")
     return Offer("rice", moment, text, [_add_op(r, c)], [c.index.item_id(r)], _price(r),
                  card=_card(r, c, f"with your {dish}"))
 
