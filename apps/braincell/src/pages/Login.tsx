@@ -6,7 +6,7 @@ import api, { sendMagicLink, verifyOtp } from '../api/auth';
 import { useAuthContext } from '../context/AuthContext';
 import { AnimatePresence, motion } from 'framer-motion';
 import Logo from '../components/Logo';
-import { enterWorkspace, findAccess, type Workspace } from '../features/auth/afterLogin';
+import { enterWorkspace, findAccess, viaLabel, type Workspace } from '../features/auth/afterLogin';
 
 type AuthUser = {
   id: string;
@@ -94,12 +94,12 @@ export default function Login() {
     navigate(usr.tenantId ? '/dashboard' : '/create-restaurant', { replace: true });
   };
 
-  /** Into a restaurant this email was given access to, then which branch this device is at. */
+  /** Into a restaurant they have access to (a Restaurant Access login then says which branch it's at). */
   const openWorkspace = async (tenantId: string, usr: AuthUser) => {
-    const nextToken = await enterWorkspace(tenantId);
+    const { token: nextToken, next } = await enterWorkspace(tenantId);
     login(nextToken, { ...usr, tenantId, isOnboarded: true });
     await reloadUser();
-    navigate('/access/select-location', { replace: true });
+    navigate(next, { replace: true });
   };
 
   const onJoin = async (tenantId: string) => {
@@ -124,7 +124,7 @@ export default function Login() {
       <div className="min-h-screen w-full bg-[#fcfcfc] font-inter flex items-center justify-center px-4">
         <div className="w-full max-w-lg rounded-2xl border border-[#ececec] bg-white p-6 shadow">
           <h1 className="text-center text-[18px] font-semibold text-slate-900">
-            You have access to these workspaces
+            Choose a restaurant
           </h1>
 
           <div className="mt-6 space-y-4">
@@ -139,7 +139,7 @@ export default function Login() {
                   </div>
                   <div>
                     <div className="text-[14px] font-medium text-slate-900">{ws.name}</div>
-                    <div className="text-[12px] text-slate-500">1 member</div>
+                    <div className="text-[12px] text-slate-500">{viaLabel(ws)}</div>
                   </div>
                 </div>
                 <button

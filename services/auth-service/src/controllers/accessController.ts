@@ -260,60 +260,17 @@ export const confirmInvite = async (req: Request, res: Response, next: NextFunct
 
     if (!invite) return void res.fail(404, 'Invite not found or expired');
 
-    // Activate: remove invite, ensure user exists, persist membership, mint tokens
-    await adminInvites().deleteOne({ _id: invite._id });
-
+    // Activate: ensure the user exists (the link proves the email), the membership, a session in the restaurant
     const users = getDb().collection('users');
     let user = await users.findOne({ email });
     if (!user) {
-      const ins = await users.insertOne({
-        email,
-        isVerified: true,
-        tenantId: new ObjectId(tenantId),
-        refreshTokens: [],
-        createdAt: new Date(),
-      });
+      const ins = await users.insertOne({ email, isVerified: true, refreshTokens: [], createdAt: new Date() });
       user = await users.findOne({ _id: ins.insertedId });
     }
-
-    // Persist RBAC so future refreshes resolve to admin
-    await memberships().updateOne(
-      { tenantId: new ObjectId(tenantId), userId: new ObjectId(user!._id), status: 'active' },
-      {
-        $set: {
-          role: 'admin',
-          status: 'active',
-          // "<branch> only" → a branch login (that branch's orders, calls and menu switches); none → every branch
-          locationId: invite.locationId ?? null,
-          updatedAt: new Date(),
-        },
-        $setOnInsert: {
-          tenantId: new ObjectId(tenantId),
-          userId: new ObjectId(user!._id),
-          createdAt: new Date(),
-        },
-      },
-      { upsert: true }
-    );
-
-    const accessToken = jwt.sign(
-      { id: user!._id.toString(), email, tenantId, role: 'admin', sessionType: 'member' },
-      process.env.JWT_SECRET!,
-      { expiresIn: '15m' }
-    );
-
-    const refreshTokenValue = generateRefreshToken({
-      id: user!._id.toString(),
-      email,
-      tenantId,
-    });
-
-    res.cookie('refreshToken', refreshTokenValue, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
-      maxAge: 30 * 24 * 60 * 60 * 1000,
-    });
+    await acceptInvite(invite, user!._id as ObjectId);
+    // (its refresh token is kept on the user and set in the login cookie — it used to be neither, so the session
+    // ended at the first refresh)
+    const { accessToken } = await startSession(req, res, user!, tenantId, { role: invite.role || 'admin' });
 
     res.ok({
       message: 'Invite confirmed successfully',
@@ -624,7 +581,69 @@ export const lookupDeviceByKey = async (req: Request, res: Response, next: NextF
   }
 };
 
-/** Issue a new access token AND a tenant-bound refresh token after user selects a workspace. */
+/** How someone is in a restaurant: its owner / a member (role from the membership), a Team invite not yet accepted,
+ * or its Restaurant Access email (the restaurant's staff login). */
+type Way = { via: 'own' | 'member' | 'invite' | 'access'; role?: string; invite?: Document };
+
+async function wayIn(tenantId: ObjectId, userId: string, email: string): Promise<Way | null> {
+  const t = await tenants().findOne({ _id: tenantId }, { projection: { ownerId: 1, accessSettings: 1 } });
+  if (!t) return null;
+  if (t.ownerId && String(t.ownerId) === userId) return { via: 'own', role: 'owner' };
+  const m = await memberships().findOne({ tenantId, userId: new ObjectId(userId), status: 'active' });
+  if (m) return { via: 'member', role: String(m.role) };
+  const inv = await adminInvites().findOne({ tenantId, email, status: 'invited', inviteExpiresAt: { $gt: new Date() } });
+  if (inv) return { via: 'invite', role: String(inv.role || 'admin'), invite: inv };
+  if (String(t.accessSettings?.centralEmail || '').toLowerCase() === email) return { via: 'access' };
+  return null;
+}
+
+/** A Team invite accepted: the person (who proved the email — the passcode / the link) becomes a member. */
+async function acceptInvite(invite: Document, userId: ObjectId): Promise<void> {
+  await memberships().updateOne(
+    { tenantId: invite.tenantId, userId, status: 'active' },
+    {
+      $set: {
+        role: invite.role || 'admin',
+        status: 'active',
+        // "<branch> only" → a branch login (that branch's orders, calls and menu switches); none → every branch
+        locationId: invite.locationId ?? null,
+        updatedAt: new Date(),
+      },
+      $setOnInsert: { tenantId: invite.tenantId, userId, createdAt: new Date() },
+    },
+    { upsert: true }
+  );
+  await adminInvites().deleteOne({ _id: invite._id });
+}
+
+/** A session in this restaurant: the access token + a refresh token kept on the user, in the login cookie
+ * (path /api/v1/auth — the one refresh reads; this used to land elsewhere and the next refresh lost the restaurant). */
+async function startSession(req: Request, res: Response, user: Document, tenantId: string, claims: Record<string, unknown>) {
+  const userId = String(user._id);
+  const email = String(user.email || '').toLowerCase();
+  const lock = await lockedBranch(req, tenantId, userId);
+  const accessToken = jwt.sign(
+    { id: userId, email, tenantId, ...claims, sessionType: lock ? 'branch' : 'member', ...(lock ? { locationId: lock } : {}) },
+    process.env.JWT_SECRET as string,
+    { expiresIn: '15m' }
+  );
+  const refreshTokenValue = generateRefreshToken({ id: userId, email, tenantId, ...(claims.central ? { central: true } : {}) });
+  const cleanedTokens = cleanupTokens(user.refreshTokens);
+  cleanedTokens.push({
+    tokenId: crypto.randomUUID(),
+    tokenHash: hashToken(refreshTokenValue),
+    createdAt: new Date(),
+    expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+    userAgent: (req.headers['user-agent'] as string | undefined) || 'unknown',
+    ip: (req.ip as string | undefined) || (req.socket?.remoteAddress as string | undefined) || 'unknown',
+  });
+  while (cleanedTokens.length > 5) cleanedTokens.shift();
+  await getDb().collection('users').updateOne({ _id: user._id }, { $set: { refreshTokens: cleanedTokens } });
+  res.cookie('refreshToken', refreshTokenValue, REFRESH_COOKIE_OPTS);
+  return { accessToken, branch: lock };
+}
+
+/** Into one of the restaurants the person has access to (POST /access/select-tenant { tenantId }). */
 export const selectTenant = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
     const email = (req.user?.email || '').toLowerCase();
@@ -632,63 +651,59 @@ export const selectTenant = async (req: Request, res: Response, next: NextFuncti
     const { tenantId } = (req.body || {}) as { tenantId?: string };
 
     if (!email || !userId) return void res.fail(401, 'Unauthorized');
-    if (!tenantId) return void res.fail(400, 'tenantId is required');
+    if (!tenantId || !ObjectId.isValid(tenantId)) return void res.fail(400, 'tenantId is required');
 
-    const t = await tenants().findOne({ _id: new ObjectId(tenantId) });
-    if (!t) return void res.fail(404, 'Tenant not found');
-
-    const centralEmail = ((t as any)?.accessSettings?.centralEmail || '').toLowerCase();
-    if (!centralEmail || centralEmail !== email) return void res.fail(403, 'Not authorized for this tenant');
-
-    // like any login's token: this restaurant, and its branch when this device / person is set to one
-    const lock = await lockedBranch(req, tenantId, userId);
-    // `central`: in through Settings → Restaurant Access (the restaurant's staff login) — staff permissions, re-checked
-    // on every refresh so removing the email there takes effect
-    const accessToken = jwt.sign(
-      { id: userId, email, tenantId, central: true, sessionType: lock ? 'branch' : 'member', ...(lock ? { locationId: lock } : {}) },
-      process.env.JWT_SECRET as string,
-      { expiresIn: '15m' }
-    );
-
-    const db = getDb();
-    const users = db.collection('users');
-
-    const refreshTokenValue = generateRefreshToken({ id: userId, email, tenantId, central: true });
-    const tokenId = crypto.randomUUID();
-    const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
-    const tokenHash = hashToken(refreshTokenValue);
-
-    const user = await users.findOne({ _id: new ObjectId(userId) });
+    const user = await getDb().collection('users').findOne({ _id: new ObjectId(userId) });
     if (!user) return void res.fail(404, 'User not found');
+    const way = await wayIn(new ObjectId(tenantId), userId, email);
+    if (!way) return void res.fail(403, 'Not authorized for this tenant');
 
-    const cleanedTokens = cleanupTokens(user.refreshTokens);
-    const userAgent = (req.headers['user-agent'] as string | undefined) || 'unknown';
-    const ip = (req.ip as string | undefined) || (req.socket?.remoteAddress as string | undefined) || 'unknown';
-
-    cleanedTokens.push({ tokenId, tokenHash, createdAt: new Date(), expiresAt, userAgent, ip });
-    while (cleanedTokens.length > 5) cleanedTokens.shift();
-
-    await users.updateOne({ _id: new ObjectId(userId) }, { $set: { refreshTokens: cleanedTokens } });
-
-    // the same cookie as every login (path /api/v1/auth): it REPLACES the restaurant-less one from the passcode, so
-    // a reload / a refresh stays in this restaurant. (It used to land on /api/v1/access, where refresh never sees
-    // it — the next refresh dropped the person back to "create a restaurant".)
-    res.cookie('refreshToken', refreshTokenValue, REFRESH_COOKIE_OPTS);
-
-    res.ok({ token: accessToken });
+    if (way.via === 'invite') await acceptInvite(way.invite!, user._id as ObjectId);
+    // a member / owner: their role there; Restaurant Access: `central` — staff permissions, re-checked on every refresh
+    // so removing the email in Settings ends it
+    const claims = way.via === 'access' ? { central: true } : { role: way.role };
+    const { accessToken, branch } = await startSession(req, res, user, tenantId, claims);
+    res.ok({ token: accessToken, via: way.via, role: way.role ?? null, branch });
   } catch (err) {
     next(err);
   }
 };
 
-/** List accessible workspaces */
+/** Every restaurant this person can go into (the login's list): their own, memberships, Team invites waiting for
+ * them, and Restaurant Access — one row each, own first. Empty when they only have their own (it just opens). */
 export async function listAccessibleWorkspaces(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
     const email = (req.user?.email || '').toLowerCase();
-    if (!email) return void res.fail(401, 'Unauthorized');
-    const cursor = tenants().find({ 'accessSettings.centralEmail': email }).project({ name: 1 });
-    const items = (await cursor.toArray()).map((t) => ({ id: String(t._id), name: t.name as string }));
-    res.ok({ items });
+    const userId = req.user?.id;
+    if (!email || !userId || !ObjectId.isValid(userId)) return void res.fail(401, 'Unauthorized');
+    const uid = new ObjectId(userId);
+    const user = await getDb().collection('users').findOne({ _id: uid }, { projection: { tenantId: 1 } });
+    const own = user?.tenantId ? String(user.tenantId) : null;
+
+    const rows = new Map<string, { id: string; via: Way['via']; role: string | null }>();
+    const add = (id: string, via: Way['via'], role: string | null) => {
+      if (!rows.has(id)) rows.set(id, { id, via, role });
+    };
+    if (own) add(own, 'own', 'owner');
+    for (const m of await memberships().find({ userId: uid, status: 'active' }, { projection: { tenantId: 1, role: 1 } }).toArray()) {
+      add(String(m.tenantId), String(m.tenantId) === own ? 'own' : 'member', String(m.role));
+    }
+    const invites = await adminInvites()
+      .find({ email, status: 'invited', inviteExpiresAt: { $gt: new Date() } }, { projection: { tenantId: 1, role: 1 } })
+      .toArray();
+    for (const i of invites) add(String(i.tenantId), 'invite', String(i.role || 'admin'));
+    for (const t of await tenants().find({ 'accessSettings.centralEmail': email }, { projection: { _id: 1 } }).toArray()) {
+      add(String(t._id), 'access', null);
+    }
+
+    const ids = [...rows.keys()].filter((id) => ObjectId.isValid(id)).map((id) => new ObjectId(id));
+    const names = new Map(
+      (await tenants().find({ _id: { $in: ids }, demo: { $exists: false } }, { projection: { name: 1 } }).toArray())
+        .map((t) => [String(t._id), String(t.name || '')])
+    );
+    const items = [...rows.values()].filter((r) => names.has(r.id)).map((r) => ({ ...r, name: names.get(r.id)! }));
+    // only their own restaurant → nothing to choose
+    res.ok({ items: items.length === 1 && items[0].via === 'own' ? [] : items });
   } catch (err) {
     next(err);
   }
