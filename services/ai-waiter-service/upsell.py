@@ -5,10 +5,12 @@ import re
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from recommender import dish_facts
+from waiter_knowledge import kind_text
 
 
 def _kind_text(it: Dict[str, Any]) -> str:
-    return " ".join(str(x or "") for x in (it.get("name"), it.get("category"))).lower()
+    # (+ the English kind words of a Bangla name: গরুর ভুনা is a curry that needs rice, লাচ্ছি a drink)
+    return kind_text(it)
 
 
 # (the dish's NAME — "Sweet & Sour Chicken" is not a dessert)
@@ -42,7 +44,7 @@ _WATER = re.compile(r"\bwater\b")
 def dish_roles(it: Dict[str, Any]) -> Dict[str, bool]:
     """What part of a meal this dish plays."""
     f = dish_facts(it)
-    name = str(it.get("name") or "").lower()
+    name = kind_text({"name": it.get("name")})  # the dish's own name (+ what its Bangla words mean)
     k = _kind_text(it)
     drink = f["drink"] or bool(_DRINK.search(name))
     dessert = not drink and (bool(_DESSERT.search(name)) or bool(_DESSERT_CATEGORY.search(str(it.get("category") or ""))))

@@ -388,6 +388,8 @@ def kind_text(it: Dict[str, Any]) -> str:
     """name + category, lower-case, + the English kind words its Bangla/Banglish words mean."""
     text = " ".join(str(x or "") for x in (it.get("name"), it.get("category"))).lower()
     extra = _gloss(text, _BN_KIND, _LATIN_KIND)
+    if "curry main" in extra and "snack" in extra:
+        extra.remove("snack")  # চিকেন ঝাল ফ্রাই is a curry; চিকেন ফ্রাই alone is the fried snack
     return f"{text} {' '.join(extra)}" if extra else text
 
 

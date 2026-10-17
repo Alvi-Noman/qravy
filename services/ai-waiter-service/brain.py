@@ -48,6 +48,7 @@ from recommender import (
     violations,
 )
 from recommender import asks_for_recommendation, asks_overview
+import bangla_meal
 import menu_profile
 import reco_format
 import intent as intent_mod
@@ -694,6 +695,10 @@ def _turn_block(
         f"RECOMMENDATION MODE: {mode.upper()} — {MODE_INSTRUCTIONS.get(mode, '')}"
         + (f' End your reply with exactly this question (in the reply language): "{ask_next}"' if ask_next else "")
     )
+    if mode != "quiet":
+        house = bangla_meal.house_note(index.items, orderable_items if orderable_items is not None else index.items)
+        if house:
+            lines.append(house)
     if mode == "overview":
         glance = glance_line(index.items, lang, available=orderable_items)
         if glance:
@@ -3363,12 +3368,37 @@ def _fixed_reco(
     else:
         return None
 
+    # a Bengali bhaat restaurant while rice is served: "কী খাওয়া যায়?" → rice with its curries and sides, the way its
+    # waiter says it — never "আলু ভর্তা, ডাল…" as dishes of their own
+    if shape == "general" and not _asked_count(t) and (
+            any(k in ("lunch", "dinner", "late") for k in kinds) or re.search(r"ভাত|\b(rice|bhat|bhaat)\b", t.lower())) \
+            and bangla_meal.is_bhaat_house(index.items):
+        ranked_all, _ = rank(index, orderable, kinds, profile, stats=stats, context_ids=cart_ids, recent=rstate.recent,
+                             limit=len(index.items))
+        rice_in_tray = any(bangla_meal.role(index.by_id[i]) == "rice" for i in (in_tray or ()) if i in index.by_id)
+        tray = in_tray or set()
+        m = bangla_meal.meal([p.item for p in ranked_all if orderable.get(index.item_id(p.item), True)
+                              and (index.item_id(p.item) not in tray or bangla_meal.role(p.item) == "rice")])
+        if m:
+            text = bangla_meal.meal_text(m, lang, rice_in_tray=rice_in_tray)
+            curries = m["fish"] + m["chicken"] + m["meat"]
+            cards = curries + ([] if rice_in_tray else [m["rice"]]) + m["side"][:1]
+            return text, [_suggestion_row(it) for it in cards], "reco_bhaat"
+
     prof = profile
     if aud and aud[2] and "sharing" not in profile.mood:  # a family / friends table: dishes made for sharing first
         prof = GuestProfile.from_dict({**profile.to_dict(), "mood": list(profile.mood) + ["sharing"]})
     ranked, _ = rank(index, orderable, kinds, prof, stats=stats, context_ids=cart_ids, recent=rstate.recent,
                      asked_for=set(kind_scope), limit=60, only=kind_scope or None, exclude=set(in_tray or ()))
     items = [p for p in ranked if orderable.get(index.item_id(p.item), True)]
+    if shape != "kind" and bangla_meal.is_bhaat_house(index.items):
+        # a bhaat restaurant: bhorta / bhaji / dal only ever WITH rice; and outside rice time (বিকেলের নাস্তা) the
+        # curries made for rice aren't "something to eat now" — snacks, soup, tea, doi are
+        items = [p for p in items if bangla_meal.role(p.item) != "side"]
+        if not any(k in ("lunch", "dinner", "late") for k in kinds):
+            light = [p for p in items if bangla_meal.role(p.item) not in ("fish", "chicken", "meat")]
+            if len(light) >= 3:
+                items = light
     if shape != "kind" and not (taste and taste[0] in ("sweet", "sour")):
         items = [p for p in items if not dish_facts(p.item)["drink"]]  # nobody recommends water as "something good"
     if taste:
