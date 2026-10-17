@@ -10,6 +10,7 @@ import type { PlanState, PlanTier } from '../../../api/billing';
 import { useTenant } from '../../../hooks/useTenant';
 import { useQueryClient } from '@tanstack/react-query';
 import { useAuthContext } from '../../../context/AuthContext';
+import { subscribeErrorText } from '../subscribeError';
 
 type PlanCardId = 'p1' | 'p2';
 const idToTier: Record<PlanCardId, Extract<PlanTier, 'Starter' | 'Pro'>> = { p1: 'Starter', p2: 'Pro' };
@@ -71,6 +72,8 @@ export default function PlanSheet(): JSX.Element {
   const [billingCycle, setBillingCycle] = useState<'monthly' | 'yearly'>('monthly');
   const [loadingPlan, setLoadingPlan] = useState<PlanCardId | null>(null);
   const [subscribeResult, setSubscribeResult] = useState<SubscribeResult | null>(null);
+  // why the server said no (it used to fail silently — only "Subscribe failed" in the console)
+  const [subscribeError, setSubscribeError] = useState<string | null>(null);
 
   const qc = useQueryClient();
   const { token } = useAuthContext();
@@ -145,6 +148,7 @@ export default function PlanSheet(): JSX.Element {
   };
 
   const proceed = async (payload: OnSubscribePayload) => {
+    setSubscribeError(null);
     try {
       await subscribePlan({
         planId: payload.planId,
@@ -204,6 +208,7 @@ export default function PlanSheet(): JSX.Element {
       }, 0);
     } catch (e) {
       console.error('Subscribe failed', e);
+      setSubscribeError(subscribeErrorText(e));
     }
   };
 
@@ -272,7 +277,14 @@ export default function PlanSheet(): JSX.Element {
               onSelect={onSelectPlan}
             />
           ) : step === 'subscribe' ? (
-            <SubscribeCheckout plan={plan} onSubscribe={proceed} />
+            <>
+              {subscribeError && (
+                <div role="alert" className="mx-auto mb-4 max-w-3xl rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-[13px] text-red-800">
+                  {subscribeError}
+                </div>
+              )}
+              <SubscribeCheckout plan={plan} onSubscribe={proceed} />
+            </>
           ) : (
             <SuccessStep plan={plan} result={subscribeResult} onDone={handleDone} />
           )}
