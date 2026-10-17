@@ -1722,13 +1722,56 @@ def _sing(w: str) -> str:
 
 
 def _name_tokens(name: str) -> set:
-    """'Mineral Water (small)' → {mineral, water, small}; 'Set Menu A-01' → {set, menu, a, 1}."""
+    """'Mineral Water (small)' → {mineral, water, small}; 'Set Menu A-01' → {set, menu, a, 1}.
+    A Bangla name's words count too, as the guest's words do ('চিকেন চাপ মাসালা' → {chicken, চাপ, masala}) —
+    a menu written in Bangla once had no name words at all, so every order on it looked like a guess."""
     toks = set()
     for w in re.findall(r"[a-z]+|\d+", str(name).lower()):
         if w in _STOP:
             continue
         toks.add(str(int(w)) if w.isdigit() else _sing(w))
+    for w in re.findall(r"[ঀ-৿]+", str(name).translate(_BN_DIGITS)):
+        if w not in _BN_STOP:
+            toks |= _bn_word_tokens(w)
     return toks
+
+
+# Bangla words in a dish name that aren't part of what it's called ("ডাল ও ভাত", "ভাত দিয়ে")
+_BN_STOP = {"ও", "এবং", "আর", "দিয়ে", "দিয়ে", "সাথে", "সঙ্গে", "সহ"}
+_BN_LOOKUP: List[Any] = []
+
+
+def _bn_lookup() -> Tuple[Dict[str, str], Dict[str, set]]:
+    """Bangla word → English menu word (from bn_translit), and one Bangla word → a two-word name. Built once."""
+    if not _BN_LOOKUP:
+        from bn_translit import PHRASES, WORDS
+
+        rev: Dict[str, str] = {}
+        for en, bn in WORDS.items():  # prefer the shortest English form ("prawn" over "prawns")
+            if bn not in rev or len(en) < len(rev[bn]):
+                rev[bn] = en
+        # one Bangla word for a two-word name: "কাজুবাদাম" = cashew nut, "সেচুয়ান" = szu-chuan, "ওয়ান্টন" = won thon
+        multi: Dict[str, set] = {}
+        for en, bn in list(PHRASES.items()) + [("cashew nut", "কাজুবাদাম"), ("szu chian", "সেচুয়ান")]:
+            if " " not in bn:
+                multi.setdefault(bn, set()).update(_name_tokens(en.replace("-", " ")))
+        _BN_LOOKUP[:] = [rev, multi]
+    return _BN_LOOKUP[0], _BN_LOOKUP[1]
+
+
+def _bn_word_tokens(w: str) -> set:
+    """One Bangla word as menu tokens: its English menu word when we know one ('চিকেন' → chicken, 'হাফ' → half),
+    else the word itself without its ending ('মাছের' → মাছ). The guest's words and a dish's name go through this
+    same mapping, so they meet."""
+    rev, multi = _bn_lookup()
+    stem = _BN_SUFFIX.sub("", w) or w
+    for cand in (w, stem):
+        if cand in multi:
+            return set(multi[cand])
+        hit = _NUM_TOKENS.get(cand) or _SIZE_TOKENS.get(cand) or _BN_WORDS.get(cand) or rev.get(cand)
+        if hit:
+            return {hit if hit.isdigit() else _sing(hit)}
+    return {stem}
 
 
 # id(index) → (that index, its words). The index is kept with its entry: a MenuIndex is built every turn, and a
@@ -1746,6 +1789,17 @@ def _menu_rev(index: MenuIndex) -> Dict[str, str]:
         for it in index.items:
             for w in re.findall(r"[A-Za-z]+", f"{it.get('name') or ''} {it.get('category') or ''}"):
                 rev.setdefault(word_to_bn(w), _sing(w.lower()))
+        # a menu written in Bangla: its own words are menu words too ('চাপ' in 'চিকেন চাপ মাসালা'), mapped as in
+        # _name_tokens — so the guest saying them is never "a word that names no dish"
+        for it in index.items:
+            for w in re.findall(r"[ঀ-৿]+", f"{it.get('name') or ''} {it.get('category') or ''}"):
+                if w in _BN_STOP:
+                    continue
+                toks = _bn_word_tokens(w)
+                if len(toks) == 1:
+                    tok = next(iter(toks))
+                    for key in (w, _BN_SUFFIX.sub("", w) or w):
+                        rev.setdefault(key, tok)
         if len(_MENU_REV) > 50 or key in _MENU_REV:
             _MENU_REV.pop(key, None) if len(_MENU_REV) <= 50 else _MENU_REV.clear()
             _NEAR_CACHE.clear()  # keyed by id(rev) — the dropped rev's id can be reused
@@ -1755,19 +1809,7 @@ def _menu_rev(index: MenuIndex) -> Dict[str, str]:
 
 def _guest_tokens(text: str, menu_rev: Optional[Dict[str, str]] = None) -> set:
     """The guest's words as menu tokens — English words as they are, Bangla mapped back ('মিনারেল' → mineral)."""
-    from bn_translit import WORDS, word_to_bn
-
-    from bn_translit import PHRASES
-
-    rev: Dict[str, str] = {}
-    for en, bn in WORDS.items():  # prefer the shortest English form ("prawn" over "prawns")
-        if bn not in rev or len(en) < len(rev[bn]):
-            rev[bn] = en
-    # one Bangla word for a two-word name: "কাজুবাদাম" = cashew nut, "সেচুয়ান" = szu-chuan, "ওয়ান্টন" = won thon
-    multi: Dict[str, set] = {}
-    for en, bn in list(PHRASES.items()) + [("cashew nut", "কাজুবাদাম"), ("szu chian", "সেচুয়ান")]:
-        if " " not in bn:
-            multi.setdefault(bn, set()).update(_name_tokens(en.replace("-", " ")))
+    rev, multi = _bn_lookup()
     out = set()
     for raw in re.findall(r"[A-Za-z]+|\d+|[ঀ-৿]+", (text or "").translate(_BN_DIGITS)):
         w = raw.lower()
