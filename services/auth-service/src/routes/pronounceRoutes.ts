@@ -56,7 +56,15 @@ export type PronounceRequest = {
   decidedBy?: string;
   final?: { sayAs: string; spoken: string }; // what Qravy put in the dictionary (differs when edited)
   reply?: string; // Qravy's note back
+  /** a HINT for Qravy, not a request: the restaurant already says it its own way (its own words, below) — never shown
+   *  in the restaurant's list; accepting it puts it in the dictionary for every restaurant */
+  hint?: boolean;
+  source?: string; // where it came from ("menu item")
 };
+
+/** A restaurant's own way of saying a word — applied at once, to its voice only (over Qravy's dictionary). */
+export type OwnWord = { word: string; sayAs: string; spoken: string; by: string; updatedAt: Date };
+const MAX_OWN = 500;
 
 export const lexicon = () => client.db('authDB').collection<LexEntry>('lexicon');
 export const pronounceRequests = () => client.db('authDB').collection<PronounceRequest>('pronounceRequests');
@@ -81,6 +89,36 @@ export async function lexiconList(): Promise<Array<{ word: string; spoken: strin
   const list = docs.map((d) => ({ word: d.word, spoken: (d.sayAs && toSpoken(d.sayAs)) || d.spoken })).filter((x) => x.word && x.spoken);
   cache = { at: Date.now(), list };
   return list;
+}
+
+/** Qravy's dictionary with a restaurant's own words on top (its word wins) — what that restaurant's voice uses. */
+export function withOwnWords(
+  global: Array<{ word: string; spoken: string }>,
+  own: Array<{ word?: string; sayAs?: string; spoken?: string }> | null | undefined
+): Array<{ word: string; spoken: string }> {
+  const mine = (own ?? [])
+    .map((o) => ({ word: String(o.word ?? '').trim(), spoken: (o.sayAs && toSpoken(o.sayAs)) || String(o.spoken ?? '').trim() }))
+    .filter((o) => o.word && o.spoken);
+  const taken = new Set(mine.map((o) => keyOf(o.word)));
+  return [...mine, ...global.filter((g) => !taken.has(keyOf(g.word)))];
+}
+
+const BN = 'ঀ-৿';
+const escRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/** The text as the voice will be given it: each word of the list, whole words only, longest first (as the guest's
+ *  app does it — apps/tastebud/src/state/speechWords.ts). */
+export function sayText(text: string, words: Array<{ word: string; spoken: string }>): string {
+  const rules = [...words].sort((a, b) => b.word.length - a.word.length);
+  if (!rules.length) return text;
+  const pat = rules
+    .map((r) => (new RegExp(`[${BN}]`).test(r.word) ? `(?<![${BN}])${escRe(r.word)}(?![${BN}])` : `(?<![A-Za-z])${escRe(r.word)}(?![A-Za-z])`))
+    .map((p) => `(${p})`)
+    .join('|');
+  return text.replace(new RegExp(pat, 'gi'), (...m) => {
+    const i = (m.slice(1, rules.length + 1) as Array<string | undefined>).findIndex((g) => g !== undefined);
+    return i >= 0 ? rules[i].spoken : m[0];
+  });
 }
 
 /* ------------------------------------------------------------------ changing it */
@@ -192,7 +230,8 @@ router.get(
   ...restaurantGuard,
   wrap(async (req, res) => {
     const tenantId = String(req.user?.tenantId ?? '');
-    const docs = await pronounceRequests().find({ tenantId }).sort({ updatedAt: -1 }).limit(100).toArray();
+    // (hints sent from their own words aren't requests — Qravy's clue only, never shown here)
+    const docs = await pronounceRequests().find({ tenantId, hint: { $ne: true } }).sort({ updatedAt: -1 }).limit(100).toArray();
     res.json({ success: true, items: docs.map(requestView) });
   })
 );
@@ -217,12 +256,12 @@ router.put(
       return res.status(409).json({ success: false, message: `“${cur.word}” is already said that way.` });
     }
     const now = new Date();
-    const mine = await pronounceRequests().findOne({ tenantId, key, status: 'pending' });
+    const mine = await pronounceRequests().findOne({ tenantId, key, status: 'pending', hint: { $ne: true } });
     if (mine) {
       await pronounceRequests().updateOne({ _id: mine._id }, { $set: { word: w, sayAs: s, spoken, note, by: actor.by ?? '', updatedAt: now } });
       return res.json({ success: true, item: requestView({ ...mine, word: w, sayAs: s, spoken, note, updatedAt: now }) });
     }
-    if ((await pronounceRequests().countDocuments({ tenantId, status: 'pending' })) >= MAX_PENDING) {
+    if ((await pronounceRequests().countDocuments({ tenantId, status: 'pending', hint: { $ne: true } })) >= MAX_PENDING) {
       return res.status(429).json({ success: false, message: `You have ${MAX_PENDING} requests waiting — Qravy will review those first.` });
     }
     const doc: PronounceRequest = {
@@ -252,6 +291,91 @@ router.delete(
     if (!ObjectId.isValid(id)) return res.status(404).json({ success: false, message: 'No such request.' });
     const r = await pronounceRequests().deleteOne({ _id: new ObjectId(id), tenantId: String(req.user?.tenantId ?? ''), status: 'pending' });
     res.status(r.deletedCount ? 200 : 404).json({ success: !!r.deletedCount });
+  })
+);
+
+/* ------------------------------------------------------------------ a restaurant's own words (Menu Items) */
+// How the restaurant wants a word said — applied AT ONCE, to its own voice only. Each change also leaves Qravy a
+// hint in Cortex (never in the restaurant's list): accepting it puts the word in the dictionary for everyone;
+// declining it changes nothing for the restaurant.
+
+const tenantsCol = () => client.db('authDB').collection('tenants');
+
+async function ownOf(tenantId: string): Promise<OwnWord[]> {
+  if (!ObjectId.isValid(tenantId)) return [];
+  const t = await tenantsCol().findOne({ _id: new ObjectId(tenantId) }, { projection: { ownPronunciations: 1 } });
+  return (t?.ownPronunciations ?? []) as OwnWord[];
+}
+
+router.get(
+  '/pronunciations/own',
+  ...restaurantGuard,
+  wrap(async (req, res) => {
+    const own = await ownOf(String(req.user?.tenantId ?? ''));
+    res.json({ success: true, items: own.map((o) => ({ word: o.word, sayAs: o.sayAs, spoken: toSpoken(o.sayAs) || o.spoken, updatedAt: o.updatedAt })) });
+  })
+);
+
+/** What this restaurant's voice is given for `text` (its own words over Qravy's dictionary) — the dashboard's Listen. */
+router.get(
+  '/pronunciations/say',
+  ...restaurantGuard,
+  wrap(async (req, res) => {
+    const text = String(req.query.text ?? '').slice(0, 200);
+    const words = withOwnWords(await lexiconList(), await ownOf(String(req.user?.tenantId ?? '')));
+    res.set('Cache-Control', 'no-store');
+    res.json({ success: true, spoken: sayText(text, words) });
+  })
+);
+
+router.put(
+  '/pronunciations/own',
+  ...restaurantGuard,
+  wrap(async (req, res) => {
+    const actor = await restaurantActor(req);
+    const tenantId = actor.tenantId as string;
+    if (!ObjectId.isValid(tenantId)) return res.status(409).json({ success: false, message: 'Tenant not set' });
+    const w = String(req.body?.word ?? '').trim().replace(/\s+/g, ' ');
+    const s = String(req.body?.sayAs ?? '').trim().replace(/\s+/g, ' ');
+    if (!w || w.length > 80) return res.status(400).json({ success: false, message: 'The name must be 1–80 characters.' });
+    if (!s || s.length > 100) return res.status(400).json({ success: false, message: 'How to say it must be 1–100 characters.' });
+    const spoken = toSpoken(s);
+    if (!spoken) return res.status(400).json({ success: false, message: 'Type how to say it in English letters or in Bangla.' });
+    const key = keyOf(w);
+    const now = new Date();
+    const own = (await ownOf(tenantId)).filter((o) => keyOf(o.word) !== key);
+    if (own.length >= MAX_OWN) return res.status(429).json({ success: false, message: `You have ${MAX_OWN} words already.` });
+    const word: OwnWord = { word: w, sayAs: s, spoken, by: actor.by ?? '', updatedAt: now };
+    await tenantsCol().updateOne({ _id: new ObjectId(tenantId) }, { $set: { ownPronunciations: [...own, word], updatedAt: now } });
+
+    // Qravy's hint (one per restaurant and word; a newer one replaces it) — unless the dictionary already says it so
+    const global = await lexicon().findOne({ _id: key, removed: { $ne: true } });
+    if (!global || toSpoken(global.sayAs) !== spoken) {
+      await pronounceRequests().updateOne(
+        { tenantId, key, status: 'pending', hint: true },
+        {
+          $set: { word: w, sayAs: s, spoken, by: actor.by ?? '', tenantName: actor.tenantName ?? '', source: String(req.body?.source ?? 'menu item').slice(0, 40), updatedAt: now },
+          $setOnInsert: { key, tenantId, status: 'pending', hint: true, createdAt: now },
+        },
+        { upsert: true }
+      );
+    }
+    res.json({ success: true, item: { word: w, sayAs: s, spoken, updatedAt: now } });
+  })
+);
+
+/** Back to the default (Qravy's dictionary / the voice's own reading). Its waiting hint goes too. */
+router.delete(
+  '/pronunciations/own/:word',
+  ...restaurantGuard,
+  wrap(async (req, res) => {
+    const tenantId = String(req.user?.tenantId ?? '');
+    if (!ObjectId.isValid(tenantId)) return res.status(409).json({ success: false, message: 'Tenant not set' });
+    const key = keyOf(String(req.params.word ?? ''));
+    const own = (await ownOf(tenantId)).filter((o) => keyOf(o.word) !== key);
+    await tenantsCol().updateOne({ _id: new ObjectId(tenantId) }, { $set: { ownPronunciations: own, updatedAt: new Date() } });
+    await pronounceRequests().deleteOne({ tenantId, key, status: 'pending', hint: true });
+    res.json({ success: true });
   })
 );
 

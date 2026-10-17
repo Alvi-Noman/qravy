@@ -40,6 +40,7 @@ import AvailabilityEditor, {
 import type { TenantDTO } from '../../../../../packages/shared/src/types/v1';
 import { useScope } from '../../context/ScopeContext';
 import { fetchLocations, type Location } from '../../api/locations';
+import ItemPronunciation from './ItemPronunciation';
 
 type UiVariation = {
   label: string;
@@ -1319,6 +1320,8 @@ export default function MenuItemModal({
                   {nameErr}
                 </div>
               )}
+              {/* how the AI waiter says it — Listen, and fix it (applies at once, saved on its own) */}
+              <ItemPronunciation name={values.name} />
             </Field>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">

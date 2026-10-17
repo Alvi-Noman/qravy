@@ -351,21 +351,30 @@ def _say_learned(text: str, tenant: Optional[str]) -> str:
     if not text:
         return text
     now = time.time()
-    hit = _LEARNED.get("*")
+    # (the restaurant's own words — Menu Items → how a dish sounds — come over the dictionary, for its voice only)
+    key = f"t:{tenant}" if tenant else "*"
+    hit = _LEARNED.get(key)
     if not hit or now - hit[0] > 60:
         rules: List[Tuple["re.Pattern[str]", str]] = []
         try:
             words: Dict[str, str] = {}
+            english = lambda w: bool(re.fullmatch(r"[A-Za-z][A-Za-z' -]*", w))  # noqa: E731
             for x in _CLIENT[MENU_DB_NAME]["lexicon"].find({"removed": {"$ne": True}}, {"word": 1, "spoken": 1}):
                 w, sp = str(x.get("word") or "").strip(), str(x.get("spoken") or "").strip()
-                if w and sp and re.fullmatch(r"[A-Za-z][A-Za-z' -]*", w):
+                if w and sp and english(w):
                     words[w.lower()] = sp
+            if tenant:
+                t = _CLIENT[MENU_DB_NAME]["tenants"].find_one({"subdomain": tenant}, {"ownPronunciations": 1}) or {}
+                for x in t.get("ownPronunciations") or []:
+                    w, sp = str(x.get("word") or "").strip(), str(x.get("spoken") or "").strip()
+                    if w and sp and english(w):
+                        words[w.lower()] = sp
             for w in sorted(words, key=len, reverse=True):
                 rules.append((re.compile(r"(?<![A-Za-z])" + re.escape(w) + r"(?![A-Za-z])", re.I), words[w]))
         except Exception as e:  # never break a reply over this
             print("[pronounce] load failed:", str(e)[:120])
         hit = (now, rules)
-        _LEARNED["*"] = hit
+        _LEARNED[key] = hit
     for pat, spoken in hit[1]:
         text = pat.sub(spoken, text)
     return text

@@ -25,6 +25,9 @@ type Request = {
   final?: { sayAs: string; spoken: string };
   reply?: string;
   current: { sayAs: string; spoken: string; actor: Actor } | null;
+  /** a hint, not a request: the restaurant already says it this way (its own words) and never sees this */
+  hint?: boolean;
+  source?: string;
 };
 
 const VOICES = { female: 'bn-BD-NabanitaNeural', male: 'bn-BD-PradeepNeural' } as const;
@@ -94,6 +97,11 @@ function RequestRow({ r, play, onDone }: { r: Request; play: (text: string) => v
         </div>
         <div className="text-[11px] text-stone-400">{when(r.createdAt)}</div>
         {r.note && <div className="mt-1 max-w-[220px] text-[12px] text-stone-600">“{r.note}”</div>}
+        {r.hint && (
+          <div className="mt-1 inline-block rounded bg-amber-50 px-1.5 py-0.5 text-[11px] text-amber-800" title="They changed it for their own restaurant (it already applies there). A clue for the dictionary — they never see this.">
+            hint · already applied for them{r.source ? ` (${r.source})` : ""}
+          </div>
+        )}
       </td>
       <td className="py-2.5 pr-3">
         {r.current ? (
@@ -124,6 +132,7 @@ function RequestRow({ r, play, onDone }: { r: Request; play: (text: string) => v
             ▶ {spoken || '—'}
           </button>
         </div>
+        {!r.hint && (
         <input
           value={reply}
           maxLength={300}
@@ -131,15 +140,16 @@ function RequestRow({ r, play, onDone }: { r: Request; play: (text: string) => v
           placeholder="Note to the restaurant (optional)"
           className="mt-1.5 w-full min-w-[200px] rounded-md border border-stone-300 px-2 py-1 text-[12px]"
         />
+        )}
         {error && <p className="mt-1 text-[12px] text-red-700">{error}</p>}
       </td>
       <td className="py-2.5 text-right">
         <div className="inline-flex flex-wrap justify-end gap-1.5 text-[12px]">
           <button type="button" disabled={busy || !spoken} onClick={() => decide('accept')} className="rounded-md bg-stone-900 px-2.5 py-1 text-white disabled:opacity-50">
-            {edited ? 'Accept with my edit' : 'Accept'}
+            {r.hint ? (edited ? 'Add for everyone, my edit' : 'Add for everyone') : edited ? 'Accept with my edit' : 'Accept'}
           </button>
           <button type="button" disabled={busy} onClick={() => decide('decline')} className="rounded-md border border-stone-300 bg-white px-2.5 py-1 text-red-700 hover:bg-red-50 disabled:opacity-50">
-            Decline
+            {r.hint ? 'Dismiss' : 'Decline'}
           </button>
         </div>
       </td>

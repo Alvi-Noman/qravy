@@ -14,6 +14,8 @@ import { useScope } from '../../context/ScopeContext';
 import { useSatisfies } from '../../hooks/useCapability'; // 👈 NEW import
 import { formatAvailability } from '../../utils/hours';
 import { useServicePeriods } from '../../hooks/useServicePeriods';
+import { SpeakerWaveIcon, StopIcon } from '@heroicons/react/24/outline';
+import { useSayIt } from '../menu-item-modal/ItemPronunciation';
 
 export default function MenuRow({
   item,
@@ -132,6 +134,7 @@ export default function MenuRow({
                 on={!!item.signature}
                 onToggle={onToggleSignature ? (next) => onToggleSignature(item.id, next) : undefined}
               />
+              <ListenButton name={item.name} />
             </div>
             {availabilityLabel && (
               <div className="mt-0.5 truncate text-xs text-amber-700" title={`Availability: ${availabilityLabel}`}>
@@ -374,6 +377,26 @@ function RowMenu({
  * Signature toggle: filled amber when on (always visible); a faint outline appears on row
  * hover / keyboard focus (always on touch screens) so the list stays calm.
  */
+/** ▶ how the AI waiter says this dish (this restaurant's voice and words) — fix it in the item's editor */
+function ListenButton({ name }: { name: string }) {
+  const [playing, play, stop] = useSayIt();
+  return (
+    <button
+      type="button"
+      onClick={(e) => {
+        e.stopPropagation();
+        if (playing) stop();
+        else void play(name);
+      }}
+      title="Listen to how the waiter says it"
+      aria-label={`Listen to how the waiter says ${name}`}
+      className="shrink-0 rounded p-0.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+    >
+      {playing ? <StopIcon className="h-4 w-4" /> : <SpeakerWaveIcon className="h-4 w-4" />}
+    </button>
+  );
+}
+
 function SignatureStar({ name, on, onToggle }: { name: string; on: boolean; onToggle?: (next: boolean) => void }) {
   const label = on ? `Remove ${name} from signature dishes` : `Mark ${name} as a signature dish`;
   if (!onToggle) {

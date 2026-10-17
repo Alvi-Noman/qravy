@@ -11,7 +11,7 @@ import type { ItemAvailabilityDoc } from '../models/ItemAvailability.js';
 import { DEFAULT_TIMEZONE, resolveWindows, tenantServicePeriods } from '../utils/availability.js';
 import { resolveBranchLocationId } from '../controllers/categoriesController.js';
 import { branchForUnnamed, publicBranches } from '../utils/branches.js';
-import { lexiconList } from './pronounceRoutes.js';
+import { lexiconList, withOwnWords } from './pronounceRoutes.js';
 
 const router: express.Router = express.Router();
 
@@ -83,8 +83,9 @@ function toPublicTenantItem(
     priceDigits: (tenant as any).priceDigits === 'bn' ? 'bn' : 'latin',
     // the restaurant's own words for the intro, thank-you and waiter-call messages (missing = the default)
     guestMessages: (tenant as any).guestMessages ?? {},
-    // the waiter's voice reads these words this way — Qravy's dictionary, the same for every restaurant
-    pronunciations: lexiconWords,
+    // the waiter's voice reads these words this way — Qravy's dictionary, with this restaurant's own words on top
+    // (Menu Items → how a dish sounds: applied at once, to this restaurant only)
+    pronunciations: withOwnWords(lexiconWords, (tenant as any).ownPronunciations),
     // the AI waiter: its name and voice
     waiter: {
       name: String((tenant as any).waiterName || '').trim() || 'Pixie',

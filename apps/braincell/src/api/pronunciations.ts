@@ -36,3 +36,20 @@ export const requestWord = async (word: string, sayAs: string, note?: string): P
 
 /** Take back a request that's still waiting. */
 export const withdrawRequest = async (id: string) => (await api.delete(`/api/v1/pronunciations/requests/${encodeURIComponent(id)}`)).data;
+
+/* ---- this restaurant's own words (Menu Items → how a dish sounds): applied at once, to its voice only ---- */
+
+export type OwnWord = { word: string; sayAs: string; spoken: string; updatedAt: string };
+
+export const listOwnWords = async (): Promise<OwnWord[]> => (await api.get('/api/v1/pronunciations/own')).data.items as OwnWord[];
+
+/** How this restaurant wants `word` said — its voice uses it right away. */
+export const setOwnWord = async (word: string, sayAs: string): Promise<OwnWord> =>
+  (await api.put('/api/v1/pronunciations/own', { word, sayAs, source: 'menu item' })).data.item as OwnWord;
+
+/** Back to the default reading. */
+export const resetOwnWord = async (word: string) => (await api.delete(`/api/v1/pronunciations/own/${encodeURIComponent(word)}`)).data;
+
+/** What this restaurant's voice is given for `text` (its own words over Qravy's dictionary). */
+export const voiceTextFor = async (text: string, signal?: AbortSignal): Promise<string> =>
+  String((await api.get('/api/v1/pronunciations/say', { params: { text }, signal })).data.spoken ?? text);
