@@ -1891,8 +1891,13 @@ def _kind_ids_in(transcript: str, index: MenuIndex) -> set:
     cat_words = set()
     for cat in {str(it.get("category") or "") for it in index.items}:
         cat_words |= (_name_tokens(cat) - _CAT_GENERIC) & words
-    ids = {index.item_id(it) for it in index.items
-           if cat_words & (_name_tokens(it.get("name")) | _name_tokens(it.get("category")))}
+    # a word several dish NAMES share is a kind too ("খিচুড়ি কী কী আছে?" → the 4 khichuris, though no category is
+    # called that) — not sizes, numbers or words like "special"
+    name_toks = [_name_tokens(it.get("name")) for it in index.items]
+    plain = _CAT_GENERIC | set(_SIZE_TOKENS.values()) | set(_BN_WORDS.values())
+    shared = {w for w in words - plain if not w.isdigit() and sum(w in t for t in name_toks) >= 2}
+    ids = {index.item_id(it) for it, toks in zip(index.items, name_toks)
+           if (cat_words & (toks | _name_tokens(it.get("category")))) or (shared & toks)}
     ids |= {index.item_id(i) for _, items in kind_items(transcript, index) for i in items}
     return ids
 
