@@ -33,6 +33,8 @@ export interface TenantDoc {
   /** the owner's picks: a guest asks for one of these words → the waiter shows these dishes, in this order */
   suggestRules?: Array<{ phrases: string[]; itemIds: string[]; on: boolean }>;
   pronunciations?: Array<{ word: string; sayAs: string; spoken: string }>;
+  /** this restaurant's own way of saying words (Menu Items): its voice only, over Qravy's dictionary (routes/pronounceRoutes.ts) */
+  ownPronunciations?: Array<{ word: string; sayAs: string; spoken: string; by: string; updatedAt: Date }>;
 
   /** IANA time zone used for all hours (default Asia/Dhaka) */
   timezone?: string;
