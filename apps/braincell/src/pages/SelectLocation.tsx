@@ -41,6 +41,21 @@ export default function SelectLocation() {
         const res = await api.get('/api/v1/locations');
         const items: Location[] = (res.data?.items || []).filter((l: any) => !l.disabled);
         if (!mounted) return;
+        // nothing to choose: a restaurant without branches → straight in; exactly one → this device is that branch's
+        if (items.length === 0) {
+          navigate('/dashboard', { replace: true });
+          return;
+        }
+        if (items.length === 1) {
+          const { os, browser } = detectClient();
+          try {
+            await registerDevice({ locationId: items[0].id, label: 'POS Device', os, browser });
+            navigate('/dashboard', { replace: true });
+            return;
+          } catch {
+            /* fall back to asking */
+          }
+        }
         setLocations(items);
         if (items.length === 1) setSelected(items[0].id);
       } catch (e) {

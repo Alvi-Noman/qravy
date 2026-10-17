@@ -22,11 +22,13 @@ export function authorize(required: string | string[], options?: { any?: boolean
 
     if (!user.capabilities) {
       const sessionType: SessionType = user.sessionType ?? (user.role ? 'member' : 'branch');
-      user.capabilities = computeCapabilities({
-        role: user.role,
-        sessionType,
-        viewAs: user.viewAs,
-      });
+      user.capabilities = (user as { central?: boolean }).central && !user.role
+        ? computeCapabilities({ sessionType: 'branch' }) // Restaurant Access: the restaurant's staff
+        : computeCapabilities({
+            role: user.role,
+            sessionType,
+            viewAs: user.viewAs,
+          });
     }
 
     if (!satisfies(user.capabilities, required, mode)) {

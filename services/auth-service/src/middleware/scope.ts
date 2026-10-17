@@ -15,6 +15,8 @@ type MutableUser = {
   capabilities?: string[];
   /** a Qravy support session's id */
   imp?: string;
+  /** in through Settings → Restaurant Access (the restaurant's staff login) */
+  central?: boolean;
 };
 
 /**
@@ -86,11 +88,13 @@ export async function applyScope(req: Request, res: Response, next: NextFunction
   user.capabilities =
     user.imp && !user.viewAs
       ? ['*']
-      : computeCapabilities({
-          role: user.role,
-          sessionType: effectiveType,
-          viewAs: user.viewAs,
-        });
+      : user.central && !user.role
+        ? computeCapabilities({ sessionType: 'branch' }) // Restaurant Access: the restaurant's staff — orders, calls, sold-out
+        : computeCapabilities({
+            role: user.role,
+            sessionType: effectiveType,
+            viewAs: user.viewAs,
+          });
 
   next();
 }

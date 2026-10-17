@@ -25,7 +25,10 @@ declare global {
   }
 }
 
-async function resolveTenantAndRole(userId: string, hintTenantId?: string) {
+/** The user's role in `hintTenantId` (a membership there); with `ownAsFallback`, else in their own restaurant. When a
+ * session names a restaurant, never fall back: someone in restaurant B through Restaurant Access who owns restaurant A
+ * was silently moved into A — as its owner — on every request. */
+async function resolveTenantAndRole(userId: string, hintTenantId?: string, ownAsFallback = true) {
   const db = client.db('authDB');
   const users = db.collection<UserDoc>('users');
 
@@ -42,7 +45,7 @@ async function resolveTenantAndRole(userId: string, hintTenantId?: string) {
   if (hintTenantId && ObjectId.isValid(hintTenantId)) {
     tryTenantIds.push(new ObjectId(hintTenantId));
   }
-  if (user?.tenantId) {
+  if (user?.tenantId && (ownAsFallback || !tryTenantIds.length)) {
     tryTenantIds.push(user.tenantId);
   }
 
@@ -166,13 +169,19 @@ export async function authenticateJWT(req: Request, res: Response, next: NextFun
     const headerTenantId = (req.header('x-tenant-id') || undefined) as string | undefined;
     const tokenTenantId = typeof payload.tenantId === 'string' ? payload.tenantId : undefined;
 
-    // Try to resolve via membership; if none, keep the tenantId from token/header (central email flow)
-    const { tenantId: resolvedTenantId, role: resolvedRole } = await resolveTenantAndRole(
-      id,
-      headerTenantId || tokenTenantId
-    );
+    // The restaurant: the token's (with the role from a membership THERE — none for a Restaurant Access session); a
+    // x-tenant-id header only where the user is a member (it was taken on trust); else their own restaurant
+    let resolvedTenantId: string | undefined;
+    let resolvedRole: MembershipDoc['role'] | undefined;
+    if (headerTenantId && headerTenantId !== tokenTenantId) {
+      const viaHeader = await resolveTenantAndRole(id, headerTenantId, false);
+      if (viaHeader.tenantId === headerTenantId) ({ tenantId: resolvedTenantId, role: resolvedRole } = viaHeader);
+    }
+    if (!resolvedTenantId) {
+      ({ tenantId: resolvedTenantId, role: resolvedRole } = await resolveTenantAndRole(id, tokenTenantId, !tokenTenantId));
+    }
 
-    const finalTenantId = resolvedTenantId || tokenTenantId || headerTenantId;
+    const finalTenantId = resolvedTenantId || tokenTenantId;
 
     // Role/sessionType from token should win (admins/owners set at login/refresh)
     const roleFromToken = payload.role;

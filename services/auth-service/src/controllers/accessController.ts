@@ -10,6 +10,8 @@ import type { DeviceDoc } from '../models/Device.js';
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
 import { generateRefreshToken, generateInviteToken } from '../utils/token.js';
+import { REFRESH_COOKIE_OPTS } from './authController.js';
+import { lockedBranch } from '../middleware/auth.js';
 import { sendAdminInviteEmail } from '../utils/email.js';
 
 let db: Db | null = null;
@@ -593,7 +595,9 @@ export const lookupDeviceByKey = async (req: Request, res: Response, next: NextF
     const deviceKey = cookieDeviceKey || queryDeviceKey;
 
     const email = (req.user?.email || '').toLowerCase();
-    if (!deviceKey) return void res.fail(400, 'deviceKey is required');
+    // no device key = this browser isn't one of a restaurant's devices — an answer, not an error (a 400 here once
+    // made the login page skip the person's restaurant access and offer "create a restaurant")
+    if (!deviceKey) return void res.ok({ found: false });
     if (!email) return void res.fail(401, 'Unauthorized');
 
     const d = await devices().findOne({ deviceKey });
@@ -636,14 +640,20 @@ export const selectTenant = async (req: Request, res: Response, next: NextFuncti
     const centralEmail = ((t as any)?.accessSettings?.centralEmail || '').toLowerCase();
     if (!centralEmail || centralEmail !== email) return void res.fail(403, 'Not authorized for this tenant');
 
-    const accessToken = jwt.sign({ id: userId, email, tenantId }, process.env.JWT_SECRET as string, {
-      expiresIn: '15m',
-    });
+    // like any login's token: this restaurant, and its branch when this device / person is set to one
+    const lock = await lockedBranch(req, tenantId, userId);
+    // `central`: in through Settings → Restaurant Access (the restaurant's staff login) — staff permissions, re-checked
+    // on every refresh so removing the email there takes effect
+    const accessToken = jwt.sign(
+      { id: userId, email, tenantId, central: true, sessionType: lock ? 'branch' : 'member', ...(lock ? { locationId: lock } : {}) },
+      process.env.JWT_SECRET as string,
+      { expiresIn: '15m' }
+    );
 
     const db = getDb();
     const users = db.collection('users');
 
-    const refreshTokenValue = generateRefreshToken({ id: userId, email, tenantId });
+    const refreshTokenValue = generateRefreshToken({ id: userId, email, tenantId, central: true });
     const tokenId = crypto.randomUUID();
     const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
     const tokenHash = hashToken(refreshTokenValue);
@@ -660,12 +670,10 @@ export const selectTenant = async (req: Request, res: Response, next: NextFuncti
 
     await users.updateOne({ _id: new ObjectId(userId) }, { $set: { refreshTokens: cleanedTokens } });
 
-    res.cookie('refreshToken', refreshTokenValue, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
-      maxAge: 30 * 24 * 60 * 60 * 1000,
-    });
+    // the same cookie as every login (path /api/v1/auth): it REPLACES the restaurant-less one from the passcode, so
+    // a reload / a refresh stays in this restaurant. (It used to land on /api/v1/access, where refresh never sees
+    // it — the next refresh dropped the person back to "create a restaurant".)
+    res.cookie('refreshToken', refreshTokenValue, REFRESH_COOKIE_OPTS);
 
     res.ok({ token: accessToken });
   } catch (err) {
