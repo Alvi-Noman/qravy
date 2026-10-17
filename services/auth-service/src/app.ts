@@ -12,6 +12,7 @@
  */
 import express, { type Application, type Request, type Response } from 'express';
 import rateLimit, { ValueDeterminingMiddleware } from 'express-rate-limit';
+import jwt from 'jsonwebtoken';
 import cookieParser from 'cookie-parser';
 import morgan from 'morgan';
 import cors from 'cors';
@@ -88,19 +89,33 @@ app.use(responseFormatter);
 
 /* ---------- Helpers for rate limiting ---------- */
 const isProd = process.env.NODE_ENV === 'production';
-const windowMs = Number(process.env.RATE_LIMIT_WINDOW_MS ?? 60_000);
+// (each limiter has its own window below — RATE_LIMIT_WINDOW_MS / RATE_LIMIT_MAX are no longer read)
 
 /**
- * Allow separate knobs (recommended):
- * - RATE_LIMIT_MAX_API  : mild limit for general API (default 300/window)
- * - RATE_LIMIT_MAX_AUTH : tight limit for risky auth endpoints (default 20/window)
- * Fallback to RATE_LIMIT_MAX then to sensible defaults.
+ * The API's limits — no longer RATE_LIMIT_MAX (the example env's 100 per 15 min was applied to the WHOLE API per IP:
+ * one dashboard used it up in minutes, an office's Wi-Fi locked everyone out, a busy restaurant's guests on its Wi-Fi
+ * would have lost the menu):
+ * - signed in: per USER, per minute (RATE_LIMIT_MAX_API_USER, default 600)
+ * - not signed in (the storefront's guests): per IP, per minute (RATE_LIMIT_MAX_API_IP, default 2000 — they share Wi-Fi)
+ * - login emails: per email address (RATE_LIMIT_MAX_AUTH, default 10 / 15 min) + per IP (RATE_LIMIT_MAX_EMAILS_IP, 200)
+ * (RATE_LIMIT_MAX_API sets both API limits — the tests use it.)
  */
-const MAX_API =
-  Number(process.env.RATE_LIMIT_MAX_API ?? process.env.RATE_LIMIT_MAX ?? 300);
+const MAX_API_USER = Number(process.env.RATE_LIMIT_MAX_API_USER ?? process.env.RATE_LIMIT_MAX_API ?? 600);
+const MAX_API_IP = Number(process.env.RATE_LIMIT_MAX_API_IP ?? process.env.RATE_LIMIT_MAX_API ?? 2000);
+const MAX_AUTH = Number(process.env.RATE_LIMIT_MAX_AUTH ?? 10);
+const MAX_EMAILS_IP = Number(process.env.RATE_LIMIT_MAX_EMAILS_IP ?? 200);
 
-const MAX_AUTH =
-  Number(process.env.RATE_LIMIT_MAX_AUTH ?? Math.min(Number(process.env.RATE_LIMIT_MAX ?? 100), 20));
+/** The signed-in user (a valid access token), for keying limits per person; null for guests. */
+function signedInUser(req: Request): string | null {
+  const h = req.headers.authorization;
+  if (!h || !h.startsWith('Bearer ') || !process.env.JWT_SECRET) return null;
+  try {
+    const p = jwt.verify(h.slice(7), process.env.JWT_SECRET) as { id?: unknown };
+    return typeof p?.id === 'string' ? p.id : null;
+  } catch {
+    return null;
+  }
+}
 
 /** Ensure we ALWAYS return a string for keying the limiter */
 function getClientIp(req: Request): string {
@@ -122,14 +137,18 @@ const skipCommon: ValueDeterminingMiddleware<boolean> = (req: Request, _res: Res
 
 /* ---------- Rate limits (production only) ---------- */
 
-/** Mild, general API limiter */
+/** The general API limiter: per signed-in user, else per IP — per minute */
 const apiLimiter = rateLimit({
-  windowMs,
-  max: MAX_API,
+  windowMs: 60_000,
+  max: (req: Request) => (signedInUser(req) ? MAX_API_USER : MAX_API_IP),
   standardHeaders: true,
   legacyHeaders: false,
   skip: skipCommon,
-  keyGenerator: (req: Request) => getClientIp(req),
+  keyGenerator: (req: Request) => {
+    const user = signedInUser(req);
+    return user ? `user:${user}` : `ip:${getClientIp(req)}`;
+  },
+  handler: (req: Request, res: Response) => tooMany('requests')(req, res),
 });
 
 /**
@@ -137,7 +156,7 @@ const apiLimiter = rateLimit({
  * guests often share its Wi-Fi IP, and tracking must never use up that IP's allowance for menus and orders.
  */
 const eventsLimiter = rateLimit({
-  windowMs,
+  windowMs: 60_000, // per minute (RATE_LIMIT_WINDOW_MS=15 min made it 3000 per 15 min for a whole restaurant's Wi-Fi)
   max: Number(process.env.RATE_LIMIT_MAX_EVENTS ?? 3000),
   standardHeaders: false,
   legacyHeaders: false,
@@ -163,9 +182,20 @@ const who = (req: Request) =>
  * the same Wi-Fi (and opening their links) locked the Cortex sign-in out for 15 minutes.
  */
 const sendLimiter = rateLimit({
-  windowMs,
+  windowMs: 15 * 60_000,
   max: MAX_AUTH,
   standardHeaders: true,
+  legacyHeaders: false,
+  skip: (req, res) => skipCommon(req, res) || req.method !== 'POST',
+  // per email address: one person retrying their own login never blocks their colleagues
+  keyGenerator: (req: Request) => `${getClientIp(req)}|${who(req)}`,
+  handler: tooMany('login emails to this address'),
+});
+// …and a looser cap per network (no flooding many addresses from one place)
+const sendLimiterIp = rateLimit({
+  windowMs: 15 * 60_000,
+  max: MAX_EMAILS_IP,
+  standardHeaders: false,
   legacyHeaders: false,
   skip: (req, res) => skipCommon(req, res) || req.method !== 'POST',
   keyGenerator: (req: Request) => getClientIp(req),
@@ -188,9 +218,9 @@ const failedAttempts = (what: string, max: number) =>
     handler: tooMany(what),
   });
 
-app.use('/api/v1/auth/login', sendLimiter);
-app.use('/api/v1/auth/signup', sendLimiter);
-app.use('/api/v1/auth/magic-link', sendLimiter);
+app.use('/api/v1/auth/login', sendLimiterIp, sendLimiter);
+app.use('/api/v1/auth/signup', sendLimiterIp, sendLimiter);
+app.use('/api/v1/auth/magic-link', sendLimiterIp, sendLimiter);
 app.use('/api/v1/auth/otp/verify', failedAttempts('wrong codes', Number(process.env.RATE_LIMIT_MAX_CODE_FAILS ?? 10)));
 // the company admin panel's sign-in
 app.use('/api/v1/cortex/login', failedAttempts('failed sign-in attempts', Number(process.env.RATE_LIMIT_MAX_CORTEX_FAILS ?? 10)));
