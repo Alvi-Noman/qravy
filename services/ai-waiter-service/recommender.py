@@ -21,7 +21,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from wait_time import asks_quickest, asks_time, clamp_prep
-from waiter_knowledge import MenuIndex, is_signature, item_hints, time_fit
+from waiter_knowledge import MenuIndex, is_dessert, is_side, is_signature, item_hints, kind_text, time_fit
 
 # ------------------------------------------------------------------ guest profile
 
@@ -313,8 +313,9 @@ def dish_facts(it: Dict[str, Any]) -> Dict[str, Any]:
     if "usually mixed chicken/prawn/beef" in contains or "mixed dishes" in contains:
         protein = protein or "mixed"
     # what KIND of dish it is comes from its own name + category; the description is an ingredient
-    # list ("Set Menu A-02: Thai Soup, …") and would make a set menu look like a soup
-    kind = " ".join(str(x or "") for x in (it.get("name"), it.get("category"))).lower()
+    # list ("Set Menu A-02: Thai Soup, …") and would make a set menu look like a soup. Bangla names count too
+    # (লাচ্ছি is a drink, ভুনা a main — kind_text adds the English kind words)
+    kind = kind_text(it)
     return {
         "contains": contains,
         "heat": h["heat"],
@@ -330,6 +331,8 @@ def dish_facts(it: Dict[str, Any]) -> Dict[str, Any]:
         "main": bool(re.search(r"selection|sizzl|set menu|choice of|curry|fish|biry?ani|kacchi|tehari|main|kebab|grill", kind))
         and not re.search(r"soup|salad|appeti", kind),
         "kid_friendly": bool(re.search(r"fry|fries|finger|nugget|corn soup|egg fried rice|sweet ?& ?sour|fried chicken|wings", kind)),
+        "side": is_side(it),
+        "dessert": is_dessert(it),
     }
 
 
@@ -519,6 +522,10 @@ def _score(it: Dict[str, Any], f: Dict[str, Any], prof: GuestProfile, kinds: Lis
         s -= 2.5  # plain rice / naan are sides — offered as a pairing, not as a recommendation
     elif f["rice"] and not f["complete_meal"] and re.search(r"\b(plain|steamed|polao|pulao|naan|roti)\b", f["text"]):
         s -= 2.5
+    if f["side"] and not f["complete_meal"]:
+        s -= 2.5  # a bhorta, a sauce, an add-on: goes with a meal, isn't one
+    if f["dessert"]:
+        s -= 1.5  # after the meal — offered then, not as "what should I eat?"
     # budget fit
     price = it.get("price")
     if prof.budget and isinstance(price, (int, float)):
@@ -599,7 +606,9 @@ def rank(
 
     # Maximal-marginal-relevance style diversification: vary category and protein
     picks: List[Pick] = []
-    pool = sorted(scored, key=lambda x: (-x[0].score, str(x[0].item.get("name"))))
+    # equally good dishes keep the menu's own order — never the alphabet (a Bangla menu once got five dishes starting with আ)
+    last = len(index.position)
+    pool = sorted(scored, key=lambda x: (-x[0].score, index.position.get(index.item_id(x[0].item), last)))
     used_cat: Dict[str, int] = {}
     used_protein: Dict[str, int] = {}
     while pool and len(picks) < limit:

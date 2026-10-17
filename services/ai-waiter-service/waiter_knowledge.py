@@ -26,6 +26,8 @@ class MenuIndex:
 
     def __init__(self, items: Iterable[Dict[str, Any]]):
         rows = [i for i in items if i and (i.get("id") or i.get("_id")) and i.get("name")]
+        # the menu's own order (as the restaurant added / imported it): breaks ties between equally good dishes
+        self.position: Dict[str, int] = {str(i.get("id") or i.get("_id")): n for n, i in enumerate(rows)}
         rows.sort(
             key=lambda i: (
                 str(i.get("category") or "~"),
@@ -250,6 +252,98 @@ def render_catalog(index: MenuIndex, desc_chars: int = 160) -> str:
     return "\n".join(out)
 
 
+# ------------------------------------------------------------------ what kind of dish (any language)
+
+# A Bangla (or Banglish) menu says লাচ্ছি, ভুনা, ভর্তা where the kind checks below look for "lassi", "curry", "side" —
+# so each dish's name + category gets the English kind words added. Keys: Bangla words (a short one must be the whole
+# word — চা is tea, চাটনি is not), or Latin patterns.
+_BN_KIND: Tuple[Tuple[Tuple[str, ...], str], ...] = (
+    (("পানীয়", "পানীয়", "ড্রিংক", "ড্রিংকস", "বেভারেজ"), "drink"),
+    (("লাচ্ছি", "লাস্সি", "লাসসি", "বোরহানি"), "lassi"),
+    (("জুস", "শরবত", "লেমোনেড", "মোজিতো", "মকটেল"), "juice"),
+    (("শেক", "মিল্কশেক", "স্মুদি"), "shake"),
+    (("চা",), "tea"),
+    (("কফি", "আমেরিকানো", "এসপ্রেসো", "ক্যাপুচিনো", "কাপুচিনো", "লাতে", "ল্যাতে", "ল্যাটে", "মোকা", "ফ্রাপে"), "coffee"),
+    (("ভাত",), "plain rice"),
+    (("পোলাও", "পোলাউ"), "polao rice"),
+    (("বিরিয়ানি", "বিরানি"), "biryani"),
+    (("কাচ্চি",), "kacchi biryani"),
+    (("তেহারি",), "tehari"),
+    (("খিচুড়ি", "খিচুড়ি"), "khichuri"),
+    (("নুডলস", "নুডুলস", "চাউমিন", "চাওমিন", "পাস্তা"), "noodle"),
+    (("ফ্রাইড রাইস",), "fried rice"),
+    (("রুটি", "নান", "পরোটা", "পরাটা"), "naan"),
+    (("স্যুপ", "সুপ"), "soup"),
+    (("সালাদ",), "salad"),
+    (("নাস্তা", "স্ন্যাকস", "স্ন্যাক্স", "পাকোড়া", "পাকোরা", "সিঙ্গারা", "সমুচা", "সামুচা", "চপ", "পুরি", "ফুচকা", "চটপটি",
+      "বড়া", "রোল", "ফ্রাই", "উইংস", "নাগেট", "মোমো"), "snack"),
+    (("কাবাব", "কাবাবের", "টিক্কা", "তন্দুরি", "গ্রিল", "চাপ", "রোস্ট", "শাশলিক"), "kebab grill"),
+    (("ভুনা", "রেজালা", "কোরমা", "দোপেয়াজা", "দোপিয়াজা", "কালিয়া", "ঝোল", "কারি", "তরকারি", "মাসালা", "মসলা", "ঝাল ফ্রাই",
+      "কালাভুনা", "মালাইকারি"), "curry main"),
+    (("মাছ", "মাছের", "ইলিশ", "রুই", "পাবদা", "চিংড়ি", "চিংড়ি", "কোরাল", "রূপচাঁদা", "ভেটকি", "শুটকি"), "fish"),
+    (("মাংস", "গোশত", "গোস্ত", "মুরগি", "মুরগির", "খাসি", "গরু"), "meat main"),
+    (("সিজলিং",), "sizzling"),
+    (("প্লাটার",), "platter"),
+    (("সেট মেনু", "সেট মেন্যু", "থালি", "কম্বো"), "set menu"),
+    (("বার্গার", "পিজ্জা", "পিৎজা", "স্যান্ডউইচ", "শর্মা", "শাওয়ারমা"), "main"),
+    (("ভর্তা", "ভাজি", "আচার", "চাটনি", "সস", "ডিপ", "অ্যাড অন", "এড অন", "এক্সট্রা"), "side"),
+    (("ডেজার্ট", "মিষ্টি", "পায়েস", "পায়েস", "ফিরনি", "জর্দা", "আইসক্রিম", "কুলফি", "পুডিং", "কেক", "ফালুদা"), "dessert"),
+    (("ডিম", "অমলেট", "হালিম"), "breakfast egg"),
+)
+_LATIN_KIND: Tuple[Tuple[str, str], ...] = (
+    (r"americano|espresso|cappuccino|latte|mocha|frapp|macchiato|\bcha\b|\bchai\b", "coffee tea drink"),
+    (r"lacc?hi|borhani|mojito|mocktail|smoothie|sharbat|shorbot", "lassi drink"),
+    (r"bhuna|rezala|korma|dopiaza|dopeyaja|kalia|jhol|malaikari|masala|tikka|tandoori|kabab|kebab|shashlik|roast", "curry main"),
+    (r"\bbhorta\b|\bvorta\b|\bbharta\b|\bbhaji\b|\bvaji\b|achar|chutney|\braita\b", "side"),
+    (r"\bfirni\b|payesh|\bjorda\b|kulfi|falooda|pudding|ice ?cream|brownie|\bcake\b|mishti", "dessert"),
+    (r"singara|samosa|somucha|\bpuri\b|fuchka|chotpoti|pakora|\bchop\b|\broll\b|momo|nugget|wings", "snack"),
+)
+_BN_WORD = re.compile(r"[ঀ-৿]+")
+
+
+def kind_text(it: Dict[str, Any]) -> str:
+    """name + category, lower-case, + the English kind words its Bangla/Banglish words mean."""
+    text = " ".join(str(x or "") for x in (it.get("name"), it.get("category"))).lower()
+    words = _BN_WORD.findall(text)
+    extra: List[str] = []
+    if words:
+        for keys, gloss in _BN_KIND:
+            for k in keys:
+                if " " in k:
+                    hit = k in text
+                elif len(k) <= 3:
+                    hit = k in words  # চা, নান, সস, সুপ: the whole word only (সুপার is not soup)
+                else:
+                    hit = any(w == k or w.startswith(k) for w in words)
+                if hit:
+                    extra.append(gloss)
+                    break
+    for pat, gloss in _LATIN_KIND:
+        if re.search(pat, text):
+            extra.append(gloss)
+    return f"{text} {' '.join(extra)}" if extra else text
+
+
+# a side / add-on / sauce: never the answer to "what should I eat?" ("Sides" at a biryani house, "Add On", ভর্তা)
+_SIDE = re.compile(r"\bside\b|\bsides\b|\badd[- ]?ons?\b|\bextras?\b|\bdips?\b|\bsauces?\b|condiment|toppings?")
+_DESSERT = re.compile(r"\bdesserts?\b|\bsweets\b|ice ?cream|pudding|\bcake\b|brownie|kulfi|\bfirni\b|payesh|falooda")
+
+
+def is_side(it: Dict[str, Any]) -> bool:
+    """A side or add-on: from the category ("Add On", "Sides", "Sauces") or a Bangla/Banglish side word in the name.
+    A dish merely cooked in a sauce ("Beef Oyster Sauce" under "Beef") is not one."""
+    cat = str(it.get("category") or "").lower()
+    if _SIDE.search(cat) or re.search(r"\bside\b", kind_text({"name": cat})):
+        return True
+    name_kind = kind_text({"name": it.get("name")})
+    return bool(re.search(r"\bside\b", name_kind)) and not re.search(r"\bmain\b|\bfish\b|kebab", name_kind)
+
+
+def is_dessert(it: Dict[str, Any]) -> bool:
+    """A dessert ("Firni", "Desserts", মিষ্টি). "Sweet & Sour Chicken" is not one."""
+    return bool(_DESSERT.search(kind_text(it)))
+
+
 # ------------------------------------------------------------------ time fit
 
 _HEAVY = re.compile(r"sizzl|whole .*(fish|snapper)|\bsnapper\b|platter|set menu|choice of \d|biry?ani|kacchi|tehari|feast|family")
@@ -287,7 +381,7 @@ def meal_kinds(period_names: Iterable[str], hour: Optional[int]) -> List[str]:
 def time_fit(it: Dict[str, Any], kinds: Iterable[str]) -> Tuple[bool, float]:
     """(suits this time?, preference score). Only clearly unsuitable dishes are excluded:
     heavy/sharing dishes at breakfast, a whole fish late at night."""
-    text = " ".join(str(x or "") for x in (it.get("name"), it.get("category"))).lower()
+    text = kind_text(it)
     tags = [str(t).lower() for t in it.get("tags") or []]
     kinds = list(kinds) or ["lunch"]
     heavy, drink, light = bool(_HEAVY.search(text)), bool(_DRINK.search(text)), bool(_LIGHT.search(text))
@@ -339,7 +433,10 @@ def recommendation_pool(
         fits, score = time_fit(it, kinds)
         if fits:
             suited.add(iid)
-            scored.append((score, str(it.get("name")), it))
+            # sides / add-ons and desserts go with a meal — not first in "what's good?"
+            score -= 2.5 * is_side(it) + 1.5 * is_dessert(it)
+            # equal scores keep the menu's own order, never the alphabet
+            scored.append((score, index.position.get(iid, len(index.position)), it))
         else:
             unsuited.add(iid)
     scored.sort(key=lambda x: (-x[0], x[1]))
