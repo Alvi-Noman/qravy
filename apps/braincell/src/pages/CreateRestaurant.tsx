@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { AnimatePresence, motion } from 'framer-motion';
 import { useAuthContext } from '../context/AuthContext';
 import { checkSubdomain, createTenant, SubdomainTakenError } from '../api/auth';
+import { enterWorkspace, findAccess, viaLabel, type Workspace } from '../features/auth/afterLogin';
 
 // Is the subdomain free? Checked while the owner types; taken → a soft alert with free ones close to it.
 type UrlCheck =
@@ -13,7 +14,46 @@ type UrlCheck =
 
 export default function CreateRestaurant() {
   const navigate = useNavigate();
-  const { user, loading } = useAuthContext();
+  const { user, loading, login, reloadUser } = useAuthContext();
+
+  // Before offering a new restaurant: is this person already in one? (Restaurant Access, a Team invite, an admin
+  // membership.) However they got here — the login, the email link, a session from before, a bookmark — one
+  // restaurant opens by itself; several are listed; only none shows the form. ('checking' → nothing shown yet.)
+  const [access, setAccess] = useState<'checking' | 'none' | Workspace[]>('checking');
+  const [opening, setOpening] = useState<string | null>(null);
+  const openWorkspace = async (tenantId: string) => {
+    if (!user) return;
+    setOpening(tenantId);
+    try {
+      const { token, next } = await enterWorkspace(tenantId);
+      await login(token, { ...user, tenantId, isOnboarded: true } as any);
+      await reloadUser();
+      navigate(next, { replace: true });
+    } catch {
+      setOpening(null);
+    }
+  };
+  useEffect(() => {
+    if (loading || !user || user.tenantId) return;
+    let live = true;
+    (async () => {
+      const found = await findAccess();
+      if (!live) return;
+      if (found.kind === 'device') {
+        await login(found.token, { ...user, tenantId: found.tenantId, isOnboarded: true } as any);
+        await reloadUser();
+        navigate('/dashboard', { replace: true });
+      } else if (found.kind === 'workspaces' && found.items.length === 1) {
+        await openWorkspace(found.items[0].id);
+      } else {
+        setAccess(found.kind === 'workspaces' ? found.items : 'none');
+      }
+    })();
+    return () => {
+      live = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, user?.id, user?.tenantId]);
 
   const [step, setStep] = useState(0);
   const [name, setName] = useState('');
@@ -151,6 +191,44 @@ export default function CreateRestaurant() {
   };
 
   const urlTaken = urlCheck.state === 'taken' && urlCheck.subdomain === restaurantUrl;
+
+  if (!user?.tenantId && (access === 'checking' || opening)) {
+    return (
+      <div className="min-h-screen w-full bg-[#fcfcfc] flex items-center justify-center font-inter text-sm text-[#5b5b5d]">
+        Opening your restaurant…
+      </div>
+    );
+  }
+  if (Array.isArray(access) && access.length) {
+    return (
+      <div className="min-h-screen w-full bg-[#fcfcfc] flex items-center justify-center px-4 font-inter">
+        <div className="w-full max-w-lg rounded-2xl border border-[#ececec] bg-white p-6 shadow">
+          <h1 className="text-center text-[18px] font-semibold text-slate-900">Choose a restaurant</h1>
+          <p className="mt-1 text-center text-[13px] text-slate-500">You've been given access to these.</p>
+          <div className="mt-5 space-y-3">
+            {access.map((ws) => (
+              <div key={ws.id} className="flex items-center justify-between rounded-lg border border-[#e5e5e5] p-4">
+                <div>
+                  <div className="text-[14px] font-medium text-slate-900">{ws.name}</div>
+                  <div className="text-[12px] text-slate-500">{viaLabel(ws)}</div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void openWorkspace(ws.id)}
+                  className="rounded-md border border-[#e2e2e2] px-3 py-1.5 text-[12px] hover:bg-slate-50"
+                >
+                  Open
+                </button>
+              </div>
+            ))}
+          </div>
+          <button type="button" onClick={() => setAccess('none')} className="mt-5 w-full text-center text-[13px] text-slate-500 underline">
+            Create my own restaurant instead
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen w-full bg-[#fcfcfc] flex flex-col font-inter">

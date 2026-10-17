@@ -8,7 +8,9 @@
 // with access to the create-restaurant page.
 import api from '../../api/auth';
 
-export type Workspace = { id: string; name: string };
+/** How they're in it: their own, a member (admin…), a Team invite waiting for them, Restaurant Access (staff login). */
+export type Via = 'own' | 'member' | 'invite' | 'access';
+export type Workspace = { id: string; name: string; via?: Via; role?: string | null };
 
 type DeviceLookup = { found: false } | { found: true; tenantId: string };
 
@@ -17,19 +19,32 @@ export type Access =
   | { kind: 'workspaces'; items: Workspace[] }
   | { kind: 'none' };
 
-/** A restaurant the email was given access to → a session in it (the token is scoped to that restaurant). */
-export async function enterWorkspace(tenantId: string): Promise<string> {
-  const sel = await api.post<{ token?: string }>('/api/v1/access/select-tenant', { tenantId }, { withCredentials: true });
+/** A restaurant they have access to → a session in it (an invite is accepted on the way). `next`: a Restaurant Access
+ * login is a restaurant device — it says which branch it's at; everyone else goes to the dashboard. */
+export async function enterWorkspace(tenantId: string): Promise<{ token: string; next: string }> {
+  const sel = await api.post<{ token?: string; via?: Via; branch?: string | null }>(
+    '/api/v1/access/select-tenant',
+    { tenantId },
+    { withCredentials: true }
+  );
   const token = sel.data?.token;
   if (!token) throw new Error('Could not open this restaurant');
-  return token;
+  return { token, next: sel.data?.via === 'access' && !sel.data?.branch ? '/access/select-location' : '/dashboard' };
+}
+
+/** "Admin", "Invitation", "Staff access" — under the restaurant's name in the list. */
+export function viaLabel(w: Workspace): string {
+  if (w.via === 'own') return 'Your restaurant';
+  if (w.via === 'invite') return 'Invitation — join as admin';
+  if (w.via === 'access') return 'Staff access';
+  return w.role ? w.role[0].toUpperCase() + w.role.slice(1) : 'Member';
 }
 
 export async function findAccess(): Promise<Access> {
   try {
     const { data } = await api.get<DeviceLookup>('/api/v1/access/devices/lookup', { withCredentials: true });
     if (data && data.found) {
-      return { kind: 'device', tenantId: data.tenantId, token: await enterWorkspace(data.tenantId) };
+      return { kind: 'device', tenantId: data.tenantId, token: (await enterWorkspace(data.tenantId)).token };
     }
   } catch {
     /* not one of a restaurant's devices — carry on */
