@@ -227,6 +227,10 @@ export interface TenantDTO {
     waiterVoice?: 'female' | 'male';
     /** The owner's own answers: when guests ask something like `question`, the waiter answers with `answer` */
     customAnswers?: Array<{ question: string; answer: string }>;
+    /** The owner's upsells: a guest orders one of these dishes / a dish of these categories → the waiter offers these */
+    upsellRules?: Array<{ whenItemIds: string[]; whenCategories: string[]; offerItemIds: string[]; on: boolean }>;
+    /** The owner's picks: a guest asks for one of these words → the waiter shows these dishes, in this order */
+    suggestRules?: Array<{ phrases: string[]; itemIds: string[]; on: boolean }>;
     /** IANA time zone for all hours (e.g. "Asia/Dhaka") */
     timezone?: string;
     /** Restaurant opening hours; empty = always open */

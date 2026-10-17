@@ -1523,7 +1523,7 @@ def fetch_restaurant_profile(tenant: Optional[str], branch: Optional[str] = None
             menu_db = _CLIENT[MENU_DB_NAME]
             t = menu_db["tenants"].find_one(
                 {"_id": tenant_oid},
-                {"name": 1, "restaurantInfo": 1, "menuNotes": 1, "waiterKnowledge": 1, "timezone": 1, "openingHours": 1, "servicePeriods": 1, "kitchen": 1, "waiterLanguage": 1, "waiterName": 1, "customAnswers": 1},
+                {"name": 1, "restaurantInfo": 1, "menuNotes": 1, "waiterKnowledge": 1, "timezone": 1, "openingHours": 1, "servicePeriods": 1, "kitchen": 1, "waiterLanguage": 1, "waiterName": 1, "customAnswers": 1, "upsellRules": 1, "suggestRules": 1},
             ) or {}
             info = t.get("restaurantInfo") or {}
             opening = t.get("openingHours") or []
@@ -1543,6 +1543,18 @@ def fetch_restaurant_profile(tenant: Optional[str], branch: Optional[str] = None
                         {"q": str(x.get("question") or "")[:200], "a": str(x.get("answer") or "")[:800]}
                         for x in (t.get("customAnswers") or [])[:50]
                         if isinstance(x, dict) and x.get("question") and x.get("answer")
+                    ],
+                    # the owner's say over offers and suggestions (Settings → Upsell & picks)
+                    "upsellRules": [
+                        {"whenItemIds": [str(i) for i in r.get("whenItemIds") or []],
+                         "whenCategories": [str(c) for c in r.get("whenCategories") or []],
+                         "offerItemIds": [str(i) for i in r.get("offerItemIds") or []], "on": r.get("on", True) is not False}
+                        for r in (t.get("upsellRules") or [])[:50] if isinstance(r, dict)
+                    ],
+                    "suggestRules": [
+                        {"phrases": [str(p) for p in r.get("phrases") or []][:10],
+                         "itemIds": [str(i) for i in r.get("itemIds") or []][:8], "on": r.get("on", True) is not False}
+                        for r in (t.get("suggestRules") or [])[:50] if isinstance(r, dict)
                     ],
                     "tz": t.get("timezone") or DEFAULT_TZ,
                     "periods": t.get("servicePeriods") if isinstance(t.get("servicePeriods"), list) else DEFAULT_PERIODS,

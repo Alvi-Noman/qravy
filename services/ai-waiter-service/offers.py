@@ -82,6 +82,8 @@ class Ctx:
     arm: Dict[str, str]
     meal_kinds: Iterable[str] = ()
     done_types: Iterable[str] = ()  # offered already this visit — never the same kind twice ("a drink?" … "a drink?")
+    # the owner's upsells (Settings → Upsell & picks): "a guest orders these → offer these" — they come first
+    owner_rules: List[Dict[str, Any]] = field(default_factory=list)
 
 
 def may_offer(reco: Any, moment: str, arm: Dict[str, str]) -> bool:
@@ -99,6 +101,11 @@ def plan(moment: str, c: Ctx) -> Optional[Offer]:
     """The one offer for this moment (or None): the biggest gap first."""
     if not c.rows:
         return None
+    # the owner's own rule beats the engine's pick (any dish the guest just ordered, or anything in the tray at the end)
+    own = _owner(moment, c)
+    if own:
+        own.arm = dict(c.arm)
+        return own
     if moment == "first_add":
         added_food = [o for o in c.added if o.get("op") == "add" and _is_food(c.index.by_id.get(str(o.get("itemId"))))]
         if not added_food:
@@ -227,6 +234,42 @@ def _say(c: Ctx, reason_bn: str, reason_en: str, short_bn: str, short_en: str) -
 
 
 # ------------------------------------------------------------------ the offers (C)
+
+def _owner(moment: str, c: Ctx) -> Optional[Offer]:
+    """The owner's rule: the guest ordered one of its dishes (or a dish of its categories) → offer its first dish
+    that can be added now (orderable, not in the tray, no required choice, not declined, no clash). Right after the
+    order: the dishes just added; at "that's all": anything in the tray. Each offered dish only once a visit."""
+    rules = [r for r in c.owner_rules or [] if isinstance(r, dict) and r.get("on", True) is not False]
+    if not rules:
+        return None
+    tray_ids = {str(r.get("itemId")) for r in c.rows}
+    if moment == "first_add":
+        trig = [c.index.by_id.get(str(o.get("itemId"))) for o in c.added if o.get("op") == "add"]
+    else:
+        trig = [c.index.by_id.get(str(r.get("itemId"))) for r in c.rows]
+    trig = [t for t in trig if t]
+    if not trig:
+        return None
+    done = set(c.done_types)
+    for rule in rules:
+        when_ids = {str(x) for x in rule.get("whenItemIds") or []}
+        cats = {str(x).strip().lower() for x in rule.get("whenCategories") or [] if str(x).strip()}
+        anchor = next((t for t in trig if c.index.item_id(t) in when_ids
+                       or str(t.get("category") or "").strip().lower() in cats), None)
+        if not anchor:
+            continue
+        for oid in [str(x) for x in rule.get("offerItemIds") or []]:
+            it = c.index.by_id.get(oid)
+            if (not it or oid in tray_ids or not c.orderable.get(oid, True) or not _simple(it)
+                    or oid in (c.profile.declined or []) or c.clash(it) or f"owner:{oid}" in done):
+                continue
+            dish, d, p = str(anchor.get("name") or ""), _label(it), _money(_price(it))
+            text = _say(c, f"{dish}-এর সাথে একটা {d} নেবেন? ({p})", f"Would you like a {d} with the {dish}? ({p})",
+                        f"{d} {p} — দেব?", f"{d} for {p}?")
+            return Offer(f"owner:{oid}", moment, text, [_add_op(it, c)], [oid], _price(it),
+                         card=_card(it, c, f"with your {dish}"))
+    return None
+
 
 def _combo_swap(moment: str, c: Ctx) -> Optional[Offer]:
     """A combo dish that IS what's in the tray, for less ("Chicken Burger" + "Fries" → "Chicken Burger Combo")."""

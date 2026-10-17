@@ -501,6 +501,29 @@ export const tenantUpdateSchema = z
       .array(z.object({ question: z.string().trim().min(2).max(200), answer: z.string().trim().min(1).max(800) }))
       .max(50)
       .optional(),
+    // the owner's say over the AI waiter's offers: "a guest orders these (dishes / categories) → offer these"
+    upsellRules: z
+      .array(
+        z.object({
+          whenItemIds: z.array(objectId).max(50).default([]),
+          whenCategories: z.array(z.string().trim().min(1).max(80)).max(20).default([]),
+          offerItemIds: z.array(objectId).min(1, 'Pick at least one dish to offer').max(5),
+          on: z.boolean().default(true),
+        })
+      )
+      .max(50)
+      .optional(),
+    // … and over its suggestions: "a guest asks for <words> → show these dishes" (in this order)
+    suggestRules: z
+      .array(
+        z.object({
+          phrases: z.array(z.string().trim().min(2).max(40)).min(1, 'Add a word guests say').max(10),
+          itemIds: z.array(objectId).min(1, 'Pick at least one dish to show').max(8),
+          on: z.boolean().default(true),
+        })
+      )
+      .max(50)
+      .optional(),
   })
   .superRefine((data, ctx) => {
     if (data.restaurantInfo) {
