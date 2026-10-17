@@ -173,6 +173,8 @@ router.get('/me', authenticateJWT, applyScope, async (req: Request, res: Respons
       type: isCentral ? 'central' : 'member',
       locationId,
     },
+    // Qravy support access: who, until when (the dashboard shows it on every screen)
+    ...((req.user as any)?.imp ? { support: { by: (req.user as any).impBy, until: (req.user as any).impUntil } } : {}),
   });
 });
 

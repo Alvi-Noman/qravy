@@ -7,8 +7,8 @@ const INVITE_TOKEN_SECRET = process.env.INVITE_TOKEN_SECRET || 'your_invite_secr
 // ———————————————————————————————————————————————————————————————
 // Refresh token helpers (existing)
 // ———————————————————————————————————————————————————————————————
-export function generateRefreshToken(payload: object) {
-  return jwt.sign(payload, REFRESH_TOKEN_SECRET, { expiresIn: '30d' });
+export function generateRefreshToken(payload: object, expiresInSeconds?: number) {
+  return jwt.sign(payload, REFRESH_TOKEN_SECRET, { expiresIn: expiresInSeconds ?? '30d' });
 }
 
 export function verifyRefreshToken(token: string) {

@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { SupportAccessCard } from '../../components/SupportBar';
 
 type Session = { id: string; device: string; ip: string; lastActive: string; current?: boolean };
 
@@ -27,6 +28,7 @@ export default function SettingsSecurity(): JSX.Element {
 
   return (
     <div className="grid gap-4">
+      <SupportAccessCard />
       <div className="rounded-xl border border-[#ececec] bg-white p-4 shadow-sm">
         <div className="text-[14px] font-semibold text-slate-900">Two‑Factor & SSO</div>
         <div className="mt-3 grid gap-3 sm:grid-cols-2">

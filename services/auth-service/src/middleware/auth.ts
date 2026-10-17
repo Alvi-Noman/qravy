@@ -1,3 +1,4 @@
+import { activeSupportSession, recordSupportAction, supportDenied } from '../services/supportSessions.js';
 import type { Request, Response, NextFunction } from 'express';
 import jwt, { JwtPayload } from 'jsonwebtoken';
 import { ObjectId } from 'mongodb';
@@ -122,6 +123,39 @@ export async function authenticateJWT(req: Request, res: Response, next: NextFun
     if (!id || !email) {
       logger.warn(`[AUTH] Missing id/email in token for ${req.method} ${req.originalUrl}`);
       res.status(401).json({ message: 'Invalid or expired token' });
+      return;
+    }
+
+    // Qravy support access: an admin of this restaurant, while the session is on — never the owner-only things
+    const imp = typeof (payload as { imp?: unknown }).imp === 'string' ? ((payload as { imp?: string }).imp as string) : null;
+    if (imp) {
+      const s = await activeSupportSession(imp);
+      if (!s) {
+        res.status(401).json({ message: 'The Qravy support session has ended', code: 'SUPPORT_ENDED' });
+        return;
+      }
+      const denied = supportDenied(req.method, req.originalUrl);
+      if (denied) {
+        res.status(403).json({ message: `Not available during Qravy support access (${denied}) — only the owner can do this.`, code: 'SUPPORT_DENIED' });
+        return;
+      }
+      req.user = {
+        ...(payload as any),
+        id,
+        email,
+        tenantId: s.tenantId.toHexString(),
+        role: 'admin',
+        sessionType: 'member',
+        locationId: undefined,
+        imp,
+        impBy: s.by,
+        impUntil: s.expiresAt.toISOString(),
+      };
+      // every change is logged (not "Exit" itself)
+      if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method.toUpperCase()) && !/\/auth\/support\/end\b/.test(req.originalUrl)) {
+        recordSupportAction(imp, req.method.toUpperCase(), req.originalUrl);
+      }
+      next();
       return;
     }
 
