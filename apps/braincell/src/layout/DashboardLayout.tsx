@@ -8,6 +8,7 @@ import { useAuthContext } from '../context/AuthContext';
 import TrialToast from '../components/billing/TrialToast';
 import PaywallModal from '../components/billing/PaywallModal';
 import PlanReminder from '../components/billing/PlanReminder';
+import { subscribeErrorText } from '../features/billing/subscribeError';
 import { useTrial } from '../hooks/useTrial';
 
 // NEW
@@ -285,6 +286,7 @@ export default function DashboardLayout(): JSX.Element {
             setPaywallOpen(false);
           } catch (e) {
             console.error('Subscribe failed', e);
+            window.alert(subscribeErrorText(e)); // (it failed silently)
           } finally {
             setSubscribing(false);
           }

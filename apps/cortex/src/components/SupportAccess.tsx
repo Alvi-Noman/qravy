@@ -56,8 +56,8 @@ export function OpenDashboardButton({ tenantId, name }: { tenantId: string; name
     <div className="w-full max-w-md rounded-lg border border-stone-200 bg-white p-3 text-[13px] shadow-sm">
       <div className="font-medium text-stone-900">Open {name}’s dashboard as an admin</div>
       <p className="mt-0.5 text-stone-500">
-        A 1-hour session, marked “Qravy support” on every screen. Everything is logged and the owner can see it. Team, billing and the owner’s own
-        sign-ins stay locked.
+        A 1-hour session, marked “Qravy support” on every screen. Everything is logged and the owner can see it. You can set up their plan and
+        payment; the team and the owner’s own sign-ins stay locked.
       </p>
       <input
         autoFocus
