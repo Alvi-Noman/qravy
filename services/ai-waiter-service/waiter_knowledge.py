@@ -674,7 +674,14 @@ def find_mentions(text: str, index: MenuIndex, limit: int = 4) -> List[Dict[str,
             if re.search(rf"(?<!\w){re.escape(key)}(?!\w)", t):
                 best = max(best, 100.0)
             elif len(key) >= 6:
-                best = max(best, float(fuzz.partial_ratio(key, t)))
+                score = float(fuzz.partial_ratio(key, t))
+                # a Bangla name: every one of its words must be (nearly) a word the guest said — letter-level
+                # likeness alone read "চিকেনের কি কি আছে?" as "চিকেন টিক্কা"
+                if score >= 90 and re.search(r"[ঀ-৿]", key):
+                    said_words = t.split()
+                    if not all(max((fuzz.ratio(w, s) for s in said_words), default=0) >= 75 for w in key.split()):
+                        score = 0.0
+                best = max(best, score)
         if best >= 90:
             scored.append((best, len(_norm(it.get("name"))), it))
     # a fuzzy hit that's just a near-twin of an exact hit ("Set Menu A-02" vs the "Set Menu A-01" actually

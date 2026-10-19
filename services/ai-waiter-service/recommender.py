@@ -163,6 +163,19 @@ def extract_prefs(text: str) -> GuestProfile:
             if re.search(pat, t):
                 p.allergies.append(name)
 
+    # "আমি বাদাম খাই না" / "no nuts please" / "চিংড়ি ছাড়া" — the classic allergens without the word "allergy" are
+    # treated as one (safety first: the waiter never recommends them, and says to tell the staff) — it once answered
+    # "বাদাম খাই না, কি খেতে পারি?" with a plain list of specials, Chocolate Brownie among them
+    if not p.allergies and _AVOID_CUE.search(t):
+        for pat, name in _ALLERGEN_WORDS:
+            if name not in ("nuts", "shellfish", "gluten", "sesame", "soy"):
+                continue
+            if name == "sesame":
+                pat = r"sesame|(?<![ঀ-৿])তিল(?![ঀ-৿])"  # (not the তিল of "তিলোত্তমা নান")
+            m = re.search(pat, t)
+            if m and _AVOID_CUE.search(t[max(0, m.start() - 30): m.end() + 25]):
+                p.allergies.append(name)
+
     # dislikes / restrictions ("I don't eat beef", "no mushrooms", "গরু খাই না", "beef chara")
     if _AVOID_CUE.search(t) and not p.allergies:
         for pat, name in _AVOID_WORDS:
