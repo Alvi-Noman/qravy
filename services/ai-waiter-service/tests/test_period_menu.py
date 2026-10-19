@@ -148,6 +148,35 @@ def test_the_real_evening_question():
     assert not re.search(r"[০-৯\d]:[০-৯\d]", out["replyText"])  # never "৫:০১"
 
 
+def test_dinner_at_a_rice_house_is_rice_first_then_the_kebabs():
+    # the owner set the kebabs / grills for Evening + Dinner; rice, fish and meat are all day → at dinner a Bengali
+    # waiter offers the rice meal first, the kebabs as the other choice (with naan / paratha)
+    house = [
+        {"id": "rice", "name": "সাদা ভাত", "price": 40, "category": "মাছে মাতাল বাঙালি", "categoryId": "c4"},
+        {"id": "rui", "name": "রুই মাছ", "price": 250, "category": "মাছে মাতাল বাঙালি", "categoryId": "c4"},
+        {"id": "ilish", "name": "সরষে ইলিশ", "price": 450, "category": "মাছে মাতাল বাঙালি", "categoryId": "c4"},
+        {"id": "murgi", "name": "দেশি মুরগির ঝোল", "price": 280, "category": CURRY, "categoryId": "c3"},
+        {"id": "beef", "name": "গরুর লাল ভুনা", "price": 300, "category": CURRY, "categoryId": "c3"},
+        {"id": "shik", "name": "বিফ শিক কাবাব", "price": 220, "category": SNACKS, "categoryId": "c1", "periods": ["evening", "dinner"]},
+        {"id": "tikka", "name": "চিকেন টিক্কা", "price": 200, "category": SNACKS, "categoryId": "c1", "periods": ["evening", "dinner"]},
+        {"id": "naan", "name": "গার্লিক নান", "price": 70, "category": SNACKS, "categoryId": "c1", "periods": ["evening", "dinner"]},
+        {"id": "porota", "name": "পরোটা", "price": 15, "category": SNACKS, "categoryId": "c1", "periods": ["evening", "dinner"]},
+    ]
+    periods = PERIODS + [{"id": "evening", "name": "Evening", "start": "17:01", "end": "22:00"}]
+    out, calls = run("রাতে কি আছে?", at="Tue 20:00", items=house, periods=periods)
+    assert not calls and out["replyText"] == (
+        "রাতে ভাত খেতে পারেন — ভাতের সাথে মাছের মধ্যে রুই মাছ আর সরষে ইলিশ আছে, মুরগির মধ্যে দেশি মুরগির ঝোল আছে, "
+        "মাংসের মধ্যে গরুর লাল ভুনা আছে। আবার চাইলে কাবাব-গ্রিলও খেতে পারেন — বিফ শিক কাবাব আর চিকেন টিক্কা, "
+        "নান কিংবা পরোটা দিয়ে। কোনটা দেব?"), out["replyText"]
+    assert {"rice", "rui", "shik"} <= cards(out)
+    # asked at lunch: when, then the same — and no cards (not orderable yet)
+    later, _ = run("রাতে কি কি পাওয়া যায়?", at="Tue 13:00", items=house, periods=periods)
+    assert later["replyText"].startswith("রাতে, মানে সন্ধ্যা ৬টা থেকে রাত ১১টা পর্যন্ত, ভাত খেতে পারেন") and not cards(later)
+    # the evening snack time before dinner is no rice meal ("বিকেলে" = 4:30, only the evening period)
+    snack, _ = run("বিকেলে কি আছে?", at="Tue 17:20", items=house, periods=periods)
+    assert "ভাত খেতে পারেন" not in snack["replyText"], snack["replyText"]
+
+
 def test_times_are_said_the_spoken_way():
     assert brain._bn_hours("17:01", "22:00") == "বিকেল ৫টা থেকে রাত ১০টা পর্যন্ত"
     assert brain._bn_hours("12:00", "15:00") == "দুপুর ১২টা থেকে বিকেল ৩টা পর্যন্ত"
