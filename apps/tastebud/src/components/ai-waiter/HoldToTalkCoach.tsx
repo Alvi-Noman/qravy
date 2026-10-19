@@ -2,7 +2,7 @@
 // First-run coachmark on the waiter screen: once the welcome has been spoken, everything except the orb dims and
 // blurs, the orb gets a pulsing halo, and a hand-drawn arrow curves from "Hold to talk" into it. The page keeps the
 // orb above this layer (so holding it works — and dismisses this), and the language switch above it too.
-// Shown once per phone (see holdCoachSeen); tapping anywhere or "Got it" dismisses it.
+// Shown once per phone (see holdCoachSeen); holding the orb, a phrase or a tap anywhere dismisses it.
 import { useCallback, useLayoutEffect, useState, type RefObject } from 'react';
 
 const SEEN_KEY = 'qravy:holdCoachSeen';
@@ -24,19 +24,24 @@ export function markHoldCoachSeen(): void {
 }
 
 const COPY = {
-  bn: { title: 'ট্যাপ করুন বা চেপে ধরে বলুন', sub: 'বৃত্তটায় ট্যাপ করে বলুন — অথবা চেপে ধরে বলুন, তারপর ছেড়ে দিন', gotIt: 'বুঝেছি' },
-  en: { title: 'Tap or hold to talk', sub: 'Tap the circle and speak — or hold it, speak, then let go', gotIt: 'Got it' },
+  bn: { title: 'ট্যাপ করুন বা চেপে ধরে বলুন', sub: 'বৃত্তটায় ট্যাপ করে বলুন — অথবা চেপে ধরে বলে ছেড়ে দিন', try: 'যেমন বলুন:' },
+  en: { title: 'Tap or hold to talk', sub: 'Tap the circle and speak — or hold it, speak, then let go', try: 'Try saying:' },
 } as const;
 
 export default function HoldToTalkCoach({
   ballRef,
   lang,
   onDismiss,
+  examples = [],
+  onSay,
 }: {
   /** The orb's ball — the halo and the arrow are drawn around it */
   ballRef: RefObject<HTMLElement | null>;
   lang: 'bn' | 'en';
   onDismiss: () => void;
+  /** what the guest could say ("এখন কী খেতে পারি?") — shown under the how, a tap says it (and closes this) */
+  examples?: string[];
+  onSay?: (text: string) => void;
 }) {
   const c = COPY[lang];
   const [orb, setOrb] = useState<{ x: number; y: number; r: number } | null>(null);
@@ -76,7 +81,8 @@ export default function HoldToTalkCoach({
       `}</style>
 
       {/* dim + blur everything behind (the orb sits above this layer) */}
-      <div className="htc-motion absolute inset-0 bg-black/60 backdrop-blur-[3px]" style={{ animation: 'htc-fade 350ms ease-out both' }} />
+      {/* (dark enough that the welcome text behind never shows through the label) */}
+      <div className="htc-motion absolute inset-0 bg-black/80 backdrop-blur-[6px]" style={{ animation: 'htc-fade 350ms ease-out both' }} />
 
       {/* the halo: a soft light behind the orb, and two rings breathing out of it */}
       <span
@@ -127,21 +133,33 @@ export default function HoldToTalkCoach({
 
       {/* the label */}
       <div
-        className="htc-motion absolute w-[280px] text-center text-white"
+        className="htc-motion absolute w-[330px] max-w-[calc(100vw-32px)] text-center text-white"
         style={{ left: x, top: sy + 14, transform: 'translateX(-50%)', animation: 'htc-up 400ms ease-out 450ms both' }}
       >
-        <div className="text-[24px] font-bold leading-tight tracking-[-0.01em]">{c.title}</div>
+        <div className="text-[22px] font-bold leading-tight tracking-[-0.01em]">{c.title}</div>
         <div className="mt-1.5 text-[14px] leading-snug text-white/80">{c.sub}</div>
-        <button
-          type="button"
-          onClick={(e) => {
-            e.stopPropagation();
-            onDismiss();
-          }}
-          className="mt-5 rounded-full bg-white px-5 py-2 text-[14px] font-semibold text-gray-900 active:scale-95"
-        >
-          {c.gotIt}
-        </button>
+        {/* how, made concrete: the things they could say — a tap says it */}
+        {examples.length > 0 && onSay && (
+          <div className="mt-4">
+            <div className="mb-2 text-[12px] font-medium uppercase tracking-[0.08em] text-white/60">{c.try}</div>
+            <div className="flex flex-wrap justify-center gap-2" role="group" aria-label={c.try}>
+              {examples.map((say) => (
+                <button
+                  key={say}
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onSay(say);
+                  }}
+                  className="whitespace-nowrap rounded-full border border-white/40 bg-white/15 px-3.5 py-2 text-[14px] font-medium text-white backdrop-blur-sm transition hover:bg-white/25 active:scale-95"
+                >
+                  “{say}”
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+        {/* no "Got it": the ways out are the ones it teaches — the orb, a phrase — or a tap anywhere */}
       </div>
     </div>
   );

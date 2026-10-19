@@ -163,6 +163,18 @@ export default function AiWaiterHome() {
     }) ?? welcomeText(selectedLang === 'en' ? 'en' : 'bn', tenantInfo?.name, waiterName);
   const { items: cartItems } = useCart();
 
+  // conversation starters — while the waiter's last line is still its welcome (a fresh visit, the guest hasn't said
+  // anything) and nothing else is on screen to answer
+  const lastLine = (aiFinal || '').trim();
+  const showStarters =
+    hasInteracted && !welcomePending && !aiLive && (!lastLine || lastLine === WELCOME_TEXT.trim()) &&
+    choices.length === 0 && !listening && uiMode !== 'thinking' && !showSuggestions && !showTray;
+  const starters =
+    selectedLang === 'en'
+      ? ['What can I eat now?', 'Show me the menu', 'I know what to order']
+      : ['এখন কী খেতে পারি?', 'মেনু দেখতে চাই', 'আমি জানি কী অর্ডার করব'];
+
+
   // ---- coming back to this page: never an old line or a leftover error — a short line for right now
   // (text only, never spoken). A real reply from the last minute stays.
   useEffect(() => {
@@ -231,7 +243,14 @@ export default function AiWaiterHome() {
 
   // phones: a smaller ball (~132 px vs ~211 px) about a third of the way down; the box keeps the ball at 44%
   const isMobile = useIsMobile();
-  const ORB_SIZE = isMobile ? 380 : 480;
+  // a short phone screen (Safari with its bars: ~630 px) — a smaller ball, so the welcome never runs into its pill
+  const [shortScreen, setShortScreen] = useState(() => typeof window !== 'undefined' && window.innerHeight < 720);
+  useEffect(() => {
+    const check = () => setShortScreen(window.innerHeight < 720);
+    window.addEventListener('resize', check);
+    return () => window.removeEventListener('resize', check);
+  }, []);
+  const ORB_SIZE = isMobile ? (shortScreen ? 300 : 380) : 480;
   const ORB_TOP = isMobile ? `calc(36dvh - ${ORB_SIZE / 2}px)` : '0px';
   const ORB_BALL = ORB_SIZE * 0.44;
   const HOLD_PILL_SPACE = 56; // room under the ball for the "Hold to Talk" pill (the text sits below it)
@@ -253,7 +272,7 @@ export default function AiWaiterHome() {
       window.removeEventListener('resize', place);
       ro?.disconnect();
     };
-  }, []);
+  }, [showStarters]); // (the starters and the tiles take turns there)
   const textWrapRef = useRef<HTMLDivElement | null>(null);
   const [textTop, setTextTop] = useState<number | null>(null);
 
@@ -298,7 +317,7 @@ export default function AiWaiterHome() {
       window.removeEventListener('resize', placeText);
       ro.disconnect();
     };
-  }, [visibleText, ORB_SIZE]);
+  }, [visibleText, ORB_SIZE, showStarters]);
 
   // "Hold to talk" coachmark: once per phone, right after the welcome has been spoken — unless the guest already
   // held the orb. It closes for good on "Got it" / a tap anywhere / the first hold (or a sheet opening).
@@ -461,10 +480,36 @@ export default function AiWaiterHome() {
         )}
       </div>
 
-      {/* Bottom controls */}
+      {/* Bottom: a fresh visit gets the conversation starters HERE, in place of the two tiles (the first two say what
+          the tiles do) — one thing to look at, not two rows fighting for the space; after the guest's first word the
+          tiles come back for the rest of the visit */}
       <div className="fixed bottom-0 left-0 right-0 flex items-end justify-center pb-10 md:pb-12">
-        {/* two equal columns, so a long label wraps inside its tile instead of overflowing (the orb is the mic) */}
-        <div ref={bottomBarRef} className="relative grid w-full max-w-[400px] grid-cols-2 items-stretch gap-3 px-4">
+        {showStarters ? (
+          // (not while the first-run tip shows them itself — they fade in here once it closes)
+          <div ref={bottomBarRef} key={coachOpen ? 'starters-wait' : 'starters'}
+               className={`w-full max-w-[560px] px-4 text-center ${coachOpen ? 'invisible' : 'qv-start-in'}`}>
+            <p className="mb-2.5 text-[12px] font-medium uppercase tracking-[0.08em] text-gray-400">
+              {selectedLang === 'en' ? 'Try saying' : 'বলে দেখুন'}
+            </p>
+            {/* one row, as tall as the tiles it replaces: on a phone it scrolls sideways (the cut-off chip shows there's more) */}
+            <div className="-mx-4 overflow-x-auto px-4 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+              <div className="mx-auto flex w-max gap-2" role="group" aria-label={selectedLang === 'en' ? 'Try saying' : 'বলে দেখুন'}>
+                {starters.map((say) => (
+                  <button
+                    key={say}
+                    type="button"
+                    onClick={() => void sendTyped(say)}
+                    className="shrink-0 whitespace-nowrap rounded-full border border-gray-200 bg-white px-4 py-3 text-[15px] font-medium text-gray-800 shadow-sm transition hover:border-rose-300 active:scale-[0.98]"
+                  >
+                    {say}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        ) : (
+        /* two equal columns, so a long label wraps inside its tile instead of overflowing (the orb is the mic) */
+        <div ref={bottomBarRef} key="tiles" className="relative grid w-full max-w-[400px] grid-cols-2 items-stretch gap-3 px-4">
           {/* Left: See menu */}
           <BottomTile
             label={selectedLang === 'en' ? 'See menu' : 'মেনু দেখুন'}
@@ -494,6 +539,7 @@ export default function AiWaiterHome() {
             }
           />
         </div>
+        )}
       </div>
 
       {/* the waiter's sheets (suggestions, the tray with its picker) + its dock — shared with the menu page */}
@@ -519,7 +565,17 @@ export default function AiWaiterHome() {
 
       {/* first visit, after the welcome: everything but the orb dims, an arrow points at it — "Hold to talk" */}
       {coachOpen && (
-        <HoldToTalkCoach ballRef={orbBallRef} lang={selectedLang === 'en' ? 'en' : 'bn'} onDismiss={dismissCoach} />
+        <HoldToTalkCoach
+          ballRef={orbBallRef}
+          lang={selectedLang === 'en' ? 'en' : 'bn'}
+          onDismiss={dismissCoach}
+          // how to talk AND what to say, in one step: a phrase tapped here is said (and the tip closes)
+          examples={starters}
+          onSay={(say) => {
+            dismissCoach();
+            void sendTyped(say);
+          }}
+        />
       )}
 
       {/* the start screen: logo + name, "Get started" (its tap unlocks the voice, then the welcome is spoken) */}
