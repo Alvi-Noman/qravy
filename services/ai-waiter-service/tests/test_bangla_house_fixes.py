@@ -224,6 +224,24 @@ def test_kebab_then_porota_or_naan_then_which_naan():
     assert added(porota) == [("porota", 1)], porota["replyText"]
 
 
+def test_a_whole_order_after_the_bread_question_keeps_every_dish():
+    # the real turn (2026-10-19 20:25): "…পরোটা নেবেন, নাকি নান?" → "আমাকে একটা আফগানি কাবাব দাও, সাথে দুটো পরোটা দাও."
+    # once added just 1 পরোটা (the bread answer took the whole sentence)
+    out, _ = run("বিফ শিক কাবাব দিন", {"intent": "order", "replyText": "বিফ শিক কাবাব যোগ করলাম। আর কিছু লাগবে?",
+                                       "cartOps": [{"op": "add", "item": ref("shik"), "quantity": 1}]})
+    assert out["replyText"].endswith("সাথে পরোটা নেবেন, নাকি নান?")
+    said = "আমাকে একটা রেশমি কাবাব দাও, সাথে দুটো পরোটা দাও."
+    both, calls = run(said, {"intent": "order", "replyText": "রেশমি কাবাব আর দুটো পরোটা যোগ করলাম।",
+                             "cartOps": [{"op": "add", "item": ref("reshmi"), "quantity": 1},
+                                         {"op": "add", "item": ref("porota"), "quantity": 2}]},
+                      cart=[line("shik")], state=state_of(out))
+    assert sorted(added(both)) == [("porota", 2), ("reshmi", 1)], (added(both), both["replyText"])
+    assert "offer_accepted" not in both["meta"]["guards"]
+    # a plain answer with a number still answers the question
+    two, calls = run("দুটো পরোটা দাও", cart=[line("shik")], state=state_of(out))
+    assert not calls and added(two) == [("porota", 2)], two["replyText"]
+
+
 def test_kebabs_suggested_ask_porota_or_naan():
     out, _ = run("কাবাব কি কি আছে?")
     assert "kind_list" in out["meta"]["guards"] and out["replyText"].endswith("কাবাবের সাথে পরোটা নেবেন, নাকি নান?"), \

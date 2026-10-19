@@ -4295,7 +4295,10 @@ async def _reply(
         said_yes = co.says_yes(transcript) or is_affirmative(transcript) or _YES_START.search(transcript)
         said_no = short_no or upsell_engine._NO.search(transcript) or is_decline(transcript)
         choices = [ch for ch in o_info.get("choices") or [] if isinstance(ch, dict) and ch.get("items")]
-        if choices and not said_no and not _SAYS_CONFIRM.search(transcript):
+        # (only a plain answer — "নান", "দুটো পরোটা": a whole order naming other dishes too ("একটা আফগানি কাবাব দাও,
+        # সাথে দুটো পরোটা দাও") goes the usual way, every dish and every number in it — it once added just 1 পরোটা)
+        plain_answer = not named_other or len(transcript.split()) <= 3  # ("মাছ", "গার্লিক নান দিন")
+        if choices and not said_no and plain_answer and not _SAYS_CONFIRM.search(transcript):
             # "সাথে পরোটা নেবেন, নাকি নান?" → "নান": one naan → added; several → "কোন নান দেব — …?"; "হ্যাঁ" → which?
             picked = next((ch for ch in choices if re.search(str(ch.get("match") or "(?!)"), transcript, re.I)), None)
             if picked:
