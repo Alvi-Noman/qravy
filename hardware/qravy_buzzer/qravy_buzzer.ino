@@ -6,14 +6,13 @@
   Requests page). Details: docs/buzzer-device.md
 
   Board:     any ESP32 (e.g. "ESP32 Dev Module"). An Arduino Uno / Nano has no Wi-Fi — it won't work.
-  Library:   ArduinoJson (v7, by Benoit Blanchon) — Sketch → Include Library → Manage Libraries…
+  Libraries: none to install — everything comes with the ESP32 board package.
   Wiring:    buzzer + → GPIO 25 (a big / loud buzzer: through a transistor), buzzer − → GND.
              The on-board LED (GPIO 2) blinks while it can't reach Qravy, and stays on when all is well.
 */
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
-#include <ArduinoJson.h>
 #include <esp_task_wdt.h>
 
 // ============================== YOUR SETTINGS ==============================
@@ -73,9 +72,14 @@ void checkQravy() {
   if (!http.begin(tls, apiLink)) return;
   int code = http.GET();
   if (code == 200) {
-    JsonDocument doc;
-    if (!deserializeJson(doc, http.getString())) {
-      ringing = doc["alert"] | false;
+    // the answer: {"alert": true, ...} — ring while "alert" is true
+    String body = http.getString();
+    int at = body.indexOf("\"alert\"");
+    if (at >= 0) {
+      int colon = body.indexOf(':', at);
+      String value = body.substring(colon + 1, colon + 8);
+      value.trim();
+      ringing = value.startsWith("true");
       lastGoodAnswer = millis();
     }
   } else {

@@ -51,7 +51,7 @@ GET https://admin.qravy.com/waiter/alert?tenant=<SUBDOMAIN>&device=1
 ## The sketch (Arduino IDE, ESP32)
 
 **[`hardware/qravy_buzzer/qravy_buzzer.ino`](../hardware/qravy_buzzer/qravy_buzzer.ino)** — open it in the Arduino IDE
-(keep it in its `qravy_buzzer` folder), board **ESP32 Dev Module**, library **ArduinoJson** (v7, by Benoit Blanchon).
+(keep it in its `qravy_buzzer` folder), board **ESP32 Dev Module** — no libraries to install.
 
 Change the lines under `YOUR SETTINGS`: the restaurant's **Wi-Fi name** and **password**, and the **API link**
 (`https://admin.qravy.com/waiter/alert?tenant=<SUBDOMAIN>&device=1`, plus `&branch=<branch>` for one branch).
