@@ -283,7 +283,9 @@ def _required_choice_contents(it: Dict[str, Any]) -> Tuple[set, bool]:
 _PACKAGED = re.compile(
     r"\b(mineral )?water\b|\bcoke\b|coca[- ]?cola|\bpepsi\b|7 ?up|seven ?up|\bsprite\b|\bfanta\b|mountain dew|\bmirinda\b|"
     r"\bsoda\b|club soda|tonic|red ?bull|energy drink|\bspeed\b|\bmojo\b|\bclemon\b|\brc cola\b|frutika|shezan|"
-    r"soft ?drinks?|canned|\bcan\b|bottled|\bbottle\b|diet coke|coke zero|pepsi max|\bdew\b",
+    r"soft ?drinks?|canned|\bcan\b|bottled|\bbottle\b|diet coke|coke zero|pepsi max|\bdew\b|"
+    # the same brands written in Bangla ("কোকা কোলা", "স্প্রাইট", "সেভেন আপ", "মিনারেল ওয়াটার")
+    r"(?<![ঀ-৿])(কোক|কোকা|পেপসি|স্প্রাইট|ফান্টা|মিরিন্ডা|মোজো|ক্লেমন|সেভেন ?আপ|মিনারেল)(?![ঀ-৿])",
     re.I,
 )
 _MADE_HERE = re.compile(r"fresh|lassi|borhani|shake|smoothie|mojito|lemonade|mocktail|coffee|latte|cappuccino|tea\b|"

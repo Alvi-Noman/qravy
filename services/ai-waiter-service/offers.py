@@ -64,6 +64,11 @@ class Offer:
     id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
     at: float = field(default_factory=time.time)
     card: Optional[Dict[str, Any]] = None  # the offered dish as a card in the tray (tap = yes)
+    # a question with named answers ("পরোটা নেবেন, নাকি নান?"): [{"label", "match" (regex), "items" (ids)}] — one
+    # dish → added; several → "কোন নান দেব — …?"
+    choices: Optional[List[Dict[str, Any]]] = None
+    # asked after a yes ("…সাথে ভাত দেব?" → "ভাতের সাথে মাছ নেবেন, নাকি মাংস?"): {"text", "choices"}
+    then: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -99,9 +104,22 @@ def may_offer(reco: Any, moment: str, arm: Dict[str, str]) -> bool:
     return True
 
 
-def plan(moment: str, c: Ctx) -> Optional[Offer]:
-    """The one offer for this moment (or None): the biggest gap first."""
+# what completes a meal (rice / bread with a curry or a kebab, rice with ডাল / ভর্তা) — asked whatever the timing arm:
+# a ডাল with nothing to eat it with isn't an upsell
+MEAL_COMPLETING = ("rice", "bread")
+
+
+def plan(moment: str, c: Ctx, only: Optional[Iterable[str]] = None) -> Optional[Offer]:
+    """The one offer for this moment (or None): the biggest gap first. `only`: just these offer types."""
     if not c.rows:
+        return None
+    if only is not None:
+        if moment != "first_add" or not any(o.get("op") == "add" for o in c.added):
+            return None
+        o = _rice(moment, c)
+        if o and o.type in set(only) and o.type not in set(c.done_types):
+            o.arm = dict(c.arm)
+            return o
         return None
     # the owner's own rule beats the engine's pick (any dish the guest just ordered, or anything in the tray at the end)
     own = _owner(moment, c)
@@ -400,10 +418,96 @@ def _more_food(moment: str, c: Ctx) -> Optional[Offer]:
     return Offer("more_food", moment, text, [op], [c.index.item_id(it)], unit * (party - have))
 
 
+_KEBAB = re.compile(r"kebab|kabab|tikka|shashlik|\bgrill\b|tandoori|\bboti\b|chaap|reshmi|seekh|\bshik\b|কাবাব|টিক্কা|গ্রিল|চাপ")
+_POROTA = re.compile(r"পরোটা|পারাটা|রুটি|\b(porota|paratha|parata|roti|ruti|chapati)\b", re.I)
+_NAAN = re.compile(r"(?<![ঀ-৿])নান(?![ঀ-৿])|\bnaa?n\b", re.I)
+
+
+def is_kebab(it: Dict[str, Any]) -> bool:
+    """A kebab / tikka / grill eaten with bread — not a "grilled chicken burger" or a kebab roll (held in the hand)
+    or a platter (a meal of its own)."""
+    r = dish_roles(it)
+    return bool(_KEBAB.search(kind_text({"name": it.get("name")}))) and not (r["handheld"] or r["drink"] or r["dessert"]
+                                                                               or r["rice"] or dish_facts(it)["complete_meal"])
+
+
+def _plain_first(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """The plain one first ("পরোটা" before "পাঁচ পরোটা"): the shortest name."""
+    return sorted(items, key=lambda it: len(bangla_meal.said_name(it)))
+
+
+def _sellable(c: Ctx, it: Dict[str, Any], tray_ids: set) -> bool:
+    iid = c.index.item_id(it)
+    return (iid not in tray_ids and c.orderable.get(iid, True) and _simple(it)
+            and iid not in (c.profile.declined or []) and not c.clash(it))
+
+
+def bread_offer(moment: str, c: Ctx, tray_ids: set) -> Optional[Offer]:
+    """Kebabs and no bread → "সাথে পরোটা নেবেন, নাকি নান?" (both on the menu), or the one bread there is."""
+    breads = [b for b in c.index.items if dish_roles(b)["rice"] and not bangla_meal.is_plain_rice(b)
+              and (_POROTA.search(str(b.get("name") or "")) or _NAAN.search(str(b.get("name") or "")))
+              and _sellable(c, b, tray_ids)]
+    porota = _plain_first([b for b in breads if _POROTA.search(str(b.get("name") or ""))])
+    naan = _plain_first([b for b in breads if _NAAN.search(str(b.get("name") or "")) and b not in porota])
+    if not (porota or naan):
+        return None
+    bn = c.lang == "bn"
+    if porota and naan:
+        text = "সাথে পরোটা নেবেন, নাকি নান?" if bn else "Would you like paratha or naan with it?"
+        choices = [{"label": "পরোটা" if bn else "paratha", "match": _POROTA.pattern, "items": [c.index.item_id(b) for b in porota]},
+                   {"label": "নান" if bn else "naan", "match": _NAAN.pattern, "items": [c.index.item_id(b) for b in naan]}]
+        return Offer("bread", moment, text, [], [x for ch in choices for x in ch["items"]], _price((porota + naan)[0]),
+                     choices=choices)
+    b = (porota or naan)[0]
+    name, p = bangla_meal.said_name(b), _money(_price(b))
+    text = _say(c, f"সাথে {name} দেব? ({p})", f"{name} with it? ({p})", f"সাথে {name} দেব? {p}", f"{name}? {p}")
+    return Offer("bread", moment, text, [_add_op(b, c)], [c.index.item_id(b)], _price(b), card=_card(b, c, "with your kebab"))
+
+
+def _rice_for_side(moment: str, c: Ctx, it: Dict[str, Any], tray_ids: set) -> Optional[Offer]:
+    """A Bengali rice place, ডাল / ভর্তা / ভাজি and no rice → "ডাল নিচ্ছেন বুঝেছি — সাথে ভাত দেব?", and after a yes
+    "ভাতের সাথে মাছ নেবেন, নাকি মাংস?" (from the curries that can be ordered now)."""
+    if bangla_meal.role(it) != "side" or not bangla_meal.is_bhaat_house(c.index.items):
+        return None
+    if any(bangla_meal.role(c.index.by_id[i]) in ("rice", "fish", "chicken", "meat") or dish_facts(c.index.by_id[i])["rice"]
+           for i in tray_ids if i in c.index.by_id):
+        return None  # rice or a curry is there already — the ডাল goes with it
+    rice = next((r for r in _plain_first([r for r in c.index.items if bangla_meal.is_plain_rice(r)])
+                 if _sellable(c, r, tray_ids)), None)
+    if not rice:
+        return None
+    d, p = bangla_meal.said_name(it), _money(_price(rice))
+    bn = c.lang == "bn"
+    text = (f"{d} নিচ্ছেন বুঝেছি — সাথে ভাত দেব? ({bangla_meal.said_name(rice)} {p})" if bn
+            else f"Got the {d} — shall I add rice with it? ({bangla_meal.said_name(rice)}, {p})")
+    ordered = [x for x in c.picks if c.orderable.get(c.index.item_id(x), True)] + list(c.index.items)
+    fish = [x for x in dict.fromkeys(map(c.index.item_id, ordered)) if bangla_meal.role(c.index.by_id[x]) == "fish"
+            and _sellable(c, c.index.by_id[x], tray_ids)]
+    meat = [x for x in dict.fromkeys(map(c.index.item_id, ordered)) if bangla_meal.role(c.index.by_id[x]) in ("meat", "chicken")
+            and _sellable(c, c.index.by_id[x], tray_ids)]
+    then = None
+    if fish and meat:
+        then = {"text": "ভাতের সাথে মাছ নেবেন, নাকি মাংস?" if bn else "With the rice — fish, or meat?",
+                "choices": [{"label": "মাছ" if bn else "fish", "match": r"মাছ|\bfish\b|\bmach\b", "items": fish},
+                            {"label": "মাংস" if bn else "meat",
+                             "match": r"মাংস|মাংশ|গরু|খাসি|মাটন|মুরগি|মুরগী|চিকেন|বিফ|হাঁস|\b(meat|beef|mutton|chicken)\b", "items": meat}]}
+    return Offer("rice", moment, text, [_add_op(rice, c)], [c.index.item_id(rice)], _price(rice),
+                 card=_card(rice, c, f"with your {d}"), then=then)
+
+
 def _rice(moment: str, c: Ctx) -> Optional[Offer]:
     """A curry with nothing to eat it with → the rice / bread that goes with it."""
     it, _row = _anchor(c)
     shape = _roles(c)
+    if it:
+        side = _rice_for_side(moment, c, it, shape["ids"])
+        if side:
+            return side
+        if is_kebab(it) and not any(
+                dish_roles(c.index.by_id[i])["rice"] for i in shape["ids"] if i in c.index.by_id):
+            bread = bread_offer(moment, c, shape["ids"])
+            if bread:
+                return bread
     if not it or not dish_roles(it)["needs_rice"] or any(
             dish_roles(c.index.by_id[i])["rice"] for i in shape["ids"] if i in c.index.by_id):
         return None
