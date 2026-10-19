@@ -505,6 +505,35 @@ router.get(
 
 /* ------------------------------------------------------------------ AI conversations across restaurants */
 
+/** A session ends after this much quiet (the same visit rule as the analytics and the restaurant's own page). */
+const VISIT_GAP_MS = 30 * 60_000;
+
+type Visit = {
+  _id: { tenant: string; session: string; location?: string | null };
+  first: Date;
+  last: Date;
+  turns: number;
+  unheard: number;
+  ordered: boolean;
+  preview: string | null;
+  table: string | null;
+  channel: string | null;
+  branch: string | null;
+  language: string | null;
+  matched: boolean;
+};
+
+/** A guest's turns (oldest first) → their visits, each up to 30 minutes of quiet. */
+function splitVisits(docs: Document[]): Document[][] {
+  const out: Document[][] = [];
+  for (const d of docs) {
+    const cur = out[out.length - 1];
+    if (cur && new Date(d.ts).getTime() - new Date(cur[cur.length - 1].ts).getTime() <= VISIT_GAP_MS) cur.push(d);
+    else out.push([d]);
+  }
+  return out;
+}
+
 router.get(
   '/cortex/conversations',
   wrap(async (req, res) => {
@@ -515,42 +544,50 @@ router.get(
     if (f.locationId) match.location = String(f.locationId);
     if (f.channel) match.channel = f.channel;
     const q = String(req.query.q || '').trim();
-    if (q) {
-      const rx = { $regex: q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' };
-      match.$or = [{ text: rx }, { 'ai.replyText': rx }];
-    }
-    const items = await transcriptsCol()
-      .aggregate(
-        [
-          { $match: match },
-          { $sort: { ts: 1 } },
-          {
-            $group: {
-              _id: { tenant: '$tenant', session: '$session', location: '$location' },
-              first: { $min: '$ts' },
-              last: { $max: '$ts' },
-              turns: { $sum: 1 },
-              unheard: { $sum: { $cond: [{ $eq: ['$status', 'unheard'] }, 1, 0] } },
-              ordered: { $max: { $cond: [{ $eq: ['$ai.meta.decision.orderPlaced', true] }, 1, 0] } },
-              preview: { $first: '$text' },
-              table: { $max: '$table' },
-              channel: { $max: '$channel' },
-              branch: { $max: '$branch' },
-              language: { $last: '$ai.meta.language' },
-            },
-          },
-          { $sort: { last: -1 } },
-          { $limit: Math.max(1, Math.min(500, Number(req.query.limit) || 100)) },
-        ],
-        { allowDiskUse: true }
-      )
+    const rx = q ? new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i') : null;
+    // one session = one visit: a guest's turns at one branch until 30 minutes of quiet (as the analytics count them)
+    // — not every talk that phone ever had; a search keeps the sessions with a matching turn
+    const docs = await transcriptsCol()
+      .find(match, {
+        projection: { tenant: 1, session: 1, location: 1, ts: 1, status: 1, text: 1, table: 1, channel: 1, branch: 1,
+                      'ai.meta.language': 1, 'ai.meta.decision.orderPlaced': 1, ...(rx ? { 'ai.replyText': 1 } : {}) },
+      })
+      .sort({ ts: 1 })
       .toArray();
+    const open = new Map<string, Visit>();
+    const visits: Visit[] = [];
+    for (const d of docs) {
+      const guest = `${d.tenant}|${d.session}|${d.location ?? ''}`;
+      const ts = new Date(d.ts);
+      let v = open.get(guest);
+      if (!v || ts.getTime() - v.last.getTime() > VISIT_GAP_MS) {
+        v = { _id: { tenant: d.tenant, session: d.session, location: d.location }, first: ts, last: ts, turns: 0,
+              unheard: 0, ordered: false, preview: null, table: null, channel: null, branch: null, language: null,
+              matched: !rx };
+        open.set(guest, v);
+        visits.push(v);
+      }
+      v.last = ts;
+      v.turns += 1;
+      if (d.status === 'unheard') v.unheard += 1;
+      else if (!v.preview && d.text) v.preview = String(d.text);
+      if (d.ai?.meta?.decision?.orderPlaced === true) v.ordered = true;
+      v.table = d.table ?? v.table;
+      v.channel = d.channel ?? v.channel;
+      v.branch = d.branch ?? v.branch;
+      v.language = d.ai?.meta?.language ?? v.language;
+      if (rx && (rx.test(String(d.text ?? '')) || rx.test(String(d.ai?.replyText ?? '')))) v.matched = true;
+    }
+    const items = visits
+      .filter((v) => v.matched)
+      .sort((a, b) => b.last.getTime() - a.last.getTime())
+      .slice(0, Math.max(1, Math.min(500, Number(req.query.limit) || 100)));
     const bySub = new Map([...lb.tenant.entries()].map(([id, t]) => [t.subdomain, { id, name: t.name }]));
     res.json({
       success: true,
       days: f.days,
       items: items.map((c) => ({
-        id: `${c._id.tenant}|${c._id.session}|${c._id.location ?? ''}`,
+        id: `${c._id.tenant}|${c._id.session}|${c._id.location ?? ''}|${c.first.getTime()}`,
         tenantId: bySub.get(c._id.tenant)?.id ?? null,
         restaurant: bySub.get(c._id.tenant)?.name ?? c._id.tenant,
         subdomain: c._id.tenant,
@@ -607,7 +644,8 @@ router.get(
         const t = bySub.get(String(d.tenant));
         return {
           id: String(d._id),
-          conversationId: `${d.tenant}|${d.session}|${d.location ?? ''}`,
+          // (the session — the visit — this turn is part of)
+          conversationId: `${d.tenant}|${d.session}|${d.location ?? ''}|@${new Date(d.ts).getTime()}`,
           tenantId: t?.id ?? null,
           restaurant: t?.name ?? String(d.tenant ?? '?'),
           subdomain: d.tenant ?? null,
@@ -623,12 +661,22 @@ router.get(
 router.get(
   '/cortex/conversations/:id',
   wrap(async (req, res) => {
-    const [tenant, session, location] = String(req.params.id).split('|');
+    const [tenant, session, location, start] = String(req.params.id).split('|');
     if (!tenant || !session) return res.status(404).json({ success: false, message: 'Not found' });
     const q: Document = { tenant, session };
     if (location) q.location = location;
-    const docs = await transcriptsCol().find(q).sort({ ts: 1 }).limit(1000).toArray();
-    res.json({ success: true, turns: docs.map(turnView) });
+    // "<start ms>": the visit that started then; "@<ms>" (a live turn's link): the visit with that turn in it;
+    // nothing (an older link): every turn
+    const from = /^\d+$/.test(start ?? '') ? Number(start) : null;
+    const around = /^@\d+$/.test(start ?? '') ? Number(start.slice(1)) : null;
+    if (from !== null) q.ts = { $gte: new Date(from - 1), $lte: new Date(from + 24 * 3600_000) };
+    if (around !== null) q.ts = { $gte: new Date(around - 24 * 3600_000), $lte: new Date(around + 24 * 3600_000) };
+    const docs = await transcriptsCol().find(q).sort({ ts: 1 }).limit(2000).toArray();
+    let turns: Document[] = docs;
+    if (from !== null) turns = splitVisits(docs)[0] ?? [];
+    if (around !== null)
+      turns = splitVisits(docs).find((v) => new Date(v[0].ts).getTime() <= around + 1 && new Date(v[v.length - 1].ts).getTime() >= around - 1) ?? [];
+    res.json({ success: true, turns: turns.slice(0, 1000).map(turnView) });
   })
 );
 

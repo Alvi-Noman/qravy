@@ -101,6 +101,22 @@ def test_turns_read_heard_understood_said():
     assert placed["understood"]["orderPlaced"] is True and placed["understood"]["orderNumber"] == 17
 
 
+def test_a_session_is_one_visit():
+    # the same phone at lunch (two turns) and again that evening (one turn): two sessions, the latest first
+    docs = [turn("g", 60 * 8, "মেনু দেখান", "এই যে মেনু", location="loc1"),
+            turn("g", 60 * 8 - 5, "ডাল দিন", "ডাল যোগ করলাম", location="loc1"),
+            turn("g", 30, "বিল দিন", "নিচে থেকে বেছে নিন", location="loc1")]
+    out = conversations.list_conversations(DB(docs), "burger-house", now=NOW)
+    assert [c["turns"] for c in out] == [1, 2] and out[0]["preview"] == "বিল দিন"
+    assert out[1]["minutes"] == 5.0 and out[0]["id"] != out[1]["id"] and out[0]["id"].startswith("g@loc1~")
+    lunch = conversations.conversation(DB(docs), "burger-house", out[1]["id"])
+    assert [t["heard"] for t in lunch] == ["মেনু দেখান", "ডাল দিন"]
+    evening = conversations.conversation(DB(docs), "burger-house", out[0]["id"])
+    assert [t["heard"] for t in evening] == ["বিল দিন"]
+    # a link from before visits (no "~start") still opens every turn of that guest
+    assert len(conversations.conversation(DB(docs), "burger-house", "g@loc1")) == 3
+
+
 def test_shows_the_menu_name_corrections():
     doc = turn("e", 1, "চিকেন বাগার", "Chicken Burger যোগ করলাম", text_norm="চিকেন Chicken Burger",
                norm_changes=[["বাগার", "Chicken Burger", 0.9], ["x", "x", 1.0]], engine="typed",
@@ -127,7 +143,9 @@ def test_the_same_phone_at_two_branches_is_two_conversations():
     ]
     names = {"locG": "Gulshan 2 (Main)", "locB": "Banani"}
     out = conversations.list_conversations(DB(docs), "burger-house", now=NOW, branch_names=names)
-    assert [(c["id"], c["branch"], c["turns"]) for c in out] == [("p@locB", "Banani", 2), ("p@locG", "Gulshan 2 (Main)", 1)]
+    # (ids: "<session>@<branch>~<visit start>")
+    assert [(c["id"].split("~")[0], c["branch"], c["turns"]) for c in out] == [("p@locB", "Banani", 2),
+                                                                              ("p@locG", "Gulshan 2 (Main)", 1)]
     assert all(c["session"] == "p" for c in out)
     # opening one shows only its branch's turns; a plain session (an older link) still shows them all
     assert [t["said"] for t in conversations.conversation(DB(docs), "burger-house", "p@locG")] == ["Yes."]

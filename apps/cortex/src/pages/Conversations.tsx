@@ -1,5 +1,6 @@
-// apps/cortex/src/pages/Conversations.tsx — every AI waiter conversation on the platform (one guest at one branch),
-// searchable by what was said; open one to read it turn by turn.
+// apps/cortex/src/pages/Conversations.tsx — every AI waiter session on the platform (one guest's visit at one branch,
+// until 30 minutes of quiet), the latest at the top under its day; searchable by what was said; open one to read it
+// turn by turn.
 import { useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
@@ -36,7 +37,7 @@ export default function Conversations() {
       <header className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-[22px] font-semibold text-stone-900">AI conversations</h1>
-          <p className="text-[13px] text-stone-500">What the AI waiter heard, understood and said — every restaurant, dine-in and online.</p>
+          <p className="text-[13px] text-stone-500">What the AI waiter heard, understood and said — every restaurant, dine-in and online. Each session is one guest's visit (a new one starts after 30 minutes of quiet), the latest at the top.</p>
         </div>
         <DaysSelect value={days} onChange={setDays} />
       </header>
@@ -72,8 +73,11 @@ export default function Conversations() {
           <Card>
             {list.data.items.length ? (
               <ul className="-m-5 divide-y divide-stone-100">
-                {list.data.items.map((c) => (
+                {list.data.items.map((c, i) => (
                   <li key={c.id}>
+                    {(i === 0 || dayOf(list.data.items[i - 1].lastAt) !== dayOf(c.lastAt)) && (
+                      <div className="bg-stone-50 px-4 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-stone-500">{dayLabel(c.lastAt)}</div>
+                    )}
                     <button
                       type="button"
                       onClick={() => set('open', c.id)}
@@ -84,7 +88,7 @@ export default function Conversations() {
                           {c.restaurant}
                           {c.branch ? ` · ${c.branch}` : ''} · {c.channel === 'dine-in' ? `table ${c.table ?? '?'}` : 'online'}
                         </span>
-                        <span className="shrink-0">{fmt.ago(c.lastAt)}</span>
+                        <span className="shrink-0 tabular-nums">{span(c)}</span>
                       </div>
                       <div className="mt-0.5 truncate text-[14px] text-stone-900">{c.preview || '…'}</div>
                       <div className="mt-1 flex flex-wrap gap-1">
@@ -98,20 +102,40 @@ export default function Conversations() {
                 ))}
               </ul>
             ) : (
-              <Empty>No conversations match.</Empty>
+              <Empty>No sessions match.</Empty>
             )}
           </Card>
           <Card
-            title={current ? `${current.restaurant}${current.branch ? ` · ${current.branch}` : ''}` : 'Conversation'}
-            subtitle={current ? `${current.channel === 'dine-in' ? `Table ${current.table ?? '?'}` : 'Online'} · ${fmt.time(current.startedAt)} · ${fmt.min(current.minutes)}` : 'Pick one on the left'}
+            title={current ? `${current.restaurant}${current.branch ? ` · ${current.branch}` : ''}` : 'Session'}
+            subtitle={current ? `${current.channel === 'dine-in' ? `Table ${current.table ?? '?'}` : 'Online'} · ${dayLabel(current.startedAt)}, ${span(current)} · ${current.turns} ${current.turns === 1 ? 'turn' : 'turns'}` : open ? '' : 'Pick one on the left'}
             right={current?.tenantId ? <Link to={`/restaurants/${current.tenantId}`} className="text-[13px] underline">restaurant</Link> : undefined}
           >
             {open ? detail.isLoading ? <Loading /> : detail.data ? <Turns turns={detail.data.turns} /> : detail.error ? <ErrorBox error={detail.error} /> : null : (
-              <p className="text-[13px] text-stone-500">Pick a conversation to read it turn by turn.</p>
+              <p className="text-[13px] text-stone-500">Pick a session to read it turn by turn.</p>
             )}
           </Card>
         </div>
       )}
     </div>
   );
+}
+
+const time = (iso: string) => new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+const dayOf = (iso: string) => new Date(iso).toDateString();
+
+/** "Today" / "Yesterday" / "Fri, Oct 17" — the list's day headings. */
+function dayLabel(iso: string): string {
+  const d = new Date(iso);
+  const yesterday = new Date();
+  yesterday.setDate(yesterday.getDate() - 1);
+  if (d.toDateString() === new Date().toDateString()) return 'Today';
+  if (d.toDateString() === yesterday.toDateString()) return 'Yesterday';
+  return d.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
+}
+
+/** A session's time: "2:14 PM" (one turn), "2:14 – 2:21 PM · 7 min". */
+function span(c: ConversationItem): string {
+  const a = time(c.startedAt);
+  const b = time(c.lastAt);
+  return a === b ? a : `${a} – ${b} · ${Math.max(1, Math.round(c.minutes))} min`;
 }

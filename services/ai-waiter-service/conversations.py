@@ -24,30 +24,41 @@ def _flags(doc: Dict[str, Any]) -> List[str]:
     return list(dict.fromkeys(out))
 
 
-def convo_id(session: Optional[str], location: Optional[str]) -> str:
-    """One conversation = one guest (session) at one branch: the same phone at Gulshan and then at Banani is two
-    conversations (as the waiter remembers them — server.convo_sid). No branch → just the session."""
+# one session = one visit: a guest's turns at one branch until 30 minutes of quiet (the same as Cortex's analytics) —
+# the same phone at lunch and again two days later is two sessions, not one conversation spread over days
+VISIT_GAP = timedelta(minutes=30)
+
+
+def convo_id(session: Optional[str], location: Optional[str], started: Optional[datetime] = None) -> str:
+    """"<session>@<branch>~<start, epoch ms>": one guest (session), at one branch, one visit. No branch → no "@…";
+    no start → every visit of that guest (links shared before sessions were split into visits)."""
     sid = session or "anon"
-    return f"{sid}@{location}" if location else sid
+    cid = f"{sid}@{location}" if location else sid
+    if isinstance(started, datetime):
+        cid += f"~{int((started - datetime(1970, 1, 1)).total_seconds() * 1000)}"
+    return cid
 
 
 def list_conversations(db: Any, tenant: str, *, days: int = 7, location: Optional[str] = None, limit: int = 100,
                        now: Optional[datetime] = None, branch_names: Optional[Dict[str, str]] = None) -> List[Dict[str, Any]]:
-    """The restaurant's conversations in the last `days`, newest first (one per guest session and branch).
+    """The restaurant's sessions in the last `days`, the latest first (one per visit of a guest at a branch).
     `branch_names`: location id → the branch's name, shown instead of the link's slug ("Gulshan 2 (Main)")."""
     since = (now or datetime.utcnow()) - timedelta(days=days)
     q: Dict[str, Any] = {"tenant": tenant, "ts": {"$gte": since}}
     if location:
         q["location"] = location
     convos: Dict[str, Dict[str, Any]] = {}
+    current: Dict[str, Dict[str, Any]] = {}  # guest@branch → their visit being read
     for d in db.transcripts.find(q, _LIST_FIELDS).sort("ts", 1):
         sid = d.get("session") or "anon"
-        cid = convo_id(sid, d.get("location"))
-        c = convos.get(cid)
-        if c is None:
-            c = convos[cid] = {"id": cid, "session": sid, "startedAt": d.get("ts"), "lastAt": d.get("ts"), "turns": 0,
-                               "unheard": 0, "flagged": 0, "ordered": False, "preview": "", "language": None,
-                               "table": None, "channel": None, "branch": None}
+        guest = convo_id(sid, d.get("location"))
+        c = current.get(guest)
+        ts = d.get("ts")
+        if c is None or not isinstance(ts, datetime) or not isinstance(c["lastAt"], datetime) or ts - c["lastAt"] > VISIT_GAP:
+            cid = convo_id(sid, d.get("location"), ts)
+            c = current[guest] = convos[cid] = {
+                "id": cid, "session": sid, "startedAt": ts, "lastAt": ts, "turns": 0, "unheard": 0, "flagged": 0,
+                "ordered": False, "preview": "", "language": None, "table": None, "channel": None, "branch": None}
         meta = (d.get("ai") or {}).get("meta") or {}
         c["turns"] += 1
         c["lastAt"] = d.get("ts")
@@ -66,7 +77,25 @@ def list_conversations(db: Any, tenant: str, *, days: int = 7, location: Optiona
         c["language"] = meta.get("language") or c["language"]
     out = sorted(convos.values(), key=lambda c: c["lastAt"] or datetime.min, reverse=True)[:limit]
     for c in out:
+        c["minutes"] = (round((c["lastAt"] - c["startedAt"]).total_seconds() / 60, 1)
+                        if isinstance(c["lastAt"], datetime) and isinstance(c["startedAt"], datetime) else 0)
         c["startedAt"], c["lastAt"] = _iso(c["startedAt"]), _iso(c["lastAt"])
+    return out
+
+
+def visit_turns(docs: List[Dict[str, Any]], started_ms: Optional[int]) -> List[Dict[str, Any]]:
+    """Of a guest's turns (oldest first), the visit that started at `started_ms` — up to 30 minutes of quiet."""
+    if started_ms is None:
+        return docs
+    start = datetime(1970, 1, 1) + timedelta(milliseconds=started_ms)
+    out: List[Dict[str, Any]] = []
+    for d in docs:
+        ts = d.get("ts")
+        if not isinstance(ts, datetime) or ts < start - timedelta(milliseconds=1):
+            continue
+        if out and isinstance(out[-1].get("ts"), datetime) and ts - out[-1]["ts"] > VISIT_GAP:
+            break
+        out.append(d)
     return out
 
 
@@ -113,11 +142,15 @@ def turn_view(doc: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def conversation(db: Any, tenant: str, session: str, limit: int = 500) -> List[Dict[str, Any]]:
-    """Every turn of one conversation at this restaurant, oldest first. `session` is a conversation id
-    ("<session>@<location>", one branch) or a plain session (all its turns — links shared before branches split them)."""
-    sid, _, loc = session.partition("@")
+    """Every turn of one session at this restaurant, in the order they were said. `session` is a session id
+    ("<session>@<location>~<start>": one visit at one branch) — or an older link without the visit (all its turns)."""
+    base, _, start = session.partition("~")
+    sid, _, loc = base.partition("@")
     q: Dict[str, Any] = {"tenant": tenant, "session": sid}
     if loc:
         q["location"] = loc
-    docs = db.transcripts.find(q).sort("ts", 1).limit(limit)
-    return [turn_view(d) for d in docs]
+    started = int(start) if start.isdigit() else None
+    if started is not None:
+        q["ts"] = {"$gte": datetime(1970, 1, 1) + timedelta(milliseconds=started - 1)}
+    docs = list(db.transcripts.find(q).sort("ts", 1).limit(limit))
+    return [turn_view(d) for d in visit_turns(docs, started)]
