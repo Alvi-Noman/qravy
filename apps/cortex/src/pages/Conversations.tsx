@@ -5,7 +5,7 @@ import { useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { api, type ConversationItem, type TenantRow, type Turn } from '../api';
-import { Badge, Card, DaysSelect, Empty, ErrorBox, Loading, fmt } from '../components/ui';
+import { Badge, Card, DaysSelect, Empty, ErrorBox, Loading } from '../components/ui';
 import Turns from '../components/Turns';
 
 export default function Conversations() {
