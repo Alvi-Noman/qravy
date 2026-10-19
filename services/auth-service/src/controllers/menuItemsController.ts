@@ -2568,19 +2568,31 @@ export async function bulkChangeCategory(req: Request, res: Response, next: Next
       .map((s) => new ObjectId(s));
     if (!oids.length) return res.fail(400, 'No valid ids');
 
-    const setOps: any = { updatedAt: new Date(), updatedBy: new ObjectId(userId) };
-    if (category !== undefined) setOps.category = typeof category === 'string' ? category : undefined;
-    if (categoryId !== undefined)
-      setOps.categoryId =
-        categoryId && ObjectId.isValid(categoryId) ? new ObjectId(categoryId) : undefined;
+    // the name and the id always move together (lists group dishes by categoryId); "" = no category
+    const tenantOid = new ObjectId(tenantId);
+    const categories = client.db('authDB').collection('categories');
+    let cat: any | null = null;
+    if (categoryId && ObjectId.isValid(categoryId)) {
+      cat = await categories.findOne({ _id: new ObjectId(categoryId), tenantId: tenantOid });
+    }
+    if (!cat && typeof category === 'string' && category.trim()) {
+      cat = await categories.findOne({ tenantId: tenantOid, name: category.trim() });
+    }
+    if (!cat && (categoryId || (category ?? '').trim())) return res.fail(404, 'Category not found');
 
-    const result = await col().updateMany(
-      { _id: { $in: oids }, tenantId: new ObjectId(tenantId) },
-      { $set: setOps }
-    );
+    const setOps: any = { updatedAt: new Date(), updatedBy: new ObjectId(userId) };
+    const update: any = { $set: setOps };
+    if (cat) {
+      setOps.category = cat.name;
+      setOps.categoryId = cat._id;
+    } else {
+      update.$unset = { category: '', categoryId: '' };
+    }
+
+    const result = await col().updateMany({ _id: { $in: oids }, tenantId: tenantOid }, update);
 
     const docs = await col()
-      .find({ _id: { $in: oids }, tenantId: new ObjectId(tenantId) })
+      .find({ _id: { $in: oids }, tenantId: tenantOid })
       .toArray();
 
     await auditLog({
