@@ -83,6 +83,18 @@ def test_a_quiet_device_shows_how_long_ago():
     assert server._device_seen_ago("t4", "gulshan") is not None  # a buzzer for every branch counts for each
 
 
+def test_only_a_buzzer_counts_as_a_buzzer():
+    """The dashboard asks on its own site (no Origin header on a same-site GET) — that's not a buzzer checking in."""
+    import asyncio
+    from aiohttp.test_utils import make_mocked_request
+
+    _fresh()
+    asyncio.run(server.handle_alert_get(make_mocked_request("GET", "/alert?tenant=t5")))
+    assert server._device_seen_ago("t5") is None
+    asyncio.run(server.handle_alert_get(make_mocked_request("GET", "/alert?tenant=t5&device=1")))
+    assert server._device_seen_ago("t5") is not None
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

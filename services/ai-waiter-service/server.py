@@ -529,8 +529,9 @@ async def handle_alert_get(request: web.Request) -> web.Response:
     tenant = q.get("tenant", "").strip()
     branch = q.get("branch", "")
     location = await asyncio.to_thread(_alert_location, tenant, branch) if tenant and branch else None
-    # a buzzer checking in: it says so (device=1), or it's not a browser (no Origin header — the dashboard sends one)
-    if tenant and (q.get("device") == "1" or not request.headers.get("Origin")):
+    # a buzzer checking in says so (device=1). Not "no Origin header": the dashboard calls this on its own site
+    # (admin.qravy.com/waiter), and a same-site GET has none — every open dashboard looked like a buzzer.
+    if tenant and q.get("device") == "1":
         _DEVICE_SEEN[(tenant, location or "")] = time.time()
     state = _alert_state(tenant, location) if tenant else {"active": False, "since": None, "last": None, "kind": None}
     return web.Response(
