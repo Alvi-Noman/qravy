@@ -309,6 +309,9 @@ def render_catalog(index: MenuIndex, desc_chars: int = 160) -> str:
 # word — চা is tea, চাটনি is not), or Latin patterns.
 _BN_KIND: Tuple[Tuple[Tuple[str, ...], str], ...] = (
     (("পানীয়", "পানীয়", "ড্রিংক", "ড্রিংকস", "বেভারেজ"), "drink"),
+    # soft-drink brands written in Bangla ("কোকা কোলা", "স্প্রাইট", "সেভেন আপ") — bottles, never "the cheapest food"
+    (("কোক", "কোকা", "কোলা", "পেপসি", "স্প্রাইট", "ফান্টা", "মিরিন্ডা", "মোজো", "ক্লেমন", "স্পিড"), "soft drink cola"),
+    (("সেভেন",), "soft drink 7up"),
     (("লাচ্ছি", "লাস্সি", "লাসসি", "বোরহানি"), "lassi"),
     (("জুস", "শরবত", "লেমোনেড", "মোজিতো", "মকটেল", "রস", "রসনা", "লাইম", "লেমন", "লেবুজা", "লেমনেড"), "juice"),
     (("শেক", "মিল্কশেক", "স্মুদি"), "shake"),
@@ -600,6 +603,10 @@ def render_restaurant(profile: Optional[Dict[str, Any]]) -> str:
         + (
             "AVAILABLE — service requests you record are sent to the staff screen."
             if p.get("staffAlerts")
+            # (a guest at a table has a bell on screen — the real way to call staff: never "there's no way")
+            else "you can't notify staff yourself, but the guest can: tell them to tap the bell button at the top left "
+                 "of their screen (উপরে বাঁ দিকের ঘণ্টার বোতাম) — it calls a waiter, the bill, water or a table clean."
+            if p.get("bell")
             else "NOT available — you cannot notify staff; ask the guest to wave to a staff member or ask at the counter."
         )
     )

@@ -175,7 +175,8 @@ def test_7_whats_on_the_afternoon_menu_suggests_for_the_afternoon():
 
 def test_8_a_vague_service_ask_asks_first_then_shows_the_options():
     out, calls = run("আপনারা কি কিছু সার্ভিস করবেন?")
-    assert not calls and out["replyText"] == "আপনি কি ওয়েটার ডাকতে চাচ্ছেন?", out["replyText"]
+    # (the table's bell, top-left, is how staff are called — the waiter points at it and offers to open it)
+    assert not calls and "উপরে বাঁ দিকে ঘণ্টার বোতাম" in out["replyText"] and "খুলে দেব" in out["replyText"], out["replyText"]
     assert out["meta"]["decision"].get("chooseOptions") and not out["meta"].get("serviceRequest")
     state = {"tray": out["meta"]["tray"], "reco": out["meta"]["reco"], "checkout": out["meta"].get("checkout") or {}}
     yes, calls = run("হ্যাঁ", state=state)
