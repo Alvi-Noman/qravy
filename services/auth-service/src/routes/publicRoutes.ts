@@ -462,10 +462,18 @@ router.get('/public/categories', async (req: Request, res: Response, next: NextF
     const catVisCol = client.db('authDB').collection('categoryVisibility');
 
     const filter: any = { tenantId: tenantOid };
-    const cats = await catsCol
-      .find(filter)
-      .project({ _id: 1, name: 1, scope: 1, channelScope: 1, locationId: 1 })
-      .toArray();
+    // in the owner's order (Menu layout → categories.sortOrder); never placed there → after them, A–Z
+    // (it had no order at all: the storefront showed them as created — alphabetically for an imported menu)
+    const cats = (
+      await catsCol
+        .find(filter)
+        .project({ _id: 1, name: 1, scope: 1, channelScope: 1, locationId: 1, sortOrder: 1 })
+        .toArray()
+    ).sort((a, b) => {
+      const ao = typeof a.sortOrder === 'number' ? a.sortOrder : Number.MAX_SAFE_INTEGER;
+      const bo = typeof b.sortOrder === 'number' ? b.sortOrder : Number.MAX_SAFE_INTEGER;
+      return ao - bo || String(a.name ?? '').localeCompare(String(b.name ?? ''));
+    });
 
     // Filter out location-scoped categories that don't match the requested branch
     const catsScoped = cats.filter((c) => {
