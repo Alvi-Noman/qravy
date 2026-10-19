@@ -3,6 +3,7 @@ category / dish hours: availability.served_periods), at any hour — not a guess
 Run: python -m pytest tests/test_period_menu.py"""
 import asyncio
 import json
+import re
 import os
 import sys
 
@@ -69,23 +70,27 @@ def test_afternoon_asked_at_lunch_lists_the_afternoon_menu_and_when():
     out, calls = run("বিকেলে কি আছে?", at="Mon 13:05")
     assert not calls and "period_menu" in out["meta"]["guards"], out["replyText"]
     t = out["replyText"]
-    assert t.startswith("বিকেলের নাস্তা পাওয়া যায় ৩টা থেকে ৬টা") and "বিফ শিক কাবাব" in t and "চিকেন টিক্কা" in t, t
-    assert "পরোটা" not in t and "গরুর লাল ভুনা" not in t, t
+    # as a waiter says it: the time in words, the kind of food, the main dishes first, the bread only "সাথে … আছে"
+    assert t == ("বিকেলে, মানে বিকেল ৩টা থেকে সন্ধ্যা ৬টা পর্যন্ত, আমাদের কাবাব-গ্রিল আইটেমগুলো পাওয়া যায়: বিফ শিক কাবাব "
+                 "আর চিকেন টিক্কা। সাথে নান-ও আছে। এখন এগুলো পাওয়া যাচ্ছে না — তবে এখন যা আছে তার থেকে কিছু দেব?"), t
+    assert "পরোটা" not in t and "গরুর লাল ভুনা" not in t and "ছ্যাঁকাখোর" not in t, t
     assert not cards(out)  # not orderable yet — nothing to tap
 
 
 def test_afternoon_asked_in_the_afternoon_shows_it_to_order():
     out, _ = run("বিকেলে কি পাওয়া যায়?", at="Mon 16:10")
-    assert "এখনই পাওয়া যাচ্ছে" in out["replyText"] and cards(out) == {"shik", "tikka", "naan"}, out["replyText"]
+    assert out["replyText"] == ("বিকেলে আমাদের কাবাব-গ্রিল আইটেমগুলো চলে: বিফ শিক কাবাব আর চিকেন টিক্কা। "
+                                "সাথে নান-ও আছে। কোনটা দেব?"), out["replyText"]
+    assert cards(out) == {"shik", "tikka", "naan"}
 
 
 def test_ekhon_reads_the_restaurants_clock():
     out, _ = run("এখন কি আছে?", at="Mon 16:10")
-    assert out["replyText"].startswith("এখন বিকেলের নাস্তার সময় (৩টা থেকে ৬টা)"), out["replyText"]
+    assert out["replyText"].startswith("এখন আমাদের কাবাব-গ্রিল আইটেমগুলো চলছে: বিফ শিক কাবাব"), out["replyText"]
     assert cards(out) == {"shik", "tikka", "naan"}
     morning, _ = run("এখন কি খাওয়া যাবে?", at="Tue 08:20")
-    assert morning["replyText"].startswith("এখন সকালের নাস্তার সময়") and cards(morning) == {"porota", "dal"}, \
-        morning["replyText"]
+    assert morning["replyText"].startswith("এখন আমাদের নাস্তার আইটেমগুলো চলছে: পরোটা আর ডাল"), morning["replyText"]
+    assert cards(morning) == {"porota", "dal"}
 
 
 def test_ekhon_as_speech_to_text_writes_it():
@@ -100,12 +105,14 @@ def test_ekhon_as_speech_to_text_writes_it():
 
 
 def test_every_time_word():
-    assert run("সকালে কি পাওয়া যায়?")[0]["replyText"].startswith("সকালের নাস্তা পাওয়া যায় ৭টা থেকে ১১টা")
+    assert run("সকালে কি পাওয়া যায়?")[0]["replyText"].startswith(
+        "সকালে, মানে সকাল ৭টা থেকে ১১টা পর্যন্ত, আমাদের নাস্তার আইটেমগুলো পাওয়া যায়: পরোটা আর ডাল।")
     out, _ = run("সন্ধ্যায় কি আছে?", at="Mon 13:05")  # 6:30 pm → the dinner period: nothing set for it
     assert "period_menu" not in out["meta"]["guards"]
     out, _ = run("রাতে কি আছে?", items=ITEMS + [{"id": "kacchi", "name": "মাটন কাচ্চি", "price": 400, "category": CURRY,
                                                    "categoryId": "c3", "periods": ["dinner"]}])
-    assert "মাটন কাচ্চি" in out["replyText"] and "রাতের খাবার" in out["replyText"], out["replyText"]
+    assert out["replyText"].startswith(
+        "রাতে, মানে সন্ধ্যা ৬টা থেকে রাত ১১টা পর্যন্ত, আমাদের কাচ্চি-পোলাও আইটেমগুলো পাওয়া যায়: মাটন কাচ্চি"), out["replyText"]
 
 
 def test_nothing_set_for_that_time_keeps_the_usual_answer():
@@ -125,3 +132,26 @@ def test_a_kind_at_a_time_and_not_a_question():
     for said in ("এখন অর্ডারটা কনফার্ম করুন", "বিকেলে আসবো", "এখন একটা চিকেন টিক্কা দিন"):
         out, _ = run(said, at="Mon 16:10")
         assert "period_menu" not in out["meta"]["guards"], (said, out["replyText"])
+
+
+def test_the_real_evening_question():
+    # the real turn: the owner's own "Evening" period, 17:01–22:00, asked after it — "এভেনিং পাওয়া যায় পাঁচ:এক থেকে দশটা
+    # — তখন আছে ছ্যাঁকাখোর (বিকালের নাস্তা): কাশ্মীরি নান, তিলোত্তমা পাতলা নান, … আর আরও সতেরোটা"
+    evening = PERIODS + [{"id": "evening", "name": "Evening", "start": "17:01", "end": "22:00"}]
+    items = [dict(it, periods=["evening"]) if it["categoryId"] == "c1" else it for it in ITEMS]
+    out, _ = run("সন্ধ্যায় কি কি পাওয়া যায় তোমাদের?", at="Tue 00:10", items=items, periods=evening)
+    assert out["replyText"] == (
+        "সন্ধ্যায়, মানে বিকেল ৫টা থেকে রাত ১০টা পর্যন্ত, আমাদের কাবাব-গ্রিল আইটেমগুলো পাওয়া যায়: বিফ শিক কাবাব আর "
+        "চিকেন টিক্কা। সাথে নান-ও আছে। এখন এগুলো পাওয়া যাচ্ছে না — তবে এখন যা আছে তার থেকে কিছু দেব?"), out["replyText"]
+    for bad in ("এভেনিং", "Evening", "আরও", "(বিকালের নাস্তা)"):
+        assert bad not in out["replyText"], bad
+    assert not re.search(r"[০-৯\d]:[০-৯\d]", out["replyText"])  # never "৫:০১"
+
+
+def test_times_are_said_the_spoken_way():
+    assert brain._bn_hours("17:01", "22:00") == "বিকেল ৫টা থেকে রাত ১০টা পর্যন্ত"
+    assert brain._bn_hours("12:00", "15:00") == "দুপুর ১২টা থেকে বিকেল ৩টা পর্যন্ত"
+    assert brain._bn_hours("12:00", "14:30") == "দুপুর ১২টা থেকে সাড়ে ২টা পর্যন্ত"
+    assert brain._bn_hours("07:00", "11:00") == "সকাল ৭টা থেকে ১১টা পর্যন্ত"
+    assert brain._bn_hours("15:30", "18:00") == "বিকেল সাড়ে ৩টা থেকে সন্ধ্যা ৬টা পর্যন্ত"
+    assert brain._bn_hours("22:00", "02:00") == "রাত ১০টা থেকে ২টা পর্যন্ত"
