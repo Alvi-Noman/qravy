@@ -3528,16 +3528,6 @@ _WHATS_SERVED = re.compile(
 _BN_DIG = str.maketrans("0123456789", "০১২৩৪৫৬৭৮৯")
 
 
-def _bn_clock(hhmm: str) -> str:
-    """"15:00" → "৩টা", "15:30" → "৩:৩০"."""
-    try:
-        h, m = (int(x) for x in str(hhmm).split(":")[:2])
-    except ValueError:
-        return str(hhmm)
-    h12 = h % 12 or 12
-    return (f"{h12}টা" if not m else f"{h12}:{m:02d}").translate(_BN_DIG)
-
-
 def _period_menu_reply(transcript: str, index: MenuIndex, orderable: Dict[str, bool], periods: List[Dict[str, Any]],
                        now_min: Optional[int], scope: set, lang: str
                        ) -> Optional[Tuple[str, List[Dict[str, Any]], str]]:
@@ -3567,48 +3557,156 @@ def _period_menu_reply(transcript: str, index: MenuIndex, orderable: Dict[str, b
         return None  # nothing set for that time → the usual answer
     on_now = now_min is not None and bool(target & set(periods_at(now_min, rules)))
     items.sort(key=lambda it: index.position.get(index.item_id(it), 1 << 20))
-    by_cat: Dict[str, List[str]] = {}
-    for it in items:
-        by_cat.setdefault(str(it.get("category") or ""), [])
-        name = bangla_meal.said_name(it)
-        if name not in by_cat[str(it.get("category") or "")]:
-            by_cat[str(it.get("category") or "")].append(name)
-    p = next(p for p in periods if str(p.get("id")) in target)
+    # (two periods running then — the owner's "Evening" and the default "Dinner": the one these dishes are set to)
+    p = max((p for p in periods if str(p.get("id")) in target),
+            key=lambda p: sum(str(p.get("id")) in (it.get("periods") or []) for it in items))
     bn = lang == "bn"
-    parts = []
-    for cat, names in list(by_cat.items())[:3]:
-        more = len(names) - 4
-        shown = ", ".join(names[:4]) + ((f" আর আরও {str(more).translate(_BN_DIG)}টা" if bn else f" and {more} more") if more > 0 else "")
-        parts.append(f"{cat}: {shown}" if cat else shown)
-    listed = "; ".join(parts)
-    hours_bn = f"{_bn_clock(p.get('start'))} থেকে {_bn_clock(p.get('end'))}"
-    hours_en = f"{_fmt_hhmm(p.get('start'))}–{_fmt_hhmm(p.get('end'))}"
-    pname = _period_name_bn(p) if bn else str(p.get("name") or "")
+    # as a waiter says it: the main dishes first (star-marked first), bread / drinks / sweets only as "সাথে … আছে";
+    # the kind of food, not the category's full name; never "and 17 more" — the cards show them all
+    if on_now or label == "এখন":
+        # it's on: only what can be ordered now (not the Friday-only kacchi on a Tuesday)
+        items = [it for it in items if orderable.get(index.item_id(it), True)] or items
+    mains = [it for it in items if _period_role(it) == "main"]
+    top = _top_kinds(mains)  # the kebabs first after "কাবাব-গ্রিল…", then the star-marked, then menu order
+    mains.sort(key=lambda it: (top.index(_kind_of(it)) if _kind_of(it) in top else len(top), not is_signature(it)))
+    rest = [it for it in items if _period_role(it) != "main"]
+    lead = mains or rest
+    names = list(dict.fromkeys(bangla_meal.said_name(it) for it in lead))[:4]
+    with_it = _with_phrase(rest, bn) if mains else ""
+    kinds = _kinds_phrase(lead, bn)
+    hours = _bn_hours(p.get("start"), p.get("end")) if bn else f"{_fmt_hhmm(p.get('start'))} to {_fmt_hhmm(p.get('end'))}"
+    open_now = any(orderable.get(index.item_id(it), True) for it in index.items)
     if bn:
+        dishes = _bn_join(names)
+        extra = f" সাথে {with_it}-ও আছে।" if with_it else ""
         if label == "এখন":
-            text = f"এখন {upsell_engine.of_bn(pname)} সময় ({hours_bn}) — আছে {listed}। কোনটা দেব?"
+            text = f"এখন আমাদের {kinds} চলছে: {dishes}।{extra} কোনটা দেব?"
         elif on_now:
-            text = f"{label} ({hours_bn}) আছে {listed}। এখনই পাওয়া যাচ্ছে — কোনটা দেব?"
+            text = f"{label} আমাদের {kinds} চলে: {dishes}।{extra} কোনটা দেব?"
         else:
-            text = f"{pname} পাওয়া যায় {hours_bn} — তখন আছে {listed}। তখন এসে অর্ডার করতে পারবেন।"
+            text = f"{label}, মানে {hours}, আমাদের {kinds} পাওয়া যায়: {dishes}।{extra}"
+            text += (" এখন এগুলো পাওয়া যাচ্ছে না — তবে এখন যা আছে তার থেকে কিছু দেব?" if open_now
+                     else " এখন অবশ্য আমরা বন্ধ — তখন এলে পাবেন।")
     else:
-        when = "Right now" if label == "এখন" else f"For {p.get('name')}"
-        text = (f"{when} ({hours_en}) we have {listed}." + (" Which would you like?" if on_now or label == "এখন"
-                                                           else " It's served then — you can order it at that time."))
-    rows = [_suggestion_row(it) for it in items[:12] if orderable.get(index.item_id(it), True)] if on_now or label == "এখন" else []
+        dishes = ", ".join(names[:-1]) + (" and " if len(names) > 1 else "") + names[-1]
+        extra = f" We also have {with_it}." if with_it else ""
+        if label == "এখন" or on_now:
+            text = f"{'Right now' if label == 'এখন' else 'At that time'} we have {kinds}: {dishes}.{extra} Which would you like?"
+        else:
+            text = (f"From {hours} we serve {kinds}: {dishes}.{extra}"
+                    + (" They're not on right now — shall I get you something that is?" if open_now
+                       else " We're closed right now — you'll find them then."))
+    rows = [_suggestion_row(it) for it in (mains + rest)[:12] if orderable.get(index.item_id(it), True)]         if on_now or label == "এখন" else []
     return text, rows, "period_menu"
 
 
-# the default periods' names as a Bangla waiter says them (a name the owner wrote stays as written)
-_PERIOD_BN = {"breakfast": ("Breakfast", "সকালের নাস্তা"), "lunch": ("Lunch", "দুপুরের খাবার"),
-              "afternoon": ("Afternoon", "বিকেলের নাস্তা"), "dinner": ("Dinner", "রাতের খাবার"),
-              "late-night": ("Late night", "রাতের শেষ মেনু")}
+def _period_role(it: Dict[str, Any]) -> str:
+    """"main" (what a waiter names: kebabs, curries, rice dishes, snacks), or what's said only as "সাথে … আছে":
+    "bread", "drink", "sweet", "side"."""
+    r = upsell_engine.dish_roles(it)
+    if r["drink"] or dish_facts(it)["drink"] or is_packaged(it):
+        return "drink"
+    if r["dessert"]:
+        return "sweet"
+    if re.search(r"\bnaan\b|paratha|porota|roti", kind_text({"name": it.get("name")})):
+        return "bread"
+    if bangla_meal.role(it) == "side" or bangla_meal.is_plain_rice(it):
+        return "side"
+    return "main"
 
 
-def _period_name_bn(p: Dict[str, Any]) -> str:
-    en, bn_name = _PERIOD_BN.get(str(p.get("id")), (None, None))
-    name = str(p.get("name") or "").strip()
-    return bn_name if bn_name and (not name or name.lower() == en.lower()) else (name or "এই সময়ের মেনু")
+def _with_phrase(items: List[Dict[str, Any]], bn: bool) -> str:
+    """"নান-পরোটা, ড্রিংকস আর মিষ্টি" — the rest, by kind."""
+    roles = {_period_role(it) for it in items}
+    names = " ".join(str(it.get("name") or "") for it in items if _period_role(it) == "bread")
+    out = []
+    if "bread" in roles:
+        naan, porota = bool(re.search(r"নান|naan|\bnan\b", names, re.I)), bool(re.search(r"পরোটা|রুটি|paratha|roti", names, re.I))
+        out.append(("নান-পরোটা" if naan and porota else "নান" if naan else "পরোটা-রুটি") if bn
+                   else ("naan and paratha" if naan and porota else "naan" if naan else "paratha"))
+    if "side" in roles:
+        out.append("ভর্তা-ভাজি" if bn else "sides")
+    if "drink" in roles:
+        out.append("ড্রিংকস" if bn else "drinks")
+    if "sweet" in roles:
+        out.append("মিষ্টি" if bn else "desserts")
+    return _bn_join(out) if bn else ", ".join(out)
+
+
+# the kinds a waiter names a time's food by ("কাবাব আর গ্রিল আইটেমগুলো"), from what the dishes are
+_TIME_KIND_SAY = (
+    (r"kebab|kabab|tikka|grill|shashlik|tandoori|chaap", "কাবাব-গ্রিল", "kebabs and grills"),
+    (r"biryani|kacchi|polao|pulao|khichuri|tehari", "কাচ্চি-পোলাও", "biryani and polao"),
+    (r"\bfish\b|prawn", "মাছের", "fish dishes"),
+    (r"curry|bhuna|jhol|korma|rezala|kalia|dopiaza|nehari", "ভুনা-তরকারির", "curries"),
+    (r"\bsoup\b", "স্যুপের", "soups"),
+    (r"shawarma|burger|sandwich|roll|pizza|snack", "নাস্তার", "snacks"),
+    (r"\bnaan\b|paratha|porota|roti|\bdal\b|bhaji|breakfast|egg", "নাস্তার", "breakfast dishes"),
+    (r"tea|coffee|espresso|latte|cappuccino", "চা-কফির", "tea and coffee"),
+    (r"juice|lassi|shake|cola|drink", "ড্রিংকসের", "drinks"),
+    (r"dessert|sweet|firni|doi|pudding|halwa|payesh", "মিষ্টির", "desserts"),
+)
+
+
+def _kind_of(it: Dict[str, Any]) -> int:
+    """Which of _TIME_KIND_SAY this dish is (its position), or len() for none."""
+    text = kind_text(it)
+    return next((i for i, (pat, _b, _e) in enumerate(_TIME_KIND_SAY) if re.search(pat, text, re.I)), len(_TIME_KIND_SAY))
+
+
+def _top_kinds(items: List[Dict[str, Any]]) -> List[int]:
+    """The one or two kinds most of these dishes are (each at least a quarter of them), the biggest first."""
+    counts: Dict[int, int] = {}
+    for it in items:
+        k = _kind_of(it)
+        if k < len(_TIME_KIND_SAY):
+            counts[k] = counts.get(k, 0) + 1
+    ranked = [k for k, n in sorted(counts.items(), key=lambda kv: -kv[1]) if n * 4 >= len(items)]
+    # (two kinds said the same way — "নাস্তার" — are one)
+    out: List[int] = []
+    for k in ranked:
+        if all(_TIME_KIND_SAY[k][1] != _TIME_KIND_SAY[o][1] for o in out):
+            out.append(k)
+    return out[:2]
+
+
+def _kinds_phrase(items: List[Dict[str, Any]], bn: bool) -> str:
+    """"কাবাব-গ্রিল আর নাস্তার আইটেমগুলো" — the kinds these dishes are; else their category's name without "(…)"."""
+    top = _top_kinds(items)
+    if top:
+        return (" আর ".join(_TIME_KIND_SAY[k][1] for k in top) + " আইটেমগুলো") if bn \
+            else " and ".join(_TIME_KIND_SAY[k][2] for k in top)
+    cat = re.sub(r"\s*\(.*?\)", "", str((items[0] if items else {}).get("category") or "")).strip()
+    return (f"{cat}-এর আইটেমগুলো" if cat else "এই আইটেমগুলো") if bn else (f"{cat} dishes" if cat else "these dishes")
+
+
+def _bn_join(names: List[str]) -> str:
+    return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " আর " + names[-1] if names else ""
+
+
+def _bn_daypart(h: int) -> str:
+    return ("ভোর" if 4 <= h < 6 else "সকাল" if h < 12 and h >= 6 else "দুপুর" if 12 <= h < 15 else
+            "বিকেল" if 15 <= h < 18 else "সন্ধ্যা" if 18 <= h < 20 else "রাত")
+
+
+def _bn_spoken_time(hhmm: Any) -> Tuple[str, str]:
+    """"17:01" → ("বিকেল", "৫টা"); "15:30" → ("বিকেল", "সাড়ে ৩টা"); "16:50" → ("বিকেল", "৫টা") — as it's said."""
+    try:
+        h, m = (int(x) for x in str(hhmm).split(":")[:2])
+    except ValueError:
+        return "", str(hhmm)
+    half = 20 <= m < 45
+    if m >= 45:
+        h, m = (h + 1) % 24, 0
+    h12 = h % 12 or 12
+    clock = (f"সাড়ে {h12}টা" if half else f"{h12}টা").translate(_BN_DIG)
+    return _bn_daypart(h), clock
+
+
+def _bn_hours(start: Any, end: Any) -> str:
+    """"বিকেল ৫টা থেকে রাত ১০টা পর্যন্ত"; the same part of the day said once: "দুপুর ১২টা থেকে ৩টা পর্যন্ত"."""
+    (dp1, c1), (dp2, c2) = _bn_spoken_time(start), _bn_spoken_time(end)
+    return f"{dp1} {c1} থেকে {'' if dp1 == dp2 else dp2 + ' '}{c2} পর্যন্ত".replace("  ", " ")
 
 
 def _fmt_hhmm(hhmm: Any) -> str:
