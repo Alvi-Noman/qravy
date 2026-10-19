@@ -87,6 +87,11 @@ def _norm(s: Any) -> str:
     return re.sub(r"\s+", " ", re.sub(r"[^\w\s&/()-]", " ", str(s or "").lower())).strip()
 
 
+def _norm_bn(s: Any) -> str:
+    """Like _norm, but Bangla words stay whole (their vowel signs kept): "চিকেন টিক্কা" → ["চিকেন", "টিক্কা"]."""
+    return re.sub(r"\s+", " ", re.sub(r"[^\w\sঀ-৿]", " ", str(s or "").lower())).strip()
+
+
 # ------------------------------------------------------------------ content hints
 
 # Keyword → label. Applied to name + description + category (never to add-on option names,
@@ -412,8 +417,12 @@ def is_side(it: Dict[str, Any]) -> bool:
 
 
 def is_dessert(it: Dict[str, Any]) -> bool:
-    """A dessert ("Firni", "Desserts", মিষ্টি). "Sweet & Sour Chicken" is not one."""
-    return bool(_DESSERT.search(kind_text(it)))
+    """A dessert ("Firni", "Desserts", মিষ্টি). "Sweet & Sour Chicken" is not one — nor the tea listed under
+    "মিষ্টি বিলাস" (a drink by its own name stays a drink)."""
+    if not _DESSERT.search(kind_text(it)):
+        return False
+    own = kind_text({"name": it.get("name")})
+    return not (re.search(r"\btea\b|coffee|lassi|juice|soft drink|\bshake\b|\bdrink\b", own) and not _DESSERT.search(own))
 
 
 # ------------------------------------------------------------------ time fit
@@ -659,6 +668,15 @@ def render_cart(rows: List[Dict[str, Any]], subtotal: float) -> str:
 # ------------------------------------------------------------------ mentions
 
 
+def _full_names(index: MenuIndex) -> set:
+    """Every dish's whole name, normalized — cached on the index."""
+    got = getattr(index, "_full_names", None)
+    if got is None:
+        got = {_norm(it.get("name")) for it in index.items}
+        index._full_names = got  # type: ignore[attr-defined]
+    return got
+
+
 def find_mentions(text: str, index: MenuIndex, limit: int = 4) -> List[Dict[str, Any]]:
     """Menu items named in a (latin-script) utterance — longest/most specific names first."""
     t = _norm(text)
@@ -667,7 +685,13 @@ def find_mentions(text: str, index: MenuIndex, limit: int = 4) -> List[Dict[str,
     scored: List[Tuple[float, int, Dict[str, Any]]] = []
     for it in index.items:
         best = 0.0
-        for label in [it.get("name"), *(it.get("aliases") or [])]:
+        # ("রুই মাছ" is রুই মাছ (গ্লাসি): the bracket says how it's made or when, not what it is)
+        full = str(it.get("name") or "").strip()
+        base = re.sub(r"\s*\(.*?\)", " ", full).strip()
+        # (…unless another dish IS called that: "ড - তে ডাল" is that one, not "ড - তে ডাল (পাসেল)")
+        if base != full and _norm(base) in _full_names(index):
+            base = full
+        for label in [full, *([base] if base and base != full else []), *(it.get("aliases") or [])]:
             key = _norm(label)
             if len(key) < 3:
                 continue
@@ -678,8 +702,15 @@ def find_mentions(text: str, index: MenuIndex, limit: int = 4) -> List[Dict[str,
                 # a Bangla name: every one of its words must be (nearly) a word the guest said — letter-level
                 # likeness alone read "চিকেনের কি কি আছে?" as "চিকেন টিক্কা"
                 if score >= 90 and re.search(r"[ঀ-৿]", key):
-                    said_words = t.split()
-                    if not all(max((fuzz.ratio(w, s) for s in said_words), default=0) >= 75 for w in key.split()):
+                    # (whole words, vowel signs kept — _norm drops them, and "চা" became the "চ" of "চান")
+                    said_words = _norm_bn(text).split()
+
+                    def heard(w: str) -> bool:
+                        if len(w) <= 2:  # "চা" is no near-miss of "চান" (ষোল আনা স্পেশাল চা ≠ …স্পেশাল কাবাব, চান?)
+                            return any(s == w or re.match(rf"{re.escape(w)}(য়ের|য়ে|য়|টা|টি|ও|র|ের)$", s) for s in said_words)
+                        return max((fuzz.ratio(w, s) for s in said_words), default=0) >= 75
+
+                    if not all(heard(w) for w in _norm_bn(label).split()):
                         score = 0.0
                 best = max(best, score)
         if best >= 90:
@@ -725,7 +756,7 @@ _KINDS = {
     "burgers": r"burger|বার্গার",
     "biryani": r"biry?ani|kacchi|tehari|বিরিয়ানি|কাচ্চি|তেহারি",
     "breakfast items": r"breakfast|paratha|porota|omelet|omelette|toast|পরোটা|নাস্তা|ডিম ভাজি",
-    "alcohol": r"\bbeer\b|\bwine\b|alcohol|whisk(e)?y|vodka|cocktail|বিয়ার|বিয়ার|ওয়াইন|ওয়াইন|মদ|অ্যালকোহল|এলকোহল|হুইস্কি",
+    "alcohol": r"\bbeer\b|\bwine\b|alcohol|whisk(e)?y|vodka|cocktail|বিয়ার|বিয়ার|ওয়াইন|ওয়াইন|(?<![ঀ-৿])মদ(?![ঀ-৿])|অ্যালকোহল|এলকোহল|হুইস্কি",
     "kebabs": r"kebab|kabab|tikka|কাবাব",
     # a set menu IS a platter to a guest ("প্লেটার খাবো না" — and then it suggested Set Menu-2)
     "platters": (
@@ -783,6 +814,9 @@ _BANGLISH_STRONG = {
     "lagbe", "chai", "cai", "ache", "ase", "achhe", "koto", "kemon", "khabo", "khete", "jhal", "kichu",
     "hobe", "korun", "koren", "korben", "bhai", "vai", "apu", "amake", "amader", "apnader", "valo", "bhalo",
     "dorkar", "niye", "nibo", "debo", "shob", "sob", "kon", "konta", "ektu", "arekta", "aro",
+    # ("koto hoilo?" — how much is it — got an English reply)
+    "hoilo", "hoise", "hoyeche", "hoyse", "holo", "hocche", "hoche", "dimu", "nimu", "khamu", "dekhan", "dekhi",
+    "bolen", "janen", "lagbo", "nai", "nei", "korsi", "korlam", "dilam", "nilam", "acche", "chilo", "khabar",
 }
 _BANGLISH_WEAK = {"ar", "na", "ki", "ta", "to", "e", "o", "r", "din", "dam", "taka", "plz"}
 
@@ -805,7 +839,8 @@ def reply_language(text: str, locale: Optional[str] = None) -> str:
     if words:
         strong = sum(w in _BANGLISH_STRONG for w in words)
         weak = sum(w in _BANGLISH_WEAK for w in words)
-        if strong >= 1 and (strong + weak) >= 2 or strong >= 2:
+        if strong >= 1 and (strong + weak) >= 2 or strong >= 2 or (strong >= 1 and len(words) <= 3
+                                                                    and not any(w in _EN_SENTENCE for w in words)):
             return "bn"
         # A Bangla speaker ordering by dish names ("Crispy rice soup, lemon doita, choice of two curry…"):
         # the transcriber writes English dish names in English letters, but it isn't English speech.

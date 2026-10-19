@@ -33,7 +33,11 @@ MAX_DECLINES = 2  # two "no"s → no more offers this visit
 _MEAL_OPTION = re.compile(r"\bmeal\b|combo|\+|মিল", re.I)
 _COMBO_DISH = re.compile(r"\bcombo\b|\bmeal\b|\bset\b", re.I)
 _SPICY_CHOICE = re.compile(r"spicy|hot|ঝাল", re.I)
-_COLD = re.compile(r"lemonade|shake|juice|lassi|cola|coke|sprite|7 ?up|fanta|soda|iced|cold|mojito|smoothie", re.I)
+_COLD = re.compile(r"lemonade|shake|juice|lassi|cola|coke|sprite|7 ?up|fanta|soda|iced|cold|mojito|smoothie|borhani|"
+                   r"লাচ্ছি|লাস্সি|জুস|লেবু|লাইম|কোলা|কোক|স্প্রাইট|ফান্টা|সেভেন আপ|ঠান্ডা|ঠাণ্ডা|আইস|বোরহানি|মোজিতো|শরবত|রস", re.I)
+_HOT = re.compile(r"\btea\b|coffee|espresso|latte|cappuccino|americano|\bhot\b|(?<![ঀ-৿])চা(?![ঀ-৿])|কফি|গরম", re.I)
+_ICED = re.compile(r"iced|\bice\b|cold|আইসড|আইস্ড|আইস|ঠান্ডা|ঠাণ্ডা|frapp", re.I)
+_BORHANI = re.compile(r"borhani|বোরহানি", re.I)
 _SPLIT_PARTS = re.compile(r"\s*(?:\+|&|,|\band\b|\bwith\b)\s*", re.I)
 _NAME_STOP = {"combo", "meal", "set", "and", "with", "the", "a", "of", "our", "portion"}
 
@@ -218,8 +222,15 @@ def _best(kind: str, c: Ctx, ctx_ids: set, spicy: bool = False) -> Optional[Dict
         if kind == "drink":
             if re.search(r"\bwater\b|পানি", name, re.I):
                 continue  # nobody upsells a bottle of water
+            hot = bool(_HOT.search(kind_text(it))) and not _ICED.search(name)
+            # tea / coffee go with breakfast or the afternoon — never "a cold one for the spice", never with a meal
+            # ("বিফ শিক কাবাব বেশ ঝাল — সাথে একটা ঠান্ডা ষোল আনা স্পেশাল চা")
+            if hot and (spicy or not set(c.meal_kinds or ()) & {"breakfast", "afternoon"}):
+                continue
             s += 0.6 if not is_packaged(it) else 0.0
             s += 0.8 if spicy and _COLD.search(name) else 0.0
+            if _BORHANI.search(name) and any(dish_facts(c.index.by_id[i])["complete_meal"] for i in ctx_ids if i in c.index.by_id):
+                s += 1.5  # borhani with the kacchi / biryani — what every guest there drinks
         if kind == "rice":
             s += 1.0 if re.search(r"\brice\b", kind_text({"name": name})) else 0.0  # fried rice: the classic partner for a curry
             s += 0.5 if not re.search(r"special|prawn|mixed|স্পেশাল|মিক্স", name, re.I) else 0.0  # plain, affordable
@@ -407,6 +418,11 @@ def _more_food(moment: str, c: Ctx) -> Optional[Offer]:
     r = dish_roles(it)
     if not (r["main"] or r["handheld"]):
         return None
+    # one each is for a dish one person eats (a burger, a kacchi, a set menu) — a curry, a sizzling, a Chinese main is
+    # shared at the table with rice ("আপনারা 6 জন — Chicken Masala 6টা করে দেব?" was nonsense)
+    f = dish_facts(it)
+    if not (r["handheld"] or (f["complete_meal"] and not re.search(r"platter|family|sizzl|for \d|for (two|three|four)", f["text"]))):
+        return None
     have = int(row.get("quantity") or 1)
     unit = float(row.get("price") or 0)
     extra = _money(unit * (party - have))
@@ -415,6 +431,9 @@ def _more_food(moment: str, c: Ctx) -> Optional[Offer]:
     text = _say(c, f"আপনারা {party} জন — {dish} {party}টা করে দেব? (আরও {extra})",
                 f"There are {party} of you — make it {party} × {dish}? ({extra} more)",
                 f"{dish} {party}টা করে দেব? +{extra}", f"Make it {party} × {dish}? +{extra}")
+    in_tray = sum(float(x.get("price") or 0) * int(x.get("quantity") or 1) for x in c.rows)
+    if c.profile.budget and in_tray + unit * (party - have) > c.profile.budget:
+        return None  # never offered past the budget they gave
     return Offer("more_food", moment, text, [op], [c.index.item_id(it)], unit * (party - have))
 
 
@@ -515,6 +534,15 @@ def _rice(moment: str, c: Ctx) -> Optional[Offer]:
     if not r:
         return None
     dish, name, p = str(it.get("name")), _label(r), _money(_price(r))
+    party = int(c.profile.party_size or 0)
+    if party >= 2 and bangla_meal.is_plain_rice(r) and bangla_meal.is_bhaat_house(c.index.items):
+        # a table of five eats five plates of rice: "আপনারা 5 জন — সবার জন্য 5টা সাদা ভাত দেব? (৳200)"
+        rn, tot = bangla_meal.said_name(r), _money(_price(r) * party)
+        text = _say(c, f"আপনারা {party} জন — সবার জন্য {party}টা {rn} দেব? ({tot})",
+                    f"There are {party} of you — {party} × {rn} for the table? ({tot})",
+                    f"{party}টা {rn} {tot} — দেব?", f"{party} × {rn} for {tot}?")
+        return Offer("rice", moment, text, [_add_op(r, c, party)], [c.index.item_id(r)], _price(r) * party,
+                     card=_card(r, c, "one each"))
     if bangla_meal.is_plain_rice(r) and bangla_meal.is_bhaat_house(c.index.items):
         # how a Bengali waiter asks: "গরুর লাল ভুনার সাথে ভাত দেব?" (the dish said plainly, no "-এর", no "(মিনিকেট…)")
         d, rn = bangla_meal.said_name(it), bangla_meal.said_name(r)
@@ -565,6 +593,12 @@ def _side(moment: str, c: Ctx) -> Optional[Offer]:
                  card=_card(side, c, f"with your {dish}"))
 
 
+def _of(name: str) -> str:
+    """"গরুর লাল ভুনা" → "গরুর লাল ভুনার", "Chicken Roast" → "Chicken Roast-এর"."""
+    said = bangla_meal.said_name({"name": name})
+    return upsell_of_bn(said) if re.search(r"[ঀ-৿]$", said) else f"{said}-এর"
+
+
 def _drink(moment: str, c: Ctx) -> Optional[Offer]:
     """No drink in the tray → one drink (a cold one with spicy food; one each for a group)."""
     shape = _roles(c)
@@ -579,6 +613,11 @@ def _drink(moment: str, c: Ctx) -> Optional[Offer]:
     d, unit = _label(drink), _price(drink)
     total = _money(unit * qty)
     anchor, _row = _anchor(c)
+    # (the meal, not its rice: "গরুর লাল ভুনার সাথে…", never "সাদা ভাত-এর সাথে একটা রসনা নেবেন?")
+    if anchor is not None and not (dish_roles(anchor)["main"] or dish_roles(anchor)["handheld"]):
+        anchor = next((c.index.by_id[str(r["itemId"])] for r in reversed(c.rows) if str(r["itemId"]) in c.index.by_id
+                       and (dish_roles(c.index.by_id[str(r["itemId"])])["main"]
+                            or dish_roles(c.index.by_id[str(r["itemId"])])["handheld"])), anchor)
     dish = str((spicy[0] if spicy else anchor or {}).get("name") or "")
     if qty > 1:
         bn = f"আপনারা {qty} জন — সবার জন্য {qty}টা {d} দেব? ({total})"
@@ -587,7 +626,7 @@ def _drink(moment: str, c: Ctx) -> Optional[Offer]:
         bn = f"{dish} বেশ ঝাল — সাথে একটা ঠান্ডা {d} ভালো যাবে ({total})। দেব?"
         en = f"The {dish} is quite spicy — a cold {d} goes well with it ({total}). Shall I add one?"
     elif dish:
-        bn = f"{dish}-এর সাথে একটা {d} নেবেন? ({total})"
+        bn = f"{_of(dish)} সাথে একটা {d} নেবেন? ({total})"
         en = f"Would you like a {d} with the {dish}? ({total})"
     else:
         bn = f"সাথে একটা {d} নেবেন? ({total})"

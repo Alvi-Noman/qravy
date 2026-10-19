@@ -242,10 +242,12 @@ def test_a_whole_order_after_the_bread_question_keeps_every_dish():
     assert not calls and added(two) == [("porota", 2)], two["replyText"]
 
 
-def test_kebabs_suggested_ask_porota_or_naan():
+def test_kebabs_suggested_mention_porota_or_naan():
+    # the list ends "কোনটা দেব?" — the bread is said, not asked (one question at a time); it's asked once a kebab is in
     out, _ = run("কাবাব কি কি আছে?")
-    assert "kind_list" in out["meta"]["guards"] and out["replyText"].endswith("কাবাবের সাথে পরোটা নেবেন, নাকি নান?"), \
+    assert "kind_list" in out["meta"]["guards"] and out["replyText"].endswith("সাথে পরোটা বা নান-ও নিতে পারেন।"), \
         out["replyText"]
+    assert out["replyText"].count("?") == 1 and not (out["meta"].get("tray") or {}).get("pending"), out["replyText"]
     # bread in the tray already → not asked
     out, _ = run("কাবাব কি কি আছে?", cart=[line("naan_g")])
-    assert "পরোটা নেবেন" not in out["replyText"], out["replyText"]
+    assert "পরোটা" not in out["replyText"], out["replyText"]
