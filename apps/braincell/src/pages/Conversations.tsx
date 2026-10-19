@@ -22,11 +22,13 @@ import { useTenant } from '../hooks/useTenant';
 import { waiterFetch } from '../api/waiter';
 
 type ConversationSummary = {
-  /** one guest at one branch ("<session>@<location>"; just the session when there's no branch) */
+  /** one session: a guest's visit at one branch, until 30 minutes of quiet ("<session>@<location>~<start>") */
   id?: string;
   session: string;
   startedAt: string;
   lastAt: string;
+  /** how long the visit's talk lasted */
+  minutes?: number;
   turns: number;
   unheard: number;
   flagged: number;
@@ -38,7 +40,7 @@ type ConversationSummary = {
   branch: string | null;
 };
 
-/** A conversation is one guest at one branch; older waiter versions only sent the session. */
+/** A session is one guest's visit at one branch; older waiter versions only sent the guest's session id. */
 const convoId = (c: ConversationSummary) => c.id ?? c.session;
 
 type Action = { op: string; name?: string; quantity?: number; variant?: string; note?: string };
@@ -156,7 +158,7 @@ export default function ConversationsPage(): JSX.Element {
             AI Conversations
           </h1>
           <p className="mt-1 text-[13px] text-slate-500">
-            What the AI waiter heard, what it understood and what it said — for every guest. Kept for 30 days.
+            What the AI waiter heard, what it understood and what it said. Each session is one guest's visit (a new one starts after 30 minutes of quiet), the latest at the top. Kept for 30 days.
           </p>
         </div>
         <div className="inline-flex rounded-md border border-[#dbdbdb] bg-white p-0.5 text-[13px]">
@@ -175,9 +177,10 @@ export default function ConversationsPage(): JSX.Element {
         </div>
       </div>
 
-      <div className="mt-6 grid grid-cols-1 gap-5 lg:grid-cols-[340px_minmax(0,1fr)]">
+      {/* the list narrow, the session wide — the session must stay readable with the setup guide open */}
+      <div className="mt-6 grid grid-cols-1 items-start gap-4 md:grid-cols-[minmax(220px,280px)_minmax(0,1fr)]">
         {/* conversations */}
-        <div className="overflow-hidden rounded-lg border border-[#ececec] bg-white shadow-sm lg:max-h-[calc(100vh-180px)] lg:overflow-y-auto">
+        <div className="max-h-[calc(100vh-180px)] min-w-0 overflow-y-auto rounded-lg border border-[#ececec] bg-white shadow-sm">
           {list.isLoading && <div className="m-4 h-40 animate-pulse rounded-md bg-slate-100" />}
           {list.isError && <p className="p-4 text-sm text-slate-500">Conversations aren't available right now.</p>}
           {list.data && list.data.length === 0 && (
@@ -186,8 +189,14 @@ export default function ConversationsPage(): JSX.Element {
             </p>
           )}
           <ul>
-            {list.data?.map((c) => (
+            {list.data?.map((c, i) => (
               <li key={convoId(c)}>
+                {/* the latest first, under its day ("Today", "Yesterday", "Fri, Oct 17") */}
+                {(i === 0 || dayOf(list.data![i - 1].lastAt) !== dayOf(c.lastAt)) && (
+                  <div className="sticky top-0 z-10 border-b border-[#f2f2f2] bg-slate-50/95 px-4 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-500 backdrop-blur">
+                    {dayLabel(c.lastAt)}
+                  </div>
+                )}
                 <button
                   type="button"
                   onClick={() => setParam('session', convoId(c))}
@@ -197,7 +206,7 @@ export default function ConversationsPage(): JSX.Element {
                 >
                   <div className="flex items-center justify-between gap-2 text-[12px] text-slate-500">
                     <span className="truncate">{where(c)}</span>
-                    <span className="shrink-0">{when(c.lastAt)}</span>
+                    <span className="shrink-0 tabular-nums">{span(c)}</span>
                   </div>
                   <div className="mt-1 truncate text-[14px] text-slate-900">
                     {c.preview || <span className="italic text-slate-400">Nothing heard clearly</span>}
@@ -214,21 +223,22 @@ export default function ConversationsPage(): JSX.Element {
           </ul>
         </div>
 
-        {/* one conversation */}
+        {/* one session */}
         <div className="min-w-0">
           {!selected && (
             <div className="rounded-lg border border-dashed border-[#dbdbdb] p-10 text-center text-sm text-slate-500">
-              Pick a conversation to read it turn by turn.
+              Pick a session to read it turn by turn.
             </div>
           )}
           {selected && (
             <>
               <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
                 <h2 className="text-[14px] font-semibold text-slate-900">
-                  {current ? where(current) : 'Conversation'}
+                  {current ? where(current) : 'Session'}
                   {current && (
                     <span className="ml-2 font-normal text-slate-500">
-                      {when(current.startedAt)} · {LANG_LABEL[current.language ?? ''] ?? current.language ?? ''}
+                      {dayLabel(current.startedAt)}, {span(current)} · {current.turns} {current.turns === 1 ? 'turn' : 'turns'}
+                      {current.language ? ` · ${LANG_LABEL[current.language] ?? current.language}` : ''}
                     </span>
                   )}
                 </h2>
@@ -237,9 +247,9 @@ export default function ConversationsPage(): JSX.Element {
                 </span>
               </div>
               {detail.isLoading && <div className="h-40 animate-pulse rounded-md bg-slate-100" />}
-              {detail.isError && <p className="text-sm text-slate-500">This conversation isn't available.</p>}
+              {detail.isError && <p className="text-sm text-slate-500">This session isn't available.</p>}
               {detail.data && detail.data.length === 0 && (
-                <p className="text-sm text-slate-500">Nothing stored for this conversation (older than 30 days?).</p>
+                <p className="text-sm text-slate-500">Nothing stored for this session (older than 30 days?).</p>
               )}
               <ol className="space-y-3">
                 {detail.data?.map((t, i) => <TurnCard key={i} turn={t} />)}
@@ -354,8 +364,8 @@ function Row({
   children: React.ReactNode;
 }) {
   return (
-    <div className="grid grid-cols-[96px_minmax(0,1fr)] gap-3 border-t border-[#f5f5f5] py-2 text-[14px]">
-      <div className="flex items-center gap-1.5 self-start pt-0.5 text-[12px] font-medium text-slate-500">
+    <div className="border-t border-[#f5f5f5] py-2 text-[14px]">
+      <div className="mb-1 flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wide text-slate-400">
         <Icon className="h-4 w-4" />
         {label}
       </div>
@@ -418,13 +428,26 @@ function where(c: ConversationSummary): string {
   return parts.filter(Boolean).join(' · ');
 }
 
-function when(iso: string): string {
+const time = (iso: string) => new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+const dayOf = (iso: string) => new Date(iso).toDateString();
+
+/** "Today" / "Yesterday" / "Fri, Oct 17" — the list's day headings. */
+function dayLabel(iso: string): string {
   const d = new Date(iso);
-  const today = new Date();
-  const sameDay = d.toDateString() === today.toDateString();
-  return sameDay
-    ? d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
-    : d.toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+  const yesterday = new Date();
+  yesterday.setDate(yesterday.getDate() - 1);
+  if (d.toDateString() === new Date().toDateString()) return 'Today';
+  if (d.toDateString() === yesterday.toDateString()) return 'Yesterday';
+  return d.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
+}
+
+/** A session's time: "2:14 PM" (one turn), "2:14 – 2:21 PM · 7 min". */
+function span(c: ConversationSummary): string {
+  const a = time(c.startedAt);
+  const b = time(c.lastAt);
+  if (a === b) return a;
+  const mins = Math.max(1, Math.round(c.minutes ?? (new Date(c.lastAt).getTime() - new Date(c.startedAt).getTime()) / 60000));
+  return `${a} – ${b} · ${mins} min`;
 }
 
 function clock(iso: string): string {
