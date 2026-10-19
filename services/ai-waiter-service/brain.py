@@ -3505,6 +3505,120 @@ def _not_this_version(transcript: str, index: MenuIndex) -> Optional[Tuple[str, 
     return None
 
 
+# a time of day the guest names → a moment on the restaurant's clock (minutes after midnight), read against ITS
+# service periods (Settings → Hours): whatever they're called, "বিকেলে" is the one running at 4:30 pm
+_WHEN_SAID = (
+    ("এখন", r"(?<![ঀ-৿])এখন(?![ঀ-৿])|\bright now\b|\bnow\b|\bekhon\b", None),
+    ("মাঝরাতে", r"মাঝরাত|গভীর রাত|\blate night\b|\bmidnight\b", 23 * 60 + 30),
+    ("সকালে", r"সকাল|ভোর|\bbreakfast\b|\bmorning\b|\bsokal\b", 9 * 60),
+    ("দুপুরে", r"দুপুর|\blunch\b|\bnoon\b|\bdupur\b", 13 * 60 + 30),
+    ("বিকেলে", r"বিকেল|বিকাল|বৈকাল|\bafternoon\b|\bbikel\b|\bteatime\b", 16 * 60 + 30),
+    ("সন্ধ্যায়", r"সন্ধ্যা|সন্ধা|সন্ধে|\bevening\b|\bsondha\b", 18 * 60 + 30),
+    ("রাতে", r"(?<![ঀ-৿])রাত|রাত্রে|ডিনার|\bdinner\b|\bnight\b|\braat\b|\brat e\b", 21 * 60),
+)
+# "… কি আছে / কী পাওয়া যায় / কি খাওয়া যাবে?", "what's on…", "what can I eat…" — asks what is served
+_WHATS_SERVED = re.compile(
+    r"(?<![ঀ-৿])(কি|কী|কোন|কোনগুলো)\s+([ঀ-৿]+\s+){0,2}(আছে|আছো|পাওয়া|পাওয়া|পাব|পাবো|খাওয়া|খাওয়া|খেতে|হবে|চলে|দেন|দিচ্ছেন)|"
+    r"মেনুতে (কি|কী)|মেনু(টা)? (কি|কী)|\bwhat('?s| is| do you have| can (i|we) (eat|get|have|order))\b|"
+    r"\bwhat to eat\b|\bki (ache|pawa|khawa)\b|"
+    # "এখন কি খাওয়া যেতে পারে?" as speech-to-text writes it: "কি খাও যেতে পারে", "কিই খাবা জেতে পারে", "কি খা঵া জেতে…"
+    r"(কি|কী|কিই|কে)\s+খা\S*\s+(যে|জে|ছে)\S*\s+পা\S*",
+    re.I,
+)
+_BN_DIG = str.maketrans("0123456789", "০১২৩৪৫৬৭৮৯")
+
+
+def _bn_clock(hhmm: str) -> str:
+    """"15:00" → "৩টা", "15:30" → "৩:৩০"."""
+    try:
+        h, m = (int(x) for x in str(hhmm).split(":")[:2])
+    except ValueError:
+        return str(hhmm)
+    h12 = h % 12 or 12
+    return (f"{h12}টা" if not m else f"{h12}:{m:02d}").translate(_BN_DIG)
+
+
+def _period_menu_reply(transcript: str, index: MenuIndex, orderable: Dict[str, bool], periods: List[Dict[str, Any]],
+                       now_min: Optional[int], scope: set, lang: str
+                       ) -> Optional[Tuple[str, List[Dict[str, Any]], str]]:
+    """"বিকেলে কি আছে?" / "এখন কি পাওয়া যাবে?" → the categories and dishes the restaurant set for that period
+    (its category / dish hours), whatever time it is now — "বিকেলের মেনু চলে ৩টা থেকে ৬টা — তখন আছে …" when it
+    isn't on yet. None when no dish is set for that period (the usual answer then)."""
+    from availability import periods_at  # (a pure helper)
+
+    t = transcript or ""
+    if not periods or not _WHATS_SERVED.search(t):
+        return None
+    said = next(((label, at) for label, pat, at in _WHEN_SAID if re.search(pat, t, re.I)), None)
+    if not said:
+        return None
+    label, at = said
+    if at is None:
+        if now_min is None:
+            return None
+        at = now_min
+    rules = {"periods": periods}
+    target = set(periods_at(at, rules))
+    if not target:
+        return None
+    items = [it for it in index.items if set(it.get("periods") or []) & target
+             and (not scope or index.item_id(it) in scope)]
+    if not items:
+        return None  # nothing set for that time → the usual answer
+    on_now = now_min is not None and bool(target & set(periods_at(now_min, rules)))
+    items.sort(key=lambda it: index.position.get(index.item_id(it), 1 << 20))
+    by_cat: Dict[str, List[str]] = {}
+    for it in items:
+        by_cat.setdefault(str(it.get("category") or ""), [])
+        name = bangla_meal.said_name(it)
+        if name not in by_cat[str(it.get("category") or "")]:
+            by_cat[str(it.get("category") or "")].append(name)
+    p = next(p for p in periods if str(p.get("id")) in target)
+    bn = lang == "bn"
+    parts = []
+    for cat, names in list(by_cat.items())[:3]:
+        more = len(names) - 4
+        shown = ", ".join(names[:4]) + ((f" আর আরও {str(more).translate(_BN_DIG)}টা" if bn else f" and {more} more") if more > 0 else "")
+        parts.append(f"{cat}: {shown}" if cat else shown)
+    listed = "; ".join(parts)
+    hours_bn = f"{_bn_clock(p.get('start'))} থেকে {_bn_clock(p.get('end'))}"
+    hours_en = f"{_fmt_hhmm(p.get('start'))}–{_fmt_hhmm(p.get('end'))}"
+    pname = _period_name_bn(p) if bn else str(p.get("name") or "")
+    if bn:
+        if label == "এখন":
+            text = f"এখন {upsell_engine.of_bn(pname)} সময় ({hours_bn}) — আছে {listed}। কোনটা দেব?"
+        elif on_now:
+            text = f"{label} ({hours_bn}) আছে {listed}। এখনই পাওয়া যাচ্ছে — কোনটা দেব?"
+        else:
+            text = f"{pname} পাওয়া যায় {hours_bn} — তখন আছে {listed}। তখন এসে অর্ডার করতে পারবেন।"
+    else:
+        when = "Right now" if label == "এখন" else f"For {p.get('name')}"
+        text = (f"{when} ({hours_en}) we have {listed}." + (" Which would you like?" if on_now or label == "এখন"
+                                                           else " It's served then — you can order it at that time."))
+    rows = [_suggestion_row(it) for it in items[:12] if orderable.get(index.item_id(it), True)] if on_now or label == "এখন" else []
+    return text, rows, "period_menu"
+
+
+# the default periods' names as a Bangla waiter says them (a name the owner wrote stays as written)
+_PERIOD_BN = {"breakfast": ("Breakfast", "সকালের নাস্তা"), "lunch": ("Lunch", "দুপুরের খাবার"),
+              "afternoon": ("Afternoon", "বিকেলের নাস্তা"), "dinner": ("Dinner", "রাতের খাবার"),
+              "late-night": ("Late night", "রাতের শেষ মেনু")}
+
+
+def _period_name_bn(p: Dict[str, Any]) -> str:
+    en, bn_name = _PERIOD_BN.get(str(p.get("id")), (None, None))
+    name = str(p.get("name") or "").strip()
+    return bn_name if bn_name and (not name or name.lower() == en.lower()) else (name or "এই সময়ের মেনু")
+
+
+def _fmt_hhmm(hhmm: Any) -> str:
+    try:
+        h, m = (int(x) for x in str(hhmm).split(":")[:2])
+    except ValueError:
+        return str(hhmm)
+    return f"{h % 12 or 12}{':%02d' % m if m else ''}{'am' if h < 12 else 'pm'}"
+
+
 # "কি কি / কী কী / কোন কোন … আছে", "কি আছে", "what … do you have" — the guest asks what there IS (a list)
 _LIST_Q = re.compile(
     r"(কি|কী)\s+(কি|কী)|কোন\s+কোন|(কি|কী)\s+(আছে|আছো|পাওয়া|পাওয়া|পাবো|পাব)|(আছে|পাওয়া যায়|পাওয়া যায়)\s+(কি|কী)\s*\W*$|"
@@ -4559,6 +4673,33 @@ async def _reply(
         res["meta"].setdefault("decision", {})["showSuggestionsModal"] = True
         return _with_buttons(res, [{"label": "হ্যাঁ, দিন", "say": f"একটা {said} দিন"}, {"label": "না", "say": "না"}] if bn
                              else [{"label": "Yes, add it", "say": f"one {said} please"}, {"label": "No", "say": "no"}])
+
+    # "বিকেলে কি আছে?" / "এখন কি পাওয়া যাবে?" → what the restaurant set for that time (its service periods, its
+    # category / dish hours) — never a guess from the dish names when the owner has said
+    lt = re.search(r"(\d{1,2}):(\d{2})", str(ctx.get("localTime") or ""))
+    # (not "ভালো কি খাওয়া যায় এখন?" — a pick, from what's orderable now; not "মানুষ / জায়গা আছে এখন?" — no food)
+    period_menu = None if (stage != "none" or _dishes_named(transcript, index, limit=1) or _orders_now(transcript)
+                           or _ABOUT_MINE.search(transcript)
+                           or re.search(r"ভালো|সেরা|বেস্ট|রেকমেন্ড|সাজেস্ট|জনপ্রিয়|পপুলার|\b(recommend|suggest|best|good|popular)\b",
+                                        transcript, re.I)
+                           or re.search(r"মানুষ|লোক(?![ঀ-৿])|কেউ|ভিড়|ভীড়|জায়গা|জায়গা|সিট|টেবিল|\b(people|seat|table|space|room)s?\b",
+                                        transcript, re.I)) else \
+        _period_menu_reply(transcript, index, orderable, list((menu_snapshot or {}).get("periods") or []),
+                           int(lt.group(1)) * 60 + int(lt.group(2)) if lt else None, kind_scope, lang)
+    if period_menu:
+        text, rows, note = period_menu
+        m = _base_meta(language=lang, intent="suggestions" if rows else "menu", topic="restaurant_info", suggestions=rows,
+                       decision={"showSuggestionsModal": bool(rows), "showUpsellTray": False}, notes=note, **ids)
+        rstate.turn += 1
+        if rows:
+            rstate.last_offered, rstate.last_offer_turn = [r["itemId"] for r in rows], rstate.turn
+        rstate.profile = profile.to_dict()
+        m["checkout"], m["tray"] = ck, tstate
+        m["reco"], m["recoMode"], m["guards"] = rstate.to_dict(), mode, [note]
+        if bn:
+            m["voiceReplyText"] = text
+        print(f"[brain] {note} → {text[:120]}")
+        return {"replyText": text, "meta": m}
 
     words_menu = bool(_SEE_MENU.search(transcript) or asks_overview(transcript))
     if (

@@ -62,6 +62,7 @@ from availability import (
     on_branch_menu,
     on_channel_menu,
     resolve_location_id,
+    served_periods,
     unavailable_reason,
 )
 
@@ -1260,6 +1261,7 @@ def fetch_menu_snapshot(
             )
 
         # Time-based availability: opening hours, category/item hours, sold out
+        snapshot_periods: Optional[List[Dict[str, Any]]] = None
         tenant_oid = q.get("tenantId")
         if tenant_oid is not None and items:
             menu_db = _CLIENT[MENU_DB_NAME]
@@ -1273,6 +1275,12 @@ def fetch_menu_snapshot(
                 if reason:
                     it["available"] = False
                     it["unavailableReason"] = reason
+                # the periods it's served in (its category's / its own hours) — "বিকেলে কি আছে?" lists those
+                served = served_periods(it, rules)
+                if served is not None:
+                    it["periods"] = served
+            # the restaurant's periods (their names and times: "বিকেলের নাস্তা পাওয়া যায় ৩টা–৬টা")
+            snapshot_periods = [{k: p.get(k) for k in ("id", "name", "start", "end")} for p in rules.get("periods") or []]
 
         print("[debug] snapshot items count =", len(items))
 
@@ -1294,6 +1302,8 @@ def fetch_menu_snapshot(
             "categories": [c for c in cats.values() if c.get("name")],
             "items": items,
         }
+        if snapshot_periods:
+            snapshot["periods"] = snapshot_periods
         return snapshot
     except Exception as e:
         print("[ai-waiter-service] ⚠️ fetch_menu_snapshot failed:", e)
