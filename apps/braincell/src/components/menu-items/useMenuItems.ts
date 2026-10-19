@@ -775,15 +775,29 @@ export function useMenuItems() {
     { ids: string[]; category?: string; categoryId?: string },
     { snapshot?: TMenuItem[] }
   >({
+    // the server takes 100 ids per call
     mutationFn: ({ ids, category, categoryId }) =>
-      minDelay(bulkChangeCategoryApi(ids, category, categoryId, token as string), MIN_MS),
+      minDelay(
+        (async () => {
+          const out: BulkCategoryRes = { items: [], matchedCount: 0, modifiedCount: 0 };
+          for (let i = 0; i < ids.length; i += 100) {
+            const r = await bulkChangeCategoryApi(ids.slice(i, i + 100), category, categoryId, token as string);
+            out.items.push(...r.items);
+            out.matchedCount += r.matchedCount;
+            out.modifiedCount += r.modifiedCount;
+          }
+          return out;
+        })(),
+        MIN_MS
+      ),
     onMutate: async () => {
       start();
       await queryClient.cancelQueries({ queryKey: keyCurrent });
       return {};
     },
-    onError: () => {
+    onError: (e: any) => {
       queryClient.invalidateQueries({ queryKey: keyCurrent });
+      toastError(e?.response?.data?.message || e?.message || 'Could not change the category');
     },
     onSuccess: (res) => {
       const updatedById = new Map(res.items.map((u) => [u.id, u]));
@@ -793,6 +807,10 @@ export function useMenuItems() {
       queryClient.setQueryData<TMenuItem[]>(keyAll as any, (arr) =>
         (arr ?? []).map((it) => updatedById.get(it.id) ?? it)
       );
+      // other branch / channel views and the categories' item counts
+      queryClient.invalidateQueries({
+        predicate: (q) => Array.isArray(q.queryKey) && (q.queryKey[0] === 'menu-items' || q.queryKey[0] === 'categories'),
+      });
       toastSuccess(`Updated category for ${plural(res.modifiedCount ?? res.items.length, 'item')}.`);
       broadcast();
     },

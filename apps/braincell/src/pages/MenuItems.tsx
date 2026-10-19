@@ -637,6 +637,28 @@ export default function MenuItemsPage(): JSX.Element {
                 />
               )}
 
+              {openBulkCategory && (
+                <Suspense fallback={null}>
+                  <BulkChangeCategoryDialog
+                    open
+                    categories={categoryNames}
+                    isSubmitting={bulkCategoryMut.isPending}
+                    onClose={() => setOpenBulkCategory(false)}
+                    onConfirm={async (name) => {
+                      const cat = (categoriesQuery.data ?? []).find((c) => c.name === name);
+                      try {
+                        // no name = no category ("" clears it)
+                        await bulkCategoryMut.mutateAsync({ ids: Array.from(selectedIds), category: name ?? '', categoryId: cat?.id });
+                        setOpenBulkCategory(false);
+                        clearSelection();
+                      } catch {
+                        /* toasted by the mutation */
+                      }
+                    }}
+                  />
+                </Suspense>
+              )}
+
               {openBulkHours && (
                 <Suspense fallback={null}>
                   <BulkHoursDialog

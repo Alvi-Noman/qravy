@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 
+const NONE = '\u0000none'; // "No category" (never a real category name)
+
 export default function BulkChangeCategoryDialog({
   open,
   categories,
@@ -43,12 +45,15 @@ export default function BulkChangeCategoryDialog({
                 onChange={(e) => setValue(e.target.value)}
                 className="w-full rounded-md border border-[#cecece] bg-white px-3 py-2"
               >
-                <option value="">No category</option>
+                <option value="" disabled>
+                  Choose a category…
+                </option>
                 {categories.map((c) => (
                   <option key={c} value={c}>
                     {c}
                   </option>
                 ))}
+                <option value={NONE}>No category</option>
               </select>
             </div>
 
@@ -58,8 +63,8 @@ export default function BulkChangeCategoryDialog({
               </button>
               <button
                 type="button"
-                disabled={isSubmitting}
-                onClick={() => onConfirm(value || undefined)}
+                disabled={isSubmitting || !value}
+                onClick={() => onConfirm(value === NONE ? undefined : value)}
                 className="rounded-md bg-[#2e2e30] px-4 py-2 text-white hover:opacity-90 disabled:opacity-50"
               >
                 {isSubmitting ? 'Updating…' : 'Update'}
