@@ -4,10 +4,12 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
 import { PLAN_CATALOG } from '../../api/billing';
 import { useAuthContext } from '../../context/AuthContext';
-import { getCategories } from '../../api/categories';
+import { bulkSetCategoryVisibility, getCategories } from '../../api/categories';
+import { getMenuItems } from '../../api/menuItems';
 import { importMenuFromLocation, type Location as LocationItem } from '../../api/locations';
 import {
   ArrowPathIcon,
+  BookOpenIcon,
   CheckIcon,
   DocumentArrowUpIcon,
   FolderPlusIcon,
@@ -71,7 +73,13 @@ export default function LocationFormDialog({
   const [step1Values, setStep1Values] = useState<LocationFormValues | null>(null);
 
   // Setup Menu Data state
-  const [importOption, setImportOption] = useState<'clone' | 'scratch'>('clone');
+  // 'shared': the restaurant's own menu (dishes / categories not tied to a branch) — every branch shows it already;
+  // 'clone': copy another branch's setup; 'scratch': a different menu (PDF / photo / by hand)
+  const [importOption, setImportOption] = useState<'shared' | 'clone' | 'scratch'>('clone');
+  // the restaurant's shared menu (a menu uploaded before any branch existed is this) — offered to every new branch
+  const [sharedMenu, setSharedMenu] = useState<{ items: number; categories: Array<{ id: string; name: string }> } | null>(null);
+  // a different menu: hide the shared one at this branch (so it shows only its own dishes) — reversible later
+  const [hideShared, setHideShared] = useState(true);
   const [scratchMode, setScratchMode] = useState<'pdf' | 'photo' | 'manual'>('pdf');
   const [sourceLocationId, setSourceLocationId] = useState<string>('');
   const [importScope, setImportScope] = useState<'all' | 'selective'>('all');
@@ -116,9 +124,28 @@ export default function LocationFormDialog({
       setImportError(null);
       setUploadProgress(0);
       setIsUploading(false);
+      setHideShared(true);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
+
+  // The restaurant's shared menu: its dishes that belong to no branch (what every new branch shows by default)
+  useEffect(() => {
+    if (!open || !token) return;
+    let live = true;
+    getMenuItems(token)
+      .then((items) => {
+        if (!live) return;
+        const shared = items.filter((it: any) => !it.locationId);
+        const cats = new Map<string, string>();
+        for (const it of shared as any[]) if (it.categoryId) cats.set(String(it.categoryId), String(it.category || ''));
+        setSharedMenu({ items: shared.length, categories: [...cats].map(([id, name]) => ({ id, name })) });
+      })
+      .catch(() => live && setSharedMenu(null));
+    return () => {
+      live = false;
+    };
+  }, [open, token]);
 
   // Fetch categories when source location changes
   useEffect(() => {
@@ -175,7 +202,11 @@ export default function LocationFormDialog({
     const others = (locations || []).filter(
       (l) => l.name.toLowerCase() !== v.name.trim().toLowerCase()
     );
-    if (others.length > 0) {
+    if (sharedMenu && sharedMenu.items > 0) {
+      // the menu the restaurant already has: the usual choice (one menu for every branch)
+      setImportOption('shared');
+      setSourceLocationId(others[0]?.id ?? '');
+    } else if (others.length > 0) {
       setImportOption('clone');
       setSourceLocationId(others[0].id);
     } else {
@@ -207,7 +238,8 @@ export default function LocationFormDialog({
     }, 150);
   };
 
-  const handleImportSubmit = async () => {
+  // skip: create the branch and set its menu up later (it shows the restaurant's menu meanwhile)
+  const handleImportSubmit = async (skip = false) => {
     if (!step1Values) return;
     setIsImporting(true);
     setImportError(null);
@@ -220,6 +252,18 @@ export default function LocationFormDialog({
       }
 
       // 2. Perform import if selected
+      if (skip || importOption === 'shared') {
+        // nothing to copy: the restaurant's menu shows at every branch (sold out / hidden per branch later)
+        onClose();
+        return;
+      }
+      if (importOption === 'scratch' && hideShared && sharedMenu?.categories.length) {
+        // a menu of its own: the shared categories are hidden at this branch only (they can be shown again there)
+        const ids = sharedMenu.categories.map((c) => c.id);
+        for (let i = 0; i < ids.length; i += 100) {
+          await bulkSetCategoryVisibility(ids.slice(i, i + 100), false, token as string, created.id);
+        }
+      }
       if (importOption === 'clone') {
         if (!sourceLocationId) {
           throw new Error('Please select a source location.');
@@ -261,6 +305,7 @@ export default function LocationFormDialog({
   const otherLocations = (locations || []).filter(
     (l) => l.name.toLowerCase() !== step1Values?.name.toLowerCase()
   );
+  const hasShared = !!sharedMenu && sharedMenu.items > 0;
 
   const scratchOptions = [
     {
@@ -455,9 +500,39 @@ export default function LocationFormDialog({
 
                   {/* Body */}
                   <div className="flex-1 overflow-y-auto p-5 bg-[#fcfcfc] space-y-4">
-                    {/* Top Level Options (Clone vs Scratch) - Only visible if other locations exist */}
-                    {otherLocations.length > 0 && (
+                    {/* The choices: the restaurant's menu (when it has one), another branch's setup (when there are
+                        other branches), or a different menu. The first branch used to get only "upload a menu" —
+                        even when the restaurant had uploaded its menu already. */}
+                    {(hasShared || otherLocations.length > 0) && (
                       <div className="space-y-3">
+                        {hasShared && (
+                          <div
+                            onClick={() => {
+                              setImportOption('shared');
+                              setUploadedFile(null);
+                            }}
+                            className={`flex cursor-pointer items-start gap-3 rounded-xl border p-4 transition-all duration-200 shadow-sm hover:shadow-md ${
+                              importOption === 'shared' ? 'border-slate-400 bg-slate-50/50 shadow-md' : 'border-[#dbdbdb] bg-white'
+                            }`}
+                          >
+                            <div
+                              className={`mt-0.5 rounded-lg p-2 transition-colors border ${
+                                importOption === 'shared' ? 'bg-[#2e2e30] text-white border-[#2e2e30]' : 'bg-slate-50 text-[#5b5b5d] border-slate-100'
+                              }`}
+                            >
+                              <BookOpenIcon className="h-5 w-5" />
+                            </div>
+                            <div className="flex-1">
+                              <span className="font-semibold text-sm text-[#2e2e30]">Use your restaurant's menu</span>
+                              <span className="ml-2 rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-700">Recommended</span>
+                              <p className="text-xs text-[#6b6b70] mt-0.5 leading-normal">
+                                All {sharedMenu!.items} dishes in {sharedMenu!.categories.length} categories — one menu for every branch, so an
+                                edit applies everywhere. Mark dishes sold out or hide categories just for this branch any time.
+                              </p>
+                            </div>
+                          </div>
+                        )}
+                        {otherLocations.length > 0 && (
                         <div
                           onClick={() => {
                             setImportOption('clone');
@@ -475,12 +550,13 @@ export default function LocationFormDialog({
                             <FolderPlusIcon className="h-5 w-5" />
                           </div>
                           <div className="flex-1">
-                            <span className="font-semibold text-sm text-[#2e2e30]">Clone from Existing Location</span>
+                            <span className="font-semibold text-sm text-[#2e2e30]">Copy another branch's setup</span>
                             <p className="text-xs text-[#6b6b70] mt-0.5 leading-normal">
-                              Copy category visibility, item availability, and settings from another branch.
+                              Same menu, with that branch's hidden categories, sold-out dishes and settings.
                             </p>
                           </div>
                         </div>
+                        )}
 
                         <div
                           onClick={() => {
@@ -499,9 +575,9 @@ export default function LocationFormDialog({
                             <ListBulletIcon className="h-5 w-5" />
                           </div>
                           <div className="flex-1">
-                            <span className="font-semibold text-sm text-[#2e2e30]">Start from Scratch</span>
+                            <span className="font-semibold text-sm text-[#2e2e30]">A different menu for this branch</span>
                             <p className="text-xs text-[#6b6b70] mt-0.5 leading-normal">
-                              Setup a new menu configuration for this location.
+                              Upload its menu as a PDF or photo, or add dishes by hand.
                             </p>
                           </div>
                         </div>
@@ -622,12 +698,29 @@ export default function LocationFormDialog({
                     )}
 
                     {/* Scratch / Manual Mode Options */}
-                    {(importOption === 'scratch' || otherLocations.length === 0) && (
+                    {importOption === 'scratch' && (
                       <motion.div
                         initial={{ opacity: 0, y: 10 }}
                         animate={{ opacity: 1, y: 0 }}
                         className="space-y-4"
                       >
+                        {hasShared && (
+                          <label className="flex cursor-pointer items-start gap-2 rounded-lg border border-[#ececec] bg-white p-3 text-xs text-[#2e2e30]">
+                            <input
+                              type="checkbox"
+                              checked={hideShared}
+                              onChange={(e) => setHideShared(e.target.checked)}
+                              className="mt-0.5 rounded border-[#dbdbdb] text-[#2e2e30] focus:ring-0"
+                            />
+                            <span>
+                              <b>Hide the restaurant's menu at {step1Values?.name || 'this branch'}</b>
+                              <span className="block text-[11px] text-[#6b6b70] mt-0.5">
+                                It shows only the dishes you add here. Untick to add them on top of the restaurant's menu. You can show
+                                any category here again from Categories.
+                              </span>
+                            </span>
+                          </label>
+                        )}
                         <div className="text-[11px] font-semibold text-[#5b5b5d] uppercase tracking-wider mb-1">
                           Choose Setup Option:
                         </div>
@@ -760,14 +853,18 @@ export default function LocationFormDialog({
 
                   {/* Footer */}
                   <div className="px-5 py-4 border-t border-[#dbdbdb] sticky bottom-0 bg-[#fcfcfc] flex items-center justify-between">
-                    <button
-                      type="button"
-                      disabled={isImporting}
-                      onClick={handleImportSubmit}
-                      className="text-xs font-semibold text-[#6b7280] hover:text-[#374151] transition-colors disabled:opacity-50 hover:underline"
-                    >
-                      Skip Setup & Start Fresh
-                    </button>
+                    {importOption !== 'shared' ? (
+                      <button
+                        type="button"
+                        disabled={isImporting}
+                        onClick={() => void handleImportSubmit(true)}
+                        className="text-xs font-semibold text-[#6b7280] hover:text-[#374151] transition-colors disabled:opacity-50 hover:underline"
+                      >
+                        Skip — set up the menu later
+                      </button>
+                    ) : (
+                      <span />
+                    )}
 
                     <div className="flex items-center gap-2">
                       <button
@@ -787,7 +884,7 @@ export default function LocationFormDialog({
                           (importOption === 'clone' && !sourceLocationId) ||
                           (importOption === 'scratch' && (scratchMode === 'pdf' || scratchMode === 'photo') && !uploadedFile)
                         }
-                        onClick={handleImportSubmit}
+                        onClick={() => void handleImportSubmit()}
                         className="px-4 py-2 rounded-md text-sm text-white transition-opacity bg-[#2e2e30] hover:opacity-90 disabled:opacity-50 font-medium"
                       >
                         {isImporting ? (
@@ -795,6 +892,8 @@ export default function LocationFormDialog({
                             <ArrowPathIcon className="h-4 w-4 animate-spin" />
                             Importing...
                           </>
+                        ) : importOption === 'shared' ? (
+                          'Create branch'
                         ) : importOption === 'clone' ? (
                           'Clone Menu'
                         ) : scratchMode === 'pdf' ? (
@@ -802,7 +901,7 @@ export default function LocationFormDialog({
                         ) : scratchMode === 'photo' ? (
                           'Import Photo'
                         ) : (
-                          'Start Fresh'
+                          'Create branch'
                         )}
                       </button>
                     </div>
