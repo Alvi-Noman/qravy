@@ -20,9 +20,10 @@
 const char* WIFI_NAME     = "RESTAURANT-WIFI";            // the restaurant's Wi-Fi name (2.4 GHz)
 const char* WIFI_PASSWORD = "WIFI-PASSWORD";              // its password
 
-// The API link — the restaurant's subdomain after "tenant=" (as in https://<subdomain>.qravy.com).
-// One branch only: add "&branch=<branch link name>" at the end (e.g. &branch=gulshan).
-const char* API_LINK = "https://admin.qravy.com/waiter/alert?tenant=sholoaanabangali&device=1";
+// The restaurant's subdomain — the part before .qravy.com in its link (https://sholoaanabangali.qravy.com)
+const char* SUBDOMAIN     = "sholoaanabangali";
+// Only one branch should ring this buzzer? Its branch link name (e.g. "gulshan"). Leave "" for every branch.
+const char* BRANCH        = "";
 
 const int  BUZZER_PIN        = 25;     // the buzzer
 const int  LED_PIN           = 2;      // the on-board LED
@@ -30,6 +31,9 @@ const bool PASSIVE_BUZZER    = false;  // false: an "active" buzzer (beeps on it
                                        // true:  a "passive" buzzer (needs a tone — it only clicks otherwise)
 const int  BEEP_LENGTH_MS    = 300;    // how long each beep is (it repeats every second)
 // ===========================================================================
+
+const char* QRAVY = "https://admin.qravy.com";  // Qravy's address (no need to change)
+String apiLink;                                 // built from SUBDOMAIN / BRANCH in setup()
 
 const uint32_t BEEP_EVERY_MS   = 1000;  // one beep per second
 const uint32_t CHECK_EVERY_MS  = 2000;  // ask Qravy every 2 seconds
@@ -66,7 +70,7 @@ void checkQravy() {
   HTTPClient http;
   http.setConnectTimeout(HTTP_TIMEOUT_MS);
   http.setTimeout(HTTP_TIMEOUT_MS);
-  if (!http.begin(tls, API_LINK)) return;
+  if (!http.begin(tls, apiLink)) return;
   int code = http.GET();
   if (code == 200) {
     JsonDocument doc;
@@ -101,6 +105,11 @@ void setup() {
   pinMode(BUZZER_PIN, OUTPUT);
   pinMode(LED_PIN, OUTPUT);
   buzzer(false);
+
+  // orders (dine-in, online, pickup) AND waiter calls all come through this one link
+  apiLink = String(QRAVY) + "/waiter/alert?tenant=" + SUBDOMAIN + "&device=1";
+  if (strlen(BRANCH)) apiLink += String("&branch=") + BRANCH;
+  Serial.println("[qravy] checking " + apiLink);
 
   // restart by itself if anything hangs for 30 seconds
 #if ESP_ARDUINO_VERSION_MAJOR >= 3
