@@ -318,6 +318,46 @@ def on_channel_menu(item: Dict[str, Any], rules: Dict[str, Any], channel: Option
     return ok or channel in (rules.get("turned_on", {}).get(str(item.get("id"))) or set())
 
 
+def _spans(windows: Iterable[Dict[str, Any]]) -> List[Tuple[int, int]]:
+    """Windows as minute ranges of a day (past midnight → two ranges); the days are left out."""
+    out: List[Tuple[int, int]] = []
+    for w in windows or []:
+        try:
+            a, b = _to_min(str(w["start"])), _to_min(str(w["end"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+        out += [(a, b)] if a < b else [(a, 24 * 60), (0, b)] if a > b else [(0, 24 * 60)]
+    return out
+
+
+def _overlap(x: List[Tuple[int, int]], y: List[Tuple[int, int]], at_least: int = 30) -> bool:
+    return any(min(b1, b2) - max(a1, a2) >= at_least for a1, b1 in x for a2, b2 in y)
+
+
+def served_periods(item: Dict[str, Any], rules: Dict[str, Any]) -> Optional[List[str]]:
+    """The service periods (Settings → Hours: Breakfast, Lunch, Afternoon…) this dish is served in — from its
+    category's hours and its own; None when neither is set (all day: it belongs to no particular period)."""
+    periods = rules.get("periods") or DEFAULT_PERIODS
+    cat = (rules.get("categories") or {}).get(str(item.get("categoryId") or "")) or {}
+    limits = [s for s in (_spans(cat.get("hours") or []),
+                          _spans(resolve_windows(item.get("servicePeriodIds"), item.get("availability"), periods)))
+              if s]
+    if not limits:
+        return None
+    out = []
+    for p in periods:
+        span = _spans([p])
+        if span and all(_overlap(span, lim) for lim in limits):
+            out.append(str(p.get("id")))
+    return out
+
+
+def periods_at(minute_of_day: int, rules: Dict[str, Any]) -> List[str]:
+    """The service periods running at that time of day ("এখন", or "বিকেলে" read as 4:30 pm)."""
+    return [str(p.get("id")) for p in rules.get("periods") or DEFAULT_PERIODS
+            if any(a <= minute_of_day < b for a, b in _spans([p]))]
+
+
 def unavailable_reason(item: Dict[str, Any], rules: Dict[str, Any], now: Optional[datetime] = None, lang: str = "en") -> Optional[str]:
     """None when the item can be ordered now; otherwise a short customer-facing reason."""
     tz = rules.get("tz") or DEFAULT_TZ
