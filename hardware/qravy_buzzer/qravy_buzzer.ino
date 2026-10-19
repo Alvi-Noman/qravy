@@ -28,6 +28,7 @@ const int  BUZZER_PIN        = 25;     // the buzzer
 const int  LED_PIN           = 2;      // the on-board LED
 const bool PASSIVE_BUZZER    = false;  // false: an "active" buzzer (beeps on its own when powered — most common)
                                        // true:  a "passive" buzzer (needs a tone — it only clicks otherwise)
+const bool ACTIVE_LOW        = false;  // true for 3-pin buzzer modules that beep when the pin is LOW
 const int  BEEP_LENGTH_MS    = 300;    // how long each beep is (it repeats every second)
 // ===========================================================================
 
@@ -47,7 +48,7 @@ void buzzer(bool on) {
     if (on) tone(BUZZER_PIN, 2700);
     else noTone(BUZZER_PIN);
   } else {
-    digitalWrite(BUZZER_PIN, on ? HIGH : LOW);
+    digitalWrite(BUZZER_PIN, (on != ACTIVE_LOW) ? HIGH : LOW);
   }
 }
 
