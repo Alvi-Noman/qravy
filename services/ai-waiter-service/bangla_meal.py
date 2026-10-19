@@ -63,8 +63,8 @@ def role(it: Dict[str, Any]) -> str:
         return "chicken"
     if curry and has & _RED_MEAT:
         return "meat"
-    if is_side(it):
-        return "side"
+    if is_side(it) or re.search(r"ভাজা|\bbhaja\b", name.lower()):
+        return "side"  # (বেগুন ভাজা, ঝুরি ভাজা আলু — eaten with the rice; a মাছ ভাজা is fish, above)
     return ""
 
 

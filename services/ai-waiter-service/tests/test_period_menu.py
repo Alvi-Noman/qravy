@@ -89,7 +89,7 @@ def test_ekhon_reads_the_restaurants_clock():
     assert out["replyText"].startswith("এখন আমাদের কাবাব-গ্রিল আইটেমগুলো চলছে: বিফ শিক কাবাব"), out["replyText"]
     assert cards(out) == {"shik", "tikka", "naan"}
     morning, _ = run("এখন কি খাওয়া যাবে?", at="Tue 08:20")
-    assert morning["replyText"].startswith("এখন আমাদের নাস্তার আইটেমগুলো চলছে: পরোটা আর ডাল"), morning["replyText"]
+    assert morning["replyText"].startswith("এখন পরোটা খেতে পারেন — সাথে ডাল আছে।"), morning["replyText"]
     assert cards(morning) == {"porota", "dal"}
 
 
@@ -106,7 +106,7 @@ def test_ekhon_as_speech_to_text_writes_it():
 
 def test_every_time_word():
     assert run("সকালে কি পাওয়া যায়?")[0]["replyText"].startswith(
-        "সকালে, মানে সকাল ৭টা থেকে ১১টা পর্যন্ত, আমাদের নাস্তার আইটেমগুলো পাওয়া যায়: পরোটা আর ডাল।")
+        "সকালে, মানে সকাল ৭টা থেকে ১১টা পর্যন্ত, পরোটা খেতে পারেন — সাথে ডাল আছে।")
     out, _ = run("সন্ধ্যায় কি আছে?", at="Mon 13:05")  # 6:30 pm → the dinner period: nothing set for it
     assert "period_menu" not in out["meta"]["guards"]
     out, _ = run("রাতে কি আছে?", items=ITEMS + [{"id": "kacchi", "name": "মাটন কাচ্চি", "price": 400, "category": CURRY,

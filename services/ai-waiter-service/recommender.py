@@ -129,14 +129,17 @@ _AVOID_WORDS = [
     (r"\bpork\b|শুকর", "pork"),
     (r"mutton|lamb|খাসি|khashi", "mutton"),
     (r"chicken|মুরগি|murgi", "chicken"),
-    (r"seafood|prawn|shrimp|চিংড়ি", "prawn/shrimp"),
+    (r"seafood|prawn|shrimp|চিংড়ি|প্রন|প্রণ|শ্রিম্প|chingri", "prawn/shrimp"),
     (r"\bfish\b|মাছ", "fish"),
     (r"mushroom", "mushroom"),
 ]
 _ALLERGY_CUE = re.compile(r"allerg|এলার্জি|এলার্জী|অ্যালার্জি|intoleran|can'?t (have|eat|take)|cannot (have|eat)", re.I)
 _AVOID_CUE = re.compile(
     r"(don'?t|do not|never|can'?t|cannot|won'?t|doesn'?t|does not) (eat|like|want|take)|\bno\b|without|except|"
-    r"not (a fan of|into)|hate|খাই না|খায় না|চলবে না|লাগবে না|ছাড়া|khai na|khay na|chara|chai na",
+    r"not (a fan of|into)|hate|খাই না|খায় না|চলবে না|লাগবে না|ছাড়া|khai na|khay na|chara|chai na|"
+    # "মাছ খাবো না", "ও মাছ খেতে পারে না", "মাছ পছন্দ না", "মাছ না, মাংস" (a না with a comma — "মাছ না মাংস?" asks which)
+    r"খাবো না|খাব না|খাবনা|খাবে না|খান না|খেতে চাই না|খেতে পারি না|খেতে পারে না|খেতে পারেন না|পছন্দ না|পছন্দ করি না|"
+    r"পছন্দ করে না|ভালো লাগে না|ভাল লাগে না|খাওয়া যাবে না|খাওয়া যাবে না|(?<![ঀ-৿])না\s*(?:,|।|$)|khabo na|khab na",
     re.I,
 )
 
@@ -201,7 +204,9 @@ def extract_prefs(text: str) -> GuestProfile:
         p.vegetarians_in_party = n or 1
     elif re.search(r"\bvegan\b", t):
         p.diet.append("vegan")
-    elif re.search(r"\b(vegetarian|veggie|veg only|only veg|pure veg)\b|নিরামিষ|niramish|niramis", t):
+    # ("ভেজ বার্গার আছে?" — asking for the vegetarian one: it once got a chicken burger offered instead)
+    elif re.search(r"\b(vegetarian|veggie|veg only|only veg|pure veg)\b|নিরামিষ|niramish|niramis|ভেজিটেরিয়ান|"
+                   r"(?<![ঀ-৿])ভেজ(?![ঀ-৿])|\bveg (burger|pizza|item|items|food|dish|dishes|option|options|roll|sandwich)", t):
         p.diet.append("vegetarian")
     if re.search(r"pescatarian|only (eat )?(fish|seafood)", t):
         p.diet.append("pescatarian")
@@ -389,7 +394,8 @@ def violations(it: Dict[str, Any], prof: GuestProfile, facts: Optional[Dict[str,
     if "no_pork" in prof.diet and "pork" in c:
         out.append("has pork")
     for word in prof.avoid:
-        if word in c or re.search(rf"\b{re.escape(word.split('/')[0])}", text):
+        # (চিংড়ি is মাছ to a Bengali guest — "মাছ খাই না" once got চিংড়ি ষোল আনা)
+        if word in c or re.search(rf"\b{re.escape(word.split('/')[0])}", text) or (word == "fish" and "prawn/shrimp" in c):
             out.append(f"guest avoids {word}")
     if prof.spice in ("none", "mild") and f["heat"] in ("spicy", "likely spicy"):
         out.append("too spicy")
@@ -503,9 +509,13 @@ def _score(it: Dict[str, Any], f: Dict[str, Any], prof: GuestProfile, kinds: Lis
     if prof.spice in ("mild", "none") and f["heat"] == "likely mild":
         s += 1.5; reasons.append("mild")
     if "light" in prof.mood:
-        s += 2.5 if (f["starter"] or f["soup"]) and not f["heavy"] else (-2.5 if f["heavy"] else 0)
+        # (a biryani, a khichuri, a nehari is never "something light" — it once was, at 4:30 in the afternoon)
+        heavy = f["heavy"] or bool(re.search(r"biry?ani|polao|pulao|tehari|khichuri|nehari|haleem|rezala|kacchi", f["text"]))
+        s += 2.5 if (f["starter"] or f["soup"]) and not heavy else (-2.5 if heavy else 0)
         if f["soup"] or f["starter"]:
             reasons.append("light")
+        if f["dessert"] or (f["drink"] and re.search(r"\btea\b|coffee|lassi|juice", f["text"])):
+            s += 1.5  # a doi, a tea, a lassi: what "something light" is at a Bengali place in the afternoon
     if "filling" in prof.mood:
         s += 2.5 if (f["heavy"] or f["complete_meal"] or f["main"]) else -1.5
         if f["complete_meal"] or f["heavy"]:
@@ -532,6 +542,13 @@ def _score(it: Dict[str, Any], f: Dict[str, Any], prof: GuestProfile, kinds: Lis
             s += 4.0; reasons.append("kid-friendly")
         elif f["heavy"] and prof.party_size < 3:
             s -= 1.5
+        if re.search(r"triple|tower|stack|double|jumbo|\bxl\b|monster|giant", f["text"]):
+            s -= 3.0  # a child's portion is no Triple Cheese Tower (it led "বাচ্চাদের জন্য…")
+        if re.search(r"sizzl|bhuna|masala|chill?i|jhal|tikka|naga|vindaloo|rezala|kala bhuna|curry", f["text"]) \
+                and not f["kid_friendly"]:
+            s -= 2.5  # nor a sizzling plate or a beef bhuna ("বাচ্চাদের জন্য Beef Sizzling…")
+        if re.search(r"\b(mini|slider|kids?|junior|nugget|tender|popcorn)\b", f["text"]):
+            s += 1.5
     if prof.vegetarians_in_party and f["protein"] == "veg":
         s += 1.0
     if f["drink"]:
@@ -545,7 +562,7 @@ def _score(it: Dict[str, Any], f: Dict[str, Any], prof: GuestProfile, kinds: Lis
     if f["side"] and not f["complete_meal"]:
         s -= 2.5  # a bhorta, a sauce, an add-on: goes with a meal, isn't one
     if f["dessert"]:
-        s -= 1.5  # after the meal — offered then, not as "what should I eat?"
+        s -= 3.0  # after the meal (below a side: "নিরামিষ কি খাওয়া যায়?" once led with Chocolate Brownie) — offered then, not as "what should I eat?"
     # budget fit
     price = it.get("price")
     if prof.budget and isinstance(price, (int, float)):

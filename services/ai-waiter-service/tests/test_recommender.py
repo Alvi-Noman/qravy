@@ -302,7 +302,7 @@ def test_quiet_mode_strips_suggestions_and_decline_is_remembered():
 def test_complement_mode_the_model_only_confirms_the_offer_is_the_engines():
     add = {**TURN, "topic": "order_change", "intent": "order", "replyText": "Added 1 × Beef with Red Curry.",
            "cartOps": [{"op": "add", "item": IDX.ref(by["rc"]), "quantity": 1, "note": "", "choices": []}]}
-    out, calls = _run("one beef with red curry please", [add])
+    out, calls = _run("one beef with red curry please, whatever is good", [add])  # (a word to read: the model)
     # the model only confirms the add — never a pairing of its own (offers.py decides the one offer)
     assert "RECOMMENDATION MODE: COMPLEMENT" in calls[0][-1]["content"] and "PAIRING" not in calls[0][-1]["content"]
     offer = out["meta"]["upsellOffer"]
