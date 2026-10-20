@@ -313,3 +313,36 @@ def test_what_goes_with_a_curry_elsewhere():
     out, calls = run("সাথে কি নেব?", items=indian, cart=[{"itemId": "bc", "quantity": 1, "price": 380}], at="Tue 20:30")
     assert out["meta"]["guards"] == ["pairing"] and not calls, out["replyText"]
     assert "Jeera Rice" in out["replyText"] and "Butter Naan" in out["replyText"], out["replyText"]
+
+
+# ------------------------------------------------------------------ what's in the tray / what's off (a real chat, 2026-10-20)
+
+def _breakfast_house():
+    items = [dict(i) for i in HOUSE]
+    items.append({"id": "but", "name": "বুটের ডাল", "price": 30, "category": "ভোরের শহর", "categoryId": "o",
+                  "periods": ["breakfast"]})
+    items.append({"id": "mug", "name": "মুগ ডাল", "price": 40, "category": "ভোরের শহর", "categoryId": "o",
+                  "periods": ["breakfast"], "hidden": True, "status": "hidden", "available": False})
+    for it in items:
+        if it["id"] == "dal":  # the old ডাল, switched off
+            it.update(hidden=True, status="hidden", available=False, category="ভর্তা ভাজির মাখামাখি", periods=None)
+    return items
+
+
+def test_whats_there_never_repeats_the_tray_nor_lists_whats_off():
+    items = _breakfast_house()
+    out, calls = run("সকালের খাবারে কি কি আছে?", items=items, at="Tue 09:30", cart=[{"itemId": "but", "quantity": 1, "price": 30}],
+                     state={"checkout": {"stage": "readback"}})  # (while the order waits for its yes, too)
+    assert "period_menu" in out["meta"]["guards"] and not calls, out["replyText"]
+    assert "বুটের ডাল" not in out["replyText"] and "মুগ ডাল" not in out["replyText"] and "পরোটা" in out["replyText"], out["replyText"]
+    later, _ = run("সকালের খাবারে কি কি আছে?", items=items, at="Tue 15:00")  # off hours: still never the switched-off ones
+    assert "মুগ ডাল" not in later["replyText"] and "বুটের ডাল" in later["replyText"], later["replyText"]
+
+
+def test_an_off_dish_in_the_tray_is_said_as_the_trays_with_the_one_that_is_on():
+    items = _breakfast_house()
+    idx = MenuIndex(items)
+    orderable = {idx.item_id(i): i.get("available") is not False for i in idx.items}
+    text = brain._gone_from_tray({"itemId": "dal", "name": "ডাল"}, idx, orderable, set(), "bn")
+    assert text == "খেয়াল করবেন: আপনার ট্রের ডাল এখন পাওয়া যাচ্ছে না — বদলে ড - তে ডাল বা বুটের ডাল দেব?", text
+    assert brain._reason_bn([{"reason": "not available right now"}]) == ""

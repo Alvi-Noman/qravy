@@ -312,7 +312,8 @@ PLAYBOOK = """You are the virtual waiter of the restaurant described below. Gues
 - "Something light" / "হালকা কিছু" is a soup, a salad, a snack, tea / coffee, doi, a dessert or a drink — never a biryani, polao, khichuri, kacchi or a curry with rice (those are full meals: filling, never "light").
 - Polao, biryani, kacchi, tehari, khichuri and fried rice ARE rice dishes — never suggest rice "with" them (nobody eats ভাত with a পোলাও). Rice / bread goes with a curry, a bhuna, a fish or meat dish, a kebab.
 - Local words: "ঠান্ডা" / "thanda" / "কোল্ড ড্রিংকস" = a cold soft drink (Coke, Sprite…), never a dish; "পানীয়" = drinks.
-- NOT ORDERABLE NOW items exist but can't be ordered at the moment: say why (the reason given) and suggest an available alternative. Never add them to the cart.
+- NOT ORDERABLE NOW items exist but can't be ordered at the moment: say why (the reason given) and suggest an available alternative. Never add them to the cart. Never list them on your own in an answer about what there is ("ডাল, মুগ ডাল আজ পাওয়া যাচ্ছে না") — name only what CAN be ordered; mention one only when the guest asks for it by name, and then offer the one of its kind that is on.
+- Never suggest or list again what is already in the CART ("সকালে কি আছে?" with বুটের ডাল in the cart: the paratha, the nehari… — not the dal they already took).
 - If a fact isn't available, say you don't have that information and that a staff member can help. Guessing is worse than saying you don't know.
 - Wait times: how long a dish takes to make is in MENU as "prep ~N min"; live numbers (how busy the kitchen is, the CART if ordered now, the quickest dishes, the guest's PLACED orders) are in WAIT TIMES in THIS TURN. Quote only those, rounded and approximate ("about 15 minutes", "১৫ মিনিটের মতো") — never an exact promise, never a number you made up, never "I've told the kitchen to hurry". A dish without a prep time takes the default given in WAIT TIMES. "Where's my food?" after ordering → answer from GUEST'S PLACED ORDER (its status and minutes left; running late → a short apology and "it's coming soon"). A guest in a hurry → lead with the quickest dishes. Ordering and asking "how long?" in the same breath → do both (topic wait_time only when time is all they asked).
 
@@ -1217,6 +1218,38 @@ def _day_dishes(items: List[Dict[str, Any]], local_time: Optional[str]) -> List[
                   "unavailableReason": (f"শুধু {when} হয়, আজ নয়" if bn else f"{when} only — not today")}
         out.append(it)
     return out
+
+
+def _same_kind_on(it: Dict[str, Any], index: MenuIndex, orderable: Dict[str, bool], skip: set = frozenset()
+                  ) -> List[Dict[str, Any]]:
+    """The dishes of its kind that CAN be ordered now — by the last word of its name ("ডাল" → বুটের ডাল)."""
+    words = re.findall(r"[A-Za-z]+|[ঀ-৿]+", re.sub(r"\(.*?\)", " ", str(it.get("name") or "")))
+    head = _guest_tokens(words[-1], _menu_rev(index)) if words else set()
+    if not head:
+        return []
+    return [o for o in index.items if o is not it and orderable.get(index.item_id(o), True) and index.item_id(o) not in skip
+            and not o.get("hidden") and head <= _name_tokens(str(o.get("name") or ""))][:2]
+
+
+def _gone_from_tray(w: Dict[str, Any], index: MenuIndex, orderable: Dict[str, bool], skip: set, lang: str) -> str:
+    """"খেয়াল করবেন: আপনার ট্রের ডাল এখন পাওয়া যাচ্ছে না — বদলে বুটের ডাল দেব?" — which line, and the one of its kind
+    that is on (it said "ডাল এখন পাওয়া যাচ্ছে না" while বুটের ডাল was on, and it sounded like no dal at all)."""
+    bn = lang == "bn"
+    it = index.by_id.get(str(w.get("itemId")))
+    alts = _same_kind_on(it, index, orderable, skip) if it else []
+    name = bangla_meal.said_name(it) if it else str(w.get("name") or "")
+    if bn:
+        swap = (f"বদলে {' বা '.join(bangla_meal.said_name(a) for a in alts)} দেব?" if alts else "বদলে অন্য কিছু দেব?")
+        return f"খেয়াল করবেন: আপনার ট্রের {name} এখন পাওয়া যাচ্ছে না — {swap}"
+    swap = (f"shall I swap it for the {' or the '.join(bangla_meal.said_name(a) for a in alts)}?" if alts
+            else "shall I swap it for something else?")
+    return f"Heads up: the {name} in your tray can't be ordered right now — {swap}"
+
+
+def _reason_bn(gone: List[Dict[str, Any]]) -> str:
+    """The reason in brackets — only when it's in Bangla (never "(not available right now)" inside a Bangla line)."""
+    why = str((gone[0] if gone else {}).get("reason") or "")
+    return f" ({why.rstrip('।.')})" if why and re.search(r"[ঀ-৿]", why) else ""
 
 
 # a short question about a dish's qualities — "ঝাল কেমন?", "কয় পিস থাকে?", "is it spicy?", "how big is it?"
@@ -3842,8 +3875,8 @@ _BN_DIG = str.maketrans("0123456789", "০১২৩৪৫৬৭৮৯")
 
 
 def _period_menu_reply(transcript: str, index: MenuIndex, orderable: Dict[str, bool], periods: List[Dict[str, Any]],
-                       now_min: Optional[int], scope: set, lang: str, opening: Optional[List[Dict[str, Any]]] = None
-                       ) -> Optional[Tuple[str, List[Dict[str, Any]], str]]:
+                       now_min: Optional[int], scope: set, lang: str, opening: Optional[List[Dict[str, Any]]] = None,
+                       in_tray: Optional[set] = None) -> Optional[Tuple[str, List[Dict[str, Any]], str]]:
     """"বিকেলে কি আছে?" / "রাতে কি পাওয়া যায়?" / "এখন কি খাওয়া যেতে পারে?" — what's served at that time, as a waiter
     says it: the all-day food AND what the owner set for that time (a category's / dish's hours), the rice meal first
     at a Bengali rice house, "we're closed then" outside the opening hours. None → the usual answer ("এখন" with no
@@ -3883,6 +3916,11 @@ def _period_menu_reply(transcript: str, index: MenuIndex, orderable: Dict[str, b
     in_scope = lambda it: not scope or index.item_id(it) in scope  # noqa: E731
     now_ok = lambda it: orderable.get(index.item_id(it), True) or not on_now  # noqa: E731
     in_order = sorted(index.items, key=lambda it: index.position.get(index.item_id(it), 1 << 20))  # (the menu's order)
+    # never what's already in the tray, never a dish the restaurant switched off or sold out today — at any hour
+    on_menu = lambda it: (index.item_id(it) not in (in_tray or set()) and not it.get("hidden")  # noqa: E731
+                          and it.get("status") in (None, "active")
+                          and not re.search(r"শেষ হয়ে গেছে|sold out", str(it.get("unavailableReason") or ""), re.I))
+    in_order = [it for it in in_order if on_menu(it)]
     set_for = [it for it in in_order if set(it.get("periods") or []) & target and in_scope(it) and now_ok(it)]
     all_day = [it for it in in_order if it.get("periods") is None and in_scope(it) and now_ok(it)]
     breakfast = any(re.search(r"breakfast|সকাল|নাস্তা", f"{p.get('id')} {p.get('name')}", re.I)
@@ -4768,6 +4806,7 @@ async def _reply(
 
     def tray_done(text: str, t_ops: List[Dict[str, Any]], t_clear: bool, after: List[Dict[str, Any]],
                   note: str, topic_: str = "order_change") -> Dict[str, Any]:
+        text = re.sub(r"[ \t]*[🌶✓✔★☆🔥⭐]+️?", "", text).strip()  # (menu-card marks are never said)
         rec = _tray.change_record(cart_rows, after) if (t_ops or t_clear) else None
         if rec:
             tstate["last_change"] = rec
@@ -5320,7 +5359,9 @@ async def _reply(
     # category / dish hours) — never a guess from the dish names when the owner has said
     lt = re.search(r"(\d{1,2}):(\d{2})", str(ctx.get("localTime") or ""))
     # (not "ভালো কি খাওয়া যায় এখন?" — a pick, from what's orderable now; not "মানুষ / জায়গা আছে এখন?" — no food)
-    period_menu = None if (stage != "none" or _dishes_named(transcript, index, limit=1) or _orders_now(transcript)
+    # (also while the order waits for its yes — "সকালের খাবারে কি কি আছে?" then is a question, the model once answered it
+    # with the tray's warnings)
+    period_menu = None if (stage not in ("none", "readback") or _dishes_named(transcript, index, limit=1) or _orders_now(transcript)
                            or _ABOUT_MINE.search(transcript) or profile.allergies  # (an allergy → the model)
                            or re.search(r"ভালো|সেরা|বেস্ট|রেকমেন্ড|সাজেস্ট|জনপ্রিয়|পপুলার|\b(recommend|suggest|best|good|popular)\b",
                                         transcript, re.I)
@@ -5332,9 +5373,11 @@ async def _reply(
                            # পরোটা and ডিম ভাজি)
                            _named_kind_ids(re.sub(r"নাস্তা\S*|নাশতা\S*|\bbreakfast\b|\bnasta\S*", " ", transcript, flags=re.I), index)
                            if re.search(r"নাস্তা|নাশতা|\bbreakfast\b|\bnasta", transcript, re.I) else kind_scope, lang,
-                           opening=list((restaurant or {}).get("opening") or []))
+                           opening=list((restaurant or {}).get("opening") or []), in_tray=set(cart_qty))
     if period_menu:
         text, rows, note = period_menu
+        if stage == "readback":
+            ck = {**ck, "stage": "none"}  # still choosing: the read-back is asked again when they're done
         m = _base_meta(language=lang, intent="suggestions" if rows else "menu", topic="restaurant_info", suggestions=rows,
                        decision={"showSuggestionsModal": bool(rows), "showUpsellTray": False}, notes=note, **ids)
         rstate.turn += 1
@@ -5598,7 +5641,7 @@ async def _reply(
             tstate["pending"] = {"kind": "unavailable", "clear": False,
                                  "ops": [{"op": "remove", "itemId": w["itemId"], "name": w["name"], "lineKey": w["lineKey"]} for w in gone]}
             ck = {**ck, "stage": "none"}
-            text = (f"অর্ডার দেওয়ার আগে একটা কথা: {names} এখন পাওয়া যাচ্ছে না ({gone[0]['reason']})। ওটা বাদ দিয়ে দেব?"
+            text = (f"অর্ডার দেওয়ার আগে একটা কথা: {names} এখন পাওয়া যাচ্ছে না{_reason_bn(gone)}। ওটা বাদ দিয়ে দেব?"
                     if bn else f"Before I place it: {names} can't be ordered right now ({gone[0]['reason']}). Shall I remove it?")
             tstate["pending"]["question"] = text
             return tray_done(text, [], False, cart_rows, "unavailable_before_checkout", "other")
@@ -6372,7 +6415,7 @@ async def _reply(
             names = ", ".join(w["name"] for w in gone)
             tstate["pending"] = {"kind": "unavailable", "clear": False,
                                  "ops": [{"op": "remove", "itemId": w["itemId"], "name": w["name"], "lineKey": w["lineKey"]} for w in gone]}
-            reply = (f"অর্ডার দেওয়ার আগে একটা কথা: {names} এখন পাওয়া যাচ্ছে না ({gone[0]['reason']})। ওটা বাদ দিয়ে দেব?"
+            reply = (f"অর্ডার দেওয়ার আগে একটা কথা: {names} এখন পাওয়া যাচ্ছে না{_reason_bn(gone)}। ওটা বাদ দিয়ে দেব?"
                      if lang == "bn" else f"Before I place it: {names} can't be ordered right now ({gone[0]['reason']}). Shall I remove it?")
             tstate["pending"]["question"] = reply
             voice = reply if lang == "bn" else ""
@@ -6614,6 +6657,10 @@ async def _reply(
         guards.append("topped_up_to_three")
     # "বাকিগুলো স্ক্রিনে দিলাম" / "I've put the others on your screen" — the guest can see the cards
     reply = _SCREEN_TALK.sub("", reply).strip()
+    # the 🌶 / ✓ marks on a dish name are for the menu card — never said ("ষোল আনা স্পেশাল চা 🌶🌶")
+    reply = re.sub(r"[ \t]*[🌶✓✔★☆🔥⭐]+️?", "", reply).strip()
+    if voice:
+        voice = re.sub(r"[ \t]*[🌶✓✔★☆🔥⭐]+️?", "", voice).strip()
     # "এটা খেতে চান? অর্ডার করতে চান?" / "ভাতও অর্ডার করতে চান? অর্ডার অর্ডার করবেন?" — one question at a time: the last
     reply = _one_last_question(reply)
     if voice:
@@ -6731,8 +6778,7 @@ async def _reply(
     if fresh and not checkout_spoke and not sure_q:
         w = fresh[0]
         if w["kind"] == "unavailable":
-            tip = (f" খেয়াল করবেন: {w['name']} এখন পাওয়া যাচ্ছে না — বদলে অন্য কিছু দেব?" if lang == "bn"
-                   else f" Heads up: {w['name']} can't be ordered right now — shall I swap it for something else?")
+            tip = " " + _gone_from_tray(w, index, orderable, set(final_qty), lang)
         else:
             tip = (f" খেয়াল করবেন: আপনি যা বলেছেন, সেই হিসেবে {w['name']} আপনার জন্য ঠিক না-ও হতে পারে ({w['reason']}) — বদলে দেব?"
                    if lang == "bn" else f" Heads up: {w['name']} may not suit you ({w['reason']}) — want me to swap it?")
