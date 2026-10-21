@@ -21,6 +21,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 import bangla_meal
+import bhorta_bhaji
 import menu_answers
 import tray as _tray
 from recommender import GuestProfile, OrderStats, dish_facts, is_packaged
@@ -76,6 +77,9 @@ class Offer:
     choices: Optional[List[Dict[str, Any]]] = None
     # asked after a yes ("…সাথে ভাত দেব?" → "ভাতের সাথে মাছ নেবেন, নাকি মাংস?"): {"text", "choices"}
     then: Optional[Dict[str, Any]] = None
+    # asked on a plain yes to a question with named answers ("সাথে ভর্তা বা ভাজি কিছু নেবেন?" → "হ্যাঁ" → the lists):
+    # {"text", "choices"}
+    on_yes: Optional[Dict[str, Any]] = None
 
     def __post_init__(self) -> None:
         # the 🌶 / ✓ marks on a dish name are for the menu card — never said ("…ষোল আনা স্পেশাল চা 🌶🌶 নেবেন?")
@@ -649,6 +653,37 @@ def _main(moment: str, c: Ctx) -> Optional[Offer]:
                  card=_card(m, c, "for the main course"))
 
 
+def _bhorta_bhaji_offer(moment: str, c: Ctx, ids: set, dal: List[Dict[str, Any]]) -> Optional[Offer]:
+    bn = c.lang == "bn"
+    groups = []
+    for g in ("bhorta", "bhaji"):
+        in_order = sorted(c.index.items, key=lambda x: c.index.position.get(c.index.item_id(x), 1 << 20))  # (the menu's order)
+        items = [x for x in bhorta_bhaji.of_group(in_order, g, c.index.item_id, c.orderable) if _sellable(c, x, ids)]
+        if items:
+            groups.append((g, items))
+    if not groups:
+        return None
+    choices, lists = [], []
+    for g, items in groups:
+        said = bhorta_bhaji.say([(g, items)], bn, limit=12)  # (all of them: an offer has no "আর কি কি…" step)
+        lists.append((g, items))
+        # "আলু" / "শাক" answer it too — never a protein word ("মাছ", "চিকেন": another dish)
+        shorts = [s for s, ok in (bhorta_bhaji._short(x, g) for x in items) if ok and s not in
+                  ("মাছ", "ডিম", "চিকেন", "ইলিশ", "চিংড়ি", "সবজি", "বিফ", "গরু", "মুরগি")]
+        rx = (bhorta_bhaji.BHORTA if g == "bhorta" else bhorta_bhaji.BHAJI).pattern
+        choices.append({"label": ("ভর্তা" if g == "bhorta" else "ভাজি") if bn else g,
+                        "match": "|".join([rx] + [re.escape(s) for s in shorts]),
+                        "items": [c.index.item_id(x) for x in items],
+                        "ask": said + ("। কোনটা নেবেন?" if bn else ". Which one?")})
+    if dal:
+        choices.append({"label": "ডাল" if bn else "dal", "match": _DAL.pattern, "items": [c.index.item_id(dal[0])]})
+    words = " বা ".join("ভর্তা" if g == "bhorta" else "ভাজি" for g, _i in groups)
+    text = f"সাথে {words} কিছু নেবেন?" if bn else f"Some {' or '.join(g for g, _i in groups)} with it?"
+    yes_text = bhorta_bhaji.say(lists, bn) + ("। কোনটা নেবেন?" if bn else ". Which would you like?")
+    return Offer("side", moment, text, [], [i for ch in choices for i in ch["items"]], _price(groups[0][1][0]),
+                 choices=choices, on_yes={"text": yes_text, "choices": choices})
+
+
 def _side(moment: str, c: Ctx) -> Optional[Offer]:
     """A burger / wings with nothing on the side → the side that goes with it."""
     shape = _roles(c)
@@ -664,6 +699,11 @@ def _side(moment: str, c: Ctx) -> Optional[Offer]:
         bhorta = _plain_first([x for x in c.index.items if _sellable(c, x, ids) and bangla_meal.role(x) == "side"
                                and re.search(r"আলু ভর্তা|বেগুন ভর্তা|ভর্তা|bhorta|bharta", str(x.get("name") or ""), re.I)])
         bn = c.lang == "bn"
+        # the bhortas and bhajis on now → "সাথে ভর্তা বা ভাজি কিছু নেবেন?"; "ভর্তা" / "কি কি ভর্তা আছে?" → the bhortas
+        # said the way a waiter says them; "হ্যাঁ" → both lists; "আলু ভর্তা" → added
+        side_offer = _bhorta_bhaji_offer(moment, c, ids, dal)
+        if side_offer:
+            return side_offer
         if dal and bhorta:
             choices = [{"label": "ডাল" if bn else "dal", "match": _DAL.pattern, "items": [c.index.item_id(dal[0])]},
                        {"label": bangla_meal.said_name(bhorta[0]), "match": re.escape(bangla_meal.said_name(bhorta[0]).split()[0]) + "|ভর্তা|bhorta",

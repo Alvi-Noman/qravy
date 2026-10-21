@@ -51,6 +51,7 @@ from recommender import asks_for_recommendation, asks_overview
 import bangla_meal
 import followups
 import menu_answers
+import bhorta_bhaji
 import pairing
 import menu_profile
 import reco_format
@@ -5168,8 +5169,8 @@ _KIND_FILLER = {"মধ্যে", "ভিতর", "ভিতরে", "কি", 
                 "পাওয়া", "পাওয়া", "যায়", "যায়", "চাই", "লাগবে", "খাবো", "খাব", "নেব", "নিব", "না", "হ্যাঁ"}
 
 
-def _kind_list_reply(transcript: str, index: MenuIndex, orderable: Dict[str, bool], scope: set, lang: str
-                     ) -> Optional[Tuple[str, List[Dict[str, Any]], str]]:
+def _kind_list_reply(transcript: str, index: MenuIndex, orderable: Dict[str, bool], scope: set, lang: str,
+                     seen: Any = ((), ()), said_before: str = "") -> Optional[Tuple[str, List[Dict[str, Any]], str]]:
     """"মাছের মধ্যে আছে রুই মাছ, হাওরের বোয়াল মাছ, … — কোনটা দেব?" for a list question about a kind; for the kind
     plus a word that is nothing on the menu ("মাছ পটিকিয়া") the same list after "which one did you mean?"."""
     t = transcript or ""
@@ -5201,6 +5202,20 @@ def _kind_list_reply(transcript: str, index: MenuIndex, orderable: Dict[str, boo
         return None
     dishes = list(zip(items, said_all))
     bn = lang == "bn"
+    # "আর কি কি মাছ আছে?" right after the fish were said — the ones not said yet (it once said the same 8 again)
+    older, last = (set(x) for x in (seen if isinstance(seen, tuple) else ((), seen)))
+    if (older or last) and bhorta_bhaji._MORE.search(t) and not unheard:
+        # (seen = on the screen AND said: ten cards shown, eight named — the other two are still "more")
+        fresh = [(it, s_) for it, s_ in dishes if not (index.item_id(it) in older or (
+            index.item_id(it) in last and (not said_before or s_ in said_before)))]
+        if not fresh:
+            text = (f"{upsell_engine.of_bn(label)} মধ্যে এগুলোই আছে — যা বললাম। এর মধ্যে কোনটা নেবেন?" if bn
+                    else f"That's all the {label} we have — the ones I said. Which would you like?")
+            return text, [_suggestion_row(it) for it, _s in dishes[:12]], "kind_all_said"
+        names = list(dict.fromkeys(s_ for _it, s_ in fresh))[:8]
+        joined = (", ".join(names[:-1]) + (" আর " if bn else " and ") + names[-1]) if len(names) > 1 else names[0]
+        text = (f"আরও আছে — {joined}। কোনটা নেবেন?" if bn else f"We also have {joined}. Which would you like?")
+        return text, [_suggestion_row(it) for it, _s in fresh[:12]], "kind_more"
     if len(spoken) == 1 and not unheard:
         # one of its kind: "জি, Burger & Fries Combo আছে — ৳490। দেব?" (not "কম্বোর মধ্যে আছে … কোনটা দেব?")
         price = _money(min(float(it.get("price") or 0) for it in items))
@@ -6314,7 +6329,7 @@ async def _reply(
             own = [w for w in ws if sum(w in o for o in words) == 1] or [n]
             sub.append({"label": n, "match": "|".join(re.escape(w) for w in own), "items": [index.item_id(it)]})
         joined = (", ".join(names[:-1]) + (" না " if bn else " or ") + names[-1]) if len(names) > 1 else names[0]
-        text = (f"কোন {picked.get('label')} দেব — {joined}?" if bn else f"Which {picked.get('label')} — {joined}?")
+        text = picked.get("ask") or (f"কোন {picked.get('label')} দেব — {joined}?" if bn else f"Which {picked.get('label')} — {joined}?")
         _hold_choices(o_info, text, sub)
         res = tray_done(text, [], False, cart_rows, "offer_which", "other")
         res["meta"]["suggestions"] = [_suggestion_row(it) for it in items[:6]]
@@ -6351,6 +6366,13 @@ async def _reply(
             if picked:
                 return _offer_choice(picked, o_info)
             if said_yes and not named_other:
+                on_yes = o_info.get("on_yes") if isinstance(o_info.get("on_yes"), dict) else None
+                if on_yes:  # "সাথে ভর্তা বা ভাজি কিছু নেবেন?" → "হ্যাঁ" → what there is, not the question again
+                    _hold_choices(o_info, str(on_yes.get("text") or ""), list(on_yes.get("choices") or choices))
+                    res = tray_done(str(on_yes.get("text") or ""), [], False, cart_rows, "offer_which", "other")
+                    res["meta"]["suggestions"] = [_suggestion_row(index.by_id[i]) for ch in choices
+                                                  for i in ch.get("items") or [] if i in index.by_id][:12]
+                    return _with_buttons(res, _choice_buttons(choices))
                 tstate["pending"] = offer_pending
                 return _with_buttons(tray_done(str(o_info.get("text") or ""), [], False, cart_rows, "offer_which", "other"),
                                      _choice_buttons(choices))
@@ -6649,7 +6671,17 @@ async def _reply(
 
     # "আলুর পরোটা আছে?" — the menu has পরোটা but no আলুর পরোটা → say so, and offer the one there is (it answered
     # "হ্যাঁ, আলুর পরোটা আছে")
-    other_kind = _not_this_version(transcript, index) if stage == "none" else None
+    # "ভর্তার মধ্যে কি কি আছে?" / "ভাজি আছে?" / "বাঁধা ভাজি আছে?" — the bhortas or bhajis as a kind, said the way a
+    # Bengali waiter says them (it once listed ইলিশ কচু as a bhorta and said "ভাজি শেষ" for the one dish called ভাজি)
+    side_ans = (bhorta_bhaji.answer(transcript, sorted(index.items, key=lambda it: index.position.get(index.item_id(it), 1 << 20)),
+                                    index.item_id, orderable,
+                                    _dishes_named(transcript, index, limit=3), lang, _suggestion_row,
+                                    # (what this guest was just shown: "আর কি কি ভর্তা আছে?" is the others)
+                                    seen=([i for i in rstate.thread_shown if i not in rstate.last_offered], list(rstate.last_offered))
+                                    if rstate.turn - max(rstate.thread_turn, rstate.last_offer_turn) <= 3 else [],
+                                    said_before=last_waiter)
+                if stage in ("none", "readback") and not tstate.get("pending") and not profile.allergies else None)
+    other_kind = _not_this_version(transcript, index) if stage == "none" and not side_ans else None
     if other_kind:
         asked_as, it = other_kind
         said = bangla_meal.said_name(it)
@@ -6671,8 +6703,8 @@ async def _reply(
     at_time = (_dish_at_time(transcript, index, orderable, list((menu_snapshot or {}).get("periods") or []),
                              int(lt.group(1)) * 60 + int(lt.group(2)) if lt else None,
                              list((restaurant or {}).get("opening") or []), lang)
-               if stage in ("none", "readback") and not tstate.get("pending") else None)
-    period_menu = None if (at_time or stage not in ("none", "readback") or _dishes_named(transcript, index, limit=1) or _orders_now(transcript)
+               if stage in ("none", "readback") and not tstate.get("pending") and not side_ans else None)
+    period_menu = None if (at_time or side_ans or stage not in ("none", "readback") or _dishes_named(transcript, index, limit=1) or _orders_now(transcript)
                            or _ABOUT_MINE.search(transcript) or profile.allergies  # (an allergy → the model)
                            # (a plain "ভালো কি খাওয়া যায়?" is still what there is to eat NOW — the time first; a pick
                            # with a taste / audience / popularity in it is the recommender's)
@@ -6693,7 +6725,7 @@ async def _reply(
                            opening=list((restaurant or {}).get("opening") or []), in_tray=set(cart_qty))
     # "এখন ভালো কি আছে?" / "কিছু সাজেস্ট করেন" between two meals (only sweets and drinks on): when the food is — never
     # "দুপুরের খাবারে সরা দই, ডাবের পুডিং…" as the pick
-    if not period_menu and not at_time and stage in ("none", "readback") and not kind_scope and lt \
+    if not period_menu and not at_time and not side_ans and stage in ("none", "readback") and not kind_scope and lt \
             and not profile.allergies and not _orders_now(transcript) and not _dishes_named(transcript, index, limit=1) \
             and re.search(r"ভালো|সেরা|রেকমেন্ড|সাজেস্ট|(কি|কী) আছে|কিছু|খাব|খাওয়া|খাওয়া|খেতে|ক্ষুধা|খিদে|"
                           r"\b(recommend|suggest|eat|food|hungry)\b", transcript, re.I) \
@@ -6734,7 +6766,7 @@ async def _reply(
                              shown=[str(x) for x in (ctx.get("shownItems") or []) if str(x) in index.by_id] or (
                                  rstate.last_offered if rstate.turn - rstate.last_offer_turn <= 2 else []))
                 if stage in ("none", "readback") and not tstate.get("pending") and not profile.allergies else None)
-    menu_ans = at_time or menu_ans  # (the dish-at-a-time answer, from above)
+    menu_ans = side_ans or at_time or menu_ans  # (the ভর্তা / ভাজি and dish-at-a-time answers, from above)
     if menu_ans:
         text, rows, note, offer_ids = menu_ans
         if stage == "readback":
@@ -6758,6 +6790,8 @@ async def _reply(
         rstate.turn += 1
         if offer_ids or rows:
             rstate.last_offered, rstate.last_offer_turn = (offer_ids or [r["itemId"] for r in rows]), rstate.turn
+        if note == "side_kind_more":
+            rstate.continuing = True  # (the same thread: a third "আর কি কি ভর্তা?" never comes back to the first ones)
         rstate.profile = profile.to_dict()
         m["checkout"], m["tray"] = ck, tstate
         m["reco"], m["recoMode"], m["guards"] = rstate.to_dict(), mode, [note]
@@ -6871,9 +6905,14 @@ async def _reply(
             and not _orders_now(transcript) and not _WANTS_A_PICK.search(transcript) and not _PRICE_Q.search(transcript) \
             and not reco_format.taste_asked(transcript) and not reco_format.audience_asked(transcript) \
             and not _ABOUT_MINE.search(transcript) and not profile.allergies and not _CONTENTS_Q.search(transcript):
-        listed = _kind_list_reply(transcript, index, orderable, kind_scope, lang)
+        listed = _kind_list_reply(transcript, index, orderable, kind_scope, lang,
+                                  seen=([i for i in rstate.thread_shown if i not in rstate.last_offered], list(rstate.last_offered))
+                                  if rstate.turn - max(rstate.thread_turn, rstate.last_offer_turn) <= 3 else [],
+                                  said_before=last_waiter)
         if listed:
             text, rows, note = listed
+            if note == "kind_more":
+                rstate.continuing = True  # (one thread: a third "আর কি কি…" never comes back to the first ones)
             m = _base_meta(language=lang, intent="suggestions", topic="recommendation", suggestions=rows,
                            decision={"showSuggestionsModal": True, "showUpsellTray": False}, notes=note, **ids)
             rstate.turn += 1

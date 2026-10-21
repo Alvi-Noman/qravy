@@ -155,7 +155,10 @@ def test_bhaat_curry_with_rice_gets_dal_or_bhorta():
     rows = [{"itemId": "lal", "quantity": 1, "price": 250}, {"itemId": "bhat", "quantity": 1, "price": 40}]
     o = offers.plan("first_add", _ctx(HOUSE, rows, [{"op": "add", "itemId": "lal", "quantity": 1},
                                                     {"op": "add", "itemId": "bhat", "quantity": 1}]))
-    assert o and o.type == "side" and o.text == "সাথে ডাল নেবেন, নাকি আলু ভর্তা?", o and o.text
+    # (the bhortas on this menu — no bhaji: "সাথে ভর্তা কিছু নেবেন?"; a "ভর্তা" answer lists them, ডাল adds the dal)
+    assert o and o.type == "side" and o.text == "সাথে ভর্তা কিছু নেবেন?", o and o.text
+    assert [ch["label"] for ch in o.choices] == ["ভর্তা", "ডাল"], o.choices
+    assert set(o.choices[0]["items"]) == {"ilish_b", "alu"}, o.choices
 
 
 def test_upsell_timing_is_never_late():
