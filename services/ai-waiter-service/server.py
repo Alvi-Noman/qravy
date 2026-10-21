@@ -666,6 +666,43 @@ async def handle_alert_options(request: web.Request) -> web.Response:
     })
 
 
+# ---------- Mic test page (tastebud /mic-test): one clip → what the waiter's speech-to-text hears ----------
+# Temporary: the same clip recorded with the phone's noise suppression on and off, to see which the transcriber
+# understands better in a noisy room. Nothing is stored. Open to anyone with the link, so it's capped per IP.
+_STT_TEST_MAX_S = 20
+_STT_TEST_PER_HOUR = int(os.environ.get("STT_TEST_PER_HOUR", "90"))
+_STT_TEST_HITS: Dict[str, Deque[float]] = defaultdict(deque)
+
+
+async def handle_stt_test(request: web.Request) -> web.Response:
+    """POST /stt-test?tenant=<subdomain>&rate=16000&hint=1 — body: raw PCM16 mono → {"text", "ms", "hint"}."""
+    if os.environ.get("STT_TEST", "on").lower() in ("0", "off", "false"):
+        return web.json_response({"ok": False, "error": "off"}, status=404, headers=_CORS)
+    ip = (request.headers.get("X-Forwarded-For") or request.remote or "?").split(",")[0].strip()
+    now = time.time()
+    hits = _STT_TEST_HITS[ip]
+    while hits and now - hits[0] > 3600:
+        hits.popleft()
+    if len(hits) >= _STT_TEST_PER_HOUR:
+        return web.json_response({"ok": False, "error": "too many tries — wait a while"}, status=429, headers=_CORS)
+    q = request.rel_url.query
+    try:
+        rate = max(8000, min(48000, int(q.get("rate", "16000"))))
+    except ValueError:
+        rate = 16000
+    pcm = await request.read()
+    if not pcm or len(pcm) > rate * 2 * _STT_TEST_MAX_S:
+        return web.json_response({"ok": False, "error": f"send 0–{_STT_TEST_MAX_S} s of audio"}, status=400, headers=_CORS)
+    hits.append(now)
+    prompt = stt_prompt(q.get("tenant") or None, "bn") if q.get("hint", "1") == "1" else ""
+    t0 = time.time()
+    text = await openai_transcribe(pcm, "bn", rate=rate, prompt=prompt)
+    # (on noise / silence a transcriber can copy its hint back — the waiter itself drops those, see is_prompt_echo)
+    return web.json_response({"ok": True, "text": text or "", "ms": int((time.time() - t0) * 1000), "hint": prompt,
+                              "echo": bool(prompt and is_prompt_echo(text, prompt))},
+                             headers=_CORS)
+
+
 async def start_http_server():
     await asyncio.to_thread(_load_alerts)  # buzzers that were ringing before this restart keep ringing
     app = web.Application()
@@ -677,6 +714,7 @@ async def start_http_server():
     app.router.add_route("OPTIONS", "/alert/dismiss", handle_alert_options)
     app.router.add_route("OPTIONS", "/upsell/stats", handle_alert_options)
     app.router.add_route("OPTIONS", "/conversations", handle_alert_options)
+    app.router.add_route("OPTIONS", "/stt-test", handle_alert_options)
 
     # Actual endpoints
     app.router.add_get("/cart/load", handle_cart_load)
@@ -686,6 +724,7 @@ async def start_http_server():
     app.router.add_post("/internal/alert/trigger", handle_alert_trigger)
     app.router.add_get("/upsell/stats", handle_upsell_stats)
     app.router.add_get("/conversations", handle_conversations)
+    app.router.add_post("/stt-test", handle_stt_test)  # the mic test page (temporary)
 
     runner = web.AppRunner(app)
     await runner.setup()

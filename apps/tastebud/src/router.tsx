@@ -16,6 +16,8 @@ const ConfirmationPage = lazy(() => import('./pages/ConfirmationPage'));
 const CheckoutPage = lazy(() => import('./pages/CheckoutPage'));
 const OrderStatusPage = lazy(() => import('./pages/OrderStatusPage'));
 const TenminOrbDemo = lazy(() => import('./pages/TenminOrbDemo'));
+// temporary: the phone's noise suppression on vs off, and what the speech-to-text heard (linked from nowhere)
+const MicTest = lazy(() => import('./pages/MicTest'));
 // dev only: listen to the Bangla voices / respellings side by side (never in a production build)
 const VoiceTest = import.meta.env.DEV ? lazy(() => import('./pages/VoiceTest')) : null;
 
@@ -54,6 +56,7 @@ export default function AppRouter() {
                 A branch goes before either: /t/<subdomain>/<branch>(/dine-in)…
                 Old links ("?table=12" on an online page, "/menu/dine-in") are moved over by KeepTableInUrl.
             */}
+            <Route path="/t/:subdomain/mic-test" element={<MicTest />} />
             <Route path="/t/:subdomain" element={<BranchGate><AIWaiter /></BranchGate>} />
             <Route path="/t/:subdomain/menu" element={<BranchGate><Restaurant /></BranchGate>} />
             <Route path="/t/:subdomain/checkout" element={<CheckoutPage />} />
@@ -87,6 +90,7 @@ export default function AppRouter() {
             */}
             <Route path="/" element={hasTenantFromRuntime ? <BranchGate><AIWaiter /></BranchGate> : <Home />} />
             <Route path="/menu" element={<BranchGate><Restaurant /></BranchGate>} />
+            <Route path="/mic-test" element={<MicTest />} />
             <Route path="/checkout" element={<CheckoutPage />} />
             <Route path="/confirmation" element={<ConfirmationPage />} />
             <Route path="/order/:token" element={<OrderStatusPage />} />
