@@ -6316,7 +6316,9 @@ async def _reply(
             per_kebab = sum(int(r["quantity"]) for r in cart_rows if r["itemId"] in index.by_id
                             and offers.is_kebab(index.by_id[r["itemId"]])) if o_info.get("type") == "bread" else 0
             op = {"op": "add", "itemId": index.item_id(it), "name": str(it.get("name")),
-                  "quantity": said_number if said_number and said_number > 0 else max(1, min(per_kebab, 6))}
+                  # ("দুইটা ভর্তা দাও" … "আলু" → two of them)
+                  "quantity": said_number if said_number and said_number > 0
+                  else (int(o_info.get("qty") or 0) or max(1, min(per_kebab, 6)))}
             v = offers._smallest_size(it) if len([x for x in it.get("variations") or [] if x.get("name")]) > 1 else None
             if v:
                 op["variant"], op["price"] = str(v["name"]), float(v.get("price") or 0)
@@ -6393,7 +6395,7 @@ async def _reply(
         if (is_done_ordering(transcript) and not named_other and not _YES_START.search(transcript)
                 and not (short_no or upsell_engine._NO.search(transcript) or is_decline(transcript))):
             # "কিছু লাগবে না" — no to the offer AND to anything more: counted as a no, then on to confirming (below)
-            rstate.offer_declines += 1
+            rstate.offer_declines += 0 if o_info.get("type") == "which" else 1  # ("কোন ভর্তা দেব?" is no upsell)
             profile.declined = list(dict.fromkeys(profile.declined + [i for i in o_ids if i not in cart_qty]))
             rstate.profile = profile.to_dict()
         adds = [x for x in o_ops if x["op"] == "add"]
@@ -6404,7 +6406,7 @@ async def _reply(
                 and not _tray.MORE_WORDS.search(transcript)):
             target = next((r for r in reversed(cart_rows) if r["itemId"] not in o_ids and int(r["quantity"]) != said_number), None)
             if target is not None:
-                rstate.offer_declines += 1
+                rstate.offer_declines += 0 if o_info.get("type") == "which" else 1  # ("কোন ভর্তা দেব?" is no upsell)
                 op = {"op": "set", "itemId": target["itemId"], "name": target["name"], "lineKey": target.get("key"),
                       "quantity": said_number}
                 after = _tray.simulate(cart_rows, [op], False, index.by_id)
@@ -6419,7 +6421,7 @@ async def _reply(
             return tray_done((offers.accepted_text(o_info, o_ops, lang) + " " + o_close).strip(), o_ops, False, after,
                              "offer_accepted")
         if short_no or upsell_engine._NO.search(transcript) or (is_decline(transcript) and not named_other):
-            rstate.offer_declines += 1
+            rstate.offer_declines += 0 if o_info.get("type") == "which" else 1  # ("কোন ভর্তা দেব?" is no upsell)
             profile.declined = list(dict.fromkeys(profile.declined + [i for i in o_ids if i not in cart_qty]))
             rstate.profile = profile.to_dict()
             if not _SAYS_CONFIRM.search(transcript):  # "না, কনফার্ম করুন" → straight on to the read-back
@@ -6684,7 +6686,8 @@ async def _reply(
                                     # (what this guest was just shown: "আর কি কি ভর্তা আছে?" is the others)
                                     seen=([i for i in rstate.thread_shown if i not in rstate.last_offered], list(rstate.last_offered))
                                     if rstate.turn - max(rstate.thread_turn, rstate.last_offer_turn) <= 3 else [],
-                                    said_before=last_waiter)
+                                    said_before=last_waiter,
+                                    tray=[index.by_id[i] for i in cart_qty if i in index.by_id])
                 if stage in ("none", "readback") and not tstate.get("pending") and not profile.allergies else None)
     other_kind = _not_this_version(transcript, index) if stage == "none" and not side_ans else None
     if other_kind:
@@ -6797,6 +6800,22 @@ async def _reply(
             rstate.last_offered, rstate.last_offer_turn = (offer_ids or [r["itemId"] for r in rows]), rstate.turn
         if note == "side_kind_more":
             rstate.continuing = True  # (the same thread: a third "আর কি কি ভর্তা?" never comes back to the first ones)
+        if note == "side_kind_which" and offer_ids:
+            # "কোন ভর্তা দেব?" holds its answers like an offer: "আলু" / "আলু ভর্তা" adds it (as many as were asked for),
+            # "ভাত" (when it asked "নাকি ভাত বলেছিলেন?") orders rice, "না" leaves it
+            choices = bhorta_bhaji.dish_choices([index.by_id[i] for i in offer_ids if i in index.by_id], index.item_id)
+            if "নাকি ভাত" in text:
+                rice = [it for it in index.items if bangla_meal.role(it) == "rice" and orderable.get(index.item_id(it), True)]
+                if rice:
+                    choices.append({"label": "ভাত", "match": r"(?<![ঀ-৿])ভাত|\b(rice|bhat|vaat)\b",
+                                    "items": [index.item_id(it) for it in rice]})
+            tstate["pending"] = {"kind": "offer", "ops": [], "clear": False, "offer": {
+                "type": "which", "moment": "first_add", "text": text, "choices": choices, "then": None,
+                "item_ids": [i for ch in choices for i in ch["items"]], "qty": _said_quantity(transcript) or 1}}
+            # (buttons: ভাত first when it's asked, then the dishes)
+            m["decision"]["chooseOptions"] = (
+                [{"label": ch["label"], "say": ch["label"]} for ch in choices if ch["label"] == "ভাত"]
+                + [{"label": ch["label"], "say": ch["label"]} for ch in choices if ch["label"] != "ভাত"][:5])
         rstate.profile = profile.to_dict()
         m["checkout"], m["tray"] = ck, tstate
         m["reco"], m["recoMode"], m["guards"] = rstate.to_dict(), mode, [note]

@@ -30,6 +30,8 @@ _PROTEIN = re.compile(r"মাছ|ইলিশ|রুই|চিংড়ি|চ�
                       r"\b(fish|chicken|beef|mutton|prawn)\b", re.I)
 # an order of other dishes too ("ইলিশ ভাজা আর ভাত দেন"): the usual order flow, not a list of bhajis
 _ORDER_VERB = re.compile(r"(?<![ঀ-৿])(দেন|দিন|দাও|দিবেন|দেবেন|চাই|নেব|নিব|নেবো|নিবো|লাগবে|অর্ডার)(?![ঀ-৿])|\b(give|want|order)\b", re.I)
+# "বেগুন ভর্তা বাদে আর কী আছে?" — the others
+_EXCEPT = re.compile(r"বাদে|বাদ দিয়ে|বাদ দিয়ে|ছাড়া|ছাড়া|ছাড়াও|ছাড়াও|\b(except|other than|besides|apart from)\b", re.I)
 _SAID_AS = {"বাঁধা": "বাঁধাকপি", "বাধা": "বাঁধাকপি", "বাঁধাকপির": "বাঁধাকপি", "ফুলকপির": "ফুলকপি", "পেঁপের": "পেঁপে",
             "আলুর": "আলু", "শাকের": "শাক", "বেগুনের": "বেগুন", "করলার": "করলা", "পটলের": "পটল", "লাউয়ের": "লাউ"}
 
@@ -126,8 +128,8 @@ def of_group(items: List[Dict[str, Any]], g: str, item_id: Callable[[Dict[str, A
 
 def answer(transcript: str, items: List[Dict[str, Any]], item_id: Callable[[Dict[str, Any]], str],
            orderable: Dict[str, bool], named: List[Dict[str, Any]], lang: str,
-           row: Callable[[Dict[str, Any]], Dict[str, Any]], seen: Any = ((), ()), said_before: str = ""
-           ) -> Optional[Tuple[str, List[Dict[str, Any]], str, List[str]]]:
+           row: Callable[[Dict[str, Any]], Dict[str, Any]], seen: Any = ((), ()), said_before: str = "",
+           tray: Optional[List[Dict[str, Any]]] = None) -> Optional[Tuple[str, List[Dict[str, Any]], str, List[str]]]:
     """A question about the ভর্তা / ভাজি as a kind → (text, cards, note, ids offered). None: not that, or a dish named
     ("আলু ভর্তা আছে?" is the usual have-answer), or nothing of the kind on the menu at all."""
     t = transcript or ""
@@ -138,16 +140,25 @@ def answer(transcript: str, items: List[Dict[str, Any]], item_id: Callable[[Dict
         return None
     # a particular bhorta / bhaji named ("আলু ভর্তা দেন", "করলা ভাজি কেমন?") is that dish — except the one called just
     # "ভাজি": the guest's "ভাজি" is all of them
-    if any(group(it) and _plain(str(it.get("name") or "")) not in ("ভাজি", "ভর্তা") for it in named):
+    own = [it for it in named if group(it) and _plain(str(it.get("name") or "")) not in ("ভাজি", "ভর্তা")]
+    # …unless it's the one NOT wanted: "বেগুন ভর্তা বাদে আর কী আছে?" → the other bhortas
+    except_ids = {item_id(it) for it in own} if own and _EXCEPT.search(t) else set()
+    if own and not except_ids:
         return None
     if any(not group(it) for it in named) and _ORDER_VERB.search(t):
         return None
     if re.search(r"কি দিয়ে|কী দিয়ে|কিভাবে|কীভাবে|বানা|উপাদান|\b(made|ingredient|recipe)", t, re.I):
         return None  # how it's made: the model, with the dish's description
     bn = lang == "bn"
-    lists = {g: of_group(items, g, item_id, orderable) for g in groups}
+    lists = {g: [it for it in of_group(items, g, item_id, orderable) if item_id(it) not in except_ids] for g in groups}
     if not any(lists.values()):
         return None  # none on now: the usual answers say why (the hours, sold out)
+    if except_ids:
+        but = bangla_meal._join([_say_name(it) for it in own], "আর")
+        shown = [it for g in groups for it in lists[g][:8]]
+        text = (f"{but} ছাড়া " + say([(g, lists[g]) for g in groups], bn, limit=8) + "। কোনটা নেবেন?" if bn
+                else f"Besides {but}: " + say([(g, lists[g]) for g in groups], bn, limit=8) + ". Which would you like?")
+        return text, [row(it) for it in shown[:12]], "side_kind_except", [item_id(it) for it in shown[:12]]
 
     # "ঝাল কোনটা?" / "ঝাল ছাড়া কোনটা?" within them
     if re.search(r"ঝাল|spicy|\bhot\b", t, re.I):
@@ -163,7 +174,8 @@ def answer(transcript: str, items: List[Dict[str, Any]], item_id: Callable[[Dict
         if bn:
             these = "এগুলো" if len(pick) > 1 else "এটা"
             text = (f"ঝাল কম চাইলে {names} নিতে পারেন — {these} ঝাল না।" if mild
-                    else f"ঝাল চাইলে {names} — {'এগুলোতে' if len(pick) > 1 else 'এটাতে'} ঝাল আছে, বাকিগুলো হালকা।") +                    (" কোনটা নেবেন?" if len(pick) > 1 else " দেব?")
+                    else f"ঝাল চাইলে {names} — {'এগুলোতে' if len(pick) > 1 else 'এটাতে'} ঝাল আছে, বাকিগুলো হালকা।")
+            text += " কোনটা নেবেন?" if len(pick) > 1 else " দেব?"
         else:
             text = (f"For something mild: {names}." if mild else f"The spicy ones: {names}; the rest are mild.") + \
                    " Which would you like?"
@@ -224,6 +236,19 @@ def answer(transcript: str, items: List[Dict[str, Any]], item_id: Callable[[Dict
 
     lim = 5 if sum(1 for g in groups if lists[g]) > 1 else 7
     shown = [it for g in groups for it in lists[g][:lim]]
+    # "একটা ভর্তা দাও" — an order, no bhorta named: "কোন ভর্তা দেব? আমাদের মেনুতে আছে …" (and with a curry and no
+    # rice in the tray, "ভাত" is easily heard as "ভর্তা": it asks that too)
+    if bn and len(groups) == 1 and lists[groups[0]] and _ORDER_VERB.search(t) and not missing \
+            and not re.search(r"(?<![ঀ-৿])(কি|কী|কোন|কোনটা)(?![ঀ-৿])|\?", t):
+        g = groups[0]
+        word = "ভর্তা" if g == "bhorta" else "ভাজি"
+        names = [_say_name(it) for it in lists[g][:lim]]
+        more = "— এছাড়া আরও আছে" if len(lists[g]) > lim else ""
+        roles = [bangla_meal.role(it) for it in tray or []]
+        rice_too = g == "bhorta" and "rice" not in roles and any(r in ("fish", "chicken", "meat") for r in roles)
+        text = (f"কোন {word} দেব? আমাদের মেনুতে আছে {bangla_meal._join(names, 'আর')}{(' ' + more) if more else ''}।"
+                + (" নাকি ভাত বলেছিলেন?" if rice_too else ""))
+        return text, [row(it) for it in shown[:12]], "side_kind_which", [item_id(it) for it in shown[:12]]
     said = say([(g, lists[g]) for g in groups], bn)
     gone = [("ভর্তা" if g == "bhorta" else "ভাজি") for g in groups if not lists[g]]
     if bn:
@@ -233,3 +258,18 @@ def answer(transcript: str, items: List[Dict[str, Any]], item_id: Callable[[Dict
         text = (f"Sorry, no {missing}. " if missing else "") + said + ". Which would you like?"
     note = "side_kind_missing" if missing else "side_kind_list"
     return text, [row(it) for it in shown[:12]], note, [item_id(it) for it in shown[:12]]
+
+
+def dish_choices(items: List[Dict[str, Any]], item_id: Callable[[Dict[str, Any]], str]) -> List[Dict[str, Any]]:
+    """The answers to "কোন ভর্তা দেব?": one per dish, answered by its name or the word that makes it that one
+    ("আলু" → আলু ভর্তা, "করলা" → করলা ভাজি)."""
+    out = []
+    for it in items:
+        g = group(it)
+        name = _say_name(it)
+        short, ok = _short(it, g) if g else (name, False)
+        keys = [name] + ([short] if ok and short and short != "সবজি" else
+                         [w for w in name.split() if w not in ("ভর্তা", "ভাজি", "ভাজা")][:2])
+        out.append({"label": name, "match": "|".join(re.escape(k) for k in dict.fromkeys(keys) if k),
+                    "items": [item_id(it)]})
+    return out

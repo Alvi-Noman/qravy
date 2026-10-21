@@ -95,3 +95,25 @@ def test_with_a_curry_the_waiter_asks_bhorta_or_bhaji():
             assert out["replyText"].startswith("ভর্তার মধ্যে আলু ভর্তা"), out["replyText"]
         else:
             assert [(o["op"], o["itemId"]) for o in m["cartOps"]] == [("add", "alu")], out["replyText"]
+
+
+def test_all_but_one_and_which_one():
+    out, calls = ask("বেগুন ভর্তা বাদে আর কী আছে?")
+    assert not calls and out["meta"]["guards"] == ["side_kind_except"], out["replyText"]
+    assert out["replyText"].startswith("বেগুন ভর্তা ছাড়া ভর্তার মধ্যে আলু ভর্তা আর চিংড়ির ভর্তা আছে"), out["replyText"]
+    out, calls = ask("একটা ভর্তা দাও")
+    assert not calls and out["replyText"] == "কোন ভর্তা দেব? আমাদের মেনুতে আছে আলু ভর্তা, বেগুন ভর্তা আর চিংড়ির ভর্তা।", out["replyText"]
+
+
+def test_which_bhorta_is_answered_by_its_word_and_rice_is_asked_with_a_curry():
+    import session_ctx
+    sid, cart, hist, state = "bb-which", [("rui", 1)], [], None
+    for said in ("দুইটা ভর্তা দাও", "আলু"):
+        out, _ = ask(said, cart=cart, state=state, history=hist)
+        m = out["meta"]
+        session_ctx.update_state("t", sid, meta=m, user_text=said)
+        state = session_ctx.get_state("t", sid)
+        hist = hist + [{"role": "user", "content": said}, {"role": "assistant", "content": out["replyText"]}]
+        if said == "দুইটা ভর্তা দাও":
+            assert out["replyText"].endswith("নাকি ভাত বলেছিলেন?"), out["replyText"]  # (a curry, no rice yet)
+    assert [(o["op"], o["itemId"], o["quantity"]) for o in m["cartOps"]] == [("add", "alu", 2)], out["replyText"]
