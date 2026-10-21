@@ -105,16 +105,21 @@ export default function MicTest() {
 
   async function start(kinds: Kind[]) {
     setWarn('');
+    const streams: Partial<Record<Kind, MediaStream>> = {};
+    let ctx: AudioContext | null = null;
     try {
-      const ctx = new AudioContext({ sampleRate: RATE, latencyHint: 'interactive' });
+      if (!navigator.mediaDevices?.getUserMedia) throw Object.assign(new Error('no mic API on this page'), { name: 'NoMediaDevices' });
+      // both straight from the tap, before anything is awaited: the audio engine (an iPhone keeps one made later
+      // silent) and then the mic (some phones refuse it once something else was awaited)
+      ctx = new AudioContext({ sampleRate: RATE, latencyHint: 'interactive' });
+      void ctx.resume().catch(() => {});
+      for (const k of kinds) streams[k] = await navigator.mediaDevices.getUserMedia({ audio: CONSTRAINTS[k] });
       await ctx.audioWorklet.addModule('/worklets/audio-capture.worklet.js');
-      const streams: Partial<Record<Kind, MediaStream>> = {};
       const settings: Partial<Record<Kind, string>> = {};
       const chunks: Record<Kind, Int16Array[]> = { clean: [], raw: [] };
       const ns: Partial<Record<Kind, boolean | undefined>> = {};
       for (const k of kinds) {
-        const st = await navigator.mediaDevices.getUserMedia({ audio: CONSTRAINTS[k] });
-        streams[k] = st;
+        const st = streams[k] as MediaStream;
         const s = settingsOf(st);
         settings[k] = s.text;
         ns[k] = s.ns;
@@ -136,9 +141,20 @@ export default function MicTest() {
       rec.current = { ctx, streams, chunks, settings, timer };
       setState('recording');
     } catch (e: any) {
+      Object.values(streams).forEach((st) => st?.getTracks().forEach((t) => t.stop()));
+      ctx?.close().catch(() => {});
       stopAll();
       setState('idle');
-      setWarn(`মাইক খোলা যায়নি: ${e?.message || e}`);
+      const name = String(e?.name || '');
+      const why =
+        name === 'NotAllowedError' || name === 'SecurityError'
+          ? 'ব্রাউজার মাইকের অনুমতি দেয়নি। Chrome/Safari-তে খুলুন (Messenger/WhatsApp-এর ভিতরে নয়), ঠিকানার পাশের আইকন → Permissions → Microphone → Allow, তারপর রিলোড করুন।'
+          : name === 'NotFoundError'
+            ? 'কোনো মাইক পাওয়া যায়নি।'
+            : name === 'NotReadableError'
+              ? 'মাইক অন্য কোনো অ্যাপ ব্যবহার করছে — সেটা বন্ধ করে আবার চেষ্টা করুন।'
+              : '';
+      setWarn(`মাইক খোলা যায়নি (${name || 'error'}: ${e?.message || e}). ${why}`);
     }
   }
 
