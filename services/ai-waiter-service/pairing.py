@@ -25,6 +25,12 @@ from waiter_knowledge import MenuIndex, kind_text
 ASKS = re.compile(
     r"(?<!ওর )(?<!তার )(?<!ওনার )(?<!ওদের )(?<!আমার )(?<!তোমার )(?<!আপনার )সাথে (কি|কী) (নেওয়া|নেয়া|নিব|নেব|নিবো|নেবো|খাওয়া|খাওয়া|খাব|খাবো|ভালো|দিব|দেব|যায়|যাবে|চলে|নিতে)|"
     r"(কি|কী) দিয়ে খা|কিসের সাথে|সাথে (ভালো|মানাবে|জমবে) (কি|কী)|"
+    # "পোলাও দিয়ে কি খাওয়া যায়?" — what to eat WITH the polao
+    r"(দিয়ে|দিয়ে) (কি|কী) (খাওয়া|খাওয়া|খাব|খাবো|নেব|নিব|নেবো|নিবো|ভালো)|"
+    # "নান দিয়ে খাওয়ার মত কিছু", "কফির সাথে খাওয়ার মত কিছু"
+    r"(দিয়ে|দিয়ে|সাথে|সঙ্গে) (খাওয়ার|খাওয়ার|খাবার|খাওয়া|খাওয়া) (মত|মতো|জন্য)|(দিয়ে|দিয়ে) খাওয়া যায়|"
+    # "সাথে কিছু খাওয়ার" (after a coffee) — something to eat with it
+    r"(?<!ওর )(?<!আমার )সাথে কিছু (খাওয়ার|খাওয়ার|খাবার|খেতে)|"
     r"\bwhat (goes|pairs) (well |best |nicely )?with\b|\bwhat (should|can|could|do) (i|we) (have|get|order|eat) with\b|"
     r"\b(goes|go) (well )?with (it|this|that)\b|\bshkathe ki\b|\bsathe ki\b",
     re.I,
@@ -42,6 +48,11 @@ _HOT = re.compile(r"\btea\b|coffee|espresso|latte|cappuccino|americano|\bhot\b|(
 _SIDE_MEAT = re.compile(r"roast|rezala|korma|jali|kabab|kebab|রোস্ট|রেজালা|কোরমা|জালি|কাবাব", re.I)
 _SWEET_AFTER = re.compile(r"firni|jorda|zarda|doi|yogurt|payesh|kheer|ফিরনি|জর্দা|দই|পায়েস|পায়েস|ক্ষীর", re.I)
 _FRIES = re.compile(r"\bfries\b|french fry|ফ্রাই(জ|স)?(?![ঀ-৿])|ফ্রেঞ্চ", re.I)
+_BITE = re.compile(r"cake|brownie|cookie|pastry|muffin|croissant|donut|doughnut|waffle|pancake|cheesecake|sandwich|"
+                   r"biscuit|singara|samosa|puri|chop\b|কেক|ব্রাউনি|কুকি|পেস্ট্রি|স্যান্ডউইচ|বিস্কুট|সিঙ্গারা|সমুচা|পুরি|চপ", re.I)
+_WITH_BREAD = re.compile(r"curry|bhuna|masala|korma|rezala|jhol|kalia|tikka|kebab|kabab|grill|chaap|\bchap\b|butter chicken|"
+                         r"paneer|dal|nehari|paya|haleem|bhaji|omelet|egg|ভুনা|মাসালা|কোরমা|রেজালা|ঝোল|কাবাব|টিক্কা|গ্রিল|চাপ|"
+                         r"ডাল|নেহারি|পায়া|হালিম|ভাজি|ডিম", re.I)
 _PLAIN_FIRST = re.compile(r"special|prawn|mixed|স্পেশাল|মিক্স|চিংড়ি|প্রন", re.I)
 
 
@@ -83,6 +94,11 @@ def anchor(index: MenuIndex, tray_ids: List[str], named: List[Dict[str, Any]], f
     for it in focus:
         if food(it):
             return it
+    # only a coffee / tea in the tray ("একটা আইসড লাতে" → "সাথে কিছু খাওয়ার?") — something to eat with it
+    for iid in reversed(tray_ids):
+        it = index.by_id.get(iid)
+        if it and _HOT.search(f"{it.get('name') or ''} {kind_text(it)}") and not is_packaged(it):
+            return it
     return None
 
 
@@ -116,6 +132,19 @@ def partners(it: Dict[str, Any], index: MenuIndex, orderable: Dict[str, bool], t
         and not _HOT.search(str(x.get("name") or ""))  # noqa: E731
     drink_had = has(lambda x: dish_roles(x)["drink"])
     groups: List[Tuple[str, List[Dict[str, Any]]]] = []
+
+    # a coffee / tea → something sweet or a bite with it (a café's classic), never another coffee
+    if re.search(r"coffee|espresso|latte|cappuccino|americano|mocha|\btea\b|কফি|(?<![ঀ-৿])চা(?![ঀ-৿])", name, re.I) \
+            and dish_roles(it)["drink"]:
+        groups.append(("bite", pick(lambda x: bool(_BITE.search(kind_text(x) + " " + str(x.get("name") or ""))), 2)))
+        return "hot_drink", [g for g in groups if g[1]]
+
+    # a bread asked about ("নান দিয়ে খাওয়ার মত কিছু") → what's eaten WITH it: the curries and kebabs (at breakfast,
+    # the dal, bhaji, egg, nehari)
+    if dish_roles(it)["rice"] and re.search(r"naan|\bnan\b|paratha|porota|roti|kulcha|luchi|নান|পরোটা|রুটি|লুচি", name, re.I):
+        groups.append(("with_bread", pick(lambda x: dish_roles(x)["main"] and not dish_roles(x)["rice"]
+                                          and bool(_WITH_BREAD.search(kind_text(x) + " " + str(x.get("name") or ""))), 3)))
+        return "bread", [g for g in groups if g[1]]
 
     if _RICE_DISH.search(name) or (f["complete_meal"] and f["rice"]):
         borhani = pick(lambda x: bool(_BORHANI.search(str(x.get("name") or ""))), 1)
@@ -198,6 +227,10 @@ def reply(it: Dict[str, Any], shape: str, groups: List[Tuple[str, List[Dict[str,
         if shape == "handheld":
             bits = [x for x in (g.get("fries") or []) + (g.get("drink") or [])]
             return f"{poss} সাথে {_join(bits, 'আর')} ভালো যায়।" + ask
+        if shape == "hot_drink":
+            return f"{poss} সাথে {_join(g['bite'], 'বা')} খুব ভালো যায়।" + ask
+        if shape == "bread":
+            return f"{d} দিয়ে খাওয়ার জন্য {_join(g['with_bread'], 'বা')} ভালো।" + ask
         if shape == "main":
             bits = []
             if g.get("rice"):
@@ -229,6 +262,10 @@ def reply(it: Dict[str, Any], shape: str, groups: List[Tuple[str, List[Dict[str,
         if g.get("drink"):
             bits.append(f"a {g['drink'][0]} to drink")
         return f"With the {d}: " + " and ".join(bits) + "." + ask
+    if shape == "hot_drink":
+        return f"{_join(g['bite'], 'or')} go nicely with the {d}." + ask
+    if shape == "bread":
+        return f"With {d}: {_join(g['with_bread'], 'or')}." + ask
     if shape in ("handheld", "main"):
         bits = (g.get("fries") or []) + (g.get("rice") or []) + (g.get("drink") or [])
         return f"{_join(bits, 'and')} go well with the {d}." + ask

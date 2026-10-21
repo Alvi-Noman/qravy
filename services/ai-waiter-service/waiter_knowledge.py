@@ -128,7 +128,9 @@ _MEATY = {
     "fish sauce", "usually mixed chicken/prawn/beef", "usually meat/prawn filling", "mixed dishes",
 }
 # Positive evidence needed before calling an untagged dish "likely vegetarian".
-_VEG_WORDS = re.compile(r"\b(vegetables?|veg|veggie|mushrooms?|paneer|tofu|potato|fries|fry|onion rings?|corn)\b")
+# (+ the dal / chana / aloo / palak dishes of an Indian or Bengali menu: "Dal Makhani" was not vegetarian enough)
+_VEG_WORDS = re.compile(r"\b(vegetables?|veg|veggie|mushrooms?|paneer|tofu|potato|fries|fry|onion rings?|corn|dal|daal|"
+                        r"lentils?|chana|chole|aloo|gobi|palak|bhindi|sobji|sabji)\b")
 _HEAT = re.compile(
     r"chil+i|hot sauce|hot\s*&\s*sour|szu-?chuan|sze?chuan|sichuan|masala|red curry|flaming|jalape|spicy|\bhot\b|bird'?s eye|naga"
 )
@@ -348,6 +350,7 @@ _BN_KIND: Tuple[Tuple[Tuple[str, ...], str], ...] = (
     (("ভর্তা", "ভাজি", "আচার", "চাটনি", "সস", "ডিপ", "অ্যাড অন", "এড অন", "এক্সট্রা"), "side"),
     (("ডেজার্ট", "মিষ্টি", "পায়েস", "পায়েস", "ফিরনি", "জর্দা", "আইসক্রিম", "কুলফি", "পুডিং", "কেক", "ফালুদা"), "dessert"),
     (("ডিম", "অমলেট", "হালিম"), "breakfast egg"),
+    (("নেহারি", "পায়া", "ডাল", "লুচি", "পুরি", "সবজি", "হালুয়া"), "breakfast"),
 )
 _LATIN_KIND: Tuple[Tuple[str, str], ...] = (
     (r"americano|espresso|cappuccino|latte|mocha|frapp|macchiato|\bcha\b|\bchai\b", "coffee tea drink"),
@@ -432,7 +435,8 @@ _DRINK = re.compile(r"beverage|drink|\bwater\b|juice|lassi|shake|\btea\b|coffee|
 _LIGHT = re.compile(r"soup|salad|spring roll|appeti|starter|snack|\bfr(y|ies)\b|onion ring|won ?thon|finger|pakora|wings|dumpling|momo")
 _MAIN = re.compile(r"selection|main|curry|sizzl|rice|noodle|chow ?mein|chop ?suey|set menu|fish|biry?ani|platter")
 _RICE_NOODLE = re.compile(r"rice|noodle|chow ?mein|chop ?suey|set menu|curry|choice of")
-_BREAKFAST = re.compile(r"breakfast|\beggs?\b|omelet|paratha|porota|toast|khichuri|halim|pancake|\btea\b|coffee|soup")
+_BREAKFAST = re.compile(r"breakfast|\beggs?\b|omelet|paratha|porota|\broti\b|\bnaan\b|luchi|\bpuri\b|toast|khichuri|halim|"
+                        r"haleem|nehari|paya|\bdal\b|\bdaal\b|bhaji|pancake")
 
 MEAL_KINDS = ("breakfast", "lunch", "afternoon", "dinner", "late")
 
@@ -472,7 +476,11 @@ def time_fit(it: Dict[str, Any], kinds: Iterable[str]) -> Tuple[bool, float]:
     for k in kinds:
         if k == "breakfast":
             fits = not heavy
-            score = 3.0 * bool(_BREAKFAST.search(text)) + 2.0 * light + 1.0 * drink
+            # the morning is dal, nehari, bhaji, eggs and the breads — a soup is light, a tea or a cappuccino goes WITH
+            score = 3.0 * (bool(_BREAKFAST.search(text)) and not drink) + 1.0 * (light and not drink)
+            # …and the dishes the menu itself serves only in the morning lead
+            periods = [str(p).lower() for p in it.get("periods") or []]
+            score += 2.0 * (bool(periods) and set(periods) <= {"breakfast", "morning"} and not drink)
         elif k == "lunch":
             fits = True
             score = 3.0 * rice + 1.5 * main + 0.5 * light
@@ -488,8 +496,8 @@ def time_fit(it: Dict[str, Any], kinds: Iterable[str]) -> Tuple[bool, float]:
         if fits:
             fits_any = True
             best = max(best, score)
-    if drink and not any(k in ("breakfast", "afternoon") for k in kinds):
-        best -= 2.0  # drinks are pairings, not recommendations, at main meals
+    if drink and "afternoon" not in kinds:
+        best -= 2.0  # drinks are pairings, not recommendations, at main meals and at breakfast
     best += 2.0 * any(t in ("recommended", "popular", "bestseller", "chef's special") for t in tags)
     if is_signature(it):
         best += 4.0  # the owner's star: first among dishes that suit the time (never overrides fit/availability)
@@ -817,6 +825,10 @@ _BANGLISH_STRONG = {
     # ("koto hoilo?" — how much is it — got an English reply)
     "hoilo", "hoise", "hoyeche", "hoyse", "holo", "hocche", "hoche", "dimu", "nimu", "khamu", "dekhan", "dekhi",
     "bolen", "janen", "lagbo", "nai", "nei", "korsi", "korlam", "dilam", "nilam", "acche", "chilo", "khabar",
+    # ("r kisu na" got an English reply; "shokaler khabare ki boal mach pabo?" too)
+    "kisu", "kicchu", "kisui", "pabo", "pamu", "paowa", "pawa", "paoa", "jabe", "khabare", "khabarer", "khaowa", "khawa",
+    "shokal", "shokale", "shokaler", "sokale", "sokaler", "dupure", "duporer", "dupurer", "rate", "rater", "raate",
+    "bikele", "bikeler", "sondhay", "ekhon", "mach", "mangsho", "murgi", "bhat", "vat", "lage", "nibo", "dibo",
 }
 _BANGLISH_WEAK = {"ar", "na", "ki", "ta", "to", "e", "o", "r", "din", "dam", "taka", "plz"}
 

@@ -190,7 +190,9 @@ def test_the_ab_arms():
     os.environ["UPSELL_AB"] = "on"
     try:
         arms = {tuple(sorted(offers.arm_for("burger-house", f"s{i}").items())) for i in range(40)}
-        assert len(arms) == 4 and offers.arm_for("burger-house", "s1") == offers.arm_for("burger-house", "s1")
+        # (only the wording is split now — the "late" timing arm meant half the guests never heard an offer)
+        assert len(arms) == 2 and all(dict(a)["timing"] == "early" for a in arms)
+        assert offers.arm_for("burger-house", "s1") == offers.arm_for("burger-house", "s1")
     finally:
         os.environ["UPSELL_AB"] = "off"
 

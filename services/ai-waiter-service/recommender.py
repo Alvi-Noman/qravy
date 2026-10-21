@@ -151,6 +151,24 @@ def _num(tok: str) -> Optional[int]:
     return _NUM_WORDS.get(tok)
 
 
+_BN_UNITS = {"এক": 1, "দুই": 2, "দু": 2, "তিন": 3, "চার": 4, "পাঁচ": 5, "ছয়": 6, "ছয়": 6, "সাত": 7, "আট": 8, "নয়": 9,
+             "নয়": 9, "দশ": 10}
+
+
+def _bn_amount(t: str) -> int:
+    """Money said in words: "পাঁচশো" 500, "দেড় হাজার" 1500, "আড়াই হাজার" 2500, "দুই হাজার" 2000, "হাজার" 1000."""
+    m = re.search(r"(দেড়|দেড়|আড়াই|আড়াই|এক|দুই|তিন|চার|পাঁচ|ছয়|ছয়|সাত|আট|নয়|নয়|দশ|\d+)?\s*হাজার", t)
+    if m:
+        w = m.group(1) or ""
+        base = {"দেড়": 1.5, "দেড়": 1.5, "আড়াই": 2.5, "আড়াই": 2.5}.get(w) or (int(w) if w.isdigit() else _BN_UNITS.get(w, 1))
+        return int(base * 1000)
+    m = re.search(r"(?<![ঀ-৿])(এক|দুই|দু|তিন|চার|পাঁচ|ছয়|ছয়|সাত|আট|নয়|নয়)\s*শো?(?![ঀ-৿])|"
+                  r"(?<![ঀ-৿])(এক|দুই|দু|তিন|চার|পাঁচ|ছয়|ছয়|সাত|আট|নয়|নয়)শো?(?![ঀ-৿])", t)
+    if m:
+        return _BN_UNITS.get(m.group(1) or m.group(2), 0) * 100
+    return 0
+
+
 def extract_prefs(text: str) -> GuestProfile:
     """Rule-based reading of one utterance (English, Bangla, Banglish). Conservative: questions
     like "is it spicy?" set nothing; "nothing spicy please" sets spice=mild."""
@@ -231,11 +249,13 @@ def extract_prefs(text: str) -> GuestProfile:
     m = re.search(
         r"(we are|we're|there are|there'?re|table for|group of|party of|family of|us)\s+(\d+|one|two|three|four|five|six|seven|eight|nine|ten)\b"
         r"|\b(\d+|two|three|four|five|six|seven|eight|nine|ten)\s+(people|persons|person|of us|guests|adults|jon|জন)"
-        r"|আমরা\s*(\d+|এক|দুই|তিন|চার|পাঁচ|ছয়)\s*জন|amra\s+(\d+|dui|tin|char|pach)\s+jon",
+        r"|আমরা\s*(\d+|এক|দুই|তিন|চার|পাঁচ|ছয়)\s*জন|amra\s+(\d+|dui|tin|char|pach)\s+jon"
+        # "দুইজন, পাঁচশো টাকার মধ্যে…" — the head-count said on its own (never "একজন": "প্রন খায় না একজন" is one of them)
+        r"|(?<![ঀ-৿])(দুই|তিন|চার|পাঁচ|ছয়|সাত|আট|[২-৯])\s*জন(?![ঀ-৿])",
         t,
     )
     if m:
-        tok = next(g for g in (m.group(2), m.group(3), m.group(5), m.group(6)) if g)
+        tok = next(g for g in (m.group(2), m.group(3), m.group(5), m.group(6), m.group(7)) if g)
         n = _num(tok)
         if n and 1 <= n <= 30:
             p.party_size = n
@@ -253,6 +273,10 @@ def extract_prefs(text: str) -> GuestProfile:
                 p.budget = n
         except ValueError:
             pass
+    if not p.budget:
+        said = _bn_amount(t)  # "পাঁচশো টাকার মধ্যে", "বাজেট দেড় হাজার", "এক হাজারের মধ্যে"
+        if said and (said >= 1000 or re.search(r"টাকা|বাজেট|মধ্যে|ভিতরে|ভেতরে|budget|taka|within", t)):
+            p.budget = said
 
     if re.search(r"\b(kids?|child|children|son|daughter|baby|toddler)\b|বাচ্চা|bacha|baccha", t):
         p.kids = True
@@ -397,6 +421,10 @@ def violations(it: Dict[str, Any], prof: GuestProfile, facts: Optional[Dict[str,
         # (চিংড়ি is মাছ to a Bengali guest — "মাছ খাই না" once got চিংড়ি ষোল আনা)
         if word in c or re.search(rf"\b{re.escape(word.split('/')[0])}", text) or (word == "fish" and "prawn/shrimp" in c):
             out.append(f"guest avoids {word}")
+        elif word == "fish" and re.search(r"মাছ|fish|seafood|sea food", str(it.get("category") or ""), re.I) and not (
+                c & {"chicken", "beef", "mutton", "duck", "egg"}):
+            # a dish of the fish section whose name hides it ("মুড়ি ঘন্ট" is a fish head) is fish too
+            out.append("guest avoids fish")
     if prof.spice in ("none", "mild") and f["heat"] in ("spicy", "likely spicy"):
         out.append("too spicy")
     # kids at the table imply mild food unless the guest said they like it hot
@@ -543,7 +571,7 @@ def _score(it: Dict[str, Any], f: Dict[str, Any], prof: GuestProfile, kinds: Lis
         elif f["heavy"] and prof.party_size < 3:
             s -= 1.5
         if re.search(r"triple|tower|stack|double|jumbo|\bxl\b|monster|giant", f["text"]):
-            s -= 3.0  # a child's portion is no Triple Cheese Tower (it led "বাচ্চাদের জন্য…")
+            s -= 7.0  # a child's portion is no Triple Cheese Tower (it led "বাচ্চাদের জন্য…")
         if re.search(r"sizzl|bhuna|masala|chill?i|jhal|tikka|naga|vindaloo|rezala|kala bhuna|curry", f["text"]) \
                 and not f["kid_friendly"]:
             s -= 2.5  # nor a sizzling plate or a beef bhuna ("বাচ্চাদের জন্য Beef Sizzling…")
@@ -954,6 +982,11 @@ class RecoState:
     offers_made: int = 0  # the offer engine's offers this visit (offers.MAX_OFFERS)
     offer_declines: int = 0  # "no"s to them (offers.MAX_DECLINES → no more this visit)
     recent: List[str] = field(default_factory=list)  # item ids pitched recently (novelty)
+    cheaper_than: int = 0  # "আরেকটু কম দামে": the dearest dish they had just seen (the fallback ceiling)
+    last_list: List[str] = field(default_factory=list)  # the last LIST said (2+ dishes): "দ্বিতীয়টা" after a question
+    last_list_turn: int = -99                            # about the first one still means the list's second
+    thread_shown: List[str] = field(default_factory=list)  # every dish said since the guest's ask that started the
+    thread_turn: int = -99                                 # suggestions ("আর কি আছে?" never repeats one) — followups.py
     profile: Dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -962,6 +995,15 @@ class RecoState:
         return cls(**{k: d[k] for k in cls.__dataclass_fields__ if k in d})
 
     def to_dict(self) -> Dict[str, Any]:
+        if len(self.last_offered) >= 2:
+            self.last_list, self.last_list_turn = list(self.last_offered), self.last_offer_turn
+        if self.last_offered and self.last_offer_turn == self.turn and self.thread_turn != self.turn:
+            # a follow-up ("আর কি আছে?", "ঝাল কিছু?") adds to the thread; any other ask starts a new one
+            # (a one-dish answer in between — "প্রথমটার দাম কত?" — neither starts nor ends it)
+            keep = getattr(self, "continuing", False) and self.turn - self.thread_turn <= 3
+            if keep or len(self.last_offered) >= 2:
+                self.thread_shown = list(dict.fromkeys((self.thread_shown if keep else []) + self.last_offered))[:40]
+                self.thread_turn = self.turn
         return asdict(self)
 
 

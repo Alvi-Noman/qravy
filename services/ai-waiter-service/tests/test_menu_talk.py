@@ -454,7 +454,7 @@ def test_recommendations_use_the_waiters_two_shapes():
 
     # STAR-MARKED dishes lead only when they suit the time: Beef with Red Curry is starred
     out, _ = ask("ভালো কি আছে আপনাদের?")
-    assert out["replyText"].startswith("স্পেশাল আইটেমের মধ্যে Beef with Red Curry"), out["replyText"]
+    assert out["replyText"].startswith("আমাদের স্পেশাল হলো Beef with Red Curry"), out["replyText"]
     import brain as b
     # the only star is a sizzler — not a breakfast dish
     sizzler_star = [dict(it, signature=(it["id"] == "csz")) for it in ITEMS]
@@ -474,7 +474,7 @@ def test_recommendations_use_the_waiters_two_shapes():
     assert "csz" not in {r["itemId"] for r in out["meta"]["suggestions"]}, out["meta"]["suggestions"]
     assert out["replyText"].startswith("সকালের নাস্তায়"), out["replyText"]  # no special now → the meal period leads
     out = ask_at("dinner")  # at dinner the star suits → it leads
-    assert out["replyText"].startswith("স্পেশাল আইটেমের মধ্যে Chicken Sizzling"), out["replyText"]
+    assert out["replyText"].startswith("আমাদের স্পেশাল হলো Chicken Sizzling"), out["replyText"]
     assert out["meta"]["suggestions"][0]["itemId"] == "csz"
 
     # anything more is still the model's

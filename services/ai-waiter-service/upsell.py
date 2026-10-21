@@ -57,6 +57,8 @@ def dish_roles(it: Dict[str, Any]) -> Dict[str, bool]:
     whole = (bool(_WHOLE_MEAL.search(k)) or f["complete_meal"] or handheld
              or bool(re.search(r"\bwith\b", name) and (_BREAD.search(name) or f["rice"]))  # "Porota with Dal"
              ) and not re.search(r"soup|salad", name)
+    if whole and f["rice"] and (f["side"] or re.search(r"\b(plain|extra)\b", name)):
+        whole = False  # "এক্সট্রা পোলাও রাইস", "Plain Polao": the rice for a curry, not a polao meal
     combo = bool(re.search(r"\bwith\b|salad|soup", name))  # "Porota with Dal", "Glass Noodle Salad" — dishes of their own
     bread = bool(_BREAD.search(name)) and not handheld and not whole and not combo
     rice = (f["rice"] or bread) and not whole and not dessert and not combo
@@ -149,7 +151,9 @@ def kind_items(kind: str, menu: List[Dict[str, Any]], orderable: Dict[str, bool]
 def of_bn(word: str) -> str:
     """Bangla "of": "ড্রিংকস" → "ড্রিংকসের", "ঠান্ডা" → "ঠান্ডার" (after a vowel just "র")."""
     w = (word or "").strip()
-    return w + ("র" if re.search(r"[aeiouািীুূৃেৈোৌঅআইঈউঊএঐওঔ]$", w) else "ের")
+    if re.search(r"[ইঈউঊএওঐঔ]$", w) or w in ("চা",):
+        return w + "য়ের"  # "থাই" → "থাইয়ের", "পোলাও" → "পোলাওয়ের", "চা" → "চায়ের" (never "থাইর")
+    return w + ("র" if re.search(r"[aeiouািীুূৃেৈোৌঅআ]$", w) else "ের")
 
 
 def listing(groups: List[Tuple[str, List[Dict[str, Any]]]], lang: str) -> str:

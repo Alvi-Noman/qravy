@@ -94,11 +94,14 @@ def test_a_clean_order_needs_no_model_and_is_confirmed_short():
     assert "clean_order" in out["meta"]["guards"]
     # anything more than "these dishes, this many" → the model reads it (with all its checks)
     for said in ("ঝাল কম করে দুইটা ক্রিস্পি রাইস স্যুপ দিন",   # a note
-                 "দুইটা স্যুপ দিন",                          # which soup?
                  "ক্রিস্পি রাইস স্যুপ কেমন?",                  # a question
                  "ভাইস ঠিক স্যুপ দুইটা দেন"):                 # a word we can't place
         _, calls = run(said, {"replyText": "…"})
         assert calls, said
+    # "which soup?" is asked from the menu itself, with the soups as buttons (two of each)
+    out, calls = run("দুইটা স্যুপ দিন", {"replyText": "…"})
+    assert not calls and out["meta"]["guards"] == ["which_one"], out["replyText"]
+    assert all(o["say"].startswith("2টা ") for o in out["meta"]["decision"]["chooseOptions"]), out["meta"]["decision"]
     # a size to pick → no model either: it's held and asked about (Half or Full?), never guessed
     out, calls = run("একটা কাচ্চি বিরিয়ানি দেন", {"replyText": "…"})
     assert not calls and ops_of(out) == [] and "Half" in out["replyText"] and "Full" in out["replyText"], out["replyText"]

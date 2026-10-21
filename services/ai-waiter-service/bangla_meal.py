@@ -129,10 +129,21 @@ def meal_text(m: Dict[str, Any], lang: str, *, rice_in_tray: bool = False) -> st
     return s[0].upper() + s[1:]
 
 
-def house_note(items: List[Dict[str, Any]], orderable_items: List[Dict[str, Any]]) -> str:
+_BREAD = re.compile(r"পরোটা|পরাটা|রুটি|(?<![ঀ-৿])নান(?![ঀ-৿])|লুচি|পুরি|paratha|porota|\broti\b|\bnaan\b|luchi|\bpuri\b", re.I)
+
+
+def house_note(items: List[Dict[str, Any]], orderable_items: List[Dict[str, Any]], kinds: Iterable[str] = ()) -> str:
     """For the model's turn context at a bhaat restaurant (empty elsewhere)."""
     if not is_bhaat_house(items):
         return ""
+    breads = [said_name(it) for it in orderable_items if _BREAD.search(str(it.get("name") or ""))]
+    if "breakfast" in list(kinds) and breads:
+        # the morning at a Bengali place is paratha / ruti with dal, bhaji, egg, nehari — never "এখন ভাত খেতে পারেন",
+        # and a tea or a cappuccino goes WITH it, it's never the pick
+        return ("HOUSE STYLE: a Bengali restaurant, and it's breakfast now. The morning meal here is "
+                f"{', '.join(dict.fromkeys(breads[:3]))} with dal, bhaji, egg or nehari — recommend THAT. Don't offer a "
+                "rice meal, and never lead with or substitute a tea / coffee / cappuccino for food — drinks only go "
+                "with the meal.")
     rice = next((it for it in orderable_items if role(it) == "rice"), None)
     if not rice:
         return ("HOUSE STYLE: a Bengali rice-and-curry restaurant, but rice isn't being served right now — don't offer a "

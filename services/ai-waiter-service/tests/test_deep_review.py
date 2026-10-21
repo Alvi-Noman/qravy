@@ -302,7 +302,8 @@ def test_a_dish_the_menu_lacks_is_no_kind_list():
              {"id": "bs", "name": "Banana Shake", "price": 160, "category": "Shake"},
              {"id": "cs", "name": "Chocolate Shake", "price": 170, "category": "Shake"}]
     out, calls = run("ম্যাঙ্গো শেক আছে?", items=juice)
-    assert calls and "reco_kind" not in out["meta"]["guards"], out["replyText"]
+    assert out["meta"]["guards"] == ["not_on_menu"] and "reco_kind" not in out["meta"]["guards"], out["replyText"]
+    assert "Mango Juice" in out["replyText"] and "Banana Shake" not in out["replyText"], out["replyText"]
 
 
 def test_what_goes_with_a_curry_elsewhere():

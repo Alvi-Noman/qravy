@@ -105,26 +105,60 @@ def _fmt_time(hhmm: str) -> str:
     return f"{h12}:{m:02d}{suffix}" if m else f"{h12}{suffix}"
 
 
-def _fmt_days(days: List[int]) -> str:
+_DAY_BN = ["রবি", "সোম", "মঙ্গল", "বুধ", "বৃহস্পতি", "শুক্র", "শনি"]
+_BN_DIGITS = str.maketrans("0123456789", "০১২৩৪৫৬৭৮৯")
+
+
+def _fmt_time_bn(hhmm: str) -> str:
+    """'17:00' → 'বিকাল ৫টা', '06:30' → 'সকাল ৬:৩০' — the time as a Bangla guest says it."""
+    h, m = [int(x) for x in hhmm.split(":")]
+    part = ("রাত" if h < 4 or h >= 20 else "ভোর" if h < 6 else "সকাল" if h < 12 else "দুপুর" if h < 15
+            else "বিকাল" if h < 18 else "সন্ধ্যা")
+    h12 = 12 if h % 12 == 0 else h % 12
+    return (f"{part} {h12}:{m:02d}" if m else f"{part} {h12}টা").translate(_BN_DIGITS)
+
+
+def _fmt_days(days: List[int], bn: bool = False) -> str:
     d = sorted(set(int(x) for x in days))
     if len(d) == 7:
         return ""
+    names = _DAY_BN if bn else _DAY_EN
     runs, i = [], 0
     while i < len(d):
         j = i
         while j + 1 < len(d) and d[j + 1] == d[j] + 1:
             j += 1
-        runs.append(f"{_DAY_EN[d[i]]}–{_DAY_EN[d[j]]}" if j - i >= 2 else ", ".join(_DAY_EN[x] for x in d[i : j + 1]))
+        runs.append(f"{names[d[i]]}–{names[d[j]]}" if j - i >= 2 else ", ".join(names[x] for x in d[i : j + 1]))
         i = j + 1
     return ", ".join(runs)
 
 
-def format_windows(windows: Optional[Iterable[Dict[str, Any]]]) -> str:
-    """[{days:[1..5], start:'07:00', end:'11:00'}] → 'Mon–Fri 7am–11am'"""
+def format_windows(windows: Optional[Iterable[Dict[str, Any]]], lang: str = "en") -> str:
+    """[{days:[1..5], start:'07:00', end:'11:00'}] → 'Mon–Fri 7am–11am' (bn: 'সোম–বৃহস্পতি সকাল ৭টা–সকাল ১১টা')"""
+    bn = (lang or "").lower() == "bn"
+    t = _fmt_time_bn if bn else _fmt_time
+    # overlapping windows on the same days are one span ("evening 5–10" + "dinner 6–11" → 5–11), said once
+    merged: List[Dict[str, Any]] = []
+    try:
+        for w in sorted((dict(x) for x in windows or []), key=lambda x: (tuple(sorted(x.get("days") or [])), _to_min(x["start"]))):
+            last = merged[-1] if merged else None
+            wraps = last and (_to_min(last["end"]) <= _to_min(last["start"]) or _to_min(w["end"]) <= _to_min(w["start"]))
+            if (last and not wraps and sorted(last.get("days") or []) == sorted(w.get("days") or [])
+                    and _to_min(last["start"]) <= _to_min(w["end"]) and _to_min(w["start"]) <= _to_min(last["end"])):
+                if _to_min(w["end"]) > _to_min(last["end"]):
+                    last["end"] = w["end"]
+                continue
+            merged.append(w)
+        windows = merged
+    except Exception:  # noqa: BLE001 — a malformed window: say them as they are
+        pass
     parts = []
     for w in windows or []:
         try:
-            label = " ".join(x for x in [_fmt_days(w.get("days") or []), f"{_fmt_time(w['start'])}–{_fmt_time(w['end'])}"] if x)
+            a, b = t(w["start"]), t(w["end"])
+            if bn and a.split()[0] == b.split()[0]:
+                b = b.split(" ", 1)[1]  # "সকাল ৭টা–১১টা", not "সকাল ৭টা–সকাল ১১টা"
+            label = " ".join(x for x in [_fmt_days(w.get("days") or [], bn), f"{a}–{b}"] if x)
             parts.append(label)
         except Exception:
             continue
@@ -376,13 +410,13 @@ def unavailable_reason(item: Dict[str, Any], rules: Dict[str, Any], now: Optiona
 
     cat = rules.get("categories", {}).get(str(item.get("categoryId") or ""))
     if cat and not is_within(cat.get("hours"), tz, now):
-        hours = format_windows(cat.get("hours"))
+        hours = format_windows(cat.get("hours"), lang)
         cname = cat.get("name") or "This section"
         return f"{cname} পাওয়া যায় {hours}।" if bn else f"{cname} is served {hours}."
 
     own = resolve_windows(item.get("servicePeriodIds"), item.get("availability"), rules.get("periods") or DEFAULT_PERIODS)
     if not is_within(own, tz, now):
-        hours = format_windows(own)
+        hours = format_windows(own, lang)
         return f"{name} পাওয়া যায় {hours}।" if bn else f"{name} is available {hours}."
 
     frm, until = item.get("availableFrom"), item.get("availableUntil")

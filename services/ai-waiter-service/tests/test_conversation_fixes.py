@@ -159,7 +159,8 @@ def test_5_too_expensive_gets_cheaper_dishes_with_their_prices():
 def test_6_a_price_question_gets_the_price():
     out, calls = run("সরা দইয়ের দাম কত?", {"replyText": "বগুড়ার বিখ্যাত সরা দই এর দাম ৳180।"})
     assert "আইটেমের মধ্যে" not in out["replyText"]
-    assert calls and "৳180" in out["replyText"]
+    # (answered from the menu — exact, no model call: "বগুড়ার বিখ্যাত সরা দই ৳180। দেব?")
+    assert not calls and "৳180" in out["replyText"] and out["replyText"].endswith("দেব?"), out["replyText"]
 
 
 def test_7_whats_on_the_afternoon_menu_suggests_for_the_afternoon():

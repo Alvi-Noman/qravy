@@ -98,10 +98,15 @@ def test_ekhon_as_speech_to_text_writes_it():
     for said in ("এখন কি খাও যেতে পারে ?", "এখন কিই খাবা জেতে পারে।", "এখন কি খাওয়া যেতে পারে?", "What can we eat now?"):
         out, _ = run(said, at="Mon 16:10")
         assert "period_menu" in out["meta"]["guards"] and cards(out) == {"shik", "tikka", "naan"}, (said, out["replyText"])
-    # about the guest's own tray, people / seats, or a pick ("ভালো কি…" — from what's orderable now) — not this
-    for said in ("তাহুলে আমার কাটে এখন কি কিয়াছে?", "মানুষ কি আছে এখন?", "এখন ভালো কি খাওয়া যেতে পারে?"):
+    # about the guest's own tray, or people / seats — not this
+    for said in ("তাহুলে আমার কাটে এখন কি কিয়াছে?", "মানুষ কি আছে এখন?"):
         out, _ = run(said, at="Mon 16:10")
         assert "period_menu" not in out["meta"]["guards"], (said, out["replyText"])
+    # a plain "what's good to eat now?" respects the time too (2026-10-21: it got a juice and two puddings at breakfast)
+    out, _ = run("এখন ভালো কি খাওয়া যেতে পারে?", at="Mon 16:10")
+    assert "period_menu" in out["meta"]["guards"], out["replyText"]
+    out, _ = run("এখানে খাওয়া যেতে পারে?", at="Mon 16:10")  # (speech-to-text's "এখানে" for "এখন": now)
+    assert "period_menu" in out["meta"]["guards"] and cards(out) == {"shik", "tikka", "naan"}, out["replyText"]
 
 
 def test_every_time_word():
