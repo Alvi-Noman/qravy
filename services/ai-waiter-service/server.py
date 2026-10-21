@@ -954,6 +954,10 @@ def stt_prompt(tenant: Optional[str], lang: Optional[str], max_chars: int = 420)
             if len(w) > 1:
                 counts[w] = counts.get(w, 0) + 1
     words = sorted(counts, key=lambda w: (-counts[w], w))
+    # a Bengali rice house: "ভাত" first — the word guests say most, while "ভর্তা" (in a dozen dish names) pulled
+    # "একটা ভাত দাও" over to "একটা ভর্তা দাও"
+    if bn and any("ভাত" in n for n in clean):
+        words = ["ভাত"] + [w for w in words if w != "ভাত"]
     # how guests name kinds of things ("ঠান্ডা" = a cold drink) — nouns only, safe to hint
     kinds = ["ঠান্ডা", "কোল্ড ড্রিংকস", "ডেজার্ট", "হাফ", "ফুল"] if bn else ["cold drinks", "dessert", "half", "full"]
     body = "মেনুর কিছু শব্দ: " if bn else "Words on the menu: "
