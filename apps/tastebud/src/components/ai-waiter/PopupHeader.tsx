@@ -13,7 +13,7 @@ type Props = {
 const ROUND =
   'absolute top-1/2 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full bg-gray-100 text-gray-700 transition hover:bg-[#FFE4EA] hover:text-[#FA2851] active:scale-95';
 
-export default function PopupHeader({ title, onClose, onBack }: Props) {
+export default function PopupHeader({ title, onClose, onBack, left }: Props & { left?: React.ReactNode }) {
   return (
     <div className="relative z-20 shrink-0 bg-white pt-[env(safe-area-inset-top)]">
       <div className="relative flex h-14 items-center justify-center px-14">
@@ -24,6 +24,7 @@ export default function PopupHeader({ title, onClose, onBack }: Props) {
             </svg>
           </button>
         )}
+        {!onBack && left ? <div className="absolute left-3 top-1/2 -translate-y-1/2">{left}</div> : null}
         <h2 className="truncate text-[16px] font-semibold text-gray-900">{title}</h2>
         <button type="button" onClick={onClose} aria-label="Close" className={`${ROUND} right-3`}>
           <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true">

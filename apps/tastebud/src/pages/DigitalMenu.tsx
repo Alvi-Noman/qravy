@@ -483,7 +483,7 @@ export default function DigitalMenu() {
       <div className="sticky top-0 z-30 bg-[#F6F5F8]">
         <div className="mx-auto max-w-6xl px-4 pt-4">
           <div className="relative flex items-center justify-between">
-            {/* Back · "Call waiter" (dine-in only: just the bell — the title sits in the middle) */}
+            {/* Back ("Call waiter" is the labelled button at the bottom left) */}
             <div className="flex items-center gap-2">
             <Link
               to={backHref}
@@ -506,12 +506,6 @@ export default function DigitalMenu() {
                 />
               </svg>
             </Link>
-            <CallWaiterButton
-              sub={subdomain}
-              branch={normalizedBranch ?? null}
-              variant="icon"
-              lang={w.selectedLang === 'en' ? 'en' : 'bn'}
-            />
             </div>
             <h1 className="pointer-events-none absolute left-1/2 -translate-x-1/2 text-[22px] sm:text-[24px] font-semibold text-gray-900">
               Menu
@@ -732,6 +726,17 @@ export default function DigitalMenu() {
 
       {/* Floating minimized cart button (only when tray is closed & cart has items) */}
       <CartFab trayOpen={w.showTray} onOpenTray={() => w.setShowTray(true)} bottom={210} />
+
+      {/* "Call waiter" (dine-in only — an online page has no table to come to): a labelled button at the bottom left,
+          opposite the tray's — a person, the bill, water, a clean table, straight to the dashboard */}
+      <div className={`fixed left-4 z-[95] ${w.showSuggestions || w.showTray ? 'hidden' : ''}`} style={{ bottom: 210 }}>
+        <CallWaiterButton
+          sub={subdomain}
+          branch={normalizedBranch ?? null}
+          variant="pill"
+          lang={w.selectedLang === 'en' ? 'en' : 'bn'}
+        />
+      </div>
 
       {/* the waiter at the bottom: hold the orb to talk; what it says, and the answer pills */}
       <div className="fixed inset-x-0 bottom-0 z-40">

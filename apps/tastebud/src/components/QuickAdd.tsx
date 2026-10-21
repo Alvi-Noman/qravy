@@ -14,6 +14,8 @@ type Props = {
   onChoose?: () => void;
   /** can't be ordered right now (e.g. the restaurant is closed) */
   disabled?: boolean;
+  /** the guest pressed "+" / "−" (the AI suggestions switch to ordering by hand) */
+  onAdd?: () => void;
   className?: string;
 };
 
@@ -21,7 +23,7 @@ const BTN =
   'grid h-9 w-9 place-items-center rounded-full text-[20px] leading-none font-semibold transition active:scale-95 ' +
   'disabled:opacity-40 disabled:active:scale-100';
 
-export default function QuickAdd({ id, name, price, imageUrl, choices, onChoose, disabled, className }: Props) {
+export default function QuickAdd({ id, name, price, imageUrl, choices, onChoose, disabled, onAdd, className }: Props) {
   const { items, addItem, setQty } = useCart();
   if (!id) return null;
   // the plain line of this dish (no size / add-ons): what "+" and "−" change
@@ -34,12 +36,14 @@ export default function QuickAdd({ id, name, price, imageUrl, choices, onChoose,
   const plus = (e: React.MouseEvent) => {
     stop(e);
     if (disabled) return;
+    onAdd?.();
     if (choices && qty === 0) return onChoose?.();
     if (qty === 0) addItem({ id, name: name ?? '', price: price ?? 0, ...(imageUrl ? { imageUrl } : {}) });
     else setQty(id, qty + 1);
   };
   const minus = (e: React.MouseEvent) => {
     stop(e);
+    onAdd?.();
     setQty(id, qty - 1); // (0 takes the line out of the tray)
   };
 

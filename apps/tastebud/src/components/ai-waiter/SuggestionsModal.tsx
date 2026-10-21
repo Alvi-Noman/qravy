@@ -10,6 +10,8 @@ import { isDineInPath, withTable } from '../../utils/table';
 import { normalizeIntent, localHeuristicIntent } from '../../utils/intent-routing';
 import { priceNumber } from '../../utils/ui-lang';
 import QuickAdd from '../QuickAdd';
+import Modal from '../Modal';
+import { useCart } from '../../context/CartContext';
 
 type MinimalMenuItem = {
   id?: string;
@@ -20,6 +22,8 @@ type MinimalMenuItem = {
   choices?: boolean;
   /** can't be ordered right now */
   orderable?: boolean;
+  /** the dish as on the menu (sizes, add-ons, pictures) — its popup, on "+" */
+  full?: any;
 };
 
 type Props = {
@@ -34,8 +38,11 @@ type Props = {
   voiceBar?: boolean;
   /** the waiter's presence (AssistantDock) at the bottom of the page */
   assistant?: React.ReactNode;
-  /** "+" on a dish with sizes / add-ons: ask the waiter for one ("একটা … দিন") — it asks which size, as buttons */
-  onAskFor?: (name: string) => void;
+  /** the guest is ordering by hand ("+" pressed): no orb — a "View your tray" bar at the bottom instead */
+  manual?: boolean;
+  onManual?: () => void;
+  onViewTray?: () => void;
+  lang?: 'bn' | 'en';
 };
 
 /* ---------- Helpers ---------- */
@@ -95,10 +102,12 @@ function formatCurrency(n?: number) {
 type ProductSuggestionCardProps = {
   item: MinimalMenuItem;
   className?: string;
-  onAskFor?: (name: string) => void;
+  /** "+" on a dish with sizes / add-ons: its popup (as on the menu) */
+  onChoose?: (item: MinimalMenuItem) => void;
+  onAdd?: () => void;
 };
 
-function ProductSuggestionCardBase({ item, className, onAskFor }: ProductSuggestionCardProps): JSX.Element {
+function ProductSuggestionCardBase({ item, className, onChoose, onAdd }: ProductSuggestionCardProps): JSX.Element {
   const name = item.name ?? 'Item';
   const price = item.price;
   const image = item.imageUrl;
@@ -125,7 +134,7 @@ function ProductSuggestionCardBase({ item, className, onAskFor }: ProductSuggest
             <div className="h-full w-full rounded-[16px] bg-gray-100 grid place-items-center text-xl">🍽️</div>
           )}
         </div>
-        {/* "+" → one in the tray, then "− 1 +" (as on the menu); sizes / add-ons → the waiter asks which */}
+        {/* "+" → one in the tray, then "− 1 +" (as on the menu); sizes / add-ons → the dish's popup */}
         <QuickAdd
           className="absolute -bottom-2 -right-2"
           id={item.id}
@@ -133,7 +142,8 @@ function ProductSuggestionCardBase({ item, className, onAskFor }: ProductSuggest
           price={price}
           imageUrl={image}
           choices={item.choices}
-          onChoose={() => onAskFor?.(name)}
+          onChoose={() => onChoose?.(item)}
+          onAdd={onAdd}
           disabled={item.orderable === false}
         />
       </div>
@@ -158,7 +168,8 @@ const ProductSuggestionCard = React.memo(
     prev.item.imageUrl === next.item.imageUrl &&
     prev.item.choices === next.item.choices &&
     prev.item.orderable === next.item.orderable &&
-    prev.onAskFor === next.onAskFor &&
+    prev.onChoose === next.onChoose &&
+    prev.onAdd === next.onAdd &&
     prev.className === next.className
 );
 
@@ -171,7 +182,10 @@ export default function SuggestionsModal({
   items = [],
   highlightIds = [],
   onIntent,
-  onAskFor,
+  manual = false,
+  onManual,
+  onViewTray,
+  lang = 'bn',
   voiceBar = true,
   assistant,
 }: Props) {
@@ -187,6 +201,10 @@ export default function SuggestionsModal({
   }, [highlightIds]);
   const menuHref = useMenuHref(menuHrefOverride);
   const hasAiItems = Array.isArray(items) && items.length > 0;
+  const { count, subtotal } = useCart();
+  // the dish whose sizes / add-ons are being picked (the menu's own popup)
+  const [choosing, setChoosing] = React.useState<MinimalMenuItem | null>(null);
+  const onChoose = React.useCallback((it: MinimalMenuItem) => setChoosing(it), []);
 
   // the restaurant from the link (/t/<subdomain>/…) like the home screen, then the global store value
   const params = useParams<{ subdomain?: string; branchSlug?: string; branch?: string }>();
@@ -209,7 +227,20 @@ export default function SuggestionsModal({
 
       {/* FULL-SCREEN PAGE: title · scrolling cards · the waiter's dock (or the mic), as a column */}
       <div className={POPUP_PAGE_CLASS}>
-        <PopupHeader title="AI Suggestions" onClose={onClose} />
+        <PopupHeader
+          title="AI Suggestions"
+          onClose={onClose}
+          // the whole menu, one tap away (top left — the close button is on the right)
+          left={
+            <Link
+              to={menuHref}
+              onClick={onClose}
+              className="inline-flex h-9 items-center gap-1 rounded-full border border-gray-200 bg-white px-3 text-[13px] font-medium text-gray-800 shadow-sm active:scale-95"
+            >
+              {lang === 'en' ? 'Full menu' : 'পুরো মেনু'}
+            </Link>
+          }
+        />
 
         {/* SCROLL AREA */}
         <SheetScrollArea className="px-4 pt-2 pb-4" fadeFrom="#FFFFFF" moreHint={items.length > 2 ? 'More below' : undefined}>
@@ -230,7 +261,7 @@ export default function SuggestionsModal({
                       (on ? "ring-2 ring-[#FA2851]/45 shadow-md shadow-rose-100" : "")
                     }
                   >
-                    <ProductSuggestionCard item={it} onAskFor={onAskFor} />
+                    <ProductSuggestionCard item={it} onChoose={onChoose} onAdd={onManual} />
                   </Link>
                 );
               })}
@@ -255,6 +286,21 @@ export default function SuggestionsModal({
             }}
           />
         </div>
+        ) : manual ? (
+          // ordering by hand: the tray, like a delivery app — no orb here
+          <div className="relative z-40 shrink-0 px-4 pt-3 pb-[max(1rem,env(safe-area-inset-bottom))] bg-white border-t border-gray-100">
+            <button
+              type="button"
+              onClick={onViewTray}
+              disabled={count === 0}
+              className="flex h-14 w-full items-center justify-between rounded-2xl bg-[#FA2851] px-5 text-white shadow-[0_6px_18px_rgba(250,40,81,0.35)] active:scale-[0.99] disabled:opacity-50"
+            >
+              <span className="text-[16px] font-semibold">
+                {lang === 'en' ? `View your tray (${count} ${count === 1 ? 'item' : 'items'})` : `ট্রে দেখুন (${count}টি আইটেম)`}
+              </span>
+              <span className="text-[16px] font-semibold">{formatCurrency(subtotal)}</span>
+            </button>
+          </div>
         ) : assistant ? (
           assistant
         ) : (
@@ -262,6 +308,27 @@ export default function SuggestionsModal({
         )}
 
       </div>
+
+      {/* a dish with sizes / add-ons: the same popup as on the menu */}
+      {choosing?.full && (
+        <Modal
+          open={!!choosing}
+          onClose={() => setChoosing(null)}
+          title={choosing.full.name ?? choosing.name ?? ''}
+          image={Array.isArray(choosing.full.media) ? choosing.full.media[0] : choosing.imageUrl}
+          images={Array.isArray(choosing.full.media) ? choosing.full.media.filter(Boolean) : choosing.imageUrl ? [choosing.imageUrl] : []}
+          price={typeof choosing.full.price === 'number' ? choosing.full.price : choosing.price}
+          compareAt={typeof choosing.full.compareAtPrice === 'number' ? choosing.full.compareAtPrice : undefined}
+          unavailable={choosing.orderable === false}
+          tags={Array.isArray(choosing.full.tags) ? choosing.full.tags : undefined}
+          description={typeof choosing.full.description === 'string' ? choosing.full.description : undefined}
+          variations={choosing.full.variations}
+          options={choosing.full.options}
+          modifierGroups={choosing.full.modifierGroups}
+          prepMinutes={choosing.full.prepMinutes}
+          itemId={choosing.id}
+        />
+      )}
     </div>
   );
 }

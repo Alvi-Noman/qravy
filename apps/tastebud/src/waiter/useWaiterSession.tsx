@@ -413,6 +413,12 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
 
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [showTray, setShowTray] = useState(false);
+  // the guest pressed "+" on an AI suggestion: ordering by hand — the orb steps aside in the suggestions and the tray,
+  // a "View your tray" bar instead (like a delivery app); back to the waiter once both are closed
+  const [manualOrder, setManualOrder] = useState(false);
+  useEffect(() => {
+    if (!showSuggestions && !showTray) setManualOrder(false);
+  }, [showSuggestions, showTray]);
 
   const openSuggestions = () => {
     setShowTray(false);
@@ -460,14 +466,17 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
     choices?: boolean;
     /** the menu's own "can be ordered now" */
     orderable?: boolean;
+    /** the dish as on the menu (sizes, add-ons, pictures) — the popup opened by "+" */
+    full?: any;
   };
 
   /** What the "+" on a suggestion needs to know, from the dish on the menu. */
-  const addFacts = (s: any): Pick<SuggestedItem, 'choices' | 'orderable'> => ({
+  const addFacts = (s: any): Pick<SuggestedItem, 'choices' | 'orderable' | 'full'> => ({
     choices:
       (Array.isArray(s?.variations) && s.variations.length > 1) ||
       (Array.isArray(s?.modifierGroups) && s.modifierGroups.length > 0),
     orderable: typeof s?.orderable === 'boolean' ? s.orderable : undefined,
+    full: s ?? undefined, // (its sizes / add-ons: the dish popup on "+")
   });
 
   const [suggestedItems, setSuggestedItems] = useState<SuggestedItem[]>([]);
@@ -1668,6 +1677,7 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
     // what's on screen
     choices, pickOptions, offerItemIds, suggestedItems, highlightIds, setHighlightIds, trayPicks, setTrayPicks,
     upsellItems, trayAskTable, setTrayAskTable, trayAskAt, showSuggestions, setShowSuggestions, showTray, setShowTray,
+    manualOrder, setManualOrder,
     openSuggestions, openTray, goMenu, mapUpsell, handleSuggestionsReply, handleTrayReply,
   };
 }
