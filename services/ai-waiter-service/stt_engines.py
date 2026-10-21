@@ -4,13 +4,15 @@ doesn't use these. Keys in the waiter's env: GEMINI_API_KEY, ELEVENLABS_API_KEY 
 import base64
 import io
 import os
+import re
 import wave
 from typing import Optional, Tuple
 
 import httpx
 
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
-GEMINI_MODEL = os.environ.get("GEMINI_STT_MODEL", "gemini-2.5-flash").strip()
+GEMINI_MODEL = os.environ.get("GEMINI_STT_MODEL", "gemini-flash-latest").strip()
+_gemini_model = GEMINI_MODEL  # (moves on to the model Google names when it retires this one)
 ELEVEN_KEY = os.environ.get("ELEVENLABS_API_KEY", "").strip()
 ELEVEN_MODEL = os.environ.get("ELEVENLABS_STT_MODEL", "scribe_v1").strip()
 TIMEOUT_S = 20.0
@@ -41,14 +43,26 @@ async def gemini(pcm16: bytes, rate: int, menu_words: str = "") -> Tuple[Optiona
                                                  "data": base64.b64encode(_wav(pcm16, rate)).decode()}}]}],
         "generationConfig": {"temperature": 0, "thinkingConfig": {"thinkingBudget": 0}},
     }
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
+    global _gemini_model
     try:
         async with httpx.AsyncClient(timeout=TIMEOUT_S) as c:
-            r = await c.post(url, json=body, headers={"x-goog-api-key": GEMINI_KEY})
+            for _ in range(3):
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{_gemini_model}:generateContent"
+                r = await c.post(url, json=body, headers={"x-goog-api-key": GEMINI_KEY})
+                if r.status_code == 404:
+                    # a model Google retired: its error names the one to use ("…use models/gemini-3.8-flash…")
+                    named = [n for n in re.findall(r"models/(gemini-[\w.\-]*\w)", r.text) if n != _gemini_model]
+                    if named:
+                        _gemini_model = named[0]
+                        continue
+                if r.status_code == 400 and "thinking" in r.text.lower() and "thinkingConfig" in body["generationConfig"]:
+                    body["generationConfig"].pop("thinkingConfig")  # (a newer model with another thinking setting)
+                    continue
+                break
         if r.status_code >= 400:
-            return None, f"Gemini error {r.status_code}: {r.text[:200]}"
+            return None, f"Gemini ({_gemini_model}) error {r.status_code}: {r.text[:200]}"
         parts = ((r.json().get("candidates") or [{}])[0].get("content") or {}).get("parts") or []
-        return " ".join(str(p.get("text") or "") for p in parts).strip(), ""
+        return " ".join(str(p.get("text") or "") for p in parts if not p.get("thought")).strip(), ""
     except Exception as e:  # noqa: BLE001
         return None, f"Gemini failed: {e!r}"[:200]
 
