@@ -40,6 +40,20 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   return data as T;
 }
 
+/** A turn's recording as a playable URL (fetched with the admin's token — an <audio> tag can't send it). null: gone. */
+export async function voiceClipUrl(id: string): Promise<string | null> {
+  const res = await fetch(`${API_BASE}/cortex/voice-clips/${encodeURIComponent(id)}`, {
+    headers: getToken() ? { Authorization: `Bearer ${getToken()}` } : {},
+  });
+  if (res.status === 401) {
+    setToken(null);
+    window.dispatchEvent(new Event('cortex:signed-out'));
+    return null;
+  }
+  if (!res.ok) return null;
+  return URL.createObjectURL(await res.blob());
+}
+
 export async function signIn(login: string, password: string): Promise<{ email: string }> {
   const r = await api<{ token: string; admin: { email: string } }>('/login', {
     method: 'POST',
@@ -171,6 +185,8 @@ export type Turn = {
   engine: string | null;
   heard: string;
   unheard: boolean;
+  /** the guest's own voice for this turn (a few days), or null */
+  audio?: string | null;
   understood: {
     text: string | null;
     corrections: Array<{ from: string; to: string }>;

@@ -5,7 +5,7 @@
  * From the transcripts the waiter stores (ai-waiter-service /conversations, kept 30 days); follows the sidebar's
  * branch picker. The selected conversation is in the URL (?session=…) so it can be shared with a teammate.
  */
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import {
@@ -50,6 +50,8 @@ type Turn = {
   input: 'voice' | 'typed';
   heard: string;
   unheard: boolean;
+  /** what the guest said, as sound (kept a few days) — GET /voice-clip */
+  audio?: string | null;
   understood: {
     text: string | null;
     corrections: { from: string; to: string }[];
@@ -252,7 +254,7 @@ export default function ConversationsPage(): JSX.Element {
                 <p className="text-sm text-slate-500">Nothing stored for this session (older than 30 days?).</p>
               )}
               <ol className="space-y-3">
-                {detail.data?.map((t, i) => <TurnCard key={i} turn={t} />)}
+                {detail.data?.map((t, i) => <TurnCard key={i} turn={t} sub={sub ?? ''} />)}
               </ol>
             </>
           )}
@@ -262,7 +264,7 @@ export default function ConversationsPage(): JSX.Element {
   );
 }
 
-function TurnCard({ turn: t }: { turn: Turn }) {
+function TurnCard({ turn: t, sub }: { turn: Turn; sub: string }) {
   const u = t.understood;
   const understoodBits = [
     u.intent && words(u.intent),
@@ -293,6 +295,7 @@ function TurnCard({ turn: t }: { turn: Turn }) {
         ) : (
           <span className="text-slate-900">{t.heard}</span>
         )}
+        {t.audio && <VoiceClip id={t.audio} sub={sub} />}
       </Row>
 
       {!t.unheard && (
@@ -351,6 +354,44 @@ function TurnCard({ turn: t }: { turn: Turn }) {
         <span className="text-slate-900">{t.said || <span className="italic text-slate-400">No reply</span>}</span>
       </Row>
     </li>
+  );
+}
+
+/** "▶ Listen": the guest's own voice for this turn, fetched with the staff login (an <audio> tag can't send it). */
+function VoiceClip({ id, sub }: { id: string; sub: string }) {
+  const { getToken, refreshToken } = useAuthContext();
+  const [url, setUrl] = useState<string | null>(null);
+  const [state, setState] = useState<'idle' | 'loading' | 'gone'>('idle');
+  useEffect(
+    () => () => {
+      if (url) URL.revokeObjectURL(url);
+    },
+    [url],
+  );
+  if (url) return <audio controls autoPlay src={url} className="mt-1.5 block h-8 w-full max-w-xs" />;
+  if (state === 'gone') return <span className="ml-2 text-xs italic text-slate-400">recording no longer kept</span>;
+  return (
+    <button
+      type="button"
+      disabled={state === 'loading'}
+      onClick={async () => {
+        setState('loading');
+        try {
+          const res = await waiterFetch(
+            `/voice-clip?tenant=${encodeURIComponent(sub)}&id=${encodeURIComponent(id)}`,
+            {},
+            { getToken, refreshToken },
+          );
+          if (!res.ok) throw new Error(String(res.status));
+          setUrl(URL.createObjectURL(await res.blob()));
+        } catch {
+          setState('gone');
+        }
+      }}
+      className="ml-2 rounded-full border border-slate-300 px-2 py-0.5 text-xs text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+    >
+      {state === 'loading' ? '…' : '▶ Listen'}
+    </button>
   );
 }
 

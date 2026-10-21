@@ -19,6 +19,7 @@ import {
   tenantsCol,
   transcriptsCol,
   turnView,
+  voiceClipsCol,
   waiterDbOf,
   type Filters,
   type SessionRow,
@@ -655,6 +656,21 @@ router.get(
         };
       }),
     });
+  })
+);
+
+/** What the guest said in one turn, as sound (MP3) — the ▶ next to "Heard". Kept a few days (VOICE_CLIP_DAYS). */
+router.get(
+  '/cortex/voice-clips/:id',
+  wrap(async (req, res) => {
+    const id = String(req.params.id);
+    if (!ObjectId.isValid(id)) return res.status(404).json({ success: false, message: 'Not found' });
+    const doc = await voiceClipsCol().findOne({ _id: new ObjectId(id) });
+    const audio = doc?.audio as { buffer?: Uint8Array } | undefined;
+    if (!doc || !audio?.buffer) return res.status(404).json({ success: false, message: 'Not found (recordings are kept a few days)' });
+    res.setHeader('Content-Type', String(doc.mime || 'audio/mpeg'));
+    res.setHeader('Cache-Control', 'private, max-age=3600');
+    res.end(Buffer.from(audio.buffer));
   })
 );
 

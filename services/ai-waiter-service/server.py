@@ -52,6 +52,7 @@ from stt import stt_np_float32
 from cart_store import save_cart, load_cart
 import upsell_stats
 import conversations
+import voice_clips
 from availability import (
     DEFAULT_PERIODS,
     DEFAULT_TZ,
@@ -128,6 +129,12 @@ try:
     _session_ctx.attach_store(DB.waiter_sessions)
 except Exception as e:
     print("[ai-waiter-service] ⚠️ session store unavailable (memory only):", e)
+
+# what the guest said, as sound: each voice turn's audio, kept VOICE_CLIP_DAYS (voice_clips.py)
+try:
+    voice_clips.attach(DB)
+except Exception as e:
+    print("[ai-waiter-service] ⚠️ voice clips unavailable:", e)
 
 # TTL (30 days) so transcripts auto-expire
 try:
@@ -703,6 +710,23 @@ async def handle_stt_test(request: web.Request) -> web.Response:
                              headers=_CORS)
 
 
+async def handle_voice_clip(request: web.Request) -> web.Response:
+    """GET /voice-clip?tenant=<subdomain>&id=<clip id> — what the guest said in one turn, as sound (the admin's AI
+    conversations page). The restaurant's owners and admins only, and only that restaurant's clips."""
+    q = request.rel_url.query
+    tenant = q.get("tenant", "").strip()
+    if not tenant:
+        return web.json_response({"ok": False, "error": "tenant required"}, status=400, headers=_CORS)
+    denied = await require_staff_of(request, tenant, roles=("owner", "admin"))
+    if denied is not None:
+        return denied
+    doc = await asyncio.to_thread(voice_clips.get, q.get("id", "").strip())
+    if not doc or doc.get("tenant") != tenant:
+        return web.json_response({"ok": False, "error": "not found (kept 7 days)"}, status=404, headers=_CORS)
+    return web.Response(body=bytes(doc["audio"]), content_type=doc.get("mime") or "audio/mpeg",
+                        headers={**_CORS, "Cache-Control": "private, max-age=3600"})
+
+
 async def start_http_server():
     await asyncio.to_thread(_load_alerts)  # buzzers that were ringing before this restart keep ringing
     app = web.Application()
@@ -715,6 +739,7 @@ async def start_http_server():
     app.router.add_route("OPTIONS", "/upsell/stats", handle_alert_options)
     app.router.add_route("OPTIONS", "/conversations", handle_alert_options)
     app.router.add_route("OPTIONS", "/stt-test", handle_alert_options)
+    app.router.add_route("OPTIONS", "/voice-clip", handle_alert_options)
 
     # Actual endpoints
     app.router.add_get("/cart/load", handle_cart_load)
@@ -725,6 +750,7 @@ async def start_http_server():
     app.router.add_get("/upsell/stats", handle_upsell_stats)
     app.router.add_get("/conversations", handle_conversations)
     app.router.add_post("/stt-test", handle_stt_test)  # the mic test page (temporary)
+    app.router.add_get("/voice-clip", handle_voice_clip)
 
     runner = web.AppRunner(app)
     await runner.setup()
@@ -2618,11 +2644,16 @@ async def handle_conn(ws: WebSocketServerProtocol):
                     pass
                 # the admin's conversations page shows these too (status "unheard": never exported as training data)
                 try:
+                    place = turn_place(tenant_hint, branch_hint, channel_hint, table_hint)
+                    # (what it couldn't make out is exactly what's worth hearing)
+                    clip = await asyncio.get_event_loop().run_in_executor(
+                        None, voice_clips.save, final_bytes, rate, tenant_hint, session_id, place.get("location"))
                     await writer_q.put({
                         "user": user_id, "session": session_id, "text": "", "ts": datetime.utcnow(),
                         "status": conversations.UNHEARD, "engine": stt_engine, "tenant": tenant_hint,
                         "ai": {"replyText": sorry, "meta": {"language": sorry_lang, "guards": [stt_engine]}},
-                        **turn_place(tenant_hint, branch_hint, channel_hint, table_hint),
+                        **({"audio": clip} if clip else {}),
+                        **place,
                     })
                 except Exception as e:
                     print("[ai-waiter-service] writer queue error:", e)
@@ -2686,6 +2717,12 @@ async def handle_conn(ws: WebSocketServerProtocol):
 
                 # store for finetune/export
                 try:
+                    place = turn_place(tenant_hint, branch_hint, channel_hint, table_hint)
+                    # the guest's own voice for this turn (not for a tapped / typed answer)
+                    clip = None
+                    if not typed_text and final_bytes:
+                        clip = await asyncio.get_event_loop().run_in_executor(
+                            None, voice_clips.save, final_bytes, rate, tenant_hint, session_id, place.get("location"))
                     await writer_q.put(
                         {
                             "user": user_id,
@@ -2700,7 +2737,8 @@ async def handle_conn(ws: WebSocketServerProtocol):
                             "ai": {"replyText": turn.get("replyText"), "meta": turn.get("meta")},
                             "tenant": tenant_hint,
                             "menu_snapshot_size": turn.get("snapshotSize"),
-                            **turn_place(tenant_hint, branch_hint, channel_hint, table_hint),
+                            **({"audio": clip} if clip else {}),
+                            **place,
                         }
                     )
                 except Exception as e:

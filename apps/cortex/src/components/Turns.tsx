@@ -1,6 +1,7 @@
 // apps/cortex/src/components/Turns.tsx — the AI waiter's turns, each as heard → understood → said.
 import type { Turn } from '../api';
 import { Badge, fmt } from './ui';
+import VoiceClip from './VoiceClip';
 
 export default function Turns({ turns }: { turns: Turn[] }) {
   if (!turns.length) return <p className="text-[13px] text-stone-500">The guest didn&apos;t talk to the AI waiter.</p>;
@@ -22,7 +23,10 @@ export default function Turns({ turns }: { turns: Turn[] }) {
           </div>
           <dl className="grid gap-2 text-[13px] md:grid-cols-[110px_1fr]">
             <dt className="text-stone-500">Heard</dt>
-            <dd className="text-stone-900">{t.heard || <span className="italic text-stone-400">(nothing)</span>}</dd>
+            <dd className="text-stone-900">
+              {t.heard || <span className="italic text-stone-400">(nothing)</span>}
+              {t.audio && <VoiceClip id={t.audio} />}
+            </dd>
             {(t.understood.text || t.understood.corrections.length > 0) && (
               <>
                 <dt className="text-stone-500">Cleaned up</dt>
