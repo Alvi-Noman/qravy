@@ -88,6 +88,14 @@ def _join(names: List[str], last: str) -> str:
 def kind_text(label: str, top: List[str], more: List[str], lang: str, *, when: str = "", popular: bool = True) -> str:
     """Format 1. `label` = "ঝাল" / "spicy"; empty label with `when` = the meal period ("রাতের খাবারে…").
     `popular` only when the data says so (orders / a "popular" tag) — otherwise "খুবই ভালো", never an invented claim."""
+    if label in ("স্পেশাল", "special"):
+        # the house specials first, the rest as "also" — "আমাদের স্পেশাল Hot Wings আর Triple Cheese Tower; এছাড়াও …"
+        # (it said "স্পেশাল আইটেমের মধ্যে … এছাড়াও Peri Peri Fries" — as if the fries were a special too)
+        if lang == "bn":
+            s = f"আমাদের স্পেশাল হলো {_join(top, 'আর')}"
+            return s + (f"। এছাড়াও {_join(more, 'কিংবা')}-ও নিতে পারেন।" if more else "।")
+        s = f"Our specials are {_join(top, 'and')}"
+        return s + (f" — you could also try {_join(more, 'or')}." if more else ".")
     if lang == "bn":
         lead = f"{label} আইটেমের মধ্যে" if label else (_WHEN_BN.get(when) or "এখন")
         s = f"{lead} {_join(top, 'অথবা')} {'খুবই জনপ্রিয়' if popular else 'খুবই ভালো'}"

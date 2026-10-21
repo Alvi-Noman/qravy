@@ -314,8 +314,9 @@ def test_complement_mode_the_model_only_confirms_the_offer_is_the_engines():
 def test_ordinals_group_question_and_single_drink_offer():
     # "the first one" is resolved against what we actually said last turn
     state = {"reco": RecoState(turn=1, last_offered=["bs", "c2", "sm"], last_offer_turn=1).to_dict()}
-    _, calls = _run("I'll take the first one", [{**TURN, "replyText": "Beef Sizzling added."}], dialog_state=state)
-    assert "YOU JUST SUGGESTED" in calls[0][-1]["content"] and "1. " + IDX.ref(by["bs"]) in calls[0][-1]["content"]
+    out, calls = _run("I'll take the first one", [{**TURN, "replyText": "Beef Sizzling added."}], dialog_state=state)
+    # (resolved in code: the first of the list just said is the Beef Sizzling — no model guess)
+    assert [o["itemId"] for o in out["meta"]["cartOps"] if o["op"] == "add"] == ["bs"], out["replyText"]
     # a group without a head-count → recommend, then ask how many
     _, calls = _run("What should we order for dinner, something filling?", [{**TURN, "replyText": "Try the Beef Sizzling. How many of you are eating?"}])
     assert "How many of you are eating?" in calls[0][-1]["content"]
@@ -372,8 +373,8 @@ def test_table_plan_needs_its_total_and_missing_dessert_is_flagged():
     finally:
         brain._call_openai = orig
     assert len(calls) == 2 and "without its total" in calls[1][-1]["content"]
-    _, calls = _run("you have any desserts?", [{**TURN, "topic": "availability", "intent": "menu", "replyText": "No desserts, sorry!"}])
-    assert "NOT ON THIS MENU: desserts" in calls[0][-1]["content"]
+    out, calls = _run("you have any desserts?", [{**TURN, "topic": "availability", "intent": "menu", "replyText": "No desserts, sorry!"}])
+    assert not calls and out["replyText"].startswith("Sorry, we don't have desserts."), out["replyText"]  # (from the menu)
 
 
 def test_sizes_are_asked_for_then_priced_correctly():
@@ -441,9 +442,9 @@ def test_no_soup_for_dessert():
     soup = {**TURN, "topic": "availability", "intent": "menu",
             "replyText": "We don't have desserts. To finish your meal, try the Chicken Corn Soup at ৳300!"}
     out, calls = _run("you have any desserts?", [soup, soup])
-    assert len(calls) == 2 and "which this menu doesn't have" in calls[1][-1]["content"]
-    assert "Soup" not in out["replyText"] and out["replyText"].startswith("Sorry, we don't have desserts.")
-    assert "odd_substitute_replaced" in out["meta"]["guards"]
+    # (answered from the menu: no dessert → said plainly, never a soup "to finish")
+    assert not calls and "Soup" not in out["replyText"] and out["replyText"].startswith("Sorry, we don't have desserts."), out["replyText"]
+    assert out["meta"]["guards"] == ["not_on_menu"]
 
 
 def test_plan_uses_a_stated_size_for_sized_dishes():

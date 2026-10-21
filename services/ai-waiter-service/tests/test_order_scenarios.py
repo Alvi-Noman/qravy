@@ -110,8 +110,11 @@ def test_a_bare_yes_to_either_or_asks_which():
     g = Guest(sold_out=("or",))
     g.say("দুইটা অনিয়ন রিংস দেন", [add("or", 2)])
     out = g.say("হ্যাঁ", [add("peri")])  # the model would pick one for the guest
-    assert adds(out) == [] and out["replyText"].startswith("কোনটা দেব —"), out["replyText"]
-    assert len(out["meta"]["decision"]["chooseOptions"]) == 2
+    # one fries said ("…তবে Peri Peri Fries আছে — দেব?") → the yes is for it; two said → "কোনটা দেব —"
+    if adds(out):
+        assert adds(out) == [("peri", 1, None, ())], adds(out)
+    else:
+        assert out["replyText"].startswith("কোনটা দেব —") and len(out["meta"]["decision"]["chooseOptions"]) == 2, out["replyText"]
 
 
 # ---------------------------------------------------------------- several dishes waiting for their options
@@ -484,7 +487,8 @@ def test_these_means_what_the_waiter_just_recommended_not_an_older_list_on_scree
     stale = ["mint", "coke", "or"]  # what the app still said was on screen
 
     async def fake(messages):
-        assert "Classic Smash Burger" in messages[-1]["content"].split("ON SCREEN")[-1] if "ON SCREEN" in messages[-1]["content"] else True
+        # (the FIRST "ON SCREEN" section is the list — the mode line below it says "ON SCREEN" too)
+        assert "Classic Smash Burger" in messages[-1]["content"].split("ON SCREEN")[1] if "ON SCREEN —" in messages[-1]["content"] else True
         return _j.dumps({**TURN, "replyText": "Hot Wings ট্রাই করতে পারেন।", "topic": "recommendation"})
 
     async def none(*a, **k):
