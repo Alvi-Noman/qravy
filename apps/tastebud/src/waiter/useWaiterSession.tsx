@@ -41,6 +41,10 @@ type UIMode = 'idle' | 'thinking' | 'talking';
 // 🔒 Welcome overlay persistence (the home screen's "tap to start"): any talk to the waiter counts as activity
 export const WELCOME_INTERACT_KEY = 'qravy:aiwaiter:lastInteractionAt';
 const IS_IPHONE = typeof navigator !== 'undefined' && /iPhone|iPod/.test(navigator.userAgent || '');
+/** The mic stays open this long after a turn (not on iPhones), so the next one starts at once — no first words lost. */
+const MIC_WARM_MS = 30_000;
+/** Recording goes on this long after the finger lifts / the second tap: the last word is still on its way. */
+const SEND_TAIL_MS = 350;
 export const WELCOME_INACTIVITY_MS = 10 * 60 * 1000; // 10 minutes
 
 export function markWelcomeInteraction() {
@@ -327,6 +331,27 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
   const nodeRef = useRef<AudioWorkletNode | null>(null);
   const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const micIdleRef = useRef<number | null>(null); // lets a warm mic go after MIC_WARM_MS unused
+  // the guest leaves the page (or it unmounts) → a warm mic is let go at once
+  useEffect(() => {
+    const letGo = () => {
+      if (ctxRef.current) return; // listening right now
+      if (micIdleRef.current) window.clearTimeout(micIdleRef.current);
+      micIdleRef.current = null;
+      try {
+        streamRef.current?.getTracks().forEach((t) => t.stop());
+      } catch {}
+      streamRef.current = null;
+    };
+    const onHide = () => {
+      if (document.visibilityState === 'hidden') letGo();
+    };
+    document.addEventListener('visibilitychange', onHide);
+    return () => {
+      document.removeEventListener('visibilitychange', onHide);
+      letGo();
+    };
+  }, []);
 
   // analyser + mic level
   const analyserRef = useRef<AnalyserNode | null>(null);
@@ -1395,11 +1420,28 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
     } catch {}
     nodeRef.current = null;
 
-    // Stop media tracks
-    try {
-      streamRef.current?.getTracks().forEach((t) => t.stop());
-    } catch {}
-    streamRef.current = null;
+    // Stop media tracks — or keep the mic warm a while for the next turn: a cold mic takes 0.3–1 s to open and its
+    // volume / noise filters need a moment to settle, which cut the first words off. Not on iPhones (an open mic moves
+    // the waiter's voice to the quiet earpiece).
+    if (micIdleRef.current) window.clearTimeout(micIdleRef.current);
+    micIdleRef.current = null;
+    if (!IS_IPHONE && streamRef.current?.active) {
+      const kept = streamRef.current;
+      micIdleRef.current = window.setTimeout(() => {
+        micIdleRef.current = null;
+        if (streamRef.current === kept && !ctxRef.current) {
+          try {
+            kept.getTracks().forEach((t) => t.stop());
+          } catch {}
+          streamRef.current = null;
+        }
+      }, MIC_WARM_MS);
+    } else {
+      try {
+        streamRef.current?.getTracks().forEach((t) => t.stop());
+      } catch {}
+      streamRef.current = null;
+    }
 
     // Suspend (not close) the AudioContext: it was started by a tap, so it can be resumed later without one —
     // that's what lets the mic reopen by itself after the waiter's question (iOS)
@@ -1473,7 +1515,8 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
   const HOLD_MS = 200;
   const stopPressRef = useRef(false); // this press sends what was said — its release does nothing more
   const orbBallRef = useRef<HTMLButtonElement | null>(null); // the home orb: the popups' orb starts here and travels into their dock
-  const holdTimerRef = useRef<number | null>(null);
+  const pressAtRef = useRef(0); // when the finger touched the orb (a release within HOLD_MS = a tap)
+  const tailTimerRef = useRef<number | null>(null); // the send after the last word's tail (SEND_TAIL_MS)
   const holdingRef = useRef(false); // this hold started the mic
   // the finger is down (past the hold delay): the orb shows "listening" at once — the mic opens a moment later, and
   // in that gap (the voice already stopped) the orb used to look idle and play the talking → idle doze-off
@@ -1496,47 +1539,56 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
         tts.fadeOut();
       } catch {}
     }
+    // pressed again while the last words are still being recorded (just let go) → it's the same turn: keep going
+    if (tailTimerRef.current) {
+      window.clearTimeout(tailTimerRef.current);
+      tailTimerRef.current = null;
+      pressAtRef.current = Date.now();
+      holdingRef.current = true;
+      setHolding(true);
+      return;
+    }
     // already listening (a tap, or the mic reopened by itself) → this press sends what they said
     if (listening && !holdingRef.current) {
       stopPressRef.current = true;
-      void stopListening();
+      sendSoon();
       return;
     }
-    if (holdTimerRef.current) window.clearTimeout(holdTimerRef.current);
-    holdTimerRef.current = window.setTimeout(() => {
-      holdTimerRef.current = null;
-      holdingRef.current = true;
-      setHolding(true);
-      stopWhenOpenRef.current = false;
-      setHoldHintOn(false);
-      setHeldOnce(true);
-      void startListening();
-    }, HOLD_MS);
+    // recording starts the moment the finger touches the orb — people speak as they press, and waiting to tell a
+    // tap from a hold (200 ms) plus waking the mic cut their first words off. Tap or hold is decided on release.
+    pressAtRef.current = Date.now();
+    holdingRef.current = true;
+    setHolding(true);
+    stopWhenOpenRef.current = false;
+    setHoldHintOn(false);
+    setHeldOnce(true);
+    void startListening();
+  };
+  // stop a moment later: the last word is still on its way from the mic (stopping at once chopped it)
+  const sendSoon = () => {
+    if (tailTimerRef.current) window.clearTimeout(tailTimerRef.current);
+    tailTimerRef.current = window.setTimeout(() => {
+      tailTimerRef.current = null;
+      void stopListening();
+    }, SEND_TAIL_MS);
   };
   const orbPressEnd = () => {
     if (stopPressRef.current) {
       stopPressRef.current = false;
       return;
     }
-    if (holdTimerRef.current) {
-      // let go before the hold kicked in → a tap: listen until they tap again
-      window.clearTimeout(holdTimerRef.current);
-      holdTimerRef.current = null;
-      setHoldHintOn(false);
-      setHeldOnce(true);
-      void startListening({ tap: true });
-      return;
-    }
     if (!holdingRef.current) return;
     holdingRef.current = false;
     setHolding(false);
-    if (listening) void stopListening();
+    // a quick press → a tap: keep listening until they tap again
+    if (Date.now() - pressAtRef.current < HOLD_MS) return;
+    if (listening) sendSoon();
     else stopWhenOpenRef.current = true;
   };
   useEffect(() => {
     if (listening && stopWhenOpenRef.current) {
       stopWhenOpenRef.current = false;
-      void stopListening();
+      sendSoon();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [listening]);
