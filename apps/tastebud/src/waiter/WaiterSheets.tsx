@@ -56,7 +56,7 @@ export default function WaiterSheets({ w, dockEnabled = true }: { w: WaiterSessi
     showSuggestions, setShowSuggestions, setHighlightIds, suggestedItems, highlightIds, handleSuggestionsReply,
     showTray, setShowTray, setTrayPicks, setTrayAskTable, resolvedChannel, trayPicks, trayAskTable, trayAskAt, lastMeta, mapUpsell,
     upsellItems, handleTrayReply, pickOptions, sendTyped, offerItemIds, listening, micLevel, session, voiceState,
-    selectedLang,
+    selectedLang, manualOrder, setManualOrder, openTray,
   } = w;
   const assistantDock = dockEnabled ? <WaiterDock w={w} /> : undefined;
   return (
@@ -70,9 +70,13 @@ export default function WaiterSheets({ w, dockEnabled = true }: { w: WaiterSessi
         items={suggestedItems}
         highlightIds={highlightIds}
         voiceBar={false /* the voice session talks here — its presence is the dock */}
-        assistant={assistantDock}
+        // ordering by hand ("+" pressed): no orb — "View your tray" instead
+        assistant={manualOrder ? undefined : assistantDock}
         onIntent={handleSuggestionsReply}
-        onAskFor={(name) => void sendTyped(selectedLang === 'en' ? `One ${name}, please` : `একটা ${name} দিন`)}
+        manual={manualOrder}
+        onManual={() => setManualOrder(true)}
+        onViewTray={openTray}
+        lang={selectedLang === 'en' ? 'en' : 'bn'}
       />
       <TrayModal
         open={showTray}
@@ -89,7 +93,7 @@ export default function WaiterSheets({ w, dockEnabled = true }: { w: WaiterSessi
         highlightIds={highlightIds}
         upsellItems={lastMeta?.upsell?.length ? mapUpsell(lastMeta.upsell as any[]) : upsellItems}
         voiceBar={false /* the voice session talks here — its presence is the dock */}
-        assistant={assistantDock}
+        assistant={manualOrder ? undefined /* ordering by hand: the tray's own buttons confirm it */ : assistantDock}
         onIntent={handleTrayReply}
         pickOptions={pickOptions}
         onPickAnswer={(say) => void sendTyped(say)}
