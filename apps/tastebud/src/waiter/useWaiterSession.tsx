@@ -22,7 +22,7 @@ import { clearOrderNote, contactMissingNow, fulfillmentNow, readOrderNote, useFu
 import type { Channel } from '../api/storefront';
 import { useWaiterLang } from '../utils/waiter-lang';
 import {
-  FOLLOW_UP_LISTEN_MS, PENDING_AUDIO_MAX, chooseOptionsOf, pickOptionsOf, handsFreeOn, type ChooseOption, type PickOption,
+  FOLLOW_UP_LISTEN_MS, MIC_AUDIO, PENDING_AUDIO_MAX, chooseOptionsOf, pickOptionsOf, handsFreeOn, type ChooseOption, type PickOption,
 } from '../utils/handsfree';
 import { earcon } from '../utils/earcon';
 
@@ -198,7 +198,7 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
         // (not on iPhones: an open mic moves the waiter's voice to the quiet earpiece mid-sentence)
         if (sessionRef.current === 'on' && !IS_IPHONE && (!streamRef.current || !streamRef.current.active)) {
           navigator.mediaDevices
-            .getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true } })
+            .getUserMedia({ audio: MIC_AUDIO })
             .then((st) => {
               if (sessionRef.current === 'on' && !streamRef.current?.active) streamRef.current = st;
               else st.getTracks().forEach((t) => t.stop());
@@ -844,14 +844,7 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
       // the mic warmed up while the waiter spoke (see onPlaybackStart), else opened now
       let stream = streamRef.current;
       if (!stream || !stream.active) {
-        stream = await navigator.mediaDevices.getUserMedia({
-          audio: {
-            channelCount: 1,
-            echoCancellation: true,
-            noiseSuppression: true,
-            autoGainControl: true,
-          },
-        });
+        stream = await navigator.mediaDevices.getUserMedia({ audio: MIC_AUDIO });
         streamRef.current = stream;
       }
 
@@ -1485,7 +1478,7 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
     }
     try {
       const s = await navigator.mediaDevices.getUserMedia({
-        audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+        audio: MIC_AUDIO,
       });
       s.getTracks().forEach((t) => t.stop());
     } catch {

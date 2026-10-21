@@ -1,6 +1,7 @@
 // apps/tastebud/src/components/ai-waiter/MicInputBar.tsx
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { getWsURL, getStableSessionId } from "../../utils/ws";
+import { MIC_AUDIO } from "../../utils/handsfree";
 import { useConversationStore } from "../../state/conversation";
 import { useTTS } from "../../state/TTSProvider";
 import { getTTS } from "../../state/tts";
@@ -635,7 +636,7 @@ export default function MicInputBar({
     let media: MediaStream;
     try {
       media = await navigator.mediaDevices.getUserMedia({
-        audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+        audio: MIC_AUDIO,
         video: false,
       });
     } catch {
