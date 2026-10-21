@@ -128,6 +128,24 @@ export type Overview = {
 export type { BillingSummary } from './components/Billing';
 import type { BillingSummary } from './components/Billing';
 
+/** GET /cortex/stt — the restaurants on ElevenLabs Scribe, and its credits (the AI waiter checks every 15 min). */
+export type SttInfo = {
+  elevenlabs: string[];
+  status: {
+    configured: boolean;
+    used: number | null;
+    limit: number | null;
+    left: number | null;
+    low: boolean;
+    out: boolean;
+    tier: string | null;
+    model: string | null;
+    resetsAt: string | null;
+    checkedAt: string | null;
+    error: string | null;
+  } | null;
+};
+
 export type TenantRow = {
   id: string;
   name: string;
