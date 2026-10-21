@@ -1,0 +1,253 @@
+// apps/tastebud/src/pages/MicTest.tsx
+// TEMPORARY test page (<restaurant>.qravy.com/mic-test, /t/<sub>/mic-test — linked from nowhere): the same words
+// recorded with the phone's noise suppression ON (what the waiter uses now) and OFF (raw), and what the waiter's
+// speech-to-text heard for each — to see which one survives a noisy room. Nothing is saved.
+import { useEffect, useRef, useState } from 'react';
+import { useParams } from 'react-router-dom';
+
+const CART_API_BASE =
+  (typeof window !== 'undefined' && (window as any).__STORE__?.cartApiBase) ||
+  (import.meta.env.DEV ? 'http://localhost:7081' : '/cart-api');
+const RATE = 16000;
+const MAX_MS = 20_000;
+
+type Kind = 'clean' | 'raw';
+type Heard = { label: string; text: string; ms: number; error?: string };
+type Clip = { kind: Kind; url: string; settings: string; heard: Heard[] };
+type Try = { id: number; at: string; said: string; clips: Clip[]; note?: string };
+
+const CONSTRAINTS: Record<Kind, MediaTrackConstraints> = {
+  clean: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+  raw: { channelCount: 1, echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+};
+
+function wavUrl(pcm: Int16Array): string {
+  const buf = new ArrayBuffer(44 + pcm.length * 2);
+  const v = new DataView(buf);
+  const w = (o: number, s: string) => {
+    for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i));
+  };
+  w(0, 'RIFF');
+  v.setUint32(4, 36 + pcm.length * 2, true);
+  w(8, 'WAVE');
+  w(12, 'fmt ');
+  v.setUint32(16, 16, true);
+  v.setUint16(20, 1, true);
+  v.setUint16(22, 1, true);
+  v.setUint32(24, RATE, true);
+  v.setUint32(28, RATE * 2, true);
+  v.setUint16(32, 2, true);
+  v.setUint16(34, 16, true);
+  w(36, 'data');
+  v.setUint32(40, pcm.length * 2, true);
+  new Int16Array(buf, 44).set(pcm);
+  return URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
+}
+
+function join(chunks: Int16Array[]): Int16Array {
+  const out = new Int16Array(chunks.reduce((n, c) => n + c.length, 0));
+  let o = 0;
+  for (const c of chunks) {
+    out.set(c, o);
+    o += c.length;
+  }
+  return out;
+}
+
+function settingsOf(stream: MediaStream): { text: string; ns: boolean | undefined } {
+  const s = (stream.getAudioTracks()[0]?.getSettings?.() || {}) as MediaTrackSettings;
+  const on = (x: unknown) => (x === true ? 'on' : x === false ? 'off' : '?');
+  return {
+    text: `noise suppression ${on(s.noiseSuppression)} · auto volume ${on(s.autoGainControl)} · echo cancel ${on(s.echoCancellation)}`,
+    ns: typeof s.noiseSuppression === 'boolean' ? s.noiseSuppression : undefined,
+  };
+}
+
+async function transcribe(pcm: Int16Array, tenant: string, hint: boolean): Promise<{ text: string; ms: number; error?: string }> {
+  try {
+    const r = await fetch(`${CART_API_BASE}/stt-test?tenant=${encodeURIComponent(tenant)}&rate=${RATE}&hint=${hint ? 1 : 0}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: new Uint8Array(pcm.buffer.slice(0) as ArrayBuffer),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || !j.ok) return { text: '', ms: 0, error: j.error || `error ${r.status}` };
+    return { text: (j.text || '(nothing heard)') + (j.echo ? '  ⚠ copied the menu hint — it heard no clear speech' : ''), ms: j.ms || 0 };
+  } catch (e: any) {
+    return { text: '', ms: 0, error: String(e?.message || e) };
+  }
+}
+
+export default function MicTest() {
+  const params = useParams();
+  const tenant = params.subdomain || (typeof window !== 'undefined' && (window as any).__STORE__?.subdomain) || '';
+  const [mode, setMode] = useState<'both' | 'one'>('both');
+  const [said, setSaid] = useState('');
+  const [state, setState] = useState<'idle' | 'recording' | 'working'>('idle');
+  const [step, setStep] = useState<Kind | null>(null); // "one after the other": which one is being recorded
+  const [tries, setTries] = useState<Try[]>([]);
+  const [warn, setWarn] = useState('');
+  const rec = useRef<{ ctx: AudioContext; streams: Partial<Record<Kind, MediaStream>>; chunks: Record<Kind, Int16Array[]>;
+    settings: Partial<Record<Kind, string>>; timer: number } | null>(null);
+  const pendingOne = useRef<Clip | null>(null); // the cleaned clip, waiting for its raw twin
+  const idRef = useRef(0);
+
+  useEffect(() => () => stopAll(), []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  function stopAll() {
+    const r = rec.current;
+    if (!r) return;
+    window.clearTimeout(r.timer);
+    Object.values(r.streams).forEach((s) => s?.getTracks().forEach((t) => t.stop()));
+    r.ctx.close().catch(() => {});
+    rec.current = null;
+  }
+
+  async function start(kinds: Kind[]) {
+    setWarn('');
+    try {
+      const ctx = new AudioContext({ sampleRate: RATE, latencyHint: 'interactive' });
+      await ctx.audioWorklet.addModule('/worklets/audio-capture.worklet.js');
+      const streams: Partial<Record<Kind, MediaStream>> = {};
+      const settings: Partial<Record<Kind, string>> = {};
+      const chunks: Record<Kind, Int16Array[]> = { clean: [], raw: [] };
+      const ns: Partial<Record<Kind, boolean | undefined>> = {};
+      for (const k of kinds) {
+        const st = await navigator.mediaDevices.getUserMedia({ audio: CONSTRAINTS[k] });
+        streams[k] = st;
+        const s = settingsOf(st);
+        settings[k] = s.text;
+        ns[k] = s.ns;
+        const src = ctx.createMediaStreamSource(st);
+        const node = new AudioWorkletNode(ctx, 'capture-processor', { numberOfInputs: 1, numberOfOutputs: 0 });
+        node.port.onmessage = (ev) => {
+          if (ev.data?.type === 'chunk' && ev.data.samples) chunks[k].push(new Int16Array(ev.data.samples));
+        };
+        src.connect(node);
+      }
+      if (kinds.length === 2 && ns.clean !== undefined && ns.clean === ns.raw) {
+        setWarn(
+          'এই ফোন একসাথে দুইভাবে মাইক খুলতে পারছে না — দুটো রেকর্ডিং একই রকম হবে। উপরে "একটার পর একটা" বেছে নিন। ' +
+            "(This phone can't open the mic two ways at once — pick “one after the other”.)",
+        );
+      }
+      if (ctx.state === 'suspended') await ctx.resume();
+      const timer = window.setTimeout(() => void stop(), MAX_MS);
+      rec.current = { ctx, streams, chunks, settings, timer };
+      setState('recording');
+    } catch (e: any) {
+      stopAll();
+      setState('idle');
+      setWarn(`মাইক খোলা যায়নি: ${e?.message || e}`);
+    }
+  }
+
+  async function stop() {
+    const r = rec.current;
+    if (!r) return;
+    // the last word is still on its way from the mic
+    await new Promise((res) => window.setTimeout(res, 350));
+    const kinds = (Object.keys(r.streams) as Kind[]).filter((k) => r.streams[k]);
+    const pcm: Partial<Record<Kind, Int16Array>> = {};
+    kinds.forEach((k) => (pcm[k] = join(r.chunks[k])));
+    const settings = r.settings;
+    stopAll();
+    setState('working');
+    const clips: Clip[] = await Promise.all(
+      kinds.map(async (k) => {
+        const p = pcm[k] as Int16Array;
+        if (p.length < RATE * 0.3) {
+          // (iPhones end the first mic when a second one opens)
+          return { kind: k, url: wavUrl(p), settings: settings[k] || '',
+                   heard: [{ label: '', text: '', ms: 0, error: 'no audio — this phone allows one mic at a time: use “one after the other”' }] };
+        }
+        const runs: [string, boolean][] = k === 'clean' ? [['with menu hint (as now)', true]] : [['with menu hint', true], ['no hint', false]];
+        const heard = await Promise.all(runs.map(async ([label, hint]) => ({ label, ...(await transcribe(p, tenant, hint)) })));
+        return { kind: k, url: wavUrl(p), settings: settings[k] || '', heard };
+      }),
+    );
+    if (mode === 'one' && kinds.length === 1 && kinds[0] === 'clean') {
+      pendingOne.current = clips[0];
+      setStep('raw');
+      setState('idle');
+      return;
+    }
+    const all = mode === 'one' && pendingOne.current ? [pendingOne.current, ...clips] : clips;
+    pendingOne.current = null;
+    setStep(null);
+    idRef.current += 1;
+    setTries((t) => [
+      { id: idRef.current, at: new Date().toLocaleTimeString(), said, clips: all,
+        note: mode === 'one' ? 'one after the other — the two recordings are two separate takes' : undefined },
+      ...t,
+    ]);
+    setState('idle');
+  }
+
+  const onButton = () => {
+    if (state === 'recording') return void stop();
+    if (state !== 'idle') return;
+    if (mode === 'both') return void start(['clean', 'raw']);
+    return void start([step === 'raw' ? 'raw' : 'clean']);
+  };
+
+  const label =
+    state === 'recording' ? '■ থামান (Stop)' : state === 'working' ? 'শুনছি… (Transcribing…)'
+      : mode === 'one' ? (step === 'raw' ? '● ২/২: একই কথা আবার বলুন — RAW' : '● ১/২: বলুন — CLEANED') : '● রেকর্ড (Record)';
+
+  return (
+    <div style={{ minHeight: '100vh', background: '#f7f7f5', color: '#1b1b1b', fontFamily: 'system-ui, sans-serif' }}>
+      <div style={{ maxWidth: 680, margin: '0 auto', padding: '20px 16px 60px' }}>
+        <h1 style={{ fontSize: 22, fontWeight: 700, margin: '0 0 4px' }}>Mic test</h1>
+        <p style={{ fontSize: 14, color: '#555', margin: '0 0 16px' }}>
+          একই কথা দুইভাবে রেকর্ড হয় — ফোনের নয়েজ সাপ্রেশন চালু (এখন যা চলে) আর বন্ধ (raw)। নিচে শুনুন আর দেখুন AI কী শুনেছে।
+          Nothing is saved. {tenant ? `Menu hint: ${tenant}` : 'No restaurant in the link — no menu hint.'}
+        </p>
+
+        <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
+          {(['both', 'one'] as const).map((m) => (
+            <button key={m} disabled={state !== 'idle'}
+              onClick={() => { setMode(m); setStep(null); pendingOne.current = null; setWarn(''); }}
+              style={{ padding: '8px 12px', borderRadius: 999, border: '1px solid #ccc', fontSize: 14,
+                background: mode === m ? '#1b1b1b' : '#fff', color: mode === m ? '#fff' : '#1b1b1b' }}>
+              {m === 'both' ? 'একসাথে দুটো (both at once)' : 'একটার পর একটা (one after the other)'}
+            </button>
+          ))}
+        </div>
+
+        <input value={said} onChange={(e) => setSaid(e.target.value)} placeholder="যা বলবেন (optional) — e.g. দুইটা ছোট মাছ ভুনা আর ভাত দেন"
+          style={{ width: '100%', boxSizing: 'border-box', padding: '10px 12px', borderRadius: 10, border: '1px solid #ccc', fontSize: 15, marginBottom: 12 }} />
+
+        <button onClick={onButton} disabled={state === 'working'}
+          style={{ width: '100%', padding: '16px', borderRadius: 14, border: 'none', fontSize: 17, fontWeight: 600,
+            background: state === 'recording' ? '#c62828' : '#1b1b1b', color: '#fff' }}>
+          {label}
+        </button>
+        <p style={{ fontSize: 12, color: '#777', margin: '6px 0 0' }}>Tap to start, tap to stop (max 20 s).</p>
+        {warn && <p style={{ background: '#fff4e5', border: '1px solid #f0c27b', borderRadius: 10, padding: 10, fontSize: 14 }}>{warn}</p>}
+
+        {tries.map((t) => (
+          <div key={t.id} style={{ background: '#fff', border: '1px solid #e3e3e0', borderRadius: 14, padding: 14, marginTop: 16 }}>
+            <div style={{ fontSize: 12, color: '#777' }}>{t.at}{t.note ? ` · ${t.note}` : ''}</div>
+            {t.said && <div style={{ fontSize: 15, margin: '6px 0 0' }}><b>Said:</b> {t.said}</div>}
+            {t.clips.map((c) => (
+              <div key={c.kind} style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid #eee' }}>
+                <div style={{ fontWeight: 700, fontSize: 15 }}>
+                  {c.kind === 'clean' ? 'CLEANED — noise suppression on (as now)' : 'RAW — noise suppression off'}
+                </div>
+                <div style={{ fontSize: 12, color: '#777', margin: '2px 0 6px' }}>{c.settings}</div>
+                <audio controls src={c.url} style={{ width: '100%' }} />
+                {c.heard.map((h) => (
+                  <div key={h.label} style={{ marginTop: 6, fontSize: 15 }}>
+                    <span style={{ fontSize: 12, color: '#777' }}>{h.label}{h.ms ? ` · ${(h.ms / 1000).toFixed(1)} s` : ''}: </span>
+                    {h.error ? <span style={{ color: '#c62828' }}>{h.error}</span> : <span>{h.text}</span>}
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
