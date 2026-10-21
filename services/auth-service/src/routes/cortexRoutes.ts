@@ -659,6 +659,58 @@ router.get(
   })
 );
 
+/* ------------------------------------------------------------------ speech-to-text: which restaurants use ElevenLabs */
+
+// the AI waiter reads the switch every 10 s (ai-waiter-service server.py elevenlabs_tenants) and writes the account's
+// credits every 15 min (stt_engines.refresh_status): both in its own db's settings
+const settingsCol = () => waiterDbOf().collection<Document>('settings');
+
+/** The restaurants on ElevenLabs Scribe, and the ElevenLabs credits (low / used up → Cortex shows a banner). */
+router.get(
+  '/cortex/stt',
+  wrap(async (_req, res) => {
+    const [engine, status] = await Promise.all([
+      settingsCol().findOne({ _id: 'stt_engine' as unknown as Document['_id'] }),
+      settingsCol().findOne({ _id: 'elevenlabs_status' as unknown as Document['_id'] }),
+    ]);
+    res.json({
+      success: true,
+      elevenlabs: Array.isArray(engine?.elevenlabs) ? engine.elevenlabs.map(String) : [],
+      status: status
+        ? {
+            configured: !!status.configured,
+            used: status.used ?? null,
+            limit: status.limit ?? null,
+            left: status.left ?? null,
+            low: !!status.low,
+            out: !!status.out,
+            tier: status.tier ?? null,
+            model: status.model ?? null,
+            resetsAt: status.resetsAt ?? null,
+            checkedAt: status.checkedAt ?? null,
+            error: status.statusError ?? null,
+          }
+        : null,
+    });
+  })
+);
+
+/** Switch restaurants (subdomains) onto / off ElevenLabs Scribe: { elevenlabs: ["burger-house", …] }. */
+router.put(
+  '/cortex/stt',
+  wrap(async (req, res) => {
+    const list = req.body?.elevenlabs;
+    if (!Array.isArray(list)) return res.status(400).json({ success: false, message: 'elevenlabs: a list of restaurants' });
+    const subs = [...new Set(list.map((x: unknown) => String(x).trim().toLowerCase()).filter((x: string) => /^[a-z0-9-]{1,63}$/.test(x)))].slice(0, 500);
+    await settingsCol().updateOne(
+      { _id: 'stt_engine' as unknown as Document['_id'] },
+      { $set: { elevenlabs: subs, updatedAt: new Date() } },
+      { upsert: true }
+    );
+    res.json({ success: true, elevenlabs: subs });
+  })
+);
+
 /** What the guest said in one turn, as sound (MP3) — the ▶ next to "Heard". Kept a few days (VOICE_CLIP_DAYS). */
 router.get(
   '/cortex/voice-clips/:id',

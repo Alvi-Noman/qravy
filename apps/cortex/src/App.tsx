@@ -15,6 +15,7 @@ import Conversations from './pages/Conversations';
 import Orders from './pages/Orders';
 import Pronunciation from './pages/Pronunciation';
 import LiveTranscripts from './pages/LiveTranscripts';
+import SpeechToText from './pages/SpeechToText';
 
 export default function App() {
   const qc = useQueryClient();
@@ -66,6 +67,7 @@ export default function App() {
           <Route path="conversations" element={<Conversations />} />
           <Route path="orders" element={<Orders />} />
           <Route path="pronunciation" element={<Pronunciation />} />
+          <Route path="speech-to-text" element={<SpeechToText />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>
       </Routes>

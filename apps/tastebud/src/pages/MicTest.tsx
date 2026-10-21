@@ -70,7 +70,7 @@ const ENGINES: [string, boolean, Engine][] = [
   ['gpt-4o + menu hint (the waiter now)', true, 'openai'],
   ['gpt-4o, no hint', false, 'openai'],
   ['Gemini 2.5 Flash + menu', true, 'gemini'],
-  ['ElevenLabs Scribe', false, 'elevenlabs'],
+  ['ElevenLabs Scribe v2 + dish names', true, 'elevenlabs'],
 ];
 
 async function allEngines(pcm: Int16Array, tenant: string): Promise<Heard[]> {

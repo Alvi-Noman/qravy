@@ -708,8 +708,9 @@ async def handle_stt_test(request: web.Request) -> web.Response:
     engine = q.get("engine", "openai")
     if engine in ("gemini", "elevenlabs"):
         words = prompt.split(":", 1)[-1].strip(" ।.") if prompt else ""
+        keyterms = [w.strip() for w in words.split(",") if w.strip()] if words else None
         text, err = await (stt_engines.gemini(pcm, rate, words) if engine == "gemini"
-                           else stt_engines.elevenlabs(pcm, rate))
+                           else stt_engines.elevenlabs(pcm, rate, keyterms))
         if err:
             return web.json_response({"ok": False, "error": err}, status=200, headers=_CORS)
         return web.json_response({"ok": True, "text": text or "", "ms": int((time.time() - t0) * 1000)}, headers=_CORS)
@@ -739,6 +740,7 @@ async def handle_voice_clip(request: web.Request) -> web.Response:
 
 async def start_http_server():
     await asyncio.to_thread(_load_alerts)  # buzzers that were ringing before this restart keep ringing
+    asyncio.get_event_loop().create_task(_elevenlabs_status_loop())  # (Cortex: ElevenLabs credits)
     app = web.Application()
 
     # CORS / preflight
@@ -1040,6 +1042,34 @@ async def openai_transcribe(
 _AB_FLAG: Dict[str, Any] = {"at": 0.0, "on": False}
 
 
+_ELEVEN_FLAG: Dict[str, Any] = {"at": 0.0, "tenants": set()}
+ELEVEN_TIMEOUT_S = float(os.environ.get("ELEVENLABS_TIMEOUT_MS", "4000")) / 1000
+
+
+def elevenlabs_tenants() -> set:
+    """The restaurants whose guests ElevenLabs Scribe hears — switched in Cortex (Speech-to-text):
+    qravy.settings {_id: "stt_engine", elevenlabs: ["burger-house", …]}. Read every 10 s, no restart."""
+    if time.time() - _ELEVEN_FLAG["at"] > 10:
+        try:
+            doc = DB.settings.find_one({"_id": "stt_engine"}) or {}
+            _ELEVEN_FLAG["tenants"] = {str(t) for t in doc.get("elevenlabs") or [] if t}
+        except Exception:
+            pass  # (keep the last known list)
+        _ELEVEN_FLAG["at"] = time.time()
+    return _ELEVEN_FLAG["tenants"]
+
+
+async def _elevenlabs_status_loop() -> None:
+    """The ElevenLabs credits, every 15 minutes, for Cortex's "credits low — top up" (stt_engines.refresh_status)."""
+    while True:
+        try:
+            if stt_engines.ELEVEN_KEY:
+                await stt_engines.refresh_status(DB)
+        except Exception as e:  # noqa: BLE001
+            print("[ai-waiter-service] ElevenLabs status check failed:", e)
+        await asyncio.sleep(int(os.environ.get("ELEVENLABS_STATUS_EVERY_S", "900")))
+
+
 def stt_ab_on() -> bool:
     """A/B test mode — toggled at runtime (no restart): qravy.settings {_id: "stt_ab", on: true}."""
     if time.time() - _AB_FLAG["at"] > 10:
@@ -1070,6 +1100,19 @@ async def cloud_transcribe(
     if not has_speech(pcm_bytes, rate):
         print("[ai-waiter-service] 🔇 no speech in the clip — not transcribing (avoids invented text)")
         return None, "no-speech"
+    # the restaurants switched to ElevenLabs in Cortex: Scribe, listening for this menu's dish names; nothing back in
+    # ELEVENLABS_TIMEOUT_MS, an error, or the credits used up → gpt-4o hears this turn as before
+    if tenant and tenant in elevenlabs_tenants() and stt_engines.ELEVEN_KEY and not stt_engines.STATUS.get("out"):
+        t0 = time.monotonic()
+        stt_prompt(tenant, lang)  # (fills _STT_NAMES: the menu's dish names, as they're said)
+        l = "en" if lang == "en" else "bn"
+        keyterms = list(dict.fromkeys(said for _n, said in _STT_NAMES.get((tenant or "", l)) or [] if 1 < len(said) <= 50))
+        text, err = await stt_engines.elevenlabs(pcm_bytes, rate, keyterms, timeout_s=ELEVEN_TIMEOUT_S,
+                                                 language="eng" if l == "en" else "ben")
+        print(f"[ai-waiter-service] ElevenLabs STT {time.monotonic() - t0:.2f}s → {text!r}{(' ' + err) if err else ''}")
+        if text:
+            return text, "elevenlabs"
+        print("[ai-waiter-service] ↪ ElevenLabs gave nothing → gpt-4o for this turn")
     if OPENAI_STT_ON and GROQ_API_KEY and stt_ab_on():
         prompt = stt_prompt(tenant, lang)
         (oa, oa_ms), (gq, gq_ms) = await asyncio.gather(
@@ -2573,7 +2616,7 @@ async def handle_conn(ws: WebSocketServerProtocol):
                             groq_text = bn_text
 
                     if groq_text and (
-                        (stt_engine == "openai" and not is_junk_transcript(groq_text))
+                        (stt_engine in ("openai", "elevenlabs") and not is_junk_transcript(groq_text))
                         or looks_sane(groq_text, lang_pref)
                     ):
                         selected_text = groq_text
