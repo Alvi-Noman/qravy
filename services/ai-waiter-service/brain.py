@@ -1372,6 +1372,17 @@ def _heard_closeness(t: str, it: Dict[str, Any], index: Optional[MenuIndex] = No
     return min(max(_fz.ratio(w, h) for h in heard) for w in own)
 
 
+def _same_dish_on_now(it: Dict[str, Any], index: MenuIndex, orderable: Dict[str, bool]) -> Optional[Dict[str, Any]]:
+    """A dish that's off now ("পরোটা", breakfast) → the one dish that's on with its whole name in it ("পাঁচ পরোটা",
+    the evening's) — what the guest means by it now. None: none, or several."""
+    mine = _name_tokens(re.sub(r"\(.*?\)", " ", str(it.get("name") or "")))
+    if not mine:
+        return None
+    alts = [d for d in index.items if d is not it and orderable.get(index.item_id(d), True) and not d.get("hidden")
+            and mine <= _name_tokens(str(d.get("name") or ""))]
+    return alts[0] if len(alts) == 1 else None
+
+
 def _menu_answer(transcript: str, index: MenuIndex, orderable: Dict[str, bool], kind_scope: set, focus: List[Dict[str, Any]],
                  lang: str, ok: Callable[[Dict[str, Any]], bool], shown: Optional[List[str]] = None,
                  ) -> Optional[Tuple[str, List[Dict[str, Any]], str, List[str]]]:
@@ -1558,6 +1569,15 @@ def _menu_answer(transcript: str, index: MenuIndex, orderable: Dict[str, bool], 
         text = (f"{it.get('name')} ({menu_answers.price_of(it)}) — এটাই দেব?" if bn
                 else f"The {it.get('name')} ({menu_answers.price_of(it)}) — is that the one?")
         return text, rows([it]), "confirm_heard", [index.item_id(it)]
+
+    # ---- "পরোটা" in the evening IS the পাঁচ পরোটা: a dish that's off now whose whole name is in exactly one dish
+    # that's on means that one (it said "পরোটা সকালে পাওয়া যায় — তবে পাঁচ পরোটা আছে, দেব?")
+    swapped = {index.item_id(x): alt for x in named if not orderable.get(index.item_id(x), True)
+               for alt in [_same_dish_on_now(x, index, orderable)] if alt is not None and alt not in named}
+    if swapped:
+        named = [swapped.get(index.item_id(x), x) for x in named]
+        if ordering:
+            return None  # (the order flow adds it — _clean_order reads the name the same way)
 
     # ---- a dish named that can't be had now (sold out, later today, another day): say which, and what instead
     if named and not ordering or (named and all(not orderable.get(index.item_id(x), True) for x in named)):
@@ -4255,14 +4275,13 @@ def _clean_order(transcript: str, index: MenuIndex, orderable: Dict[str, bool], 
             return []
         it = dishes[0]
         iid = index.item_id(it)
+        said = seg  # (the guest's own words — the count is read from these)
         if not orderable.get(iid, True):
             # "ডাল" at lunch when the breakfast ডাল is off but "ড - তে ডাল" is on: the one that's on, if just one
-            mine0 = _name_tokens(re.sub(r"\(.*?\)", " ", str(it.get("name") or "")))
-            alts = [d for d in index.items if d is not it and orderable.get(index.item_id(d), True)
-                    and mine0 and mine0 <= _name_tokens(str(d.get("name") or ""))]
-            if len(alts) != 1:
+            alt = _same_dish_on_now(it, index, orderable)
+            if alt is None:
                 return []
-            it = alts[0]
+            it = alt
             iid = index.item_id(it)
             seg = f"{seg} {it.get('name')}"  # (its words are now said)
         if cart_qty.get(iid) or _ambiguous_pick(it, index, orderable, seg):
@@ -4277,7 +4296,10 @@ def _clean_order(transcript: str, index: MenuIndex, orderable: Dict[str, bool], 
             if it in _dishes_named(w, index, limit=2):
                 continue  # what the dish is called for short ("কোক" — Coca-Cola)
             return []  # a word we can't place ("ভাইস", "ঝোল"…) — let the model read the whole sentence
-        ops.append({"op": "add", "item": index.ref(it), "quantity": _said_quantity(seg) or 1})
+        # the count, not a number in the dish's own name: "পরোটা দাও" → 1 পাঁচ পরোটা (not 5), "দুইটা পাঁচ পরোটা" → 2
+        name_words = {w for w in re.findall(r"[ঀ-৿]+|[A-Za-z]+", str(it.get("name") or ""))}
+        count_words = " ".join(w for w in re.findall(r"\S+", said) if w not in name_words)
+        ops.append({"op": "add", "item": index.ref(it), "quantity": _said_quantity(count_words) or 1})
     if len({o["item"] for o in ops}) != len(ops):
         return []  # the same dish twice → the model
     return ops

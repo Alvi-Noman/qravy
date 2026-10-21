@@ -216,3 +216,16 @@ def test_fast_food_is_a_kind():
         out, calls = run(q, items=cafe)
         assert not calls and out["meta"]["guards"] == ["kind_list"], (q, out["replyText"])
         assert out["replyText"].startswith("ফাস্টফুডের মধ্যে আছে Classic Beef Burger, Chicken Pizza আর French Fries"), out["replyText"]
+
+
+def test_an_off_dish_is_the_one_on_with_its_name():
+    menu = [{"id": "p", "name": "পরোটা", "price": 15, "category": "ভোরের শহর", "available": False,
+             "unavailableReason": "ভোরের শহর পাওয়া যায় সকাল ৭টা–১১টা।"},
+            {"id": "p5", "name": "পাঁচ পরোটা ✓", "price": 30, "category": "বিকালের নাস্তা"},
+            {"id": "k", "name": "চিকেন চাপ", "price": 180, "category": "বিকালের নাস্তা"}]
+    out, calls = run("পরোটা দাও", items=menu)
+    assert not calls and ops(out) == [("add", "p5", 1)], (ops(out), out["replyText"])  # (not 5: the "পাঁচ" is its name)
+    out, calls = run("দুইটা পাঁচ পরোটা দাও", items=menu)
+    assert ops(out) == [("add", "p5", 2)], ops(out)
+    out, calls = run("পরোটা আছে?", items=menu)
+    assert not calls and out["replyText"].startswith("জি, পাঁচ পরোটা আছে"), out["replyText"]
