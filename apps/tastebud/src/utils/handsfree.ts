@@ -4,6 +4,17 @@
 // services/ai-waiter-service/endpointer.py and voiceprint.py): no second tap to send, and after the waiter ASKS
 // something the mic reopens for a short listen window (nobody answers → it closes quietly).
 
+/** How the waiter opens the mic: RAW — no noise suppression, auto volume or echo cancelling. The phone's own
+ *  "cleaning" damaged the guest's words in a noisy room (the mic test, 2026-10-21: six sentences against a song —
+ *  cleaned + menu hint got all six wrong, raw + menu hint all six right); the speech-to-text handles noise itself.
+ *  (No echo cancelling is fine: the waiter's voice fades out the moment the guest presses to talk.) */
+export const MIC_AUDIO: MediaTrackConstraints = {
+  channelCount: 1,
+  echoCancellation: false,
+  noiseSuppression: false,
+  autoGainControl: false,
+};
+
 /** After the waiter's question, the mic stays open this long for the answer. */
 export const FOLLOW_UP_LISTEN_MS = 6_000;
 /** Listen windows in a row without a tap — then the guest taps again (a noisy room can't keep the mic open). */
