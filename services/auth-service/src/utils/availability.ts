@@ -102,6 +102,23 @@ export function isWithinWindows(windows: AvailabilityWindow[] | undefined | null
   });
 }
 
+/** The next moment `windows` are open, from `from` (now, if open already); null: never within `horizonDays`.
+ *  (5-minute steps: opening hours are set in whole minutes, a few minutes late is fine for "opens at…".) */
+export function nextOpeningAt(
+  windows: AvailabilityWindow[] | undefined | null,
+  tz: string,
+  from: Date,
+  horizonDays = 7
+): Date | null {
+  if (isWithinWindows(windows, tz, from)) return from;
+  const step = 5 * 60_000;
+  const start = Math.ceil(from.getTime() / step) * step;
+  for (let t = start; t <= from.getTime() + horizonDays * 86_400_000; t += step) {
+    if (isWithinWindows(windows, tz, new Date(t))) return new Date(t);
+  }
+  return null;
+}
+
 /** Offset of `tz` from UTC at instant `at`, in minutes (Dhaka → +360). */
 function tzOffsetMinutes(tz: string, at: Date): number {
   const p = zonedParts(at, tz);
