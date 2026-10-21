@@ -203,3 +203,16 @@ def test_between_two_meals_it_says_when_the_food_is():
         assert "দুধ চা" in out["replyText"] and "লাটে" not in out["replyText"], out["replyText"]
     out, calls = run("মিষ্টি কি আছে?", items=GAP, at="Tue 11:16", periods=PERIODS)  # a sweet asked for: the sweets
     assert out["meta"]["guards"] != ["period_between"], out["replyText"]
+
+
+def test_fast_food_is_a_kind():
+    cafe = [{"id": "cap", "name": "Cappuccino", "price": 220, "category": "Coffee"},
+            {"id": "bur", "name": "Classic Beef Burger", "price": 350, "category": "Burgers"},
+            {"id": "piz", "name": "Chicken Pizza", "price": 550, "category": "Pizza"},
+            {"id": "fri", "name": "French Fries", "price": 150, "category": "Sides"},
+            {"id": "pas", "name": "Alfredo Pasta", "price": 420, "category": "Pasta"},
+            {"id": "bro", "name": "Brownie", "price": 180, "category": "Desserts"}]
+    for q in ("ফাস্টফুড আইটেমে কী কী আছে?", "ফাস্ট ফুড কি আছে?", "fast food ki ache?"):
+        out, calls = run(q, items=cafe)
+        assert not calls and out["meta"]["guards"] == ["kind_list"], (q, out["replyText"])
+        assert out["replyText"].startswith("ফাস্টফুডের মধ্যে আছে Classic Beef Burger, Chicken Pizza আর French Fries"), out["replyText"]

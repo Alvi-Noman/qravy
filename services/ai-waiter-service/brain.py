@@ -2782,7 +2782,10 @@ def _kind_word(transcript: str, index: MenuIndex, scope: set) -> str:
     for a, b in zip(raws, raws[1:]):
         pair = f"{a} {re.sub(r'(তে|য়ে|য়ে|ে|য়|য়)$', '', _BN_SUFFIX.sub('', b)) or b}"
         if _kind_ids_in(pair, index) & scope:
-            return pair
+            # ("fast food ki ache?" is Bangla in Latin letters — "ফাস্টফুডের মধ্যে…", not "fast foodের মধ্যে")
+            if banglish and re.fullmatch(r"fast food", pair.lower()):
+                return "ফাস্টফুড"
+            return to_bangla_script(pair.lower()) if banglish else pair
     return ""
 
 
@@ -5841,6 +5844,8 @@ async def _reply(
     transcript = re.sub(r"(?<![ঀ-৿])এক্টা(?![ঀ-৿])", "একটা", transcript)
     # "ম্যাংগো" and "ম্যাঙ্গো" are one word spelt two ways (ং+গ = ঙ্গ): one spelling, so "দুইটা ম্যাংগো জুস" is Mango Juice
     transcript = transcript.replace("ংগ", "ঙ্গ")
+    # "ফাস্ট ফুড" is one word to a guest ("ফাস্টফুড আইটেমে কী কী আছে?"); said apart, "ফাস্ট" fuzzy-matched "Pasta"
+    transcript = re.sub(r"(ফাস্ট|ফাষ্ট)\s+(ফুড|ফুট)", r"\1\2", transcript)
     ctx = dict(context or {})
     restaurant = restaurant or ctx.get("restaurant")
     lang = locale if lock_language and locale in ("bn", "en") else reply_language(transcript, locale)

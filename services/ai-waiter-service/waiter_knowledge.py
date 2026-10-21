@@ -760,6 +760,14 @@ _KINDS = {
         r"ড্রিংক|পানীয়|কোমল পানীয়|\bcoke\b|pepsi|sprite|7 ?up|কোক|পেপসি|স্প্রাইট|সেভেন ?আপ",
         r"drink|beverage|\bsoda\b|\bcoke\b|pepsi|sprite|7 ?up|fanta|mojito|lemonade|juice|\blassi\b|\bshakes?\b|milkshake|borhani|\bcola\b|\bwater\b",
     ),
+    # "ফাস্টফুড আইটেমে কী কী আছে?" — what Bangladeshi cafés call fast food: burgers, pizza, sandwiches, fries, fried
+    # chicken (it once answered with "here's our menu", at a café full of them)
+    "fast food": (
+        r"fast ?food|ফাস্ট ?ফুড|ফাষ্ট ?ফুড|ফাস্ট ?ফুট|ফাষ্ট ?ফুট|\bjunk food\b",
+        r"fast ?food|burger|pizza|sandwich|\bsub\b|\bwrap|shawarma|shwarma|\broll\b|hot ?dog|\bfries\b|wedges|nugget|"
+        r"fried chicken|chicken fry|\bwings\b|tenders|strips|broast|ফাস্ট ?ফুড|বার্গার|পিজ্জা|পিজা|স্যান্ডউইচ|শর্মা|"
+        r"হট ?ডগ|ফ্রাই|নাগেট|উইংস",
+    ),
     "pizza": r"pizza|পিজা|পিজ্জা",
     "burgers": r"burger|বার্গার",
     "biryani": r"biry?ani|kacchi|tehari|বিরিয়ানি|কাচ্চি|তেহারি",
