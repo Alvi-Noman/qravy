@@ -7,6 +7,8 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 export default [
+  // developer tools run by hand (scripts/availability-parity.ts …) — outside src/, so outside the typed lint
+  { ignores: ['scripts/**'] },
   ...sharedPreset,
   {
     files: ['**/*.ts', '**/*.tsx'],
