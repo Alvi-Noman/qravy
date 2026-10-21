@@ -5,6 +5,7 @@ import { Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { api, type TenantRow, type Turn } from '../api';
 import { Badge, Card, Empty, ErrorBox, fmt } from '../components/ui';
+import VoiceClip from '../components/VoiceClip';
 
 type LiveTurn = Turn & {
   id: string;
@@ -162,7 +163,10 @@ export default function LiveTranscripts() {
               </div>
               <dl className="grid gap-2 text-[13px] md:grid-cols-[110px_1fr]">
                 <dt className="text-stone-500">Heard</dt>
-                <dd className="text-stone-900">{t.heard || <span className="italic text-stone-400">(nothing)</span>}</dd>
+                <dd className="text-stone-900">
+                  {t.heard || <span className="italic text-stone-400">(nothing)</span>}
+                  {t.audio && <VoiceClip id={t.audio} />}
+                </dd>
                 {(t.understood.text || t.understood.actions.length > 0 || t.understood.mentioned.length > 0 || t.understood.suggested.length > 0) && (
                   <>
                     <dt className="text-stone-500">Understood</dt>

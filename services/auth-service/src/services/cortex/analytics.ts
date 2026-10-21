@@ -317,6 +317,8 @@ export function turnView(doc: Document) {
     engine: doc.engine ?? null,
     heard,
     unheard: doc.status === 'unheard',
+    // what the guest said, as sound (ai-waiter-service voice_clips.py — kept a few days): GET /cortex/voice-clips/:id
+    audio: doc.audio ? String(doc.audio) : null,
     understood: {
       text: cleaned && cleaned !== heard ? cleaned : null,
       corrections,
@@ -340,6 +342,8 @@ export function turnView(doc: Document) {
 }
 
 export const transcriptsCol = transcripts;
+/** Each voice turn's audio (MP3), written by the AI waiter and deleted by itself after a few days. */
+export const voiceClipsCol = () => waiterDb().collection('voice_clips');
 export const eventsCol = events;
 export const ordersCol = orders;
 export const tenantsCol = tenants;

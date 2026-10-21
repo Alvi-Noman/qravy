@@ -123,6 +123,7 @@ def turn_view(doc: Dict[str, Any]) -> Dict[str, Any]:
         "input": "typed" if doc.get("engine") == "typed" else "voice",
         "heard": heard,
         "unheard": doc.get("status") == UNHEARD,
+        "audio": str(doc["audio"]) if doc.get("audio") else None,  # what the guest said, as sound (voice_clips)
         "understood": {
             "text": cleaned if cleaned and cleaned != heard else None,
             "corrections": corrections,
