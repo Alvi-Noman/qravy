@@ -456,7 +456,19 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
     name?: string;
     price?: number;
     imageUrl?: string;
+    /** sizes / add-ons to pick first (the "+" asks the waiter, which asks which) */
+    choices?: boolean;
+    /** the menu's own "can be ordered now" */
+    orderable?: boolean;
   };
+
+  /** What the "+" on a suggestion needs to know, from the dish on the menu. */
+  const addFacts = (s: any): Pick<SuggestedItem, 'choices' | 'orderable'> => ({
+    choices:
+      (Array.isArray(s?.variations) && s.variations.length > 1) ||
+      (Array.isArray(s?.modifierGroups) && s.modifierGroups.length > 0),
+    orderable: typeof s?.orderable === 'boolean' ? s.orderable : undefined,
+  });
 
   const [suggestedItems, setSuggestedItems] = useState<SuggestedItem[]>([]);
   // dishes the waiter pointed at when the guest asked about the list on screen ("which of these…")
@@ -498,6 +510,7 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
         (storeItem as any)?.imageUrl ??
         (storeItem as any)?.image ??
         undefined,
+      ...addFacts(storeItem),
     };
   }
 
@@ -578,6 +591,7 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
           name: s.name,
           price: typeof s.price === 'number' ? s.price : undefined,
           imageUrl: s.imageUrl ?? s.image ?? undefined,
+          ...addFacts(s),
         });
       }
     }
@@ -1224,6 +1238,7 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
                     name: s.name,
                     price: typeof s.price === 'number' ? s.price : undefined,
                     imageUrl: s.imageUrl ?? s.image ?? undefined,
+                    ...addFacts(s),
                   }));
               }
               setSuggestedItems((mapped || []).filter(Boolean));

@@ -8,7 +8,8 @@ import { toMenuItemDTO } from '../utils/mapper.js';
 import type { TenantDoc } from '../models/Tenant.js';
 import type { MenuItemDoc } from '../models/MenuItem.js';
 import type { ItemAvailabilityDoc } from '../models/ItemAvailability.js';
-import { DEFAULT_TIMEZONE, resolveWindows, tenantServicePeriods } from '../utils/availability.js';
+import { DEFAULT_TIMEZONE, isWithinWindows, nextOpeningAt, resolveWindows, tenantServicePeriods } from '../utils/availability.js';
+import { checkOrderable } from '../utils/orderability.js';
 import { resolveBranchLocationId } from '../controllers/categoriesController.js';
 import { branchForUnnamed, publicBranches } from '../utils/branches.js';
 import { lexiconList, withOwnWords } from './pronounceRoutes.js';
@@ -226,29 +227,32 @@ router.get('/public/hours', async (req: Request, res: Response, next: NextFuncti
  * GET /api/v1/public/menu?subdomain=...&branch=...&channel=online|dine-in
  * Public, read-only storefront menu for a tenant (and optional branch).
  */
-router.get('/public/menu', async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const parsed = querySchema.safeParse(req.query);
-    if (!parsed.success) {
-      const msg = parsed.error.issues?.[0]?.message || 'Invalid query';
-      return res.status(400).json({ message: msg });
-    }
-    const { subdomain, branch, channel } = parsed.data;
-    const qCh = parseChannel(channel);
+/** The opening hours that apply (a branch's own, else the restaurant's) and the time zone. */
+async function storeHours(tenant: any, locId: ObjectId | null): Promise<{ openingHours: any[]; tz: string }> {
+  let openingHours = tenant?.openingHours ?? [];
+  if (locId) {
+    const loc = await client
+      .db('authDB')
+      .collection('locations')
+      .findOne({ _id: locId, tenantId: tenant._id }, { projection: { openingHours: 1 } });
+    if (Array.isArray(loc?.openingHours)) openingHours = loc!.openingHours;
+  }
+  return { openingHours, tz: tenant?.timezone ?? DEFAULT_TIMEZONE };
+}
 
-    const tenant = await findTenantBySubdomain(subdomain);
-    if (!tenant?._id) {
-      return res.status(404).json({ message: 'Tenant not found' });
-    }
+/**
+ * The public menu (what the menu page shows) at `at`: each dish with `hidden` (not on this channel), `orderable`,
+ * `servedNow` and why not — the same decision checkout makes (utils/orderability.ts). Used by GET /public/menu and
+ * by the availability parity check (scripts/availability-parity), which compares it with the AI waiter's own.
+ */
+export async function publicMenuItems(
+  tenant: TenantDoc,
+  locId: ObjectId | null,
+  qCh: 'dine-in' | 'online' | undefined,
+  at: Date
+): Promise<any[]> {
     const tenantOid = tenant._id!;
     const periods = tenantServicePeriods(tenant);
-
-    // Resolve branch (location) if provided
-    // no branch in the link → the branch its orders go to (the only one, or the main link's); none → the whole menu
-    const locId: ObjectId | null = branch
-      ? await resolveBranchLocationId(tenantOid, branch)
-      : (await branchForUnnamed(tenantOid)).locationId;
-
     // Collections
     const itemsCol = client.db('authDB').collection<MenuItemDoc>('menuItems');
     const catsCol = client.db('authDB').collection('categories');
@@ -269,9 +273,7 @@ router.get('/public/menu', async (req: Request, res: Response, next: NextFunctio
 
     // Owner-defined order (drag & drop / PDF order), newest first for unordered items
     const docs = await itemsCol.find(filter).sort({ sortOrder: 1, createdAt: -1 }).toArray();
-    if (docs.length === 0) {
-      return res.json({ items: [] });
-    }
+    if (docs.length === 0) return [];
 
     const catIds = Array.from(
       new Set(
@@ -409,6 +411,9 @@ router.get('/public/menu', async (req: Request, res: Response, next: NextFunctio
       if (!present) continue;
 
       if ((d as any).offline) anyOn = false; // switched off restaurant-wide / sold out today
+      // hidden by the owner (the admin's hide: hidden + status "hidden") — off everywhere, as the waiter has it (the
+      // menu page showed such a dish as orderable: the availability parity check found it)
+      if ((d as any).hidden === true || (d as any).status === 'hidden') anyOn = false;
 
       const dto = toMenuItemDTO(d);
       // Customers get the effective hours: service periods (Breakfast…) + custom times
@@ -421,6 +426,58 @@ router.get('/public/menu', async (req: Request, res: Response, next: NextFunctio
       out.push(dto);
     }
 
+    // ONE decision for "can this be ordered now?" — the same as checkout's (utils/orderability.ts: opening hours,
+    // the section's hours — service periods, a branch's own hours — the dish's hours and dates, sold out, the
+    // branch's menu). The menu page shows only what's served (it used to work this out itself, without the
+    // sections' hours: breakfast showed as orderable at night while the waiter and checkout said no).
+    //   orderable — can be ordered right now
+    //   servedNow — served at this time of day (while the restaurant is closed: when it next opens)
+    //   unavailable — why not, when it isn't orderable
+    const ids = out.map((o) => new ObjectId(String(o.id)));
+    const now = await checkOrderable({ tenantOid, itemIds: ids, locationId: locId, channel: qCh ?? undefined, at });
+    const closed = [...now.values()].some((r) => !r.ok && r.reason === 'closed');
+    let served = now;
+    if (closed) {
+      const { openingHours, tz } = await storeHours(tenant, locId);
+      const opensAt = nextOpeningAt(openingHours, tz, at) ?? at;
+      served = await checkOrderable({
+        tenantOid, itemIds: ids, locationId: locId, channel: qCh ?? undefined, at: opensAt, ignoreOpeningHours: true,
+      });
+    }
+    for (const o of out) {
+      const r = now.get(String(o.id));
+      const s = served.get(String(o.id));
+      o.orderable = !o.hidden && !!r?.ok;
+      o.servedNow = !o.hidden && !!s?.ok;
+      if (r && !r.ok) o.unavailable = { reason: r.reason, message: r.message };
+    }
+
+    return out;
+}
+
+router.get('/public/menu', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const parsed = querySchema.safeParse(req.query);
+    if (!parsed.success) {
+      const msg = parsed.error.issues?.[0]?.message || 'Invalid query';
+      return res.status(400).json({ message: msg });
+    }
+    const { subdomain, branch, channel } = parsed.data;
+    const qCh = parseChannel(channel);
+
+    const tenant = await findTenantBySubdomain(subdomain);
+    if (!tenant?._id) {
+      return res.status(404).json({ message: 'Tenant not found' });
+    }
+    const tenantOid = tenant._id!;
+
+    // Resolve branch (location) if provided
+    // no branch in the link → the branch its orders go to (the only one, or the main link's); none → the whole menu
+    const locId: ObjectId | null = branch
+      ? await resolveBranchLocationId(tenantOid, branch)
+      : (await branchForUnnamed(tenantOid)).locationId;
+
+    const out = await publicMenuItems(tenant, locId, qCh ?? undefined, new Date());
     return res.json({ items: out });
   } catch (err) {
     logger.error(`[PUBLIC MENU] ${String((err as Error)?.message || err)}`);
@@ -467,7 +524,7 @@ router.get('/public/categories', async (req: Request, res: Response, next: NextF
     const cats = (
       await catsCol
         .find(filter)
-        .project({ _id: 1, name: 1, scope: 1, channelScope: 1, locationId: 1, sortOrder: 1 })
+        .project({ _id: 1, name: 1, scope: 1, channelScope: 1, locationId: 1, sortOrder: 1, availability: 1, servicePeriodIds: 1, branchAvailability: 1 })
         .toArray()
     ).sort((a, b) => {
       const ao = typeof a.sortOrder === 'number' ? a.sortOrder : Number.MAX_SAFE_INTEGER;
@@ -507,6 +564,21 @@ router.get('/public/categories', async (req: Request, res: Response, next: NextF
         )
       : catsScoped;
 
+    // each section's real hours (a branch's own, else its service periods + times — as checkout decides) and whether
+    // it's served now (or, while the restaurant is closed, when it opens): the menu page puts these first
+    const periods = tenantServicePeriods(tenant);
+    const { openingHours, tz } = await storeHours(tenant, locId);
+    const at = new Date();
+    const ref = isWithinWindows(openingHours, tz, at) ? at : nextOpeningAt(openingHours, tz, at) ?? at;
+    const hoursOf = (c: any) => {
+      const own = locId
+        ? (c.branchAvailability as Array<{ locationId: ObjectId; availability: any[] }> | undefined)?.find(
+            (b) => String(b.locationId) === String(locId)
+          )
+        : undefined;
+      return own ? own.availability ?? [] : resolveWindows(c.servicePeriodIds, c.availability, periods);
+    };
+
     const out = filteredByChannel
       .filter((c) => !removed.has(c._id.toString()))
       .map((c) => ({
@@ -514,6 +586,9 @@ router.get('/public/categories', async (req: Request, res: Response, next: NextF
         name: c.name ?? 'Untitled',
         channelScope: c.channelScope ?? 'all',
         hidden: hidden.has(c._id.toString()),
+        availability: hoursOf(c),
+        timeBound: hoursOf(c).length > 0,
+        servedNow: isWithinWindows(hoursOf(c), tz, ref),
         // placeholders to satisfy DTOs that expect timestamps
         createdAt: new Date(0).toISOString(),
         updatedAt: new Date(0).toISOString(),

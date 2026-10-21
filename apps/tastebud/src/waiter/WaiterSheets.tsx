@@ -56,6 +56,7 @@ export default function WaiterSheets({ w, dockEnabled = true }: { w: WaiterSessi
     showSuggestions, setShowSuggestions, setHighlightIds, suggestedItems, highlightIds, handleSuggestionsReply,
     showTray, setShowTray, setTrayPicks, setTrayAskTable, resolvedChannel, trayPicks, trayAskTable, trayAskAt, lastMeta, mapUpsell,
     upsellItems, handleTrayReply, pickOptions, sendTyped, offerItemIds, listening, micLevel, session, voiceState,
+    selectedLang,
   } = w;
   const assistantDock = dockEnabled ? <WaiterDock w={w} /> : undefined;
   return (
@@ -71,6 +72,7 @@ export default function WaiterSheets({ w, dockEnabled = true }: { w: WaiterSessi
         voiceBar={false /* the voice session talks here — its presence is the dock */}
         assistant={assistantDock}
         onIntent={handleSuggestionsReply}
+        onAskFor={(name) => void sendTyped(selectedLang === 'en' ? `One ${name}, please` : `একটা ${name} দিন`)}
       />
       <TrayModal
         open={showTray}

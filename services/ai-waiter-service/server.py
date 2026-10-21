@@ -1292,6 +1292,54 @@ def build_menu_query(tenant: Optional[str]) -> Dict[str, Any]:
     return q
 
 
+_OFFICIAL: Dict[Tuple[str, str, str], Tuple[float, Dict[str, Dict[str, Any]]]] = {}
+_OFFICIAL_TTL_S = float(os.environ.get("ORDERABLE_CACHE_S", "15"))
+_OFF_REASON_BN = {"sold-out": "আজ শেষ হয়ে গেছে", "closed": "এখন রেস্টুরেন্ট বন্ধ", "not-at-branch": "এই শাখার মেনুতে নেই"}
+
+
+def _official_orderable(items: List[Dict[str, Any]], tenant: Optional[str], branch: Optional[str],
+                        channel: Optional[str], lang: str) -> None:
+    """Each item's "can it be ordered now" from the public menu (auth-service: the menu page's and checkout's own
+    decision) — kept 15 s. Where our reading differs, theirs wins and it's logged; unreachable → ours stands."""
+    if not tenant or not items:
+        return
+    key = (str(tenant), str(branch or ""), str(channel or ""))
+    hit = _OFFICIAL.get(key)
+    if hit and time.time() - hit[0] < _OFFICIAL_TTL_S:
+        official = hit[1]
+    else:
+        try:
+            params = {"subdomain": tenant, **({"branch": branch} if branch else {}),
+                      **({"channel": channel} if channel in ("dine-in", "online") else {})}
+            r = httpx.get(f"{AUTH_INTERNAL_URL}/api/v1/public/menu", params=params, timeout=2.0)
+            if r.status_code >= 400:
+                return
+            official = {str(o.get("id")): o for o in (r.json().get("items") or []) if "orderable" in o}
+        except Exception as e:  # noqa: BLE001
+            print("[ai-waiter-service] ⚠️ orderable check unavailable — using our own reading:", repr(e)[:120])
+            return
+        _OFFICIAL[key] = (time.time(), official)
+    if not official:
+        return
+    bn = lang != "en"
+    for it in items:
+        o = official.get(str(it.get("id")))
+        if o is None:
+            continue
+        ok = bool(o.get("orderable"))
+        if ok and not it.get("available", True):
+            print(f"[ai-waiter-service] ⚖️ {it.get('name')!r}: we said off ({it.get('unavailableReason')}), "
+                  f"the menu says orderable → orderable")
+            it["available"] = True
+            it.pop("unavailableReason", None)
+        elif not ok and it.get("available", True):
+            code = str((o.get("unavailable") or {}).get("reason") or "")
+            print(f"[ai-waiter-service] ⚖️ {it.get('name')!r}: we said orderable, the menu says off ({code}) → off")
+            it["available"] = False
+            it["unavailableReason"] = (_OFF_REASON_BN.get(code, "এখন পাওয়া যাচ্ছে না") if bn else
+                                       str((o.get("unavailable") or {}).get("message") or "not available right now"))
+
+
 def fetch_menu_snapshot(
     tenant: Optional[str],
     limit: int = MENU_SNAPSHOT_MAX,
@@ -1299,11 +1347,14 @@ def fetch_menu_snapshot(
     channel: Optional[str] = None,
     lang: Optional[str] = None,
     now: Optional[datetime] = None,
+    check_orderable: bool = False,
 ) -> Dict[str, Any]:
     """
-    Build a compact, real-time slice of the menu (source of truth for the brain).
+    Build a compact, real-time slice of the menu (source of truth for the brain). `check_orderable`: take "can it be
+    ordered now" from the menu page's / checkout's decision (a guest's turn; not for the speech-to-text hint).
     Uses MenuItemDoc-like fields.
     """
+    now_given = now  # (a test's clock: then only our own reading — the server decides for the real now)
     try:
         q = build_menu_query(tenant)
         print("[debug] menu query:", q)
@@ -1403,6 +1454,10 @@ def fetch_menu_snapshot(
                     it["periods"] = served
             # the restaurant's periods (their names and times: "বিকেলের নাস্তা পাওয়া যায় ৩টা–৬টা")
             snapshot_periods = [{k: p.get(k) for k in ("id", "name", "start", "end")} for p in rules.get("periods") or []]
+            # ONE decision: what the menu page and checkout say can be ordered now (auth-service, the same function)
+            # — never "available" here and "unavailable" there. Our own reading above only gives the words for why.
+            if now_given is None and check_orderable:
+                _official_orderable(items, tenant, branch, channel, lang or "en")
 
         print("[debug] snapshot items count =", len(items))
 
@@ -1993,7 +2048,9 @@ async def run_text_turn(
     """
     t_start = time.monotonic()
     lang = locale if lock_language and locale in ("bn", "en") else reply_language(text, locale)
-    snapshot = fetch_menu_snapshot(tenant, limit=MENU_SNAPSHOT_MAX, branch=branch, channel=channel, lang=lang, now=now)
+    # (in a worker thread: its database reads and the orderable check never hold up other guests' turns)
+    snapshot = await asyncio.to_thread(lambda: fetch_menu_snapshot(
+        tenant, limit=MENU_SNAPSHOT_MAX, branch=branch, channel=channel, lang=lang, now=now, check_orderable=True))
     vocab = build_vocab_from_snapshot(snapshot)
     # (Bangla word-snapping is OFF: it cut Bangla vowel signs off as punctuation and garbled correct words —
     # "সিজলিং" → "সিজলিংিং", "চিকেনটা" → "চিকেনা". gpt-4o-transcribe + the menu hint already write dish names right.)

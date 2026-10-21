@@ -2,6 +2,7 @@
 import React from 'react';
 import type { v1 } from '../../../../packages/shared/src/types';
 import Modal from './Modal';
+import QuickAdd from './QuickAdd';
 import { minutesLabel, prepRange } from '../utils/wait-time';
 import { priceNumber } from '../utils/ui-lang';
 
@@ -107,8 +108,9 @@ function ProductCardBase({ item, className, closedNote }: ProductCardProps): JSX
           (className ?? '')
         }
       >
-        {/* Right: Image */}
-        <div className="relative h-[110px] w-[110px] shrink-0 overflow-hidden rounded-[16px]">
+        {/* Right: Image (with "+" on its corner) */}
+        <div className="relative h-[110px] w-[110px] shrink-0">
+        <div className="relative h-full w-full overflow-hidden rounded-[16px]">
           {image ? (
             <img
               src={image}
@@ -121,6 +123,21 @@ function ProductCardBase({ item, className, closedNote }: ProductCardProps): JSX
           ) : (
             <div className="h-full w-full rounded-[16px] bg-gray-100" />
           )}
+        </div>
+          {/* "+" → one in the tray, then "− 1 +"; a dish with sizes / add-ons opens its choices */}
+          <QuickAdd
+            className="absolute -bottom-2 -right-2"
+            id={anyItem.id ? String(anyItem.id) : undefined}
+            name={anyItem.name}
+            price={price}
+            imageUrl={image}
+            choices={
+              (Array.isArray(anyItem.variations) && anyItem.variations.length > 1) ||
+              (Array.isArray(anyItem.modifierGroups) && anyItem.modifierGroups.length > 0)
+            }
+            onChoose={() => setOpen(true)}
+            disabled={unavailable || !!closedNote || anyItem.orderable === false}
+          />
         </div>
 
         {/* Left: Info column */}
@@ -251,6 +268,7 @@ const ProductCard = React.memo(ProductCardBase, (prev, next) => {
     a.name === b.name &&
     a.status === b.status &&
     a.available === b.available &&
+    a.orderable === b.orderable &&
     a.price === b.price &&
     a.compareAtPrice === b.compareAtPrice &&
     JSON.stringify(prepRange(a)) === JSON.stringify(prepRange(b)) &&

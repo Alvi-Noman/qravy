@@ -133,8 +133,16 @@ export default function DigitalMenu() {
     enabled: Boolean(subdomain),
     queryFn: () => listMenu({ subdomain: subdomain!, branch: normalizedBranch, channel }),
     staleTime: 30_000,
-    refetchOnWindowFocus: false,
+    // the server decides what's served (as checkout does) — asked again every minute, so the menu follows the clock
+    refetchInterval: 60_000,
+    refetchOnWindowFocus: true,
   });
+  /** Only what's served now (the server's decision: the section's and the dish's hours, sold out, the branch's menu) —
+   *  never a dish that can't be had (while the restaurant is closed: what's served when it opens). */
+  const shownItems = React.useMemo(
+    () => items.filter((it) => !(it as any).hidden && (it as any).status !== 'hidden' && (it as any).servedNow !== false),
+    [items],
+  );
 
   /** CATEGORIES */
   const catKey = ['publicCategories', { subdomain, branchSlug: normalizedBranch, channel }];
@@ -153,7 +161,8 @@ export default function DigitalMenu() {
       }
     },
     staleTime: 60_000,
-    refetchOnWindowFocus: false,
+    refetchInterval: 60_000,
+    refetchOnWindowFocus: true,
   });
 
   /** Search (fuzzysort) */
@@ -172,7 +181,7 @@ export default function DigitalMenu() {
   /** Server order (owner's drag & drop / PDF order), description and serving hours per category */
   const catMetaById = new Map<
     string,
-    { index: number; description?: string; availability?: AvailabilityWindow[] }
+    { index: number; description?: string; availability?: AvailabilityWindow[]; nowFirst?: boolean }
   >();
   categories.forEach((c, index) => {
     const id = (c as any).id ?? (c as any)._id ?? (c as any).categoryId;
@@ -183,6 +192,8 @@ export default function DigitalMenu() {
       index,
       description: (c as any).description || undefined,
       availability: Array.isArray((c as any).availability) ? (c as any).availability : undefined,
+      // a section with its own hours that's being served now (breakfast in the morning) goes first
+      nowFirst: !!(c as any).timeBound && !!(c as any).servedNow,
     });
   });
 
@@ -205,7 +216,7 @@ export default function DigitalMenu() {
   }, []);
 
   const searchableRows: SearchRow[] = React.useMemo(() => {
-    return items.map((it) => {
+    return shownItems.map((it) => {
       const any = it as any;
       const categoryName =
         any.categoryName ??
@@ -220,11 +231,11 @@ export default function DigitalMenu() {
         tags: Array.isArray(any.tags) ? any.tags.map(String).join(' ') : '',
       };
     });
-  }, [items, catNameById]);
+  }, [shownItems, catNameById]);
 
   const filteredItems: v1.MenuItemDTO[] = React.useMemo(() => {
     const q = query.trim();
-    if (!q) return items;
+    if (!q) return shownItems;
 
     const preparedRows = searchableRows.map((row) => ({
       ...row,
@@ -264,7 +275,7 @@ export default function DigitalMenu() {
       .map((item) => item.row._raw);
 
     return results;
-  }, [items, query, searchableRows]);
+  }, [shownItems, query, searchableRows]);
 
   /** Group items by category (post-filter) */
   type Group = {
@@ -273,6 +284,7 @@ export default function DigitalMenu() {
     description?: string;
     availability?: AvailabilityWindow[];
     order: number;
+    nowFirst?: boolean;
   };
   type Grouped = Record<string, Group>;
 
@@ -288,6 +300,7 @@ export default function DigitalMenu() {
           description: meta?.description,
           availability: meta?.availability,
           order: meta?.index ?? Number.MAX_SAFE_INTEGER,
+          nowFirst: meta?.nowFirst,
         };
       }
       acc[key].items.push(item);
@@ -322,10 +335,13 @@ export default function DigitalMenu() {
       }
     }
 
-    // Owner-defined category order; unknown categories last, A–Z
+    // the sections served at this time of day first (breakfast in the morning), then the owner's order; unknown last
     return Object.fromEntries(
       Object.entries(acc).sort(
-        (a, b) => a[1].order - b[1].order || a[1].name.localeCompare(b[1].name),
+        (a, b) =>
+          Number(!a[1].nowFirst) - Number(!b[1].nowFirst) ||
+          a[1].order - b[1].order ||
+          a[1].name.localeCompare(b[1].name),
       ),
     );
   }, [filteredItems, catNameById, catMetaById]);
@@ -338,17 +354,12 @@ export default function DigitalMenu() {
   const restaurantOpen = isAvailableAt(openingHours, now, tz);
   const opensAt = restaurantOpen ? null : nextOpening(openingHours, now, tz);
 
-  /** Why an item can't be ordered now: restaurant closed → section hours → item hours */
-  const itemClosedNote = (item: v1.MenuItemDTO, g?: Group) =>
-    closedNoteFor({
-      at: now,
-      tz,
-      openingHours,
-      categoryHours: g?.availability,
-      itemHours: (item as any).availability,
-      itemFrom: (item as any).availableFrom,
-      itemUntil: (item as any).availableUntil,
-    }) ?? undefined;
+  /** Why a shown dish can't be ordered right now — the server's decision (only the restaurant being closed, since
+   *  the rest aren't shown): "opens at …" from its hours */
+  const itemClosedNote = (item: v1.MenuItemDTO, _g?: Group) =>
+    (item as any).orderable === false
+      ? closedNoteFor({ at: now, tz, openingHours }) ?? (item as any).unavailable?.message ?? 'Not available right now'
+      : undefined;
 
   const hasCategories = Object.keys(grouped).length > 0 && !isCatError;
 

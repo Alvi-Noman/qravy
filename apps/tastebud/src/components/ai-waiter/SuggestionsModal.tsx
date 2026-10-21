@@ -9,12 +9,17 @@ import type { AiReplyMeta, WaiterIntent } from '../../types/waiter-intents';
 import { isDineInPath, withTable } from '../../utils/table';
 import { normalizeIntent, localHeuristicIntent } from '../../utils/intent-routing';
 import { priceNumber } from '../../utils/ui-lang';
+import QuickAdd from '../QuickAdd';
 
 type MinimalMenuItem = {
   id?: string;
   name?: string;
   price?: number;
   imageUrl?: string;
+  /** sizes / add-ons to pick first ("+" asks the waiter for it, and it asks which) */
+  choices?: boolean;
+  /** can't be ordered right now */
+  orderable?: boolean;
 };
 
 type Props = {
@@ -29,6 +34,8 @@ type Props = {
   voiceBar?: boolean;
   /** the waiter's presence (AssistantDock) at the bottom of the page */
   assistant?: React.ReactNode;
+  /** "+" on a dish with sizes / add-ons: ask the waiter for one ("একটা … দিন") — it asks which size, as buttons */
+  onAskFor?: (name: string) => void;
 };
 
 /* ---------- Helpers ---------- */
@@ -88,9 +95,10 @@ function formatCurrency(n?: number) {
 type ProductSuggestionCardProps = {
   item: MinimalMenuItem;
   className?: string;
+  onAskFor?: (name: string) => void;
 };
 
-function ProductSuggestionCardBase({ item, className }: ProductSuggestionCardProps): JSX.Element {
+function ProductSuggestionCardBase({ item, className, onAskFor }: ProductSuggestionCardProps): JSX.Element {
   const name = item.name ?? 'Item';
   const price = item.price;
   const image = item.imageUrl;
@@ -104,17 +112,30 @@ function ProductSuggestionCardBase({ item, className }: ProductSuggestionCardPro
         (className ?? '')
       }
     >
-      <div className="relative h-[90px] w-[90px] sm:h-[110px] sm:w-[110px] overflow-hidden rounded-[16px]">
-        {image ? (
-          <img
-            src={image}
-            alt={name}
-            loading="lazy"
-            className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.03]"
-          />
-        ) : (
-          <div className="h-full w-full rounded-[16px] bg-gray-100 grid place-items-center text-xl">🍽️</div>
-        )}
+      <div className="relative h-[90px] w-[90px] sm:h-[110px] sm:w-[110px] shrink-0">
+        <div className="h-full w-full overflow-hidden rounded-[16px]">
+          {image ? (
+            <img
+              src={image}
+              alt={name}
+              loading="lazy"
+              className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.03]"
+            />
+          ) : (
+            <div className="h-full w-full rounded-[16px] bg-gray-100 grid place-items-center text-xl">🍽️</div>
+          )}
+        </div>
+        {/* "+" → one in the tray, then "− 1 +" (as on the menu); sizes / add-ons → the waiter asks which */}
+        <QuickAdd
+          className="absolute -bottom-2 -right-2"
+          id={item.id}
+          name={name}
+          price={price}
+          imageUrl={image}
+          choices={item.choices}
+          onChoose={() => onAskFor?.(name)}
+          disabled={item.orderable === false}
+        />
       </div>
 
       <div className="flex min-w-0 flex-1 flex-col">
@@ -135,6 +156,9 @@ const ProductSuggestionCard = React.memo(
     prev.item.name === next.item.name &&
     prev.item.price === next.item.price &&
     prev.item.imageUrl === next.item.imageUrl &&
+    prev.item.choices === next.item.choices &&
+    prev.item.orderable === next.item.orderable &&
+    prev.onAskFor === next.onAskFor &&
     prev.className === next.className
 );
 
@@ -147,6 +171,7 @@ export default function SuggestionsModal({
   items = [],
   highlightIds = [],
   onIntent,
+  onAskFor,
   voiceBar = true,
   assistant,
 }: Props) {
@@ -205,7 +230,7 @@ export default function SuggestionsModal({
                       (on ? "ring-2 ring-[#FA2851]/45 shadow-md shadow-rose-100" : "")
                     }
                   >
-                    <ProductSuggestionCard item={it} />
+                    <ProductSuggestionCard item={it} onAskFor={onAskFor} />
                   </Link>
                 );
               })}

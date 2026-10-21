@@ -22,6 +22,8 @@ export async function checkOrderable(opts: {
   locationId?: ObjectId | null;
   channel?: 'dine-in' | 'online';
   at?: Date;
+  /** what's served at `at` whatever the opening hours (the menu page while the restaurant is closed) */
+  ignoreOpeningHours?: boolean;
 }): Promise<Map<string, OrderabilityResult>> {
   const at = opts.at ?? new Date();
   const db = client.db('authDB');
@@ -57,6 +59,8 @@ export async function checkOrderable(opts: {
           servicePeriodIds: 1,
           availableFrom: 1,
           availableUntil: 1,
+          hidden: 1,
+          status: 1,
         },
       }
     )
@@ -111,6 +115,11 @@ export async function checkOrderable(opts: {
 
   for (const it of items) {
     const id = String(it._id);
+    // hidden by the owner (the admin's hide) — never orderable, as the menu page and the waiter have it
+    if (it.hidden === true || it.status === 'hidden') {
+      out.set(id, { ok: false, reason: 'hidden', message: `${it.name} isn't on the menu.` });
+      continue;
+    }
     if (offIds.has(id) || it.offline) {
       out.set(id, { ok: false, reason: 'sold-out', message: `${it.name} is sold out right now.` });
       continue;
@@ -132,7 +141,7 @@ export async function checkOrderable(opts: {
     const res = orderableNow({
       tz,
       at,
-      openingHours,
+      openingHours: opts.ignoreOpeningHours ? [] : openingHours,
       categoryHours: branchOverride
         ? branchOverride.availability
         : resolveWindows(cat?.servicePeriodIds, cat?.availability, periods),
