@@ -13,7 +13,7 @@ const MAX_MS = 20_000;
 
 type Kind = 'clean' | 'raw';
 type Heard = { label: string; text: string; ms: number; error?: string };
-type Clip = { kind: Kind; url: string; settings: string; heard: Heard[] };
+type Clip = { kind: Kind | 'file'; url: string; settings: string; heard: Heard[] };
 type Try = { id: number; at: string; said: string; clips: Clip[]; note?: string };
 
 const CONSTRAINTS: Record<Kind, MediaTrackConstraints> = {
@@ -63,9 +63,44 @@ function settingsOf(stream: MediaStream): { text: string; ns: boolean | undefine
   };
 }
 
-async function transcribe(pcm: Int16Array, tenant: string, hint: boolean): Promise<{ text: string; ms: number; error?: string }> {
+type Engine = 'openai' | 'gemini' | 'elevenlabs';
+
+// every engine on one clip: the waiter's own (gpt-4o + the menu hint) first
+const ENGINES: [string, boolean, Engine][] = [
+  ['gpt-4o + menu hint (the waiter now)', true, 'openai'],
+  ['gpt-4o, no hint', false, 'openai'],
+  ['Gemini 2.5 Flash + menu', true, 'gemini'],
+  ['ElevenLabs Scribe', false, 'elevenlabs'],
+];
+
+async function allEngines(pcm: Int16Array, tenant: string): Promise<Heard[]> {
+  return Promise.all(ENGINES.map(async ([label, hint, engine]) => ({ label, ...(await transcribe(pcm, tenant, hint, engine)) })));
+}
+
+/** Any audio file (the ▶ Listen MP3 from Cortex / the admin panel, a phone recording) → 16 kHz mono PCM, ≤ MAX_MS. */
+async function fileToPcm(file: File): Promise<{ pcm: Int16Array; seconds: number; cut: boolean }> {
+  const ac = new AudioContext();
+  let decoded: AudioBuffer;
   try {
-    const r = await fetch(`${CART_API_BASE}/stt-test?tenant=${encodeURIComponent(tenant)}&rate=${RATE}&hint=${hint ? 1 : 0}`, {
+    decoded = await ac.decodeAudioData(await file.arrayBuffer());
+  } finally {
+    ac.close().catch(() => {});
+  }
+  const seconds = Math.min(decoded.duration, MAX_MS / 1000);
+  const off = new OfflineAudioContext(1, Math.max(1, Math.ceil(seconds * RATE)), RATE);
+  const src = off.createBufferSource();
+  src.buffer = decoded;
+  src.connect(off.destination);
+  src.start(0);
+  const f32 = (await off.startRendering()).getChannelData(0);
+  const pcm = new Int16Array(f32.length);
+  for (let i = 0; i < f32.length; i++) pcm[i] = (Math.max(-1, Math.min(1, f32[i])) * 0x7fff) | 0;
+  return { pcm, seconds, cut: decoded.duration > MAX_MS / 1000 };
+}
+
+async function transcribe(pcm: Int16Array, tenant: string, hint: boolean, engine: Engine = 'openai'): Promise<{ text: string; ms: number; error?: string }> {
+  try {
+    const r = await fetch(`${CART_API_BASE}/stt-test?tenant=${encodeURIComponent(tenant)}&rate=${RATE}&hint=${hint ? 1 : 0}&engine=${engine}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/octet-stream' },
       body: new Uint8Array(pcm.buffer.slice(0) as ArrayBuffer),
@@ -177,8 +212,10 @@ export default function MicTest() {
           return { kind: k, url: wavUrl(p), settings: settings[k] || '',
                    heard: [{ label: '', text: '', ms: 0, error: 'no audio — this phone allows one mic at a time: use “one after the other”' }] };
         }
-        const runs: [string, boolean][] = k === 'clean' ? [['with menu hint (as now)', true]] : [['with menu hint', true], ['no hint', false]];
-        const heard = await Promise.all(runs.map(async ([label, hint]) => ({ label, ...(await transcribe(p, tenant, hint)) })));
+        // the RAW clip (what the waiter records now) through every engine; the cleaned one through the waiter's only
+        const heard = k === 'clean'
+          ? [{ label: 'gpt-4o + menu hint', ...(await transcribe(p, tenant, true)) }]
+          : await allEngines(p, tenant);
         return { kind: k, url: wavUrl(p), settings: settings[k] || '', heard };
       }),
     );
@@ -200,6 +237,26 @@ export default function MicTest() {
     setState('idle');
   }
 
+  // "Upload a recording": a clip from before (e.g. a turn the waiter got wrong) through every engine
+  async function onFile(file: File) {
+    setWarn('');
+    setState('working');
+    try {
+      const { pcm, seconds, cut } = await fileToPcm(file);
+      const heard = await allEngines(pcm, tenant);
+      idRef.current += 1;
+      setTries((t) => [
+        { id: idRef.current, at: new Date().toLocaleTimeString(), said,
+          clips: [{ kind: 'file', url: URL.createObjectURL(file), heard,
+                    settings: `${file.name} · ${seconds.toFixed(1)} s${cut ? ' (the first 20 s)' : ''}` }] },
+        ...t,
+      ]);
+    } catch (e: any) {
+      setWarn(`এই ফাইলটা পড়া গেল না (${e?.message || e}). MP3, WAV, M4A বা OGG দিন।`);
+    }
+    setState('idle');
+  }
+
   const onButton = () => {
     if (state === 'recording') return void stop();
     if (state !== 'idle') return;
@@ -216,7 +273,8 @@ export default function MicTest() {
       <div style={{ maxWidth: 680, margin: '0 auto', padding: '20px 16px 60px' }}>
         <h1 style={{ fontSize: 22, fontWeight: 700, margin: '0 0 4px' }}>Mic test</h1>
         <p style={{ fontSize: 14, color: '#555', margin: '0 0 16px' }}>
-          একই কথা দুইভাবে রেকর্ড হয় — ফোনের নয়েজ সাপ্রেশন চালু (এখন যা চলে) আর বন্ধ (raw)। নিচে শুনুন আর দেখুন AI কী শুনেছে।
+          একই কথা দুইভাবে রেকর্ড হয় — ফোনের নয়েজ সাপ্রেশন চালু আর বন্ধ (raw — waiter এখন এটাই ব্যবহার করে)। RAW রেকর্ডিং আর আপলোড করা
+          রেকর্ডিং সব ইঞ্জিনে যায় — এখনকার gpt-4o, Gemini আর ElevenLabs — পাশাপাশি দেখুন কোনটা ঠিক শুনেছে।
           Nothing is saved. {tenant ? `Menu hint: ${tenant}` : 'No restaurant in the link — no menu hint.'}
         </p>
 
@@ -240,6 +298,15 @@ export default function MicTest() {
           {label}
         </button>
         <p style={{ fontSize: 12, color: '#777', margin: '6px 0 0' }}>Tap to start, tap to stop (max 20 s).</p>
+        <label style={{ display: 'block', marginTop: 12, padding: '12px', borderRadius: 14, border: '1px dashed #999',
+          textAlign: 'center', fontSize: 15, background: '#fff', opacity: state === 'idle' ? 1 : 0.5 }}>
+          ⬆ আগের রেকর্ডিং দিন (Upload a recording) — MP3 / WAV / M4A
+          <input type="file" accept="audio/*,.mp3,.wav,.m4a,.ogg,.webm" disabled={state !== 'idle'} style={{ display: 'none' }}
+            onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) void onFile(f); }} />
+        </label>
+        <p style={{ fontSize: 12, color: '#777', margin: '6px 0 0' }}>
+          A turn from before: AI conversations (Cortex / admin) → ▶ Listen → ⋮ → Download, then upload it here.
+        </p>
         {warn && <p style={{ background: '#fff4e5', border: '1px solid #f0c27b', borderRadius: 10, padding: 10, fontSize: 14 }}>{warn}</p>}
 
         {tries.map((t) => (
@@ -249,7 +316,7 @@ export default function MicTest() {
             {t.clips.map((c) => (
               <div key={c.kind} style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid #eee' }}>
                 <div style={{ fontWeight: 700, fontSize: 15 }}>
-                  {c.kind === 'clean' ? 'CLEANED — noise suppression on (as now)' : 'RAW — noise suppression off'}
+                  {c.kind === 'clean' ? 'CLEANED — noise suppression on' : c.kind === 'file' ? 'UPLOADED RECORDING' : 'RAW — noise suppression off (as now)'}
                 </div>
                 <div style={{ fontSize: 12, color: '#777', margin: '2px 0 6px' }}>{c.settings}</div>
                 <audio controls src={c.url} style={{ width: '100%' }} />
