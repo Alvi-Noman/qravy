@@ -53,6 +53,7 @@ from cart_store import save_cart, load_cart
 import upsell_stats
 import conversations
 import voice_clips
+import stt_engines
 from availability import (
     DEFAULT_PERIODS,
     DEFAULT_TZ,
@@ -677,7 +678,7 @@ async def handle_alert_options(request: web.Request) -> web.Response:
 # Temporary: the same clip recorded with the phone's noise suppression on and off, to see which the transcriber
 # understands better in a noisy room. Nothing is stored. Open to anyone with the link, so it's capped per IP.
 _STT_TEST_MAX_S = 20
-_STT_TEST_PER_HOUR = int(os.environ.get("STT_TEST_PER_HOUR", "90"))
+_STT_TEST_PER_HOUR = int(os.environ.get("STT_TEST_PER_HOUR", "240"))  # (a try = 4–5 engine runs)
 _STT_TEST_HITS: Dict[str, Deque[float]] = defaultdict(deque)
 
 
@@ -703,6 +704,15 @@ async def handle_stt_test(request: web.Request) -> web.Response:
     hits.append(now)
     prompt = stt_prompt(q.get("tenant") or None, "bn") if q.get("hint", "1") == "1" else ""
     t0 = time.time()
+    # other engines, to compare (stt_engines.py): Gemini (given the menu's words too), ElevenLabs Scribe
+    engine = q.get("engine", "openai")
+    if engine in ("gemini", "elevenlabs"):
+        words = prompt.split(":", 1)[-1].strip(" ।.") if prompt else ""
+        text, err = await (stt_engines.gemini(pcm, rate, words) if engine == "gemini"
+                           else stt_engines.elevenlabs(pcm, rate))
+        if err:
+            return web.json_response({"ok": False, "error": err}, status=200, headers=_CORS)
+        return web.json_response({"ok": True, "text": text or "", "ms": int((time.time() - t0) * 1000)}, headers=_CORS)
     text = await openai_transcribe(pcm, "bn", rate=rate, prompt=prompt)
     # (on noise / silence a transcriber can copy its hint back — the waiter itself drops those, see is_prompt_echo)
     return web.json_response({"ok": True, "text": text or "", "ms": int((time.time() - t0) * 1000), "hint": prompt,
