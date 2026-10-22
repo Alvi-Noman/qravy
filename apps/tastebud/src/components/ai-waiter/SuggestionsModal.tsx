@@ -11,7 +11,7 @@ import { normalizeIntent, localHeuristicIntent } from '../../utils/intent-routin
 import { priceNumber } from '../../utils/ui-lang';
 import QuickAdd from '../QuickAdd';
 import Modal from '../Modal';
-import { useCart } from '../../context/CartContext';
+import ViewTrayBar from './ViewTrayBar';
 
 type MinimalMenuItem = {
   id?: string;
@@ -201,7 +201,6 @@ export default function SuggestionsModal({
   }, [highlightIds]);
   const menuHref = useMenuHref(menuHrefOverride);
   const hasAiItems = Array.isArray(items) && items.length > 0;
-  const { count, subtotal } = useCart();
   // the dish whose sizes / add-ons are being picked (the menu's own popup)
   const [choosing, setChoosing] = React.useState<MinimalMenuItem | null>(null);
   const onChoose = React.useCallback((it: MinimalMenuItem) => setChoosing(it), []);
@@ -289,17 +288,7 @@ export default function SuggestionsModal({
         ) : manual ? (
           // ordering by hand: the tray, like a delivery app — no orb here
           <div className="relative z-40 shrink-0 px-4 pt-3 pb-[max(1rem,env(safe-area-inset-bottom))] bg-white border-t border-gray-100">
-            <button
-              type="button"
-              onClick={onViewTray}
-              disabled={count === 0}
-              className="flex h-14 w-full items-center justify-between rounded-2xl bg-[#FA2851] px-5 text-white shadow-[0_6px_18px_rgba(250,40,81,0.35)] active:scale-[0.99] disabled:opacity-50"
-            >
-              <span className="text-[16px] font-semibold">
-                {lang === 'en' ? `View your tray (${count} ${count === 1 ? 'item' : 'items'})` : `ট্রে দেখুন (${count}টি আইটেম)`}
-              </span>
-              <span className="text-[16px] font-semibold">{formatCurrency(subtotal)}</span>
-            </button>
+            <ViewTrayBar onClick={onViewTray} lang={lang} />
           </div>
         ) : assistant ? (
           assistant

@@ -171,8 +171,8 @@ export default function AiWaiterHome() {
     choices.length === 0 && !listening && uiMode !== 'thinking' && !showSuggestions && !showTray;
   const starters =
     selectedLang === 'en'
-      ? ['What can I eat now?', 'Show me the menu', 'I know what to order']
-      : ['এখন কী খেতে পারি?', 'মেনু দেখতে চাই', 'আমি জানি কী অর্ডার করব'];
+      ? ['What can I eat now?', 'Show me the menu']
+      : ['এখন কী খেতে পারি?', 'মেনু দেখতে চাই']; // (two: the guest who knows what to order just says it)
 
 
   // ---- coming back to this page: never an old line or a leftover error — a short line for right now

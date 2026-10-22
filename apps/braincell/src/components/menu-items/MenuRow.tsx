@@ -185,6 +185,8 @@ export default function MenuRow({
           type="button"
           role="switch"
           aria-checked={active}
+          aria-label={active ? 'Available — turn off' : 'Unavailable — turn on'}
+          title={active ? 'Available on the menu' : 'Unavailable — turn on to sell it again'}
           onClick={() => onToggleAvailability(item.id, !active)}
           className={`relative inline-flex h-6 w-11 items-center rounded-full transition ${
             active ? 'bg-slate-400' : 'bg-slate-300'
@@ -196,19 +198,35 @@ export default function MenuRow({
             }`}
           />
         </button>
+        {/* the two ways to take a dish off: for today (back on by itself at the daily reset) or until the owner turns
+            it back on — said plainly under the switch, and what an off dish is waiting for */}
         {!active && itAny.soldOutUntil ? (
           <div className="mt-1 whitespace-nowrap text-[11px] text-amber-700" title="Sold out today — switches back on automatically">
             Back {formatBackAt(itAny.soldOutUntil)}
           </div>
-        ) : active && onSoldOutToday ? (
-          <button
-            type="button"
-            onClick={() => onSoldOutToday(item.id)}
-            title="Turn off now and back on automatically at the daily reset time"
-            className="mt-1 block whitespace-nowrap text-[11px] text-[#6b7280] underline-offset-2 hover:text-[#111827] hover:underline"
-          >
-            Sold out today
-          </button>
+        ) : !active ? (
+          <div className="mt-1 whitespace-nowrap text-[11px] text-rose-700" title="Off until you turn the switch back on">
+            Off until you turn it on
+          </div>
+        ) : onSoldOutToday ? (
+          <div className="mt-1 flex flex-col items-start gap-0.5">
+            <button
+              type="button"
+              onClick={() => onSoldOutToday(item.id)}
+              title="Turn off now and back on automatically at the daily reset time"
+              className="whitespace-nowrap text-[11px] text-[#6b7280] underline-offset-2 hover:text-[#111827] hover:underline"
+            >
+              Sold out today
+            </button>
+            <button
+              type="button"
+              onClick={() => onToggleAvailability(item.id, false)}
+              title="Turn off until you turn it back on yourself (it never comes back on by itself)"
+              className="whitespace-nowrap text-[11px] text-[#6b7280] underline-offset-2 hover:text-[#111827] hover:underline"
+            >
+              Off until I turn it on
+            </button>
+          </div>
         ) : null}
       </td>
 
