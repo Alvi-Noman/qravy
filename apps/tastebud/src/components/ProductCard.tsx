@@ -11,6 +11,8 @@ export type ProductCardProps = {
   className?: string;
   /** Set when the item's section is outside its serving hours, e.g. "Available 7am–11am" */
   closedNote?: string;
+  /** the guest added it by hand ("+", or "Add to tray" in its popup) */
+  onAdd?: () => void;
 };
 
 /** Short labels shown as badges (Spicy, Vegetarian, Halal…) */
@@ -63,7 +65,7 @@ function formatCurrency(n?: number) {
 }
 
 /* ---------- Component ---------- */
-function ProductCardBase({ item, className, closedNote }: ProductCardProps): JSX.Element {
+function ProductCardBase({ item, className, closedNote, onAdd }: ProductCardProps): JSX.Element {
   const anyItem = item as any;
 
   // Media
@@ -136,6 +138,7 @@ function ProductCardBase({ item, className, closedNote }: ProductCardProps): JSX
               (Array.isArray(anyItem.modifierGroups) && anyItem.modifierGroups.length > 0)
             }
             onChoose={() => setOpen(true)}
+            onAdd={onAdd}
             disabled={unavailable || !!closedNote || anyItem.orderable === false}
           />
         </div>
@@ -249,6 +252,7 @@ function ProductCardBase({ item, className, closedNote }: ProductCardProps): JSX
         modifierGroups={anyItem.modifierGroups}
         prepMinutes={anyItem.prepMinutes}
         itemId={anyItem.id ? String(anyItem.id) : undefined}
+        onAdded={onAdd}
       />
     </>
   );
@@ -262,6 +266,7 @@ const ProductCard = React.memo(ProductCardBase, (prev, next) => {
   return (
     prev.className === next.className &&
     prev.closedNote === next.closedNote &&
+    prev.onAdd === next.onAdd &&
     (Array.isArray(a.tags) ? a.tags.join('|') : '') === (Array.isArray(b.tags) ? b.tags.join('|') : '') &&
     a.id === b.id &&
     !!a.signature === !!b.signature &&

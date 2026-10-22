@@ -19,6 +19,8 @@ import { FulfillmentToggle } from '../components/OnlineOrderDetails';
 import { useFulfillment, useOrderChannel } from '../utils/order-mode';
 import LangSwitch from '../components/LangSwitch';
 import CartFab from '../components/ai-waiter/CartFab';
+import ViewTrayBar from '../components/ai-waiter/ViewTrayBar';
+import { useCart } from '../context/CartContext';
 import CallWaiterButton from '../components/CallWaiterButton';
 import { withTable } from '../utils/table';
 import { storeBasePath } from '../utils/checkout-flow';
@@ -457,6 +459,12 @@ export default function DigitalMenu() {
   // the same voice session and reply handling as AIWaiterHome: cart changes, the option picker, offers, suggestion
   // cards, answer pills, the read-back / table / details steps. "Show me the menu" → we're already here.
   const w = useWaiterSession({ subdomain, branch: normalizedBranch, channel, onOpenMenu: () => {} });
+  // the guest pressed "+" (or added a dish from its popup): ordering by hand — "View your tray (N)" takes the place of
+  // the orb and the tray button for the rest of this visit to the page (while the tray has something in it)
+  const { count: trayCount } = useCart();
+  const [manual, setManual] = React.useState(false);
+  const onManualAdd = React.useCallback(() => setManual(true), []);
+  const manualBar = manual && trayCount > 0 && !w.showTray && !w.showSuggestions;
 
   /* ============================== Rendering =============================== */
 
@@ -606,6 +614,7 @@ export default function DigitalMenu() {
                                         key={item.id}
                                         item={item}
                                         closedNote={itemClosedNote(item, group)}
+                                        onAdd={onManualAdd}
                                       />
                                     ))}
                                   </div>
@@ -672,6 +681,7 @@ export default function DigitalMenu() {
                                   key={item.id}
                                   item={item}
                                   closedNote={itemClosedNote(item, g)}
+                                  onAdd={onManualAdd}
                                 />
                               ))}
                             </div>
@@ -697,7 +707,7 @@ export default function DigitalMenu() {
             />
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               {filteredItems.slice(0, visibleCount).map((item) => (
-                <ProductCard key={item.id} item={item} closedNote={itemClosedNote(item)} />
+                <ProductCard key={item.id} item={item} closedNote={itemClosedNote(item)} onAdd={onManualAdd} />
               ))}
             </div>
             {visibleCount < filteredItems.length && (
@@ -724,8 +734,8 @@ export default function DigitalMenu() {
       {/* the waiter's sheets (suggestions, the tray with its picker) — the same as on the home screen */}
       <WaiterSheets w={w} />
 
-      {/* Floating minimized cart button (only when tray is closed & cart has items) */}
-      <CartFab trayOpen={w.showTray} onOpenTray={() => w.setShowTray(true)} bottom={210} />
+      {/* Floating minimized cart button (only when tray is closed & cart has items) — not while ordering by hand */}
+      {!manualBar && <CartFab trayOpen={w.showTray} onOpenTray={() => w.setShowTray(true)} bottom={210} />}
 
       {/* "Call waiter" (dine-in only — an online page has no table to come to): a labelled button at the bottom left,
           opposite the tray's — a person, the bill, water, a clean table, straight to the dashboard */}
@@ -738,10 +748,23 @@ export default function DigitalMenu() {
         />
       </div>
 
-      {/* the waiter at the bottom: hold the orb to talk; what it says, and the answer pills */}
+      {/* the waiter at the bottom: hold the orb to talk; what it says, and the answer pills — or, for a guest ordering
+          by hand ("+" pressed), "View your tray (N)" in its place (the tray then opens without the orb) */}
       <div className="fixed inset-x-0 bottom-0 z-40">
         <div className="mx-auto max-w-2xl">
-          <WaiterDock w={w} originFromOrb={false} />
+          {manualBar ? (
+            <div className="bg-white/95 px-4 pt-3 pb-[max(1rem,env(safe-area-inset-bottom))] shadow-[0_-4px_16px_rgba(0,0,0,0.06)] backdrop-blur">
+              <ViewTrayBar
+                lang={w.selectedLang === 'en' ? 'en' : 'bn'}
+                onClick={() => {
+                  w.setManualOrder(true);
+                  w.openTray();
+                }}
+              />
+            </div>
+          ) : (
+            <WaiterDock w={w} originFromOrb={false} />
+          )}
         </div>
       </div>
     </div>

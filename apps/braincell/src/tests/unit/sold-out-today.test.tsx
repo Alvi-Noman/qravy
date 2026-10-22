@@ -83,3 +83,18 @@ describe('<HoursEditor /> labels', () => {
     expect(screen.getByText('Leave unticked if you take orders around the clock.')).toBeTruthy();
   });
 });
+
+describe('Off until turned on', () => {
+  it('offers "Off until I turn it on" next to "Sold out today"', () => {
+    const onToggleAvailability = vi.fn();
+    renderRow({ ...baseItem, status: 'active' }, { onSoldOutToday: vi.fn(), onToggleAvailability });
+    fireEvent.click(screen.getByText('Off until I turn it on'));
+    expect(onToggleAvailability).toHaveBeenCalledWith('i1', false); // off, with no automatic switch-on
+  });
+
+  it('says an item switched off stays off until turned on', () => {
+    renderRow({ ...baseItem, status: 'hidden', hidden: true }, { onSoldOutToday: vi.fn() });
+    expect(screen.getByText('Off until you turn it on')).toBeTruthy();
+    expect(screen.queryByText('Sold out today')).toBeNull();
+  });
+});

@@ -45,6 +45,8 @@ export type ModalProps = {
   modifierGroups?: ModifierGroup[];
   /** When set, the sheet shows quantity + "Add to tray" */
   itemId?: string;
+  /** after "Add to tray" (the menu page: the guest is ordering by hand) */
+  onAdded?: () => void;
   size?: 'sm' | 'md' | 'lg';
   dismissible?: boolean;
 };
@@ -151,6 +153,7 @@ export default function Modal({
   modifierGroups,
   prepMinutes,
   itemId,
+  onAdded,
   size = 'md',
   dismissible = true,
 }: ModalProps) {
@@ -400,6 +403,7 @@ export default function Modal({
       ...(chosenModifiers.length ? { modifiers: chosenModifiers } : {}),
       ...(gallery[0] ? { imageUrl: gallery[0] } : {}),
     });
+    onAdded?.();
     close();
   };
 
