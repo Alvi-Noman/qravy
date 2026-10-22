@@ -494,11 +494,13 @@ export default function AiWaiterHome() {
             {/* one row, as tall as the tiles it replaces: on a phone it scrolls sideways (the cut-off chip shows there's more) */}
             <div className="-mx-4 overflow-x-auto px-4 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
               <div className="mx-auto flex w-max gap-2" role="group" aria-label={selectedLang === 'en' ? 'Try saying' : 'বলে দেখুন'}>
-                {starters.map((say) => (
+                {starters.map((say, i) => (
                   <button
                     key={say}
                     type="button"
-                    onClick={() => void sendTyped(say)}
+                    // "মেনু দেখতে চাই" tapped: straight to the menu, like the "মেনু দেখুন" tile — no "thinking" for a
+                    // button press (said aloud, it's still the waiter's turn); the others ask the waiter
+                    onClick={() => (i === 1 ? goMenu() : void sendTyped(say))}
                     className="shrink-0 whitespace-nowrap rounded-full border border-gray-200 bg-white px-4 py-3 text-[15px] font-medium text-gray-800 shadow-sm transition hover:border-rose-300 active:scale-[0.98]"
                   >
                     {say}
