@@ -71,14 +71,23 @@ def phonetic_key(token: str) -> str:
     return key
 
 # ---------- main normalize ----------
-_BN = re.compile(r"[\u0980-\u09FF]")
-# Bangla snapping: close but not too loose (প্রাউন → প্রন, রিংস → রিং), and never everyday words
-_BN_THRESHOLD = 0.78
-_BN_COMMON = {
-    "আমার", "আমাদের", "আপনার", "আপনাদের", "একটা", "দুইটা", "তিনটা", "খাবার", "অর্ডার", "কতক্ষণ", "লাগবে", "দিবেন",
-    "দেবেন", "করবেন", "করেন", "করুন", "হবে", "আছে", "আছেন", "চাই", "দিন", "দেন", "এগুলো", "সবগুলো", "ভালো", "কোনটা",
-    "কনফার্ম", "টেবিল", "বিল", "পানি", "ঝাল", "মিষ্টি", "ঠান্ডা", "গরম", "হালকা", "বড়", "ছোট", "হাফ", "ফুল", "আরেকটা",
-}
+# Only Latin-script words are snapped to a menu word. Other scripts (Bangla, Devanagari, Arabic, Thai…) pass on
+# exactly as heard: snapping them garbled correct words ("পরোটা" → "পরোটাা", "চিকেনটা" → "চিকেনা"), and the
+# transcriber + the menu hint already write dish names right.
+def _latin(tok: str) -> bool:
+    return all(ord(ch) < 0x250 for ch in tok if ch.isalpha() or unicodedata.category(ch)[0] == "M")
+
+
+def _split_punct(raw: str) -> Tuple[str, str, str]:
+    """("rings?" → "", "rings", "?") — only real punctuation/symbols; vowel signs and other marks belong to the word."""
+    def edge(ch: str) -> bool:
+        return unicodedata.category(ch)[0] in "PSZ"
+    i, j = 0, len(raw)
+    while i < j and edge(raw[i]):
+        i += 1
+    while j > i and edge(raw[j - 1]):
+        j -= 1
+    return raw[:i], raw[i:j], raw[j:]
 
 
 def normalize_text(
@@ -116,27 +125,10 @@ def normalize_text(
 
     out_tokens = []
     for raw_tok in tokens:
-        # keep punctuation around a word ("রিংস?") and match the word itself
-        m_p = re.match(r"^(\W*)(.*?)(\W*)$", raw_tok)
-        lead, tok, trail = (m_p.group(1), m_p.group(2), m_p.group(3)) if m_p else ("", raw_tok, "")
-        if not tok or tok in vocab_set:
+        # keep punctuation around a word ("rings?") and match the word itself
+        lead, tok, trail = _split_punct(raw_tok)
+        if not tok or tok in vocab_set or not _latin(tok):
             out_tokens.append(raw_tok)
-            continue
-        bangla = bool(_BN.search(tok))
-        if bangla:
-            # Bangla: only real content words get snapped to a menu word — never short everyday words (কি, দিন,
-            # আছে…), and only to a Bangla-script menu word
-            cands = [v for v in vocab_set if _BN.search(v)]
-            best = None
-            if len(tok) >= 4 and tok not in _BN_COMMON and cands:
-                m = process.extractOne(tok, cands, scorer=fuzz.ratio, score_cutoff=_BN_THRESHOLD * 100)
-                if m and m[0] != tok:
-                    best, sc = m[0], m[1] / 100.0
-            if best:
-                out_tokens.append(lead + best + trail)
-                changed.append((tok, best, sc))
-            else:
-                out_tokens.append(raw_tok)
             continue
 
         # phonetic: same-sound candidates

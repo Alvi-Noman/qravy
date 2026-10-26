@@ -53,6 +53,7 @@ import followups
 import menu_answers
 import bhorta_bhaji
 import pairing
+import knowledge
 import menu_profile
 import reco_format
 import intent as intent_mod
@@ -61,6 +62,7 @@ import offers
 from menu_profile import glance_line
 from waiter_knowledge import (
     MenuIndex,
+    _norm,
     cart_lines,
     explicitly_asked,
     find_mentions,
@@ -87,7 +89,9 @@ from wait_time import ORDER_WORDS, PLACED_Q, asks_quickest, asks_time
 
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
 OPENAI_BASE = os.environ.get("OPENAI_BASE", "https://api.openai.com").rstrip("/")
-OPENAI_CHAT_MODEL = os.environ.get("OPENAI_CHAT_MODEL", "gpt-4.1-mini").strip()
+OPENAI_CHAT_MODEL = os.environ.get("OPENAI_CHAT_MODEL", "gpt-4.1").strip()
+# experiment: the model answers menu questions and orders itself — the word-pattern answers before it are skipped
+AI_FIRST = os.environ.get("WAITER_AI_FIRST", "").strip() == "1"
 OPENAI_CHAT_URL = f"{OPENAI_BASE}/v1/chat/completions"
 
 BRAIN_MAX_TOKENS = int(os.environ.get("BRAIN_MAX_TOKENS", "1800"))
@@ -190,6 +194,43 @@ RESPONSE_SCHEMA: Dict[str, Any] = {
         "replyText": _STR,
     },
 }
+
+# AI-first: the model also lists every food / drink it named, and the code checks each one is on the menu (it once
+# offered Fanta and Sprite, and described a teriyaki platter the restaurant doesn't have)
+RESPONSE_SCHEMA_AI_FIRST: Dict[str, Any] = {
+    **RESPONSE_SCHEMA,
+    "required": [*RESPONSE_SCHEMA["required"], "foodsNamed"],
+    "properties": {**RESPONSE_SCHEMA["properties"], "foodsNamed": {"type": "array", "items": _STR}},
+}
+FOODS_NAMED_FIELD = ("# Field foodsNamed\nEvery specific dish, drink or brand you name in replyText, exactly as you wrote "
+                     "it, and every one the guest asked about (not general words like rice, fish, curry, drinks). [] if "
+                     "none. Name MENU dishes by their MENU name.")
+
+
+def _unknown_foods(names: Any, index: MenuIndex) -> List[str]:
+    """The foods / drinks the model named that match nothing on this menu — not a dish, nor part of one's name,
+    description or category."""
+    from rapidfuzz import fuzz
+
+    names_on_menu = [_norm(re.sub(r"\s*\(.*?\)", " ", str(it.get("name") or ""))) for it in index.items]
+    hay = [_norm(x) for it in index.items for x in (
+        it.get("name"), to_bangla_script(str(it.get("name") or "")), it.get("description"), it.get("category"),
+        *(it.get("aliases") or []), *[v.get("name") for v in it.get("variations") or [] if isinstance(v, dict)]) if x]
+    out = []
+    for n in names if isinstance(names, list) else []:
+        n = str(n or "").strip()
+        # (the model may write a Bangla menu's dish in English: "Chicken Jhal Fry" is চিকেন ঝাল ফ্রাই — it once
+        # told a guest that dish wasn't on the menu)
+        keys = {k for k in (_norm(re.sub(r"\s*\(.*?\)", " ", x)) for x in (n, to_bangla_script(n))) if len(k) >= 2}
+        if not keys or any(index.resolve(None, x) or find_mentions(x, index, 1) for x in (n, to_bangla_script(n))):
+            continue
+        if any(k in h for k in keys for h in hay):
+            continue
+        if any(fuzz.ratio(k, h) >= 80 for k in keys if len(k) >= 5 for h in names_on_menu):
+            continue  # another spelling of a dish's name ("চিকেন ঝালফ্রাই", "Chicken Jhal-Fry")
+        out.append(n)
+    return out
+
 
 MODE_INSTRUCTIONS = {
     "full": "Recommend 2–3 dishes from RANKED PICKS (or exactly one if they asked for one), each with a short personal "
@@ -437,6 +478,32 @@ Guest: "ok that's everything, send it to the kitchen" → checkout "start". Gues
 Guest: "you have desserts?" → a question, never a confirmation.
 """
 
+# AI-first: the playbook without what belongs elsewhere — cuisine and language knowledge (now in knowledge/, read
+# only by the restaurants it fits: oyster sauce and "fried rice is never ভাত" reached every burger shop), one
+# restaurant's facts ("Mineral Water is on the menu"), and the fill-in sentence shapes behind the stiff
+# "…আইটেমের মধ্যে A, B অথবা C খুবই ভালো" replies. Lines (with their indented sub-lines) starting with these go:
+_NOT_IN_AI_FIRST = (
+    '- "Something light"', '- "Healthy"', "- Polao, biryani, kacchi", "- Local words:",
+    "- Common knowledge for this kind of menu", "  Example (for a Chinese menu", "- THE WAITER'S SHAPES",
+    "- Water: bottled Mineral Water", "- Food words in Bangla",
+)
+
+
+def _without_lines(text: str, starts: Tuple[str, ...]) -> str:
+    out, dropping = [], False
+    for line in text.split("\n"):
+        if line.startswith(starts):
+            dropping = True
+            continue
+        if dropping and line.startswith("  "):
+            continue  # (an indented line under the one dropped)
+        dropping = False
+        out.append(line)
+    return "\n".join(out)
+
+
+PLAYBOOK_AI_FIRST = _without_lines(PLAYBOOK, _NOT_IN_AI_FIRST)
+
 # --------------------------- small helpers ---------------------------
 
 _BN_DIGITS = str.maketrans("০১২৩৪৫৬৭৮৯", "0123456789")
@@ -622,7 +689,8 @@ async def _call_openai(messages: List[Dict[str, str]]) -> str:
             "max_tokens": BRAIN_MAX_TOKENS,
             "temperature": BRAIN_TEMP,
             "response_format": (
-                {"type": "json_schema", "json_schema": {"name": "waiter_turn", "strict": True, "schema": RESPONSE_SCHEMA}}
+                {"type": "json_schema", "json_schema": {"name": "waiter_turn", "strict": True,
+                                                        "schema": RESPONSE_SCHEMA_AI_FIRST if AI_FIRST else RESPONSE_SCHEMA}}
                 if structured
                 else {"type": "json_object"}
             ),
@@ -706,6 +774,8 @@ def _turn_block(
     orderable_items: Optional[List[Dict[str, Any]]] = None,
     meal_kinds: Optional[List[str]] = None,
     understood: Optional[Dict[str, Any]] = None,
+    knowledge_now: str = "",
+    checked_facts: Optional[List[str]] = None,
 ) -> str:
     now = context.get("localTime") or datetime.now().strftime("%a %H:%M")
     lines = [
@@ -853,6 +923,15 @@ def _turn_block(
     if understood:
         # a first reading of what they mean (a separate, focused step) — follow it unless the words clearly say otherwise
         lines.append("WHAT THE GUEST MEANS (first reading): " + json.dumps(understood, ensure_ascii=False))
+    if knowledge_now:
+        lines.append("# WAITER KNOWLEDGE FOR THIS TURN (general, per cuisine/language)\n" + knowledge_now)
+    if checked_facts:
+        lines.append(
+            "# CHECKED FACTS (worked out from this restaurant's menu, hours and availability — rely on them; answer in "
+            "your own words; they came from matching the guest's words, so if the guest named several dishes or meant "
+            "something else, follow what the guest actually said. What they say about times, hours and what is or "
+            "isn't on the menu is TRUE: never say the opposite. When a fact lists the dishes the guest asked about, "
+            "name them — don't answer only with hours)\n" + "\n".join(f"- {f}" for f in checked_facts))
     lines.append(f'Guest said: "{transcript}"')
     return "\n".join(lines)
 
@@ -1138,6 +1217,22 @@ _CLARIFY_ASK = re.compile(
 )
 
 
+# where one dish ends and the next begins in an order ("বিফ শিক দাও আর একটা নান দাও", "চা, পরোটা")
+_DISH_JOIN = re.compile(r"\s*(?:,|।|;|\s(?:আর|এবং|and|plus)\s)\s*")
+
+
+def _several_dishes(text: str, index: MenuIndex) -> bool:
+    """Two or more parts of the sentence each name food — several dishes, never one merged name (it answered
+    "বিফ শিক নান আমাদের মেনুতে নেই" to "একটা বিফ শিক দাও আর একটা নান দাও")."""
+    words = getattr(index, "_dish_words", None)
+    if words is None:  # every word of the menu's dish names (not numbers) — "নান", "শিক", "ভাত"
+        words = {w for it in index.items for w in _name_tokens(re.sub(r"\(.*?\)", " ", str(it.get("name") or "")))
+                 if not w.isdigit()}
+        index._dish_words = words  # type: ignore[attr-defined]
+    rev = _menu_rev(index)
+    return sum(1 for s in _DISH_JOIN.split(text or "") if s.strip() and _guest_tokens(s, rev) & words) >= 2
+
+
 def _names_food(text: str, index: MenuIndex) -> bool:
     """Does the guest name a dish? ("অর্ডার থেকে কোকটা বাদ দিন", "সব কোক বাদ দিন" — about the Coke, never "everything")"""
     return bool(_dishes_named(text, index, limit=1) or find_mentions(text, index, limit=1))
@@ -1390,8 +1485,8 @@ def _menu_answer(transcript: str, index: MenuIndex, orderable: Dict[str, bool], 
     the ids "দেব?" offers). None → the usual flow (the model)."""
     t = (transcript or "").strip()
     bn = lang == "bn"
-    if not t or len(t.split()) > 9:
-        return None
+    if not t or len(t.split()) > 9 or _several_dishes(t, index):
+        return None  # (several dishes: the order flow takes each — never one merged "বিফ শিক নান")
     named = _dishes_named(t, index, limit=4)
     phrase, keep = _asked_phrase(t, index)
     if len(keep) >= 2 and len(set(keep)) == 1:
@@ -1950,7 +2045,7 @@ def _answers_by_dish(text: str, held: List[Dict[str, Any]], index: MenuIndex) ->
     the dish it names; a part naming none belongs to the dish named just before it, or — when no dish is named at
     all ("দুটোই স্পাইসি", "রেগুলার") — to every held dish."""
     ids = [str(e["itemId"]) for e in held]
-    segs = [x for x in re.split(r"\s*(?:,|।|;|\s(?:আর|এবং|and|plus)\s)\s*", text or "") if x.strip()]
+    segs = [x for x in _DISH_JOIN.split(text or "") if x.strip()]
     out: Dict[str, List[str]] = {i: [] for i in ids}
     last: Optional[str] = None
     loose: List[str] = []
@@ -2095,6 +2190,24 @@ def _options_question(held: List[Dict[str, Any]], index: MenuIndex, lang: str) -
     if not parts:
         return ""
     return ("; ".join(parts) + " — কোনটা নেবেন?") if bn else ("Which would you like " + "; ".join(parts) + "?")
+
+
+def _orderable_twin(it: Optional[Dict[str, Any]], index: MenuIndex, orderable: Dict[str, bool]) -> Optional[Dict[str, Any]]:
+    """A dish that can't be ordered now, listed again under the same name in a part of the menu that can (a breakfast
+    and a lunch "গরুর কালা ভুনা") → that copy, or else the one dish on now whose name holds its name. None when it
+    can be ordered, or has no such twin."""
+    if not it or orderable.get(index.item_id(it), True):
+        return None
+    same = next((o for o in index.items if o is not it and orderable.get(index.item_id(o), True)
+                 and _norm(o.get("name")) == _norm(it.get("name"))), None)
+    if same:
+        return same
+    # …or the one dish on now that IS that dish by name: "পরোটা" (breakfast) at 8pm is the evening's "প্যাঁচ পরোটা" —
+    # it once said "পরোটা এখন পাওয়া যাচ্ছে না, কাছাকাছি প্যাঁচ পরোটা". (The confirmation names the one added.)
+    toks = _name_tokens(re.sub(r"\(.*?\)", " ", str(it.get("name") or "")))
+    fits = [o for o in index.items if o is not it and orderable.get(index.item_id(o), True) and toks
+            and toks <= _name_tokens(re.sub(r"\(.*?\)", " ", str(o.get("name") or "")))]
+    return fits[0] if len({_norm(o.get("name")) for o in fits}) == 1 else None
 
 
 def _same_dish_twice(raw_ops: Any, transcript: str, index: MenuIndex, orderable: Dict[str, bool]) -> Tuple[Any, List[str]]:
@@ -2821,10 +2934,14 @@ def _dishes_named(text: str, index: MenuIndex, limit: int = 3, exact_only: bool 
     # (only ADDS words, so "রাইস" still means rice)
     singular = re.sub(r"([ঀ-৿]{2,})স(?![ঀ-৿])", r"\1", text)
     said = _guest_tokens(text, _menu_rev(index)) | _guest_tokens(singular, _menu_rev(index))
+    name_nums = _name_numbers_said(text)
+    said |= name_nums  # ("সেট মেনু ছয়": the word-reading never made a 6 of ছয়)
     scored = []
     for it in index.items:
         name = str(it.get("name") or "")
         toks = _name_tokens(name)
+        if {x for x in toks if x.isdigit()} - name_nums:
+            continue  # its number wasn't said as part of a name ("একটি" is a count, not Set Menu-1)
         base = _name_tokens(re.sub(r"\(.*?\)", " ", name)) if "(" in name else toks
         if base != toks and any(o is not it and _name_tokens(str(o.get("name") or "")) == base for o in index.items):
             base = toks  # another dish IS called that ("ড - তে ডাল" next to "ড - তে ডাল (পাসেল)")
@@ -3399,6 +3516,10 @@ def _validate_ops(
         if not it:
             problems.append(f"unknown item {raw.get('item')!r}")
             continue
+        # the same dish listed twice (a breakfast copy and a lunch copy of "গরুর কালা ভুনা"): the one that can be
+        # ordered now — the other once dropped the order with a bare "দুঃখিত, কোনটা বোঝালেন?"
+        if kind in ("add", "set") and not row:
+            it = _orderable_twin(it, index, orderable) or it
         iid, name = index.item_id(it), it.get("name")
         note = str(raw.get("note") or "").strip()[:140]
         choices = _norm_choice_list(it, raw.get("choices"))
@@ -3636,6 +3757,45 @@ _EACH = re.compile(r"(\S+)\s+করে(?![ঀ-৿])|(\S+)\s+(?:of\s+)?each\b|\be
 _SIZE_UNIT = re.compile(r"^(পিস|পিচ|pcs?|pieces?)", re.I)
 
 
+def _counted(w: str) -> bool:
+    """"২টা" / "3 pcs" — the part after a number says it's a count (the counter words are _BN_SUFFIX's)."""
+    return bool(_BN_SUFFIX.search(w or "")) or bool(re.search(r"(pcs?|x)$", w or "", re.I))
+
+
+def _name_numbers_said(text: str) -> set:
+    """Numbers said as PART of a name — "সেট মেনু-৩", "Set Menu 3", "কম্বো তিন" — not as a count ("একটি", "২টা").
+    ("একটি সেট মেনু-৩" once matched Set Menu-1: the "এক" of একটি.)"""
+    out = set()
+    for w in re.split(r"[\s\-–,।?!]+", (text or "").translate(_BN_DIGITS)):
+        m = re.match(r"^(\d+)(.*)$", w)
+        if m:
+            if not _counted(m.group(2)):
+                out.add(str(int(m.group(1))))
+            continue
+        if not w:
+            continue
+        val = _NUM_WORDS.get(_phon(w)) or _NUM_WORDS.get(w.lower())
+        if val:
+            out.add(val)
+    return out
+
+
+def _without_name_number(seg: str, it: Dict[str, Any]) -> str:
+    """"সেট মেনু-৩ দুইটা" → "সেট মেনু- দুইটা": the ৩ is the dish's own number (Set Menu-3), not three of them (it
+    made 3 × Set Menu-1). Only a bare number — "৩টা" is still a count."""
+    nums = {str(int(n)) for n in re.findall(r"\d+", str(it.get("name") or ""))}
+    if not nums:
+        return seg
+    out, dropped = [], False
+    for w in re.split(r"(\s+|-)", seg.translate(_BN_DIGITS)):
+        bare = str(int(w)) if w.isdigit() else (_NUM_WORDS.get(_phon(w)) if w.strip() else None)
+        if not dropped and bare in nums:
+            dropped = True
+            continue
+        out.append(w)
+    return "".join(out)
+
+
 def _without_size_count(seg: str, it: Dict[str, Any]) -> str:
     """"একটা হট উইংস ৬ পিস" with sizes 6 pcs / 10 pcs → "একটা হট উইংস": the "৬ পিস" is the SIZE, not six of them
     (it made 6 × Hot Wings)."""
@@ -3686,7 +3846,7 @@ def _fix_quantities(ops: List[Dict[str, Any]], transcript: str, index: MenuIndex
         # this phrase must be about this dish alone (two ops in one phrase → leave it)
         if sum(1 for x in adds if x is not o and len(seg_toks[k] & _name_tokens(str(x.get("name") or ""))) >= max(overlap)):
             continue
-        said = _said_quantity(_without_size_count(segs[k], it))
+        said = _said_quantity(_without_size_count(_without_name_number(segs[k], it), it))
         want = said if said is not None else each
         if want and want != int(o.get("quantity") or 1):
             fixes.append(f"{o['name']}: {o.get('quantity')} → {want}")
@@ -3969,7 +4129,9 @@ def _checkout_turn(
         text = None if "?" in transcript else lead + co.held_text(lang)
         return text, {"checkoutStage": "none"}, {"stage": "none", "sig": "", "table": tbl}
     if action == "empty":
-        return co.empty_cart_text(lang), {"checkoutStage": "none"}, {"stage": "none", "sig": "", "table": tbl}
+        # (AI-first: the model says it, knowing why the tray is empty — at 1am it said "your tray is empty", never
+        # that the café was closed)
+        return (None if AI_FIRST else co.empty_cart_text(lang)), {"checkoutStage": "none"}, {"stage": "none", "sig": "", "table": tbl}
     if action == "reset":
         return None, {}, {"stage": "none", "sig": "", "table": tbl}
     return None, {}, {**prev, "table": tbl or prev.get("table") or ""}
@@ -4815,8 +4977,39 @@ def _open_spans(opening: List[Dict[str, Any]]) -> List[Tuple[int, int]]:
             b = int(str(w["end"])[:2]) * 60 + int(str(w["end"])[3:5])
         except (KeyError, TypeError, ValueError):
             continue
-        out += [(a, b)] if a < b else [(a, 24 * 60), (0, b)] if a > b else [(0, 24 * 60)]
+        # (06:00–00:00 closes at midnight: no empty 00:00–00:00 range — it made the hours "রাত ১২টা থেকে ১২টা")
+        out += [(a, b)] if a < b else [(a, 24 * 60), *([(0, b)] if b else [])] if a > b else [(0, 24 * 60)]
     return out
+
+
+def _open_windows(opening: List[Dict[str, Any]]) -> List[Tuple[int, int]]:
+    """Each opening window as (start, end) minutes, an end past midnight counted on: 18:00–02:00 → (1080, 1560)."""
+    out: List[Tuple[int, int]] = []
+    for w in opening or []:
+        try:
+            a = int(str(w["start"])[:2]) * 60 + int(str(w["start"])[3:5])
+            b = int(str(w["end"])[:2]) * 60 + int(str(w["end"])[3:5])
+        except (KeyError, TypeError, ValueError):
+            continue
+        out.append((a, b if b > a else b + 24 * 60))
+    return out
+
+
+def _closed_fact(opening: List[Dict[str, Any]], local_time: str) -> List[str]:
+    """The restaurant closed right now → the fact the model must say (with when it opens). Before, a 1am order got
+    "your tray is empty" and "try again later", never "we're closed, we open at 9"."""
+    lt = re.search(r"(\d{1,2}):(\d{2})", local_time or "")
+    spans = _open_spans(opening)
+    if not lt or not spans:
+        return []
+    now = int(lt.group(1)) * 60 + int(lt.group(2))
+    if any(a <= now < b for a, b in spans):
+        return []
+    opens = min((a for a, _b in spans), key=lambda a: (a - now) % (24 * 60))
+    return [f"The restaurant is CLOSED right now and opens at {opens // 60:02d}:{opens % 60:02d} — nothing can be "
+            "ordered until then. When the guest orders or asks what's available, say plainly that it's closed and "
+            "when it opens. That is the RESTAURANT's opening time — each dish still has its own serving hours (a lunch "
+            "dish is not served from opening time)."]
 
 
 def _bn_spoken(minute: int) -> str:
@@ -5151,7 +5344,9 @@ def _open_answer(transcript: str, opening: List[Dict[str, Any]], hours_text: str
         if hours_text:
             return f"আমরা খোলা থাকি {hours_text}।" if bn else f"We're open {hours_text}."
         return None
-    first, last = min(a for a, _b in spans), max(b for _a, b in spans)
+    # opens at the earliest start, closes at the latest end — past midnight counted on (18:00–02:00 was "12am to 12am")
+    wins = _open_windows(opening)
+    first, last = min(a for a, _b in wins), max(b for _a, b in wins)
     fmt = lambda m: f"{m // 60 % 24}:{m % 60:02d}"  # noqa: E731
     span_bn = _bn_hours(fmt(first), fmt(last % (24 * 60)))
     said = next(((label, at) for label, pat, at in _WHEN_SAID if re.search(pat, t, re.I)), None)
@@ -5893,6 +6088,12 @@ async def _reply(
     orderable = {index.item_id(it): it.get("available") is not False for it in index.items}
     if OPENAI_API_KEY and MENU_PROFILE_AI:
         menu_profile.warm(index.items, _read_menu)  # once per menu, in the background: "what do you have?"
+    # this restaurant's cuisines (from its dishes) → which knowledge packs the waiter reads (knowledge/)
+    cuisines = knowledge.cuisine_keys(menu_profile.menu_glance(index.items))
+    # what the menu-data checks worked out for this turn — handed to the model to answer from (AI_FIRST)
+    facts: List[str] = []
+    if AI_FIRST:
+        facts += _closed_fact(list((restaurant or {}).get("opening") or []), str(ctx.get("localTime") or ""))
     cart_rows, subtotal = cart_lines(index, ctx.get("cartItems") or [])
     _tray.with_refs(cart_rows)  # L1, L2 … + the storefront's line keys
     cart_qty: Dict[str, int] = {}
@@ -6485,7 +6686,7 @@ async def _reply(
             # the parts that name ANOTHER dish are a new order (read below, as usual) — the rest answers the held ones
             heard = transcript
             if others:
-                segs = [x for x in re.split(r"\s*(?:,|।|;|\s(?:আর|এবং|and|plus)\s)\s*", transcript) if x.strip()]
+                segs = [x for x in _DISH_JOIN.split(transcript) if x.strip()]
                 heard = " ".join(x for x in segs if not ({index.item_id(d) for d in find_mentions(x, index, limit=4)
                                                           + _dishes_named(x, index, limit=4)} & others))
             per_dish = _answers_by_dish(heard, held, index)
@@ -6630,7 +6831,9 @@ async def _reply(
     kitchen = ctx.get("kitchen") if isinstance(ctx.get("kitchen"), dict) else None
     cart_est = wtalk.cart_estimate(cart_rows, index.by_id, kitchen)
     time_q, quick_q = asks_time(transcript), asks_quickest(transcript)
-    if (time_q or quick_q) and stage == "none" and len(transcript.split()) <= 16 and not _orders_now(transcript):
+    # ("রেস্টুরেন্ট কতক্ষণ খোলা?" asks the opening hours, not the kitchen's wait — it got "15 মিনিটের মতো লাগে")
+    if ((time_q or quick_q) and stage == "none" and len(transcript.split()) <= 16 and not _orders_now(transcript)
+            and not _OPEN_Q.search(transcript)):
         mentioned = _dishes_named(transcript, index)
         mine = (kitchen or {}).get("myOrders") or []
         about_dish = bool(mentioned) or bool(_ABOUT_A_DISH.search(transcript))
@@ -6712,6 +6915,12 @@ async def _reply(
                                     tray=[index.by_id[i] for i in cart_qty if i in index.by_id])
                 if stage in ("none", "readback") and not tstate.get("pending") and not profile.allergies else None)
     other_kind = _not_this_version(transcript, index) if stage == "none" and not side_ans else None
+    not_this_version = other_kind if AI_FIRST else None  # (checked against the model's cart changes below)
+    if other_kind and AI_FIRST:
+        asked_as, it = other_kind
+        facts.append(f'"{asked_as}" is not on the menu; the nearest is {it.get("name")} '
+                     f"({_money(it.get('price'))}) — offer it, don't add it unasked")
+        other_kind = None
     if other_kind:
         asked_as, it = other_kind
         said = bangla_meal.said_name(it)
@@ -6766,6 +6975,10 @@ async def _reply(
                 and not re.search(r"শেষ হয়ে গেছে|sold out", str(it.get("unavailableReason") or ""), re.I)]
         period_menu = _between_meals(index, orderable, list((menu_snapshot or {}).get("periods") or []),
                                      int(lt.group(1)) * 60 + int(lt.group(2)), bn, live)
+    if AI_FIRST:
+        if period_menu:
+            facts.append("What is served at the time asked (from the restaurant's own hours): " + period_menu[0])
+        period_menu = None
     if period_menu:
         text, rows, note = period_menu
         if stage == "readback":
@@ -6797,6 +7010,10 @@ async def _reply(
                                  rstate.last_offered if rstate.turn - rstate.last_offer_turn <= 2 else []))
                 if stage in ("none", "readback") and not tstate.get("pending") and not profile.allergies else None)
     menu_ans = side_ans or at_time or menu_ans  # (the ভর্তা / ভাজি and dish-at-a-time answers, from above)
+    if AI_FIRST:
+        if menu_ans:
+            facts.append(menu_ans[0])
+        menu_ans = None
     if menu_ans:
         text, rows, note, offer_ids = menu_ans
         if stage == "readback":
@@ -6869,6 +7086,7 @@ async def _reply(
         and not reco_format.taste_asked(transcript)
         and not period_asked  # "বিকেলের মেনুতে কী আছে?" → suggestions for the afternoon
         and extract_prefs(transcript).summary() == "nothing specific yet"
+        and not (AI_FIRST and facts)  # (a question the facts answer — the AI answers it)
     ):
         text = ("এই যে আমাদের মেনু — দেখে বলুন, কোনটা অর্ডার করতে চান? নাকি আমি কিছু সাজেস্ট করব?" if bn
                 else "Here's our menu — have a look and tell me what you'd like to order. Or shall I suggest something?")
@@ -6955,6 +7173,9 @@ async def _reply(
                                   seen=([i for i in rstate.thread_shown if i not in rstate.last_offered], list(rstate.last_offered))
                                   if rstate.turn - max(rstate.thread_turn, rstate.last_offer_turn) <= 3 else [],
                                   said_before=last_waiter)
+        if listed and AI_FIRST:
+            facts.append(f"The full list of that kind on the menu: {listed[0]}")
+            listed = None
         if listed:
             text, rows, note = listed
             if note == "kind_more":
@@ -7050,6 +7271,8 @@ async def _reply(
             kind_scope=kind_scope, lang=lang, stage=stage, mode=mode, about_shown=about_shown,
             cart_ids=list(cart_qty) + mentioned_now, in_tray=in_tray, understood=understood, owner_pick=owner_pick,
         )
+    if AI_FIRST:
+        fixed = None
     if fixed:
         text, rows, note = fixed
         m = _base_meta(language=lang, intent="suggestions", topic="recommendation", suggestions=rows,
@@ -7345,9 +7568,15 @@ async def _reply(
             last_change_txt = "removed " + "; ".join(_tray.label(r) for r in last_change["before"])
 
     messages: List[Dict[str, str]] = [
-        {"role": "system", "content": PLAYBOOK},
+        {"role": "system", "content": PLAYBOOK_AI_FIRST if AI_FIRST else PLAYBOOK},
         {"role": "system", "content": _knowledge_block(index, {**(restaurant or {}), "bell": bell} if restaurant else None)},
     ]
+    # (the knowledge packs go with the AI-first flow only, for now: with it off, the waiter is exactly today's)
+    standing_knowledge = knowledge.standing(cuisines, lang) if AI_FIRST else ""
+    if standing_knowledge:
+        messages.append({"role": "system", "content": "# WAITER KNOWLEDGE (always)\n" + standing_knowledge})
+    if AI_FIRST:
+        messages.append({"role": "system", "content": FOODS_NAMED_FIELD})
     for m in (history or [])[-HISTORY_MESSAGES:]:
         if m.get("role") in ("user", "assistant") and (m.get("content") or "").strip():
             messages.append({"role": m["role"], "content": m["content"].strip()[:600]})
@@ -7361,6 +7590,8 @@ async def _reply(
                 any_orderable=any(orderable.values()), just_suggested=just_suggested, ask_next=ask_next,
                 orderable_items=[it for it in index.items if orderable.get(index.item_id(it), True)],
                 meal_kinds=kinds,
+                knowledge_now=knowledge.for_turn(cuisines, lang, f"{transcript}\n{last_waiter}") if AI_FIRST else "",
+                checked_facts=facts,
                 missing=missing_kinds(transcript, index), asked_kinds=kind_items(transcript, index),
                 allergy_guides=[allergy_guide(index, a, orderable) for a in profile.allergies],
                 checkout_stage=stage,
@@ -7414,7 +7645,7 @@ async def _reply(
                      or _take_all_listed(transcript, index, orderable, list(just_suggested), dict(cart_qty), last_waiter))
     try:
         if clean_ops:
-            print(f"[brain] clean order → no model: {[(o['op'], o['item'], o.get('quantity')) for o in clean_ops]}")
+            print(f"[brain] clean order → no model:{[(o['op'], o['item'], o.get('quantity')) for o in clean_ops]}")
             guards.append("clean_order")
             raw = json.dumps({"topic": "order_change", "intent": "order", "language": lang, "replyText": "",
                               "cartOps": clean_ops, "clearCart": False, "confirmOrder": False, "checkout": "none",
@@ -7425,6 +7656,21 @@ async def _reply(
         obj = _parse_model_json(raw)
         first_reply = str(obj.get("replyText") or "")
         issues: List[str] = []
+        if AI_FIRST and not clean_ops:
+            # never a food or drink this menu doesn't have, unless saying so ("we don't have Fanta")
+            unknown = _unknown_foods(obj.get("foodsNamed"), index)
+            if unknown:
+                issues.append(f"No dish on the MENU has the name {', '.join(unknown)}. If you meant a MENU dish, write "
+                              "its exact MENU name. If it isn't on the MENU, don't offer, list or describe it — if the "
+                              "guest asked for it, say plainly it isn't on the menu and offer the closest dish that IS.")
+            # the guest named a version the menu doesn't have ("আলু পরোটা") → never the plain dish added in its place
+            if not_this_version:
+                asked_as, plain = not_this_version
+                if any(isinstance(o, dict) and index.resolve(o.get("item"), o.get("name")) is plain
+                       and str(o.get("op") or "") == "add" for o in obj.get("cartOps") or []):
+                    issues.append(f'The guest asked for "{asked_as}", which is not on the MENU — don\'t add '
+                                  f"{plain.get('name')} in its place. Say \"{asked_as}\" isn't on the menu and offer "
+                                  f"{plain.get('name')}; add it only when the guest says yes.")
         slips = _price_slips(first_reply, index, cart_rows, subtotal)
         if slips:
             issues.append(
@@ -7672,6 +7918,9 @@ async def _reply(
         print("[brain] retargeted ops to what the guest said:", fixed)
         guards.append("wrong_dish_corrected")
         for o in list(ops):
+            twin = _orderable_twin(index.by_id.get(o["itemId"]), index, orderable) if o["op"] == "add" else None
+            if twin:  # (retargeted onto the lunch copy of a dish whose breakfast copy is on now)
+                o["itemId"], o["name"] = index.item_id(twin), twin.get("name")
             if not orderable.get(o["itemId"], True) or (o["op"] != "add" and o["itemId"] not in cart_qty):
                 ops.remove(o)
                 problems.append(f"{o['name']} can't be changed that way")

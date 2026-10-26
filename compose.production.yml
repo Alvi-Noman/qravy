@@ -49,7 +49,7 @@ services:
       FRONTEND_URL: https://${ADMIN_DOMAIN}
       APP_BASE_URL: https://${ADMIN_DOMAIN}
       OPENAI_API_KEY: ${OPENAI_API_KEY:?Set OPENAI_API_KEY in .env.production}
-      MENU_IMPORT_MODEL: gpt-4.1-mini
+      MENU_IMPORT_MODEL: gpt-4.1
     depends_on:
       - ai-waiter-service
     restart: unless-stopped
@@ -131,7 +131,7 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:?Set OPENAI_API_KEY in .env.production}
       OPENAI_BASE: https://api.openai.com
       OPENAI_STT_MODEL: gpt-4o-transcribe
-      OPENAI_CHAT_MODEL: ${OPENAI_CHAT_MODEL:-gpt-4.1-mini}
+      OPENAI_CHAT_MODEL: ${OPENAI_CHAT_MODEL:-gpt-4.1}
       INTENT_AI: "0"
       BRAIN_TIMEOUT_S: "12.0"
       BRAIN_MAX_TOKENS: "1800"
@@ -141,7 +141,7 @@ services:
       MENU_COLLECTION: menuItems
       NORMALIZER_FUZZY_THRESHOLD: "0.87"
       NORMALIZER_VOCAB_MAX: "200"
-      MENU_SNAPSHOT_MAX: "120"
+      MENU_SNAPSHOT_MAX: "400"
       NORMALIZER_INCLUDE_ALIASES: "1"
       STAFF_ALERTS_ENABLED: "0"
       IDLE_FINALIZE_MS: "1200"

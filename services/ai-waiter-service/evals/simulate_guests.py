@@ -26,7 +26,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import run_eval as E  # noqa: E402
 
-MODEL = os.environ.get("SIM_MODEL", "gpt-4.1-mini")
+MODEL = os.environ.get("SIM_MODEL", "gpt-4.1")
 
 PERSONAS: List[Dict[str, Any]] = [
     {"id": "undecided", "at": "20:00", "lang": "en",

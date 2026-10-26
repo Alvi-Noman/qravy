@@ -256,7 +256,7 @@ def apply_ui(meta: Dict[str, Any], cart: Dict[str, int], by_id: Dict[str, Dict],
 
 # ------------------------------------------------------------------ judge
 
-JUDGE_MODEL = os.environ.get("EVAL_JUDGE_MODEL", "gpt-4.1-mini")  # cheap by default; set gpt-4.1 for a stricter judge
+JUDGE_MODEL = os.environ.get("EVAL_JUDGE_MODEL", "gpt-4.1")
 
 
 async def judge(case: Case, transcript: List[Dict[str, str]], cart_before: str, cart_after: str, now_txt: str,

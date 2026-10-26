@@ -102,7 +102,7 @@ export async function estimateWithAI(items: PrepInput[]): Promise<{ estimates: P
   if (!items.length) return { estimates: [], source: 'ai' };
   if (!aiAvailable()) return { estimates: items.map(fallback), source: 'guess' };
 
-  const model = process.env.PREP_TIME_MODEL || process.env.MENU_IMPORT_MODEL || 'gpt-4.1-mini';
+  const model = process.env.PREP_TIME_MODEL || process.env.MENU_IMPORT_MODEL || 'gpt-4.1';
   const client = new OpenAI({
     apiKey: process.env.OPENAI_API_KEY,
     baseURL: process.env.OPENAI_BASE || undefined,

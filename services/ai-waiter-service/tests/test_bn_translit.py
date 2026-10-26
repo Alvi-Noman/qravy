@@ -74,6 +74,14 @@ def test_unknown_words_still_become_bangla():
         assert out and not re.search(r"[A-Za-z]", out), (w, out)
 
 
+def test_a_name_the_dictionary_lacks_stays_as_written_for_reading():
+    # the guesser wrote "Masala Wedges" as "মাসালা ওেড্গেস" — the guest reads the menu's own name instead
+    out = to_bangla_script("আপনি Masala Wedges (Spicy) নিতে পারেন", guess=False)
+    assert "Masala Wedges" in out and "স্পাইসি" in out
+    assert to_bangla_script("Chicken Chili Onion আর French Fry", guess=False) == "চিকেন চিলি অনিয়ন আর ফ্রেঞ্চ ফ্রাই"
+    assert not re.search(r"[A-Za-z]", to_bangla_script("Masala Wedges", spoken=True))  # the voice: Bangla script
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_") and callable(fn):
