@@ -8,6 +8,9 @@ import {
   listAdmins as apiListAdmins,
 } from '../../api/access';
 import { useLocations } from '../../components/locations/useLocations';
+import { useQuery } from '@tanstack/react-query';
+import { getMe } from '../../api/auth';
+import { useAuthContext } from '../../context/AuthContext';
 
 /**
  * Admin-only Team Settings
@@ -39,11 +42,25 @@ export default function SettingsAdminAccess(): JSX.Element {
 
   const owner = useMemo(() => team.find((m) => m.role === 'owner'), [team]);
 
+  // opened from Cortex (Qravy support access): the server refuses team changes — only the restaurant's owner adds people
+  const { token } = useAuthContext();
+  const me = useQuery({
+    queryKey: ['me-support', !!token],
+    queryFn: () => getMe<{ support?: { by: string; until: string } }>(token ?? undefined),
+    enabled: !!token,
+    staleTime: 60_000,
+  });
+  const supportSession = !!me.data?.support;
+
   const toast = (text: string) => {
     setMessage(text);
     window.clearTimeout((toast as any)._t);
-    (toast as any)._t = window.setTimeout(() => setMessage(null), 2400);
+    (toast as any)._t = window.setTimeout(() => setMessage(null), text.length > 40 ? 6000 : 2400);
   };
+
+  // the server's reason (e.g. "Not available during Qravy support access…"), not just "failed"
+  const why = (e: unknown, fallback: string) =>
+    (e as { response?: { data?: { message?: string } } })?.response?.data?.message || fallback;
 
   const validateEmail = (v: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
 
@@ -92,10 +109,10 @@ export default function SettingsAdminAccess(): JSX.Element {
       // Revalidate to get canonical id/status from server
       await load();
       setInviteEmail('');
-    } catch {
+    } catch (e) {
       // rollback
       setTeam((t) => t.filter((m) => m.id !== tempId));
-      toast('Failed to send invite');
+      toast(why(e, 'Failed to send invite'));
     }
   };
 
@@ -105,8 +122,8 @@ export default function SettingsAdminAccess(): JSX.Element {
     try {
       await apiResendInvite(m.email);
       toast(`Invite re-sent to ${m.email}`);
-    } catch {
-      toast('Failed to resend invite');
+    } catch (e) {
+      toast(why(e, 'Failed to resend invite'));
     }
   };
 
@@ -128,9 +145,9 @@ export default function SettingsAdminAccess(): JSX.Element {
       await apiRevokeAdmin(email);
       toast('Admin access revoked');
       await load(); // ensure server truth
-    } catch {
+    } catch (e) {
       setTeam(prev); // rollback
-      toast('Failed to revoke admin');
+      toast(why(e, 'Failed to revoke admin'));
     } finally {
       setConfirm(null);
     }
@@ -150,6 +167,12 @@ export default function SettingsAdminAccess(): JSX.Element {
       </div>
 
       <div className="w-full px-6 py-5">
+        {supportSession && (
+          <p className="mb-4 rounded-lg bg-amber-50 px-4 py-3 text-[13px] text-amber-900">
+            You opened this dashboard with Qravy support access. Adding or removing admins isn&apos;t possible here — the
+            restaurant&apos;s owner does it from their own login.
+          </p>
+        )}
         <section className="w-full rounded-xl border border-[#ececec] bg-white p-5 shadow-sm">
           <div className="grid grid-cols-1 items-end gap-3 md:grid-cols-6">
             <div className="md:col-span-5">
@@ -186,7 +209,7 @@ export default function SettingsAdminAccess(): JSX.Element {
                 />
                 <button
                   onClick={invite}
-                  disabled={loading}
+                  disabled={loading || supportSession}
                   className="shrink-0 rounded-lg bg-[#2e2e30] px-4 py-2 text-sm font-medium text-white transition hover:opacity-95 active:opacity-90 disabled:opacity-60"
                   aria-label="Send Admin invite"
                 >
@@ -335,7 +358,7 @@ export default function SettingsAdminAccess(): JSX.Element {
 
       {message && (
         <div className="fixed bottom-5 left-1/2 z-50 -translate-x-1/2 transform">
-          <div className="rounded-full border border-[#e8e8e8] bg-white px-4 py-2 text-[12px] text-slate-900 shadow-sm">
+          <div className="max-w-[90vw] rounded-2xl border border-[#e8e8e8] bg-white px-4 py-2 text-center text-[12px] text-slate-900 shadow-sm sm:max-w-md">
             {message}
           </div>
         </div>
