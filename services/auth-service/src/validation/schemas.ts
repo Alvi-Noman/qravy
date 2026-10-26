@@ -462,6 +462,7 @@ export const tenantUpdateSchema = z
     openingHours: z.array(availabilityWindowSchema).max(7).optional(),
     dailyResetTime: timeOfDay.optional(),
     servicePeriods: z.array(servicePeriodSchema).max(12).optional(),
+    categoryHoursMode: z.enum(['auto', 'manual']).optional(),
     kitchen: z
       .object({
         defaultPrepMinutes: prepMinutesField,

@@ -255,6 +255,8 @@ export interface TenantDTO {
     dailyResetTime?: string;
     /** Named service periods (defaults: Breakfast, Lunch, Afternoon, Dinner, Late night) */
     servicePeriods?: ServicePeriodDTO[];
+    /** 'auto' (default): categories follow their serving hours; 'manual': only their on/off switch */
+    categoryHoursMode?: 'auto' | 'manual';
     kitchen?: KitchenSettingsDTO;
     tables?: string[];
     trialStartedAt?: string | null;

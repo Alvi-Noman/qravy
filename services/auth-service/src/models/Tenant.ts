@@ -44,6 +44,8 @@ export interface TenantDoc {
   dailyResetTime?: string;
   /** Named service periods (Breakfast, Lunch…) items/categories reference; missing = defaults */
   servicePeriods?: Array<{ id: string; name: string; days: number[]; start: string; end: string }>;
+  /** 'auto' (default): categories follow their serving hours; 'manual': only their on/off switch counts */
+  categoryHoursMode?: 'auto' | 'manual';
   /** Wait-time estimation: minutes for a dish with no time set, and orders the kitchen cooks at once */
   kitchen?: { defaultPrepMinutes?: number; parallelOrders?: number };
   /** Dine-in table labels ("1", "A4", "PATIO-2"); each gets a QR code that opens the menu with ?table= */

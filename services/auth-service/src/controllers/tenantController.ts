@@ -793,6 +793,7 @@ export async function updateMyTenant(req: Request, res: Response, next: NextFunc
     if (parsed.openingHours) update.openingHours = normalizeAvailability(parsed.openingHours);
     if (parsed.dailyResetTime) update.dailyResetTime = parsed.dailyResetTime;
     if (parsed.servicePeriods) update.servicePeriods = normalizeServicePeriods(parsed.servicePeriods);
+    if (parsed.categoryHoursMode) update.categoryHoursMode = parsed.categoryHoursMode;
     if (parsed.kitchen) update.kitchen = kitchenSettings({ kitchen: parsed.kitchen });
     if (parsed.mainBranchId !== undefined) {
       if (parsed.mainBranchId) {

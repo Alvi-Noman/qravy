@@ -6,6 +6,7 @@ import { useTenant } from '../../hooks/useTenant';
 import { updateTenant } from '../../api/tenant';
 import { DEFAULT_SERVICE_PERIODS, type ServicePeriod } from '../../hooks/useServicePeriods';
 import { toastError, toastSuccess } from '../Toaster';
+import { useCategoryHoursMode } from '../Categories/CategorySwitchingMode';
 
 const DAYS = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
 const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
@@ -38,6 +39,7 @@ export default function ServicePeriodsCard() {
   const { data: tenant } = useTenant();
   const queryClient = useQueryClient();
   const saved = (tenant?.servicePeriods as ServicePeriod[] | undefined) ?? DEFAULT_SERVICE_PERIODS;
+  const manualSwitching = useCategoryHoursMode() === 'manual';
 
   const [rows, setRows] = useState<Row[]>(() => toRows(saved));
   const [error, setError] = useState<string | null>(null);
@@ -80,6 +82,12 @@ export default function ServicePeriodsCard() {
         Named times you can pick for items and categories (e.g. put all morning dishes on “Breakfast”). Change a time
         here and every item using it follows. Items can still have their own custom times or dates instead.
       </p>
+      {manualSwitching && (
+        <p className="mt-2 rounded-md bg-amber-50 px-3 py-2 text-[12px] text-amber-900">
+          Categories don’t follow these times now — you switch them on and off by hand (Categories → “Turn categories
+          on and off”). Dishes with their own times still follow them.
+        </p>
+      )}
 
       <div className="mt-4 space-y-2">
         {rows.map((r) => (

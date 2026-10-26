@@ -313,6 +313,8 @@ export interface TenantDTO {
   dailyResetTime?: string;
   /** Named service periods (defaults: Breakfast, Lunch, Afternoon, Dinner, Late night) */
   servicePeriods?: ServicePeriodDTO[];
+  /** 'auto' (default): categories follow their serving hours; 'manual': only their on/off switch */
+  categoryHoursMode?: 'auto' | 'manual';
   /** Wait-time estimation: default minutes per dish and orders the kitchen cooks at once */
   kitchen?: KitchenSettingsDTO;
   /** Dine-in table labels; each gets a QR code ("/dine-in?table=<label>&k=<key>") */
