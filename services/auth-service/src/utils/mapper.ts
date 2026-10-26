@@ -186,6 +186,7 @@ export function toTenantDTO(doc: TenantDoc): v1.TenantDTO {
     tableKeys: doc.tableKeys ?? {},
     mainBranchId: doc.mainBranchId ? String(doc.mainBranchId) : null,
     servicePeriods: tenantServicePeriods(doc),
+    categoryHoursMode: doc.categoryHoursMode === 'manual' ? 'manual' : 'auto',
 
     // trial info
     trialStartedAt: doc.trialStartedAt ? doc.trialStartedAt.toISOString() : null,

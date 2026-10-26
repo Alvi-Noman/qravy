@@ -26,6 +26,7 @@ import CategoriesToolbarSkeleton from '../components/Categories/CategoriesToolba
 import CategoryListSkeleton from '../components/Categories/CategoryListSkeleton';
 import { TagIcon } from '@heroicons/react/24/outline';
 import Can from '../components/Can';
+import CategorySwitchingMode from '../components/Categories/CategorySwitchingMode';
 import { usePermissions } from '../context/PermissionsContext';
 import { useScope } from '../context/ScopeContext';
 import { useAuthContext } from '../context/AuthContext';
@@ -452,6 +453,13 @@ export default function CategoriesPage() {
               />
 
               <div className="mt-4 space-y-4">
+                {/* by their serving hours, or only by the switches below (restaurant-wide) */}
+                {viewCategories.length > 0 && (
+                  <Can capability="categories:update">
+                    <CategorySwitchingMode />
+                  </Can>
+                )}
+
                 {/* Empty State (Dashboard style) */}
                 {!viewCategories.length ? (
                   <div className="flex h-[60vh] flex-col items-center justify-center text-center p-8">

@@ -32,8 +32,10 @@ export async function checkOrderable(opts: {
 
   const tenant = await db
     .collection('tenants')
-    .findOne({ _id: opts.tenantOid }, { projection: { timezone: 1, openingHours: 1, servicePeriods: 1 } });
+    .findOne({ _id: opts.tenantOid }, { projection: { timezone: 1, openingHours: 1, servicePeriods: 1, categoryHoursMode: 1 } });
   const periods = tenantServicePeriods(tenant as any);
+  // the restaurant switches its categories on and off by hand: a category's serving hours don't apply
+  const manualCats = tenant?.categoryHoursMode === 'manual';
   const tz: string = tenant?.timezone ?? DEFAULT_TIMEZONE;
 
   let openingHours: AvailabilityWindow[] = tenant?.openingHours ?? [];
@@ -142,9 +144,11 @@ export async function checkOrderable(opts: {
       tz,
       at,
       openingHours: opts.ignoreOpeningHours ? [] : openingHours,
-      categoryHours: branchOverride
-        ? branchOverride.availability
-        : resolveWindows(cat?.servicePeriodIds, cat?.availability, periods),
+      categoryHours: manualCats
+        ? []
+        : branchOverride
+          ? branchOverride.availability
+          : resolveWindows(cat?.servicePeriodIds, cat?.availability, periods),
       itemHours: resolveWindows(it.servicePeriodIds, it.availability, periods),
       itemFrom: it.availableFrom,
       itemUntil: it.availableUntil,

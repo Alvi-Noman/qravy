@@ -570,7 +570,10 @@ router.get('/public/categories', async (req: Request, res: Response, next: NextF
     const { openingHours, tz } = await storeHours(tenant, locId);
     const at = new Date();
     const ref = isWithinWindows(openingHours, tz, at) ? at : nextOpeningAt(openingHours, tz, at) ?? at;
+    const manualCats = (tenant as any).categoryHoursMode === 'manual';
     const hoursOf = (c: any) => {
+      // switched by hand (Categories → "Switch categories: by hand"): no section follows its hours
+      if (manualCats) return [];
       const own = locId
         ? (c.branchAvailability as Array<{ locationId: ObjectId; availability: any[] }> | undefined)?.find(
             (b) => String(b.locationId) === String(locId)

@@ -260,7 +260,11 @@ def load_rules(db, tenant_oid, location_id=None, channel: Optional[str] = None) 
     if tenant_oid is None:
         return rules
     try:
-        t = db["tenants"].find_one({"_id": tenant_oid}, {"timezone": 1, "openingHours": 1, "servicePeriods": 1}) or {}
+        t = db["tenants"].find_one(
+            {"_id": tenant_oid}, {"timezone": 1, "openingHours": 1, "servicePeriods": 1, "categoryHoursMode": 1}
+        ) or {}
+        # the restaurant switches its categories on and off by hand: no category follows its serving hours
+        manual_cats = t.get("categoryHoursMode") == "manual"
         rules["tz"] = t.get("timezone") or DEFAULT_TZ
         rules["opening"] = t.get("openingHours") or []
         if isinstance(t.get("servicePeriods"), list):
@@ -280,6 +284,8 @@ def load_rules(db, tenant_oid, location_id=None, channel: Optional[str] = None) 
                     if str(b.get("locationId")) == str(location_id):
                         hours = b.get("availability") or []
                         break
+            if manual_cats:
+                hours = []
             rules["categories"][str(c["_id"])] = {
                 "name": c.get("name"),
                 "hours": hours,

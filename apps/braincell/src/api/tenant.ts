@@ -151,6 +151,8 @@ export async function updateTenant(
     dailyResetTime?: string;
     /** Service periods (Breakfast, Lunch…); new ones may omit id */
     servicePeriods?: Array<{ id?: string; name: string; days: number[]; start: string; end: string }>;
+    /** 'auto': categories follow their serving hours; 'manual': only their on/off switch */
+    categoryHoursMode?: 'auto' | 'manual';
     /** Wait-time estimation: default minutes per dish, orders cooked at once */
     kitchen?: { defaultPrepMinutes: number; parallelOrders: number };
     /** Dine-in table labels for table QR codes */

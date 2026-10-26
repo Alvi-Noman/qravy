@@ -7,6 +7,7 @@ import { fetchLocations, type Location } from '../../api/locations';
 import { useAuthContext } from '../../context/AuthContext';
 import { getCategories, type Category } from '../../api/categories';
 import HoursEditor, { validateHours, type AvailabilityWindow } from './HoursEditor';
+import { useCategoryHoursMode } from './CategorySwitchingMode';
 import AvailabilityEditor, { validateAvailability } from '../availability/AvailabilityEditor';
 
 type FormValues = { name: string };
@@ -135,6 +136,7 @@ export default function CategoryFormDialog({
 
   const [description, setDescription] = useState(initialDescription);
   const [hours, setHours] = useState<AvailabilityWindow[]>(initialAvailability ?? []);
+  const manualSwitching = useCategoryHoursMode() === 'manual';
   const [periodIds, setPeriodIds] = useState<string[]>(initialServicePeriodIds ?? []);
   const [hoursError, setHoursError] = useState<string | null>(null);
   // Editing an existing category while viewing one branch → hours apply to that branch only
@@ -449,6 +451,12 @@ export default function CategoryFormDialog({
             </div>
 
             <div className="mt-4">
+              {manualSwitching && (
+                <p className="mb-2 rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                  Serving hours aren’t applied now: your categories are switched on and off by hand (Categories →
+                  “Turn categories on and off”). Hours set here start working again if you switch back to automatic.
+                </p>
+              )}
               {branchHoursMode && (
                 <label className="mb-2 flex items-center gap-2 text-sm text-[#2e2e30]">
                   <input
