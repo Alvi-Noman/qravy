@@ -3,7 +3,7 @@
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { BellIcon, SparklesIcon } from '@heroicons/react/24/outline';
+import { Bars3Icon, BellIcon, SparklesIcon } from '@heroicons/react/24/outline';
 import TopbarSearch from './TopbarSearch';
 import TopbarProfileMenu from './TopbarProfileMenu';
 import { useProgress } from '../../context/ProgressContext.js';
@@ -19,7 +19,15 @@ const DUMMY_NOTIFICATIONS: NotificationItem[] = [
   { id: '5', title: 'New review', desc: '4.5★ from a diner', time: '1d', seen: true },
 ];
 
-export default function TopBar({ onAIClick }: { onAIClick?: () => void }): JSX.Element {
+export default function TopBar({
+  onAIClick,
+  onMenuClick,
+}: {
+  /** the AI assistant button — shown only when given */
+  onAIClick?: () => void;
+  /** phones: ☰ opens the sidebar drawer */
+  onMenuClick?: () => void;
+}): JSX.Element {
   const { active } = useProgress();
   const { session, user } = useAuthContext();
 
@@ -58,26 +66,41 @@ export default function TopBar({ onAIClick }: { onAIClick?: () => void }): JSX.E
   return (
     <div className="sticky top-0 z-30 border-b border-[#ececec] bg-[#fcfcfc]/95 backdrop-blur">
       <div className="relative">
-        <div className="flex items-center gap-3 px-4 py-2">
-          <DigitalMenuStatus
-            isLive={isLive}
-            onChange={(next) => setIsLive(next)}
-            scopeLabel="Main Location"
-            viewMenuHref="/menu"
-            disabled={digitalMenuDisabled}
-          />
+        <div className="flex items-center gap-1.5 px-2 py-2 md:gap-3 md:px-4">
+          {onMenuClick && (
+            <button
+              type="button"
+              aria-label="Open menu"
+              onClick={onMenuClick}
+              className="-ml-0.5 shrink-0 rounded-md p-2 text-slate-700 hover:bg-[#f6f6f6] md:hidden"
+            >
+              <Bars3Icon className="h-6 w-6" />
+            </button>
+          )}
 
-          <TopbarSearch className="ml-auto mr-2 w-[28rem] md:w-[40rem]" />
+          <div className="hidden sm:block">
+            <DigitalMenuStatus
+              isLive={isLive}
+              onChange={(next) => setIsLive(next)}
+              scopeLabel="Main Location"
+              viewMenuHref="/menu"
+              disabled={digitalMenuDisabled}
+            />
+          </div>
 
-          <button
-            type="button"
-            aria-label="AI Assistant"
-            onClick={() => onAIClick?.()}
-            className="rounded-md p-2 text-slate-700 hover:bg-[#f6f6f6]"
-            title="AI Assistant"
-          >
-            <SparklesIcon className="h-5 w-5 text-slate-600" />
-          </button>
+          <TopbarSearch className="min-w-0 flex-1 sm:ml-auto sm:mr-2 sm:w-[28rem] sm:flex-none md:w-[40rem]" />
+
+          {onAIClick && (
+            <button
+              type="button"
+              aria-label="AI Assistant"
+              onClick={onAIClick}
+              className="rounded-md p-2 text-slate-700 hover:bg-[#f6f6f6]"
+              title="AI Assistant"
+            >
+              <SparklesIcon className="h-5 w-5 text-slate-600" />
+            </button>
+          )}
 
           <TopbarNotifications
             items={filteredNotifications}
@@ -347,7 +370,7 @@ function TopbarNotifications({
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 8 }}
             transition={{ duration: 0.15, ease: 'easeOut' }}
-            className="absolute right-0 top-full z-40 mt-2 w-80 overflow-hidden rounded-lg border border-[#ececec] bg-white shadow-lg"
+            className="absolute right-0 top-full z-40 mt-2 w-[min(20rem,calc(100vw-1rem))] overflow-hidden rounded-lg border border-[#ececec] bg-white shadow-lg"
           >
             <div className="p-2">
               <div className="relative grid h-8 grid-cols-3 overflow-hidden rounded-full border border-[#e5e5e5] bg-[#f5f5f5] p-1">

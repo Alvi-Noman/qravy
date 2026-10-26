@@ -258,10 +258,19 @@ export const confirmInvite = async (req: Request, res: Response, next: NextFunct
       status: 'invited',
     });
 
-    if (!invite) return void res.fail(404, 'Invite not found or expired');
+    const users = getDb().collection('users');
+    if (!invite) {
+      // a link works once: opened again after it was accepted → say so (the page sends them to sign in); a reusable
+      // link would let anyone it's forwarded to in for 7 days
+      const existing = await users.findOne({ email });
+      const member =
+        existing &&
+        (await memberships().findOne({ tenantId: new ObjectId(tenantId), userId: existing._id, status: 'active' }));
+      if (member) return void res.fail(409, 'This invite was already accepted — sign in with your email.', { code: 'INVITE_USED' });
+      return void res.fail(404, 'Invite not found or expired');
+    }
 
     // Activate: ensure the user exists (the link proves the email), the membership, a session in the restaurant
-    const users = getDb().collection('users');
     let user = await users.findOne({ email });
     if (!user) {
       const ins = await users.insertOne({ email, isVerified: true, refreshTokens: [], createdAt: new Date() });

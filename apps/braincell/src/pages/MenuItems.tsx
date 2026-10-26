@@ -474,7 +474,7 @@ export default function MenuItemsPage(): JSX.Element {
       <div ref={contentRef} className="flex-1 min-h-0 overflow-y-auto p-0 text-[#2e2e30] text-sm">
         {/* Header */}
         <div
-          className="sticky top-0 z-20 flex items-center justify-between border-b border-[#ececec] px-6"
+          className="sticky top-0 z-20 flex flex-wrap items-center justify-between gap-x-3 gap-y-2 border-b border-[#ececec] px-4 md:px-6"
           style={{
             paddingTop: `${16 - 8 * shrink}px`,
             paddingBottom: `${16 - 8 * shrink}px`,
@@ -498,7 +498,7 @@ export default function MenuItemsPage(): JSX.Element {
 
           <Can capability="menuItems:create">
             <div
-              className="flex items-center gap-2"
+              className="flex flex-wrap items-center gap-2 [&>*]:whitespace-nowrap"
               style={{
                 transform: `scale(${1 - 0.05 * shrink})`,
                 transformOrigin: 'right center',
@@ -535,7 +535,7 @@ export default function MenuItemsPage(): JSX.Element {
           </Can>
         </div>
 
-        <div className="px-6 pt-4">
+        <div className="px-4 pt-4 md:px-6">
           {loading ? (
             <>
               <MenuToolbarSkeleton />

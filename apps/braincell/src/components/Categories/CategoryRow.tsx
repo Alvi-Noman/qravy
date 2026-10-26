@@ -167,6 +167,10 @@ export default function CategoryRow({
             {category.name}
           </div>
           <div className="mt-0.5 flex flex-wrap items-center gap-2">
+            {/* phones: the usage column is hidden — said here instead */}
+            <span className="text-xs text-[#6b7280] sm:hidden">
+              {usageCount > 0 ? `${usageCount} item${usageCount > 1 ? 's' : ''}` : 'No items'}
+            </span>
             <span className="text-xs text-[#9b9ba1]">
               Added {category.createdAt ? new Date(category.createdAt).toLocaleDateString() : 'N/A'}
             </span>
@@ -183,7 +187,7 @@ export default function CategoryRow({
         </Link>
       </td>
 
-      <td className="px-3 py-3 align-middle">
+      <td className="hidden px-3 py-3 align-middle sm:table-cell">
         {usageCount > 0 ? (
           <span className="inline-flex items-center rounded-full bg-[#f1f2f4] px-2 py-0.5 text-xs text-[#44464b]">
             {usageCount} item{usageCount > 1 ? 's' : ''}
