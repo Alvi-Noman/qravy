@@ -205,16 +205,16 @@ services:
       # === Normalizer knobs ===
       - NORMALIZER_FUZZY_THRESHOLD=0.87
       - NORMALIZER_VOCAB_MAX=200
-      - MENU_SNAPSHOT_MAX=120
+      - MENU_SNAPSHOT_MAX=400
       - NORMALIZER_INCLUDE_ALIASES=1
 
       # === Speech-to-text: the full model is much better at Bangla (~$0.006 / min of speech) ===
       - OPENAI_STT_MODEL=gpt-4o-transcribe
 
-      # === OpenAI brain (GPT-4.1-mini) ===
+      # === OpenAI brain (GPT-4.1) ===
       - OPENAI_API_KEY=${OPENAI_API_KEY:?Set OPENAI_API_KEY in your .env}
       - OPENAI_BASE=https://api.openai.com
-      - OPENAI_CHAT_MODEL=gpt-4.1-mini
+      - OPENAI_CHAT_MODEL=gpt-4.1
       # the separate "understand first" call (intent.py): off — it added ~1.5 s to every turn (1 = on)
       - INTENT_AI=0
       # Optional tuning (max tokens is a ceiling — Bangla replies + voice text need room)

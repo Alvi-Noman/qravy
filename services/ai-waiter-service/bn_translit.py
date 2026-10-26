@@ -169,6 +169,8 @@ def _phonetic(word: str) -> str:
 # ------------------------------------------------------------------ public API
 
 _LATIN_WORD = re.compile(r"(?<![A-Za-z0-9])[A-Za-z]+(?:'[a-z]+)?(?![A-Za-z0-9])")
+# a run of English words (one dish name, as the menu writes it)
+_LATIN_RUN = re.compile(r"(?<![A-Za-z0-9])[A-Za-z]+(?:'[a-z]+)?(?:[ -]+[A-Za-z]+(?:'[a-z]+)?)*(?![A-Za-z0-9])")
 _QTY_TIMES = re.compile(r"(\d+)\s*[×x]\s*(?=\S)")
 # menu codes like "A-01", "A -03", "এ-02" (Latin or already-Bangla letter)
 _CODE = re.compile(r"(?<![A-Za-z0-9ঀ-৿])([A-Za-z]|এ|বি|সি|ডি|ই)\s*-\s*0*(\d{1,3})(?!\d)")
@@ -247,6 +249,11 @@ def _spoken_money(text: str) -> str:
     return re.sub(r"৳\s*([0-9][0-9,]*(?:\.\d+)?|[ঀ-৿]+(?:\s[ঀ-৿]+)?)", r"\1 টাকা", text)
 
 
+def _known(word: str) -> bool:
+    low = word.lower()
+    return low in WORDS or len(word) == 1 or (word.isupper() and len(word) <= 3)
+
+
 def word_to_bn(word: str) -> str:
     low = word.lower()
     if low in WORDS:
@@ -258,9 +265,11 @@ def word_to_bn(word: str) -> str:
     return _phonetic(word)
 
 
-def to_bangla_script(text: str, *, spoken: bool = False, drop_code_letter: bool = False) -> str:
+def to_bangla_script(text: str, *, spoken: bool = False, drop_code_letter: bool = False, guess: bool = True) -> str:
     """Every English word in a Bangla reply → Bangla script; "2 × X" → "2টা X"; menu codes without the
-    zero ("A-01" → "1"). `spoken` = the text for the voice ("৳320" → "320 টাকা", "এ-01" → "এক")."""
+    zero ("A-01" → "1"). `spoken` = the text for the voice ("৳320" → "320 টাকা", "এ-01" → "এক"). `guess=False`: a word
+    the dictionary doesn't know stays as the menu writes it (the guesser wrote "Wedges" as "ওেড্গেস") — for the text a
+    guest reads; the voice always needs Bangla script."""
     if not text:
         return ""
     out = _QTY_TIMES.sub(r"\1টা ", text)
@@ -273,6 +282,10 @@ def to_bangla_script(text: str, *, spoken: bool = False, drop_code_letter: bool 
     # phrases first (longest first), case-insensitive, on word boundaries
     for phrase in sorted(PHRASES, key=len, reverse=True):
         out = re.sub(rf"(?<![A-Za-z]){re.escape(phrase)}(?![A-Za-z])", PHRASES[phrase], out, flags=re.I)
+    if not guess:  # a name with any word the dictionary lacks stays whole, as written ("Masala Wedges", not half Bangla)
+        out = _LATIN_RUN.sub(lambda m: m.group(0) if not all(_known(w) for w in _LATIN_WORD.findall(m.group(0)))
+                             else _LATIN_WORD.sub(lambda w: word_to_bn(w.group(0)), m.group(0)), out)
+        return out
     return _LATIN_WORD.sub(lambda m: word_to_bn(m.group(0)), out)
 
 

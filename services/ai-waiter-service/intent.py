@@ -165,5 +165,5 @@ async def understand(
 
 
 ENABLED = os.environ.get("INTENT_AI", "1").strip().lower() not in ("0", "false", "no", "off")
-MODEL = os.environ.get("INTENT_MODEL", "gpt-4.1-mini").strip()
+MODEL = os.environ.get("INTENT_MODEL", "gpt-4.1").strip()
 TIMEOUT_S = float(os.environ.get("INTENT_TIMEOUT_S", "3.5"))

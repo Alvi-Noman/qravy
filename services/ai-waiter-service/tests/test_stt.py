@@ -100,6 +100,11 @@ def test_bangla_words_are_passed_on_exactly_as_heard():
                   "কোল্ড ড্রিংকসের মধ্যে কী কী আছে?"):
         out, changes = normalize_text(heard, vocab=vocab)
         assert out == heard and not changes, (heard, out)
+    # a Bangla-script menu too (it once made "পরোটা" → "পরোটাা": the vowel sign was cut off as punctuation)
+    vocab = srv.build_vocab_from_snapshot({"items": [{"name": "আলু পরোটা"}, {"name": "সিজলিং"}, {"name": "Chicken Sizzling"}]})
+    for heard in ("দুইটা পরোটা দিন", "পরোটাটা দেন।", "সিজলিং?", "मसाला डोसा दीजिए", "شاورما دجاج"):
+        out, changes = normalize_text(heard, vocab=vocab)
+        assert out == heard and not changes, (heard, out)
 
 
 def test_no_auto_detection_anywhere():

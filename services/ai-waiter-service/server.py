@@ -165,7 +165,9 @@ IDLE_FINALIZE_MS = int(os.environ.get("IDLE_FINALIZE_MS", "1200"))
 
 # Normalizer knobs
 FUZZY_THRESHOLD = float(os.environ.get("NORMALIZER_FUZZY_THRESHOLD", "0.83"))
-MENU_SNAPSHOT_MAX = int(os.environ.get("MENU_SNAPSHOT_MAX", "120"))  # max items sent to brain per turn
+# max dishes the waiter sees per turn — a big menu (200+ dishes is common for Chinese / Indian) must not lose
+# dishes silently: it once dropped a restaurant's plain rice, and "ভাত" became "fried rice"
+MENU_SNAPSHOT_MAX = int(os.environ.get("MENU_SNAPSHOT_MAX", "400"))
 VOCAB_MAX = int(os.environ.get("NORMALIZER_VOCAB_MAX", "200"))
 INCLUDE_ALIASES = os.environ.get("NORMALIZER_INCLUDE_ALIASES", "1") == "1"
 
@@ -1048,7 +1050,7 @@ ELEVEN_TIMEOUT_S = float(os.environ.get("ELEVENLABS_TIMEOUT_MS", "4000")) / 1000
 
 def elevenlabs_tenants() -> set:
     """The restaurants whose guests ElevenLabs Scribe hears — switched in Cortex (Speech-to-text):
-    qravy.settings {_id: "stt_engine", elevenlabs: ["burger-house", …]}. Read every 10 s, no restart."""
+    qravy.settings {_id: "stt_engine", elevenlabs: ["<subdomain>", …]}. Read every 10 s, no restart."""
     if time.time() - _ELEVEN_FLAG["at"] > 10:
         try:
             doc = DB.settings.find_one({"_id": "stt_engine"}) or {}
@@ -1387,7 +1389,7 @@ def fetch_menu_snapshot(
                 "availableUntil": 1,
                 "locationId": 1,
             },
-        ).limit(limit)
+        ).sort([("sortOrder", 1), ("_id", 1)]).limit(limit)  # (a fixed order: the same dishes every turn)
 
         items: List[Dict[str, Any]] = []
         for d in cur:
@@ -1432,6 +1434,9 @@ def fetch_menu_snapshot(
                     "locationId": str(d.get("locationId")) if d.get("locationId") else None,
                 }
             )
+
+        if len(items) >= limit:
+            print(f"[menu] {tenant}: the menu has {limit}+ dishes — the waiter sees only the first {limit} (MENU_SNAPSHOT_MAX)")
 
         # Time-based availability: opening hours, category/item hours, sold out
         snapshot_periods: Optional[List[Dict[str, Any]]] = None
@@ -2207,7 +2212,7 @@ async def run_text_turn(
         # words the restaurant (or Qravy) taught the voice, written in English letters ("Sholo" → "শোলো"), before the
         # names are spelled in Bangla by rule
         voice_src = _say_learned(reply_text, tenant)
-        reply_text = to_bangla_script(reply_text, drop_code_letter=drop)
+        reply_text = to_bangla_script(reply_text, drop_code_letter=drop, guess=False)
         meta["voiceReplyText"] = to_bangla_script(voice_src, spoken=True, drop_code_letter=drop)
     # H: the waiter's offers and what became of them, for the restaurant's upsell stats (never breaks a reply)
     stats_loc = resolve_location_id(_CLIENT[MENU_DB_NAME], resolve_tenant_id(tenant), branch) if tenant else None

@@ -19,7 +19,7 @@ import {
 import { MENU_JSON_SCHEMA, MENU_SYSTEM_PROMPT, buildUserPrompt } from './prompt.js';
 import type { RawMenu } from './types.js';
 
-const DEFAULT_MODEL = 'gpt-4.1-mini';
+const DEFAULT_MODEL = 'gpt-4.1';
 const MAX_OUTPUT_TOKENS = 16_000;
 
 export class OpenAIMenuExtractor implements MenuExtractor {
