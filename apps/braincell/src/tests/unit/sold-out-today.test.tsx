@@ -47,7 +47,7 @@ describe('Sold out today', () => {
   it('offers "Sold out today" on items that are on', () => {
     const onSoldOutToday = vi.fn();
     renderRow({ ...baseItem, status: 'active' }, { onSoldOutToday });
-    fireEvent.click(screen.getByText('Sold out today'));
+    fireEvent.click(screen.getAllByText('Sold out today')[0]);
     expect(onSoldOutToday).toHaveBeenCalledWith('i1');
   });
 
@@ -56,7 +56,7 @@ describe('Sold out today', () => {
     back.setDate(back.getDate() + 1);
     back.setHours(5, 0, 0, 0);
     renderRow({ ...baseItem, status: 'hidden', hidden: true, soldOutUntil: back.toISOString() }, { onSoldOutToday: vi.fn() });
-    expect(screen.getByText(/^Back tomorrow/)).toBeTruthy();
+    expect(screen.getAllByText(/^Back tomorrow/).length).toBeGreaterThan(0);
     expect(screen.queryByText('Sold out today')).toBeNull();
   });
 
@@ -88,13 +88,13 @@ describe('Off until turned on', () => {
   it('offers "Off until I turn it on" next to "Sold out today"', () => {
     const onToggleAvailability = vi.fn();
     renderRow({ ...baseItem, status: 'active' }, { onSoldOutToday: vi.fn(), onToggleAvailability });
-    fireEvent.click(screen.getByText('Off until I turn it on'));
+    fireEvent.click(screen.getAllByText('Off until I turn it on')[0]);
     expect(onToggleAvailability).toHaveBeenCalledWith('i1', false); // off, with no automatic switch-on
   });
 
   it('says an item switched off stays off until turned on', () => {
     renderRow({ ...baseItem, status: 'hidden', hidden: true }, { onSoldOutToday: vi.fn() });
-    expect(screen.getByText('Off until you turn it on')).toBeTruthy();
+    expect(screen.getAllByText('Off until you turn it on').length).toBeGreaterThan(0);
     expect(screen.queryByText('Sold out today')).toBeNull();
   });
 });

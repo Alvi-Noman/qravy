@@ -41,8 +41,8 @@ export default function LocationsToolbar({
     <div className="flex w-full flex-col gap-3 md:flex-row md:items-center md:justify-between">
       <div className="flex flex-1 flex-wrap items-center gap-2" />
       <div className="flex items-center gap-2">
-        <div className="ml-auto flex min-w-[320px] max-w-[680px] flex-1 items-center">
-          <div className="flex min-w-[320px] flex-1 items-center rounded-md border border-[#dbdbdb] bg-[#fcfcfc] px-3 py-2 focus-within:border-[#111827]">
+        <div className="ml-auto flex min-w-0 md:min-w-[320px] max-w-[680px] flex-1 items-center">
+          <div className="flex min-w-0 md:min-w-[320px] flex-1 items-center rounded-md border border-[#dbdbdb] bg-[#fcfcfc] px-3 py-2 focus-within:border-[#111827]">
             <MagnifyingGlassIcon className="mr-2 h-4 w-4 text-slate-500" />
             <input
               value={q}
@@ -61,16 +61,20 @@ export default function LocationsToolbar({
             ) : null}
           </div>
 
-          <div className="relative ml-2" ref={sortRef}>
+          <div className="relative ml-2 shrink-0" ref={sortRef}>
             <button
+              aria-label="Sort"
+              title="Sort"
               type="button"
               aria-expanded={sortOpen}
               onClick={() => setSortOpen((v) => !v)}
               className="inline-flex items-center gap-2 rounded-md border border-[#dbdbdb] bg-[#fcfcfc] px-3 py-2 text-sm text-[#2e2e30] hover:bg-[#f5f5f5]"
             >
               <ArrowsUpDownIcon className="h-4 w-4 text-[#6b7280]" />
+              <span className="hidden whitespace-nowrap sm:inline">
               {sortBy === 'name-asc' && 'Name (A–Z)'}
               {sortBy === 'created-desc' && 'Recently created'}
+              </span>
             </button>
             <AnimatePresence>
               {sortOpen && (

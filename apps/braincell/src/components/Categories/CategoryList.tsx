@@ -45,7 +45,7 @@ export default function CategoryList({
                 />
               </th>
               <th className="px-3 py-3 w-[45%]">Category</th>
-              <th className="px-3 py-3 w-[15%]">Usage</th>
+              <th className="hidden px-3 py-3 w-[15%] sm:table-cell">Usage</th>
               <th className="px-3 py-3 w-[15%]">Availability</th>
               <th className="px-3 py-3 w-[20%] text-right">
                 <span className="sr-only">Actions</span>

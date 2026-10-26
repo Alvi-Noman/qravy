@@ -34,7 +34,7 @@ export default function MenuTable({
         <table className="min-w-full text-sm">
           <thead className="bg-[#fafafa] text-[#5b5b5d]">
             <tr className="text-left">
-              <th className="px-3 py-3 w-[5%]">
+              <th className="px-2 py-3 w-[5%] sm:px-3">
                 <input
                   type="checkbox"
                   checked={allSelected}
@@ -43,11 +43,13 @@ export default function MenuTable({
                   className="h-4 w-4 rounded border-[#cecece] text-[#2e2e30] focus:ring-[#2e2e30]"
                 />
               </th>
-              <th className="px-3 py-3 w-[40%]">Product</th>
-              <th className="px-3 py-3 w-[20%]">Category</th>
-              <th className="px-3 py-3 w-[15%]">Price</th>
-              <th className="px-3 py-3 w-[10%]">Availability</th>
-              <th className="px-3 py-3 w-[10%] text-right">
+              <th className="px-2 py-3 w-[40%] sm:px-3">Product</th>
+              <th className="hidden px-3 py-3 w-[20%] sm:table-cell">Category</th>
+              <th className="hidden px-3 py-3 w-[15%] sm:table-cell">Price</th>
+              <th className="px-2 py-3 w-[10%] sm:px-3">
+                <span className="sr-only sm:not-sr-only">Availability</span>
+              </th>
+              <th className="px-2 py-3 w-[10%] text-right sm:px-3">
                 <span className="sr-only">Actions</span>
               </th>
             </tr>

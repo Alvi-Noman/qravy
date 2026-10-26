@@ -134,10 +134,12 @@ router.get('/me', authenticateJWT, applyScope, async (req: Request, res: Respons
 
   let effectiveTenantId: ObjectId | null = null;
 
-  if (user.tenantId) {
-    effectiveTenantId = user.tenantId;
-  } else if (req.user?.tenantId && ObjectId.isValid(req.user.tenantId)) {
+  // the restaurant this session is in (an admin invited to another restaurant is in that one, not their own) — else
+  // their own
+  if (req.user?.tenantId && ObjectId.isValid(req.user.tenantId)) {
     effectiveTenantId = new ObjectId(req.user.tenantId);
+  } else if (user.tenantId) {
+    effectiveTenantId = user.tenantId;
   }
 
   let isOnboarded = false;

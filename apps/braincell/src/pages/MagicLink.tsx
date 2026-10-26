@@ -32,6 +32,8 @@ export default function MagicLink() {
   const [verifiedUser, setVerifiedUser] = useState<AuthUser | null>(null);
   const [verifiedToken, setVerifiedToken] = useState<string>('');
   const [hardError, setHardError] = useState<boolean>(false);
+  // an admin invite opened again after it was accepted (a link works once)
+  const [inviteUsed, setInviteUsed] = useState(false);
 
   // 1) Try the normal magic-link verify first
   const { data, isPending, isSuccess, isError } = useQuery<VerifyResponse, Error>({
@@ -116,11 +118,15 @@ export default function MagicLink() {
           return;
         }
 
+        // the invite's session is already in the restaurant they were invited to → its dashboard (no list: this page
+        // drew nothing after an invite, and the link opened to a blank screen)
         setVerifiedToken(accessToken);
         setVerifiedUser(user);
-        await login(accessToken, user);
-        await runPostLogin(accessToken, user);
-      } catch {
+        await login(accessToken, { ...user, isOnboarded: true });
+        await reloadUser();
+        navigate('/dashboard', { replace: true });
+      } catch (e) {
+        if ((e as { response?: { status?: number } })?.response?.status === 409) setInviteUsed(true);
         setHardError(true);
       }
     };
@@ -146,7 +152,27 @@ export default function MagicLink() {
 
   return (
     <div className="min-h-screen w-full bg-[#fcfcfc] font-inter flex items-center justify-center px-4">
-      {status === 'error' && <AuthErrorScreen />}
+      {status === 'error' &&
+        (inviteUsed ? (
+          <AuthErrorScreen
+            title="Invite already accepted"
+            message="You're already an admin of this restaurant. Sign in with your email to open it."
+            action="Sign in"
+          />
+        ) : (
+          <AuthErrorScreen
+            title="This link has expired"
+            message="Sign-in and invite links work once and expire after a while. Sign in with your email to continue."
+            action="Sign in"
+          />
+        ))}
+
+      {(status === 'pending' || (status === 'success' && workspaces.length === 0)) && (
+        <div className="flex flex-col items-center gap-3 text-[14px] text-slate-600" role="status">
+          <span className="h-6 w-6 animate-spin rounded-full border-2 border-slate-300 border-t-slate-700" aria-hidden />
+          Signing you in…
+        </div>
+      )}
 
       {status === 'success' && workspaces.length > 0 && (
         <div className="w-full max-w-lg rounded-2xl border border-[#ececec] bg-white p-6 shadow">

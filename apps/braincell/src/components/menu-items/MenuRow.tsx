@@ -105,6 +105,38 @@ export default function MenuRow({
       : []),
   ].join(' · ');
 
+  // the two ways to take a dish off: for today (back on by itself at the daily reset) or until the owner turns
+  // it back on — said plainly under the switch, and what an off dish is waiting for
+  const availNote =
+    !active && itAny.soldOutUntil ? (
+      <div className="mt-1 whitespace-nowrap text-[11px] text-amber-700" title="Sold out today — switches back on automatically">
+        Back {formatBackAt(itAny.soldOutUntil)}
+      </div>
+    ) : !active ? (
+      <div className="mt-1 whitespace-nowrap text-[11px] text-rose-700" title="Off until you turn the switch back on">
+        Off until you turn it on
+      </div>
+    ) : onSoldOutToday ? (
+      <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 sm:flex-col sm:items-start sm:gap-0.5">
+        <button
+          type="button"
+          onClick={() => onSoldOutToday(item.id)}
+          title="Turn off now and back on automatically at the daily reset time"
+          className="whitespace-nowrap text-[11px] text-[#6b7280] underline-offset-2 hover:text-[#111827] hover:underline"
+        >
+          Sold out today
+        </button>
+        <button
+          type="button"
+          onClick={() => onToggleAvailability(item.id, false)}
+          title="Turn off until you turn it back on yourself (it never comes back on by itself)"
+          className="whitespace-nowrap text-[11px] text-[#6b7280] underline-offset-2 hover:text-[#111827] hover:underline"
+        >
+          Off until I turn it on
+        </button>
+      </div>
+    ) : null;
+
   return (
     <tr
       data-item-id={item.id}
@@ -113,7 +145,7 @@ export default function MenuRow({
         backgroundColor: isNew ? 'var(--brand-25, #f9fbff)' : undefined,
       }}
     >
-      <td className="px-3 py-4 align-middle">
+      <td className="px-2 py-4 align-middle sm:px-3">
         <input
           type="checkbox"
           checked={selected}
@@ -123,10 +155,10 @@ export default function MenuRow({
         />
       </td>
 
-      <td className="px-3 py-4 align-middle">
+      <td className="px-2 py-4 align-middle sm:px-3">
         <div className="flex items-center gap-3">
           <Avatar name={item.name} imageUrl={(itAny.media?.[0] as string) || itAny.imageUrl} />
-          <div className="min-w-0">
+          <div className="min-w-0 max-w-[44vw] sm:max-w-none">
             <div className="flex min-w-0 items-center gap-1">
               <div className="truncate font-medium text-[#111827]">{item.name}</div>
               <SignatureStar
@@ -134,18 +166,34 @@ export default function MenuRow({
                 on={!!item.signature}
                 onToggle={onToggleSignature ? (next) => onToggleSignature(item.id, next) : undefined}
               />
-              <ListenButton name={item.name} />
+              <span className="hidden sm:inline-flex">
+                <ListenButton name={item.name} />
+              </span>
+            </div>
+            {/* phones: the category and price columns are hidden — said here instead */}
+            <div className="mt-0.5 truncate text-xs text-[#6b7280] sm:hidden">
+              {[
+                item.category || 'Uncategorized',
+                hasVariations
+                  ? lowestVariantPrice !== null
+                    ? `from ৳${lowestVariantPrice.toFixed(0)}`
+                    : null
+                  : `৳${Number(itAny.price ?? 0).toFixed(0)}`,
+              ]
+                .filter(Boolean)
+                .join(' · ')}
             </div>
             {availabilityLabel && (
               <div className="mt-0.5 truncate text-xs text-amber-700" title={`Availability: ${availabilityLabel}`}>
                 🕐 {availabilityLabel}
               </div>
             )}
+            <div className="sm:hidden">{availNote}</div>
           </div>
         </div>
       </td>
 
-      <td className="px-3 py-4 align-middle">
+      <td className="hidden px-3 py-4 align-middle sm:table-cell">
         {item.category ? (
           <span className="inline-flex items-center rounded-full bg-[#f1f2f4] px-2 py-0.5 text-xs text-[#44464b]">
             {item.category}
@@ -155,7 +203,7 @@ export default function MenuRow({
         )}
       </td>
 
-      <td className="px-3 py-4 align-middle">
+      <td className="hidden px-3 py-4 align-middle sm:table-cell">
         <div className="flex items-center gap-2">
           {hasVariations ? (
             lowestVariantPrice !== null ? (
@@ -180,7 +228,7 @@ export default function MenuRow({
         </div>
       </td>
 
-      <td className="px-3 py-4 align-middle">
+      <td className="px-2 py-4 align-middle sm:px-3">
         <button
           type="button"
           role="switch"
@@ -198,40 +246,11 @@ export default function MenuRow({
             }`}
           />
         </button>
-        {/* the two ways to take a dish off: for today (back on by itself at the daily reset) or until the owner turns
-            it back on — said plainly under the switch, and what an off dish is waiting for */}
-        {!active && itAny.soldOutUntil ? (
-          <div className="mt-1 whitespace-nowrap text-[11px] text-amber-700" title="Sold out today — switches back on automatically">
-            Back {formatBackAt(itAny.soldOutUntil)}
-          </div>
-        ) : !active ? (
-          <div className="mt-1 whitespace-nowrap text-[11px] text-rose-700" title="Off until you turn the switch back on">
-            Off until you turn it on
-          </div>
-        ) : onSoldOutToday ? (
-          <div className="mt-1 flex flex-col items-start gap-0.5">
-            <button
-              type="button"
-              onClick={() => onSoldOutToday(item.id)}
-              title="Turn off now and back on automatically at the daily reset time"
-              className="whitespace-nowrap text-[11px] text-[#6b7280] underline-offset-2 hover:text-[#111827] hover:underline"
-            >
-              Sold out today
-            </button>
-            <button
-              type="button"
-              onClick={() => onToggleAvailability(item.id, false)}
-              title="Turn off until you turn it back on yourself (it never comes back on by itself)"
-              className="whitespace-nowrap text-[11px] text-[#6b7280] underline-offset-2 hover:text-[#111827] hover:underline"
-            >
-              Off until I turn it on
-            </button>
-          </div>
-        ) : null}
+        <div className="hidden sm:block">{availNote}</div>
       </td>
 
       {/* 👇 Only show RowMenu if user has edit/delete rights */}
-      <td className="px-3 py-4 align-middle text-right">
+      <td className="px-2 py-4 align-middle sm:px-3 text-right">
         {canShowRowMenu ? (
           <RowMenu item={item} onEdit={onEdit} onDuplicate={onDuplicate} onDelete={onDelete} />
         ) : null}

@@ -20,6 +20,8 @@ import { subscribeAndSaveBilling } from '../api/tenant';
 const Sidebar = lazy(() => import('../components/SideBar/Sidebar'));
 
 const AI_PANEL_WIDTH = 380;
+// the AI assistant (right-hand panel + its topbar button): off for now — true brings both back
+const AI_PANEL_ON = false;
 
 function SidebarFallback() {
   return (
@@ -75,7 +77,10 @@ function SidebarFallback() {
 }
 
 export default function DashboardLayout(): JSX.Element {
-  const [aiOpen, setAiOpen] = useState(false);
+  const [aiOpenState, setAiOpen] = useState(false);
+  const aiOpen = AI_PANEL_ON && aiOpenState;
+  // phones: the sidebar is a drawer (☰ in the top bar), closed again on every page change
+  const [navOpen, setNavOpen] = useState(false);
   const [aiDismissed, setAiDismissed] = useState(false); // remember user closed the panel
   const { user, loading, token, session } = useAuthContext();
   // a branch device / branch login runs one branch's service — the restaurant's setup guide isn't for it
@@ -113,9 +118,11 @@ export default function DashboardLayout(): JSX.Element {
     }
   }
 
+  useEffect(() => setNavOpen(false), [location.pathname]);
+
   // Auto-open AI panel for new users (based on server progress) after 1.5s.
   useEffect(() => {
-    if (tenantLoading || aiDismissed) return; // don't reopen if user dismissed
+    if (!AI_PANEL_ON || tenantLoading || aiDismissed) return; // don't reopen if user dismissed
     const hasCat = !!tenant?.onboardingProgress?.hasCategory;
     const hasItem = !!tenant?.onboardingProgress?.hasMenuItem;
     if (!hasCat || !hasItem) {
@@ -181,17 +188,38 @@ export default function DashboardLayout(): JSX.Element {
   }, [location.pathname, queryClient]);
 
   return (
-    <div className="flex h-screen bg-[#f5f5f5] overflow-hidden">
+    <div className="flex h-[100dvh] bg-[#f5f5f5] overflow-hidden">
       {!isSettingsPage && (
-        <Suspense fallback={<SidebarFallback />}>
-          <Sidebar />
-        </Suspense>
+        <div className="hidden md:flex">
+          <Suspense fallback={<SidebarFallback />}>
+            <Sidebar />
+          </Suspense>
+        </div>
+      )}
+
+      {/* phones: the same sidebar as a drawer from the left */}
+      {!isSettingsPage && navOpen && (
+        <div className="fixed inset-0 z-50 md:hidden" role="dialog" aria-modal="true" aria-label="Menu">
+          <button
+            type="button"
+            aria-label="Close menu"
+            className="absolute inset-0 bg-black/30"
+            onClick={() => setNavOpen(false)}
+          />
+          <div className="absolute inset-y-0 left-0 flex w-[82vw] max-w-[300px] bg-[#f5f5f5] shadow-xl">
+            <Suspense fallback={<SidebarFallback />}>
+              <Sidebar />
+            </Suspense>
+          </div>
+        </div>
       )}
 
       <main className="flex-1 min-w-0 min-h-0 flex items-start justify-center bg-[#f5f5f5]">
-        <div className={`flex-1 ${isSettingsPage ? 'mx-4 max-w-[1400px]' : 'mr-4'} my-2 h-[calc(100vh-1rem)] min-h-0 min-w-0`}>
+        <div
+          className={`flex-1 ${isSettingsPage ? 'md:mx-4 max-w-[1400px]' : 'md:mr-4'} md:my-2 h-[100dvh] md:h-[calc(100dvh-1rem)] min-h-0 min-w-0`}
+        >
           <div
-            className="h-full min-h-0 min-w-0 rounded-xl border border-[#ececec] bg-[#fcfcfc] overflow-hidden grid"
+            className="h-full min-h-0 min-w-0 md:rounded-xl md:border border-[#ececec] bg-[#fcfcfc] overflow-hidden grid"
             style={{
               gridTemplateColumns: `minmax(0,1fr) ${aiOpen && !branchSession ? AI_PANEL_WIDTH : 0}px`,
               transition: 'grid-template-columns 300ms ease',
@@ -203,14 +231,17 @@ export default function DashboardLayout(): JSX.Element {
               style={isSettingsPage ? undefined : { scrollbarGutter: 'stable' }}
             >
               {(isSubscribed || manualBilling) && !branchSession && <PlanReminder billing={tenant?.billing} />}
-              <TopBar onAIClick={() => { setAiDismissed(false); setAiOpen(true); }} />
+              <TopBar
+                onAIClick={AI_PANEL_ON ? () => { setAiDismissed(false); setAiOpen(true); } : undefined}
+                onMenuClick={isSettingsPage ? undefined : () => setNavOpen(true)}
+              />
               <div className="flex-1 min-h-0 min-w-0 flex flex-col">
                 <Outlet />
               </div>
             </div>
 
             {/* Right */}
-            {!branchSession && <AIAssistantPanel
+            {AI_PANEL_ON && !branchSession && <AIAssistantPanel
               open={aiOpen}
               onClose={() => { setAiDismissed(true); setAiOpen(false); }}
               onRequestOpen={() => { if (!aiDismissed) setAiOpen(true); }} // allow auto-open unless dismissed
