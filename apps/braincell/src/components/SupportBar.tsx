@@ -66,7 +66,7 @@ export function SupportAccessCard() {
       <div className="text-[14px] font-semibold text-slate-900">Qravy support access</div>
       <p className="mt-0.5 max-w-2xl text-[12px] text-slate-500">
         When the Qravy team opens your dashboard to help you — who, when, why and how many changes they made (setting up your plan
-        included). Each visit lasts at most an hour, and your team and your own sign-ins are never touched.
+        or adding admins included). Each visit lasts at most an hour, and your own sign-ins are never touched.
       </p>
       {items.length ? (
         <ul className="mt-3 divide-y divide-slate-100 text-[13px]">

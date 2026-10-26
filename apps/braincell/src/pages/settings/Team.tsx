@@ -8,9 +8,6 @@ import {
   listAdmins as apiListAdmins,
 } from '../../api/access';
 import { useLocations } from '../../components/locations/useLocations';
-import { useQuery } from '@tanstack/react-query';
-import { getMe } from '../../api/auth';
-import { useAuthContext } from '../../context/AuthContext';
 
 /**
  * Admin-only Team Settings
@@ -41,16 +38,6 @@ export default function SettingsAdminAccess(): JSX.Element {
   const [confirm, setConfirm] = useState<{ id: string; email: string } | null>(null);
 
   const owner = useMemo(() => team.find((m) => m.role === 'owner'), [team]);
-
-  // opened from Cortex (Qravy support access): the server refuses team changes — only the restaurant's owner adds people
-  const { token } = useAuthContext();
-  const me = useQuery({
-    queryKey: ['me-support', !!token],
-    queryFn: () => getMe<{ support?: { by: string; until: string } }>(token ?? undefined),
-    enabled: !!token,
-    staleTime: 60_000,
-  });
-  const supportSession = !!me.data?.support;
 
   const toast = (text: string) => {
     setMessage(text);
@@ -167,12 +154,6 @@ export default function SettingsAdminAccess(): JSX.Element {
       </div>
 
       <div className="w-full px-6 py-5">
-        {supportSession && (
-          <p className="mb-4 rounded-lg bg-amber-50 px-4 py-3 text-[13px] text-amber-900">
-            You opened this dashboard with Qravy support access. Adding or removing admins isn&apos;t possible here — the
-            restaurant&apos;s owner does it from their own login.
-          </p>
-        )}
         <section className="w-full rounded-xl border border-[#ececec] bg-white p-5 shadow-sm">
           <div className="grid grid-cols-1 items-end gap-3 md:grid-cols-6">
             <div className="md:col-span-5">
@@ -209,7 +190,7 @@ export default function SettingsAdminAccess(): JSX.Element {
                 />
                 <button
                   onClick={invite}
-                  disabled={loading || supportSession}
+                  disabled={loading}
                   className="shrink-0 rounded-lg bg-[#2e2e30] px-4 py-2 text-sm font-medium text-white transition hover:opacity-95 active:opacity-90 disabled:opacity-60"
                   aria-label="Send Admin invite"
                 >

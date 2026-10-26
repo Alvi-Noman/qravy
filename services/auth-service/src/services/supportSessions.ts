@@ -59,9 +59,9 @@ export function recordSupportAction(id: string, method: string, path: string): v
     .catch(() => undefined);
 }
 
-/** What a support session may NOT do — the owner's alone. */
+/** What a support session may NOT do — the owner's alone. (Adding and removing admins is allowed: Qravy sets
+ * restaurants up — every change is logged on the session.) */
 export const SUPPORT_DENIED: Array<{ method: string; path: RegExp; what: string; billing?: true }> = [
-  { method: 'POST', path: /\/access\/(invite-admin|resend-invite|revoke-admin)\b/, what: 'team changes' },
   { method: 'POST', path: /\/access\/select-tenant\b/, what: "switching to the owner's other restaurants" },
   { method: 'POST', path: /\/tenants$/, what: 'creating a restaurant' },
   { method: 'POST', path: /\/tenants\/(subscribe|cancel|trial\/end|billing-profile)\b/, what: 'billing and the plan', billing: true },
