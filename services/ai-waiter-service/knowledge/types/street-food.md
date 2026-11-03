@@ -1,5 +1,8 @@
 # Street-food shop
 
+Default for Bangladesh (how guests there eat through the day). Another country gets its own version in
+knowledge/types/<country>/street-food.md — not built yet: add it with the first restaurant outside Bangladesh.
+
 ## Detect
 - any: street food
 

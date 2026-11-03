@@ -1,5 +1,8 @@
 # Bangladeshi rice house
 
+Default for Bangladesh (how guests there eat through the day). Another country gets its own version in
+knowledge/types/<country>/bangladeshi-rice-house.md — not built yet: add it with the first restaurant outside Bangladesh.
+
 ## Detect
 - needs: rice house; any: bangla
 

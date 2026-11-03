@@ -1,4 +1,7 @@
-# Chinese & fast-food café (Bangladeshi style)
+# Chinese & fast-food café
+
+Default for Bangladesh (how guests there eat through the day). Another country gets its own version in
+knowledge/types/<country>/chinese-fast-food-cafe.md — not built yet: add it with the first restaurant outside Bangladesh.
 
 ## Detect
 - all: chinese, fast food

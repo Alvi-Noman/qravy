@@ -49,3 +49,7 @@ The best-matching type wins; none → general.md. `lead` / `avoid` / the words a
 dish's name, section and kind (Bangla words anywhere inside, English words whole). The schedule decides what LEADS a
 suggestion at that time — what can be ordered still comes from the restaurant's own hours. A new kind of restaurant is
 a new type file. The cuisine packs (knowledge/cuisines/) hold what the dishes ARE, whatever the type.
+
+**Country:** every type file is the Bangladesh default (all restaurants today are in Bangladesh). For the first
+restaurant in another country, add knowledge/types/<country>/<type>.md with that country's day, and teach knowledge.py
+to prefer it for restaurants in that country (the country is stored per restaurant from onboarding) — about an hour.

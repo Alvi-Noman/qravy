@@ -1,5 +1,8 @@
 # Chinese / Thai restaurant
 
+Default for Bangladesh (how guests there eat through the day). Another country gets its own version in
+knowledge/types/<country>/chinese-restaurant.md — not built yet: add it with the first restaurant outside Bangladesh.
+
 ## Detect
 - any: chinese, thai
 

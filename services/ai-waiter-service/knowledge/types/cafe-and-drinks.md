@@ -1,5 +1,8 @@
 # Café / tea & drinks
 
+Default for Bangladesh (how guests there eat through the day). Another country gets its own version in
+knowledge/types/<country>/cafe-and-drinks.md — not built yet: add it with the first restaurant outside Bangladesh.
+
 ## Detect
 - any: cafe, juice, bakery
 
