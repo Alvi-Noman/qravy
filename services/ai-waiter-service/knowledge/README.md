@@ -30,3 +30,26 @@ What a good waiter knows about it, in plain sentences.
 - Write general knowledge only. Never a specific restaurant's name, dish names from one menu, prices, or "if the guest
   says X, reply Y". Each restaurant's own dishes, prices and hours come from its menu automatically.
 - Short beats long: a turn takes at most ~1,600 characters of triggered sections.
+
+## Restaurant types (knowledge/types/) — the day's schedule
+Every restaurant is ONE general type, read from its menu (never from the category picked in onboarding): the share of
+its dishes per cuisine decides it, so every restaurant of a type behaves the same. A type pack has three data sections,
+read by the code and never pasted into the AI's instructions — keep the line format exactly:
+
+    ## Detect
+    - all: chinese, fast food           (each at least 8% of the menu)   ·  "any: cafe, juice"  ·  "needs: rice house"
+    ## Schedule
+    - morning 06:00-11:30: lead set menu, fried rice; avoid sizzling, platter
+    (…the whole day; past midnight is fine: "late night 22:30-06:00")
+    ## Needs a base
+    - masala, chili onion, curry -> fried rice, chowmein      (never alone: no base on now → not suggested)
+    - kebab, chaap ~> naan, paratha                           (goes well with: named together when the base is on)
+
+The best-matching type wins; none → general.md. `lead` / `avoid` / the words around the arrow are matched against each
+dish's name, section and kind (Bangla words anywhere inside, English words whole). The schedule decides what LEADS a
+suggestion at that time — what can be ordered still comes from the restaurant's own hours. A new kind of restaurant is
+a new type file. The cuisine packs (knowledge/cuisines/) hold what the dishes ARE, whatever the type.
+
+**Country:** every type file is the Bangladesh default (all restaurants today are in Bangladesh). For the first
+restaurant in another country, add knowledge/types/<country>/<type>.md with that country's day, and teach knowledge.py
+to prefer it for restaurants in that country (the country is stored per restaurant from onboarding) — about an hour.

@@ -737,9 +737,26 @@ async def _call_openai(messages: List[Dict[str, str]]) -> str:
 # --------------------------- prompt assembly ---------------------------
 
 
+_TYPES: Dict[Any, str] = {}
+
+
+def _restaurant_type(index: MenuIndex) -> str:
+    """The restaurant's general type (knowledge/types), read from its dishes — worked out once per menu."""
+    key = tuple(sorted(f"{it.get('name')}|{it.get('category')}" for it in index.items))
+    if key not in _TYPES:
+        if len(_TYPES) > 200:
+            _TYPES.clear()
+        _TYPES[key] = knowledge.restaurant_type(menu_profile.cuisine_shares(index.items))
+    return _TYPES[key]
+
+
 def _knowledge_block(index: MenuIndex, restaurant: Optional[Dict[str, Any]]) -> str:
+    # the restaurant as its DISHES say it — never the category picked in onboarding ("Cafe" for a Chinese place)
+    rtype = _restaurant_type(index)
+    kind = knowledge.type_title(rtype) if rtype != "general" else ", ".join(
+        c[2] for c in (menu_profile.menu_glance(index.items).get("cuisine") or []))
     return (
-        "# RESTAURANT\n" + render_restaurant(restaurant) + "\n\n"
+        "# RESTAURANT\n" + render_restaurant({**(restaurant or {}), "type": kind}) + "\n\n"
         "# MENU (ref name — price [tags; hints] · desc · choices)\n" + (render_catalog(index) or "(menu unavailable)") + "\n\n"
         "# PRICE GUIDE (per category: range, cheapest dishes)\n" + render_price_guide(index)
     )
@@ -6240,10 +6257,21 @@ async def _reply(
     import recommender as _reco
     _reco.RICE_FIRST.set(bool(lt_now) and bangla_meal.rice_time_again(int(lt_now.group(1)) * 60 + int(lt_now.group(2)))
                          and bangla_meal.is_bhaat_house(index.items))
+    # the cuisine's default day (knowledge/cuisines/*.md "Schedule"): what leads now — set menus and fried rice in a
+    # Chinese café's morning, momos at four — and the dishes never eaten alone ("Needs a base": a masala with fried rice)
+    # (by the restaurant's general TYPE — read from its menu, the same for every restaurant of that type)
+    rtype = _restaurant_type(index)
+    day_slot = knowledge.schedule_now(rtype, int(lt_now.group(1)) * 60 + int(lt_now.group(2)) if lt_now else None)
+    _reco.SCHEDULE.set(day_slot)
+    _reco.BASES.set(knowledge.needs_base(rtype))
     # what the menu-data checks worked out for this turn — handed to the model to answer from (AI_FIRST)
     facts: List[str] = []
     if AI_FIRST:
         facts += _closed_fact(list((restaurant or {}).get("opening") or []), str(ctx.get("localTime") or ""))
+    if day_slot is not None:
+        facts.append(f"It's {day_slot.name} here. When recommending, lead with what this time is for at this kind of "
+                     f"restaurant ({', '.join(day_slot.lead[:8])}) where the MENU has it — the RANKED PICKS already "
+                     "follow this. A dish marked \"with X\" is eaten with X: always say them together, never alone.")
     cart_rows, subtotal = cart_lines(index, ctx.get("cartItems") or [])
     _tray.with_refs(cart_rows)  # L1, L2 … + the storefront's line keys
     cart_qty: Dict[str, int] = {}
@@ -7820,6 +7848,18 @@ async def _reply(
                 issues.append(f"No dish on the MENU has the name {', '.join(unknown)}. If you meant a MENU dish, write "
                               "its exact MENU name. If it isn't on the MENU, don't offer, list or describe it — if the "
                               "guest asked for it, say plainly it isn't on the menu and offer the closest dish that IS.")
+            # a dish never eaten alone, suggested alone ("Chicken Masala ভালো হবে") — with its base, or a complete meal
+            named_now = [x for x in (index.resolve(None, n) for n in obj.get("foodsNamed") or []) if x]
+            adding = {index.item_id(x) for x in (index.resolve(o.get("item"), o.get("name"))
+                                                 for o in obj.get("cartOps") or [] if isinstance(o, dict)) if x}
+            in_tray_now = [index.by_id[i] for i in cart_qty if i in index.by_id]
+            for x in named_now:
+                base = _reco.base_for(x, index, orderable)
+                if (base and index.item_id(x) not in adding and index.item_id(x) not in cart_qty
+                        and not any(_reco.is_base_of(o, x) for o in named_now + in_tray_now if o is not x)):
+                    issues.append(f"{x.get('name')} is eaten WITH a base, never on its own — say it together with "
+                                  f"{base.get('name')} (or suggest a complete meal, like a set menu) instead.")
+                    break
             # the guest named a version the menu doesn't have ("আলু পরোটা") → never the plain dish added in its place
             if not_this_version:
                 asked_as, plain = not_this_version
