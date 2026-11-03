@@ -138,9 +138,19 @@ def menu_glance(items: List[Dict[str, Any]], available: Optional[List[Dict[str, 
     # cuisine: how many dishes sound like it. The top one, plus others that are a real part of the menu (at least
     # half as many dishes) — a family restaurant is "চাইনিজ, ইন্ডিয়ান ও ফাস্ট ফুড"; a kabab house with two naans
     # is just "কাবাব-গ্রিল"
-    scores = sorted(((sum(1 for t in all_texts if re.search(c[3], t)), -i, c) for i, c in enumerate(_CUISINES)),
-                    key=lambda x: (-x[0], -x[1]))
-    floor = max(3, 0.2 * n)
+    # (a Bangla-script menu is read through its dishes' English kind words — "কাবাব" is a kebab — and a Bengali rice
+    # house, rice and its curries, is Bangladeshi: Bangla names never matched these English words, so a Bangla menu had
+    # no cuisine and its cuisine knowledge never reached the waiter)
+    from bangla_meal import is_bhaat_house, role
+    from waiter_knowledge import kind_text
+    cuisine_texts = [f"{t} {kind_text(it).lower()}" for t, it in zip(all_texts, items)]
+    counts = [sum(1 for t in cuisine_texts if re.search(c[3], t)) for c in _CUISINES]
+    if is_bhaat_house(items):
+        b = next(i for i, c in enumerate(_CUISINES) if c[0] == "bangla")
+        counts[b] = max(counts[b], sum(1 for it in items if role(it)))
+    scores = sorted(((counts[i], -i, c) for i, c in enumerate(_CUISINES)), key=lambda x: (-x[0], -x[1]))
+    # (a real section of the menu — 9 Chinese dishes of a 76-dish café were "not its cuisine" at a fifth)
+    floor = max(3, 0.1 * n)
     top = scores[0][0] if scores else 0
     cuisine = [c[:3] for s, _, c in scores if s >= floor and s >= 0.5 * top][:3]
 

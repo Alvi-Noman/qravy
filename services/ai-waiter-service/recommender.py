@@ -31,6 +31,49 @@ DIETS = ("vegetarian", "vegan", "no_beef", "no_pork", "pescatarian", "halal")
 MOODS = ("light", "filling", "sharing", "quick")
 # this turn, the rice meal leads, not the time's own dishes (a Bengali rice house from 9pm — set by the brain per turn)
 RICE_FIRST: contextvars.ContextVar[bool] = contextvars.ContextVar("rice_first", default=False)
+# this turn's time of day by the cuisine's default schedule (knowledge.Slot: what leads, what doesn't) and the dishes
+# never eaten alone ([(words, the bases they go with)]) — from the cuisine packs, set by the brain per turn
+SCHEDULE: contextvars.ContextVar[Any] = contextvars.ContextVar("schedule", default=None)
+BASES: contextvars.ContextVar[Any] = contextvars.ContextVar("bases", default=())
+
+
+# snacks, sides and complete dishes eaten as they are — never "needs a base", whatever spice word is in the name
+_SNACK = re.compile(r"\b(wedges?|fries|french fry|wings?|nachos|chips|soup|salad|momos?|rolls?|burgers?|sandwich|pizza|"
+                    r"pasta|shawarma|wrap|set menu|platter|combo|meat box|thali|snack|appeti\w*|starter)\b")
+
+
+def dish_text(it: Dict[str, Any]) -> str:
+    """A dish's name, section and kind words, for the schedule / base words ("চিকেন বিরিয়ানি" reads "biryani" too)."""
+    return f"{it.get('name') or ''} {it.get('category') or ''} {kind_text(it)}".lower()
+
+
+def is_base_of(base: Dict[str, Any], dish: Dict[str, Any]) -> bool:
+    """Is `base` (fried rice, rice, naan) one the `dish` (a masala, a curry) is eaten with?"""
+    from knowledge import word_in
+
+    text, btext = dish_text(dish), dish_text(base)
+    return any(any(word_in(w, text) for w in needs) and any(word_in(b, btext) for b in bases)
+               for needs, bases, _must in BASES.get() or ())
+
+
+def base_for(it: Dict[str, Any], index: MenuIndex, orderable: Dict[str, bool]) -> Any:
+    """A dish never eaten alone (a masala, a curry) → the base dish on now it goes with (fried rice, rice, naan);
+    False when it needs one and none is on; None when it doesn't need one (or is its own base: "Chicken Fried Rice")."""
+    from knowledge import word_in
+
+    text = dish_text(it)
+    if _SNACK.search(text):
+        return None  # ("Masala Wedges" is potato wedges — a snack, eaten as it is)
+    for needs, bases, must in BASES.get() or ():
+        if not any(word_in(w, text) for w in needs) or any(word_in(w, text) for w in bases):
+            continue
+        for w in bases:  # (in the pack's order: "সাদা ভাত" before "পরোটা" — at breakfast the rice is off, the paratha on)
+            for o in sorted(index.items, key=lambda o: index.position.get(index.item_id(o), 1 << 20)):
+                if (o is not it and orderable.get(index.item_id(o), True) and word_in(w, dish_text(o))
+                        and not any(word_in(n, dish_text(o)) for n in needs)):
+                    return o
+        return False if must else None  # ("~>": a kebab is still a kebab without the naan)
+    return None
 SPICE = ("", "none", "mild", "medium", "hot")
 
 
@@ -667,12 +710,38 @@ def rank(
         f = dish_facts(it)
         v = violations(it, prof, f)
         fits, _ = time_fit(it, kinds)
+        # (the cuisine's own day decides first: a Chinese café's morning IS set menus and fried rice — the generic
+        # "is this a breakfast dish?" guess kept every set menu out before 11)
+        day = SCHEDULE.get()
+        if not fits and day is not None and not (f["drink"] or f["dessert"]):
+            from knowledge import word_in
+            fits = any(word_in(w, dish_text(it)) for w in day.lead)
         if not fits and iid not in asked_for:
             v.append("doesn't suit this time")
         if v:
             blocked[iid] = v
             continue
         s, why = _score(it, f, prof, kinds, stats, context_ids, recent)
+        # the time of day by the cuisine's default schedule: set menus and fried rice in a Chinese café's morning, momos
+        # and wings in its afternoon (it suggested a lone Chicken Masala in the morning) — food only, not the drinks
+        slot = SCHEDULE.get()
+        if slot is not None and not (f["drink"] or f["dessert"]) and iid not in asked_for:
+            from knowledge import word_in
+            text = dish_text(it)
+            if any(word_in(w, text) for w in slot.lead):
+                s += 4.5
+            elif any(word_in(w, text) for w in slot.avoid):
+                s -= 4.0
+        # never eaten alone (Chicken Masala, a curry): it comes WITH its base ("Chicken Fried Rice-এর সাথে…"), a
+        # complete meal (a set menu) ahead of it — and not at all when no base is on now
+        if iid not in asked_for and only is None:
+            base = base_for(it, index, orderable)
+            if base is False:
+                blocked[iid] = ["eaten with a base, and none is on now"]
+                continue
+            if base is not None:
+                s -= 1.0
+                why = [f"with {base.get('name')}"] + list(why)
         # the food the restaurant serves at just ONE time of day (the evening's kebabs, the morning's breakfast) leads
         # while it's on — a waiter names what's on now first (the kebab section never made the evening picks)
         if iid in asked_for:

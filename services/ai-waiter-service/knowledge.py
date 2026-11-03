@@ -30,6 +30,19 @@ class Section:
     text: str
     when: Optional[re.Pattern] = None
 
+    @property
+    def data(self) -> bool:
+        """A section the CODE reads (the day's schedule, what needs a base) — never pasted into the AI's instructions."""
+        return self.title.strip().lower() in DATA_SECTIONS
+
+
+# sections that are data for the code, in a cuisine pack:
+#   ## Schedule
+#   - morning 06:00-11:30: lead set menu, fried rice; avoid burger
+#   ## Needs a base
+#   - masala, chili onion, sweet and sour -> fried rice, chowmein
+DATA_SECTIONS = {"schedule", "needs a base"}
+
 
 @dataclass
 class Pack:
@@ -59,7 +72,7 @@ def _parse(key: str, raw: str) -> Pack:
         if cur is None:
             continue  # (the pack's own intro — for the people who write it)
         m = re.match(r"^\s*when:\s*(.+)$", line, re.I)
-        if m:
+        if m and not cur.data:
             words = [w.strip() for w in m.group(1).split(",") if w.strip()]
             if words:
                 # a word inside Bangla words too ("সকালে", "নাস্তায়"); Latin words whole ("tea", not "steak")
@@ -106,7 +119,8 @@ def _render(pack: Pack, sections: List[Section]) -> str:
 
 def standing(cuisines: Iterable[str], lang: str) -> str:
     """The always-on sections — the same every turn for this restaurant (so it is cached with the menu)."""
-    parts = [_render(p, ss) for p in packs(cuisines, lang) if (ss := [s for s in p.sections if s.when is None])]
+    parts = [_render(p, ss) for p in packs(cuisines, lang)
+             if (ss := [s for s in p.sections if s.when is None and not s.data])]
     return "\n\n".join(parts)
 
 
@@ -117,7 +131,7 @@ def for_turn(cuisines: Iterable[str], lang: str, text: str, budget: int = TURN_B
     parts: List[str] = []
     used = 0
     for p in packs(cuisines, lang):
-        hits = [s for s in p.sections if s.when is not None and s.when.search(text)]
+        hits = [s for s in p.sections if s.when is not None and not s.data and s.when.search(text)]
         if not hits:
             continue
         block = _render(p, hits)
@@ -135,6 +149,84 @@ def for_turn(cuisines: Iterable[str], lang: str, text: str, budget: int = TURN_B
         parts.append(block)
         used += len(block)
     return "\n\n".join(parts)
+
+
+def _words(raw: str) -> List[str]:
+    return [w.strip().lower() for w in (raw or "").split(",") if w.strip()]
+
+
+def _mins(hhmm: str) -> int:
+    h, m = hhmm.split(":")
+    return int(h) * 60 + int(m)
+
+
+@dataclass
+class Slot:
+    name: str
+    start: int
+    end: int
+    lead: List[str]
+    avoid: List[str]
+
+    def covers(self, minute: int) -> bool:
+        return self.start <= minute < self.end if self.start < self.end else (minute >= self.start or minute < self.end)
+
+
+_SLOT = re.compile(r"^-\s*([\w ]+?)\s+(\d{1,2}:\d{2})\s*[-–]\s*(\d{1,2}:\d{2})\s*:\s*lead\s+([^;]+?)\s*(?:;\s*avoid\s+(.+?))?\s*$", re.I)
+_PAIR = re.compile(r"^-\s*(.+?)\s*(->|→|~>)\s*(.+?)\s*$")
+
+
+def _data(cuisines: Iterable[str], title: str) -> List[Tuple[str, str]]:
+    """(cuisine, line) for every line of that data section in the menu's cuisine packs (most of the menu first)."""
+    out = []
+    for c in cuisines:
+        p = load("cuisines", c)
+        for s in (p.sections if p else []):
+            if s.title.strip().lower() == title:
+                out += [(c, line.strip()) for line in s.text.splitlines() if line.strip().startswith("-")]
+    return out
+
+
+def schedule_now(cuisines: Iterable[str], minute: Optional[int]) -> Optional[Slot]:
+    """What leads at this time of day by the cuisines' default schedules — the menu's main cuisine first, the others'
+    "lead" words added (a café that's Chinese AND fast food). None when no pack has a schedule, or no time is known."""
+    if minute is None:
+        return None
+    found: Optional[Slot] = None
+    for _c, line in _data(cuisines, "schedule"):
+        m = _SLOT.match(line)
+        if not m:
+            continue
+        slot = Slot(m.group(1).strip().lower(), _mins(m.group(2)), _mins(m.group(3)),
+                    _words(m.group(4)), _words(m.group(5) or ""))
+        if not slot.covers(minute):
+            continue
+        if found is None:
+            found = slot
+        else:  # (another cuisine of the menu, the same time of day: its lead words too, never its "avoid" over ours)
+            found.lead += [w for w in slot.lead if w not in found.lead]
+            found.avoid += [w for w in slot.avoid if w not in found.avoid and w not in found.lead]
+    if found:
+        found.avoid = [w for w in found.avoid if w not in found.lead]
+    return found
+
+
+def needs_base(cuisines: Iterable[str]) -> List[Tuple[List[str], List[str], bool]]:
+    """[(dish words, the bases they go with, must)] — "masala -> fried rice" (never alone: no base on, not suggested),
+    "কাবাব ~> নান" (goes well with: the naan named when it's on, the kebab still suggested when it isn't)."""
+    out = []
+    for _c, line in _data(cuisines, "needs a base"):
+        m = _PAIR.match(line)
+        if m:
+            out.append((_words(m.group(1)), _words(m.group(3)), m.group(2) != "~>"))
+    return out
+
+
+def word_in(word: str, text: str) -> bool:
+    """A schedule / pairing word in a dish's text: Bangla anywhere inside, Latin as whole words ("rice", not "price")."""
+    if re.search(r"[^\x00-\x7f]", word):
+        return word in text
+    return bool(re.search(rf"\b{re.escape(word)}s?\b", text))
 
 
 def cuisine_keys(glance: Optional[dict]) -> List[str]:

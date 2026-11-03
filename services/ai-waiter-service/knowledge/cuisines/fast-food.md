@@ -13,3 +13,10 @@ when: piece, pcs, পিস, size, সাইজ, large, regular, small, বড�
 Light: fries, onion rings, nachos, drinks. Filling: burgers, fried chicken, combos, pizza, meat boxes. Wings are
 a snack but not "light".
 when: light, হালকা, filling, hungry, ক্ষুধা, খিদে, পেট ভরে
+
+## Schedule
+- morning 06:00-11:30: lead set menu, combo, sandwich, wrap
+- lunch 11:30-16:00: lead set menu, combo, meat box, burger, pasta, rice bowl
+- afternoon 16:00-19:00: lead fries, wedges, wings, nachos, momo, strips, shawarma, burger
+- dinner 19:00-22:30: lead burger, meat box, pizza, platter, combo
+- late night 22:30-06:00: lead burger, meat box, shawarma, wings, pizza

@@ -30,3 +30,20 @@ What a good waiter knows about it, in plain sentences.
 - Write general knowledge only. Never a specific restaurant's name, dish names from one menu, prices, or "if the guest
   says X, reply Y". Each restaurant's own dishes, prices and hours come from its menu automatically.
 - Short beats long: a turn takes at most ~1,600 characters of triggered sections.
+
+## Data sections (read by the code, never pasted into the AI's instructions)
+A cuisine pack may have two sections the code reads — keep the line format exactly:
+
+    ## Schedule
+    - morning 06:00-11:30: lead set menu, fried rice, soup; avoid sizzling, platter
+    - lunch 11:30-16:00: lead set menu, platter, fried rice
+    (…every time of day, wrapping past midnight is fine: "late night 22:30-06:00")
+
+    ## Needs a base
+    - masala, chili onion, curry -> fried rice, chowmein      (never alone: no base on now → not suggested)
+    - kebab, chaap ~> naan, paratha                           (goes well with: named together when the base is on)
+
+`lead` / `avoid` / the words before and after the arrow are matched against each dish's name, section and kind (Bangla
+words anywhere inside, English words whole). The schedule decides what LEADS a recommendation at that time of day —
+what can be ordered still comes from the restaurant's own hours. A menu with several cuisines uses its main cuisine's
+time slots and adds the others' lead words.
