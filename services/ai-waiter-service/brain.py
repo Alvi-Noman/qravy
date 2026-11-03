@@ -738,8 +738,10 @@ async def _call_openai(messages: List[Dict[str, str]]) -> str:
 
 
 def _knowledge_block(index: MenuIndex, restaurant: Optional[Dict[str, Any]]) -> str:
+    # the cuisine as its DISHES say it — never the category picked in onboarding ("Cafe" for a Chinese place)
+    cuisine = ", ".join(c[2] for c in (menu_profile.menu_glance(index.items).get("cuisine") or []))
     return (
-        "# RESTAURANT\n" + render_restaurant(restaurant) + "\n\n"
+        "# RESTAURANT\n" + render_restaurant({**(restaurant or {}), "type": cuisine}) + "\n\n"
         "# MENU (ref name — price [tags; hints] · desc · choices)\n" + (render_catalog(index) or "(menu unavailable)") + "\n\n"
         "# PRICE GUIDE (per category: range, cheapest dishes)\n" + render_price_guide(index)
     )
