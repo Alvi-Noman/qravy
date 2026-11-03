@@ -71,8 +71,9 @@ def test_afternoon_asked_at_lunch_lists_the_afternoon_menu_and_when():
     assert not calls and "period_menu" in out["meta"]["guards"], out["replyText"]
     t = out["replyText"]
     # as a waiter says it: the time in words, the kind of food, the main dishes first, the bread only "সাথে … আছে"
+    # (the owner's wording, 2026-11-04: food that starts later today "এখনো সার্ভ করা শুরু হয়নি", not "পাওয়া যাচ্ছে না")
     assert t == ("বিকেলে, মানে বিকেল ৩টা থেকে সন্ধ্যা ৬টা পর্যন্ত, আমাদের কাবাব-গ্রিল আইটেমগুলো পাওয়া যায়: বিফ শিক কাবাব "
-                 "আর চিকেন টিক্কা। সাথে নান-ও আছে। এখন এগুলো পাওয়া যাচ্ছে না — তবে এখন যা আছে তার থেকে কিছু দেব?"), t
+                 "আর চিকেন টিক্কা। সাথে নান-ও আছে। এগুলো এখনো সার্ভ করা শুরু হয়নি — তবে এখন যা আছে তার থেকে কিছু দেব?"), t
     assert "পরোটা" not in t and "গরুর লাল ভুনা" not in t and "ছ্যাঁকাখোর" not in t, t
     assert not cards(out)  # not orderable yet — nothing to tap
 
@@ -147,7 +148,7 @@ def test_the_real_evening_question():
     out, _ = run("সন্ধ্যায় কি কি পাওয়া যায় তোমাদের?", at="Tue 00:10", items=items, periods=evening)
     assert out["replyText"] == (
         "সন্ধ্যায়, মানে বিকেল ৫টা থেকে রাত ১০টা পর্যন্ত, আমাদের কাবাব-গ্রিল আইটেমগুলো পাওয়া যায়: বিফ শিক কাবাব আর "
-        "চিকেন টিক্কা। সাথে নান-ও আছে। এখন এগুলো পাওয়া যাচ্ছে না — তবে এখন যা আছে তার থেকে কিছু দেব?"), out["replyText"]
+        "চিকেন টিক্কা। সাথে নান-ও আছে। এগুলো এখনো সার্ভ করা শুরু হয়নি — তবে এখন যা আছে তার থেকে কিছু দেব?"), out["replyText"]
     for bad in ("এভেনিং", "Evening", "আরও", "(বিকালের নাস্তা)"):
         assert bad not in out["replyText"], bad
     assert not re.search(r"[০-৯\d]:[০-৯\d]", out["replyText"])  # never "৫:০১"

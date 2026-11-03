@@ -73,6 +73,17 @@ def _classic_side(it: Dict[str, Any]) -> bool:
     return item_hints(it)["diet"] == "likely vegetarian" or bool(_DAL.search(_name(it).lower()))
 
 
+# The owner's rule for a Bengali rice house: in the evening the kebabs lead, but from 9pm it's rice time again —
+# "এখন ভাত খেতে পারেন, ভাতের সাথে …; আবার চাইলে সাথে কাবাব-নানও খেতে পারেন" (until the small hours)
+RICE_AGAIN_FROM = 21 * 60
+RICE_AGAIN_UNTIL = 4 * 60
+
+
+def rice_time_again(minute: Optional[int]) -> bool:
+    """From 9pm to the small hours: rice first again (at a rice house), the kebabs after."""
+    return minute is not None and (minute >= RICE_AGAIN_FROM or minute < RICE_AGAIN_UNTIL)
+
+
 def is_bhaat_house(items: Iterable[Dict[str, Any]]) -> bool:
     """Plain rice on the menu and at least three fish / meat curries to eat it with."""
     roles = [role(it) for it in items]
@@ -110,14 +121,14 @@ def _join(names: List[str], last: str) -> str:
     return names[0] if len(names) == 1 else ", ".join(names[:-1]) + f" {last} " + names[-1]
 
 
-def meal_text(m: Dict[str, Any], lang: str, *, rice_in_tray: bool = False) -> str:
+def meal_text(m: Dict[str, Any], lang: str, *, rice_in_tray: bool = False, lead: Optional[str] = None) -> str:
     """'এখন ভাত খেতে পারেন। ভাতের সাথে মাছের মধ্যে A আর B আছে, মুরগির মধ্যে C আছে, মাংসের মধ্যে D আছে।
-    সাথে E বা F নিতে পারেন।'"""
+    সাথে E বা F নিতে পারেন।' — `lead` in place of "ভাতের সাথে " ("তরকারির মধ্যে মাছের মধ্যে … আছে, …")."""
     names = {g: [said_name(it) for it in m.get(g) or []] for g in ("fish", "chicken", "meat", "side")}
     if lang == "bn":
         labels = {"fish": "মাছের মধ্যে", "chicken": "মুরগির মধ্যে", "meat": "মাংসের মধ্যে"}
         parts = [f"{labels[g]} {_join(names[g], 'আর')} আছে" for g in ("fish", "chicken", "meat") if names[g]]
-        s = ("" if rice_in_tray else "এখন ভাত খেতে পারেন। ") + "ভাতের সাথে " + ", ".join(parts) + "।"
+        s = ("" if rice_in_tray else "এখন ভাত খেতে পারেন। ") + ("ভাতের সাথে " if lead is None else lead) + ", ".join(parts) + "।"
         if names["side"]:
             s += f" সাথে {_join(names['side'], 'বা')} নিতে পারেন।"
         return s

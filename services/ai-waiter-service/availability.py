@@ -98,8 +98,19 @@ def is_within(windows: Optional[Iterable[Dict[str, Any]]], tz: Optional[str], no
     return False
 
 
+def _said(hhmm: str) -> Tuple[int, int]:
+    """A time as people say it: within 5 minutes of the hour is that hour — periods are stored 12:02 / 17:01 so they
+    don't overlap, but "দুপুর ১২টা ২ মিনিট" / "বিকাল ৫:০১" is no time a waiter says."""
+    h, m = [int(x) for x in hhmm.split(":")[:2]]
+    if m <= 5:
+        return h, 0
+    if m >= 55:
+        return (h + 1) % 24, 0
+    return h, m
+
+
 def _fmt_time(hhmm: str) -> str:
-    h, m = [int(x) for x in hhmm.split(":")]
+    h, m = _said(hhmm)
     suffix = "am" if h < 12 else "pm"
     h12 = 12 if h % 12 == 0 else h % 12
     return f"{h12}:{m:02d}{suffix}" if m else f"{h12}{suffix}"
@@ -111,7 +122,7 @@ _BN_DIGITS = str.maketrans("0123456789", "০১২৩৪৫৬৭৮৯")
 
 def _fmt_time_bn(hhmm: str) -> str:
     """'17:00' → 'বিকাল ৫টা', '06:30' → 'সকাল ৬:৩০' — the time as a Bangla guest says it."""
-    h, m = [int(x) for x in hhmm.split(":")]
+    h, m = _said(hhmm)
     part = ("রাত" if h < 4 or h >= 20 else "ভোর" if h < 6 else "সকাল" if h < 12 else "দুপুর" if h < 15
             else "বিকাল" if h < 18 else "সন্ধ্যা")
     h12 = 12 if h % 12 == 0 else h % 12

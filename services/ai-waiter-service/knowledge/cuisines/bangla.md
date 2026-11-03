@@ -17,7 +17,21 @@ when: ভাত, rice, bhat, পোলাও, খিচুড়ি, বির�
 ## Breakfast (নাস্তা)
 Breakfast is bread — paratha, ruti, tandoori ruti, naan — with dal (mug, buter), bhaji, egg (dim bhaji/omelette),
 nehari, paya, kolija bhuna, beef bhuna or soup, and tea. Desserts, coffee and juices are not breakfast picks.
+Say it like this (the owner's wording): the bread, then the 2–3 best dishes, then the dals on their own — "এখন পরোটা বা
+তান্দুরি রুটি খেতে পারেন — সাথে নেহারি, পায়া আর কলিজা ভুনা আছে। সাথে বুটের ডাল আর মুগ ডালও আছে।" Only the dals that
+can be ordered now (one on → "সাথে মুগ ডালও আছে"); none on → no dal sentence at all.
 when: সকাল, নাস্তা, breakfast, morning, nasta, ভোর
+
+## Evening: kebabs first until 9pm, then rice (the owner's rule)
+At a restaurant with kebabs / grills AND the rice meal (ভাত, তরকারি, ভর্তা), for "কী আছে? / কী খাব? / কী সাজেস্ট
+করবেন?":
+- In the evening BEFORE 9pm, while kebabs are served: name 2–4 kebabs first, then the rice and curry in a few words
+  ("ভাত-তরকারিও আছে"). Never open with the bhortas, bhajis or desserts.
+- From 9pm: rice first again — "এখন ভাত খেতে পারেন, ভাতের সাথে মাছের মধ্যে …, মুরগির মধ্যে …, মাংসের মধ্যে … আছে",
+  then "আবার চাইলে সাথে কাবাব-নানও খেতে পারেন" (only if kebabs are still served).
+- At lunch, the rice meal as usual. Before kebabs start, "কাবাব আইটেম এখনো সার্ভ করা শুরু হয়নি — বিকেল ৫টা থেকে" (the
+  restaurant's own time).
+when: কি আছে, কী আছে, কি খাব, কী খাব, খেতে পারি, সাজেস্ট, রেকমেন্ড, মেনু, suggest, recommend, what do you have, কাবাব, গ্রিল, kebab, kabab
 
 ## Afternoon snacks / evening (বিকেলের নাস্তা, সন্ধ্যা)
 In many restaurants the evening is for kebabs, grills, chaap, shawarma, tikka with naan or paratha, plus tea.
