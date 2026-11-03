@@ -737,11 +737,26 @@ async def _call_openai(messages: List[Dict[str, str]]) -> str:
 # --------------------------- prompt assembly ---------------------------
 
 
+_TYPES: Dict[Any, str] = {}
+
+
+def _restaurant_type(index: MenuIndex) -> str:
+    """The restaurant's general type (knowledge/types), read from its dishes — worked out once per menu."""
+    key = tuple(sorted(f"{it.get('name')}|{it.get('category')}" for it in index.items))
+    if key not in _TYPES:
+        if len(_TYPES) > 200:
+            _TYPES.clear()
+        _TYPES[key] = knowledge.restaurant_type(menu_profile.cuisine_shares(index.items))
+    return _TYPES[key]
+
+
 def _knowledge_block(index: MenuIndex, restaurant: Optional[Dict[str, Any]]) -> str:
-    # the cuisine as its DISHES say it — never the category picked in onboarding ("Cafe" for a Chinese place)
-    cuisine = ", ".join(c[2] for c in (menu_profile.menu_glance(index.items).get("cuisine") or []))
+    # the restaurant as its DISHES say it — never the category picked in onboarding ("Cafe" for a Chinese place)
+    rtype = _restaurant_type(index)
+    kind = knowledge.type_title(rtype) if rtype != "general" else ", ".join(
+        c[2] for c in (menu_profile.menu_glance(index.items).get("cuisine") or []))
     return (
-        "# RESTAURANT\n" + render_restaurant({**(restaurant or {}), "type": cuisine}) + "\n\n"
+        "# RESTAURANT\n" + render_restaurant({**(restaurant or {}), "type": kind}) + "\n\n"
         "# MENU (ref name — price [tags; hints] · desc · choices)\n" + (render_catalog(index) or "(menu unavailable)") + "\n\n"
         "# PRICE GUIDE (per category: range, cheapest dishes)\n" + render_price_guide(index)
     )
@@ -6244,9 +6259,11 @@ async def _reply(
                          and bangla_meal.is_bhaat_house(index.items))
     # the cuisine's default day (knowledge/cuisines/*.md "Schedule"): what leads now — set menus and fried rice in a
     # Chinese café's morning, momos at four — and the dishes never eaten alone ("Needs a base": a masala with fried rice)
-    day_slot = knowledge.schedule_now(cuisines, int(lt_now.group(1)) * 60 + int(lt_now.group(2)) if lt_now else None)
+    # (by the restaurant's general TYPE — read from its menu, the same for every restaurant of that type)
+    rtype = _restaurant_type(index)
+    day_slot = knowledge.schedule_now(rtype, int(lt_now.group(1)) * 60 + int(lt_now.group(2)) if lt_now else None)
     _reco.SCHEDULE.set(day_slot)
-    _reco.BASES.set(knowledge.needs_base(cuisines))
+    _reco.BASES.set(knowledge.needs_base(rtype))
     # what the menu-data checks worked out for this turn — handed to the model to answer from (AI_FIRST)
     facts: List[str] = []
     if AI_FIRST:

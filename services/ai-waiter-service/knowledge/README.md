@@ -31,19 +31,21 @@ What a good waiter knows about it, in plain sentences.
   says X, reply Y". Each restaurant's own dishes, prices and hours come from its menu automatically.
 - Short beats long: a turn takes at most ~1,600 characters of triggered sections.
 
-## Data sections (read by the code, never pasted into the AI's instructions)
-A cuisine pack may have two sections the code reads — keep the line format exactly:
+## Restaurant types (knowledge/types/) — the day's schedule
+Every restaurant is ONE general type, read from its menu (never from the category picked in onboarding): the share of
+its dishes per cuisine decides it, so every restaurant of a type behaves the same. A type pack has three data sections,
+read by the code and never pasted into the AI's instructions — keep the line format exactly:
 
+    ## Detect
+    - all: chinese, fast food           (each at least 8% of the menu)   ·  "any: cafe, juice"  ·  "needs: rice house"
     ## Schedule
-    - morning 06:00-11:30: lead set menu, fried rice, soup; avoid sizzling, platter
-    - lunch 11:30-16:00: lead set menu, platter, fried rice
-    (…every time of day, wrapping past midnight is fine: "late night 22:30-06:00")
-
+    - morning 06:00-11:30: lead set menu, fried rice; avoid sizzling, platter
+    (…the whole day; past midnight is fine: "late night 22:30-06:00")
     ## Needs a base
     - masala, chili onion, curry -> fried rice, chowmein      (never alone: no base on now → not suggested)
     - kebab, chaap ~> naan, paratha                           (goes well with: named together when the base is on)
 
-`lead` / `avoid` / the words before and after the arrow are matched against each dish's name, section and kind (Bangla
-words anywhere inside, English words whole). The schedule decides what LEADS a recommendation at that time of day —
-what can be ordered still comes from the restaurant's own hours. A menu with several cuisines uses its main cuisine's
-time slots and adds the others' lead words.
+The best-matching type wins; none → general.md. `lead` / `avoid` / the words around the arrow are matched against each
+dish's name, section and kind (Bangla words anywhere inside, English words whole). The schedule decides what LEADS a
+suggestion at that time — what can be ordered still comes from the restaurant's own hours. A new kind of restaurant is
+a new type file. The cuisine packs (knowledge/cuisines/) hold what the dishes ARE, whatever the type.

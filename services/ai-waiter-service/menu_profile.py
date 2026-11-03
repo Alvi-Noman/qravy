@@ -120,6 +120,31 @@ def _text(it: Dict[str, Any]) -> str:
     return f"{it.get('name') or ''} {it.get('category') or ''}".lower()
 
 
+def _cuisine_counts(items: List[Dict[str, Any]]) -> List[int]:
+    """How many of the menu's dishes sound like each cuisine (in _CUISINES order).
+    (A Bangla-script menu is read through its dishes' English kind words — "কাবাব" is a kebab — and a Bengali rice
+    house, rice and its curries, is Bangladeshi: Bangla names never matched these English words, so a Bangla menu had
+    no cuisine and its cuisine knowledge never reached the waiter.)"""
+    from bangla_meal import is_bhaat_house, role
+    from waiter_knowledge import kind_text
+    texts = [f"{_text(it)} {kind_text(it).lower()}" for it in items]
+    counts = [sum(1 for t in texts if re.search(c[3], t)) for c in _CUISINES]
+    if is_bhaat_house(items):
+        b = next(i for i, c in enumerate(_CUISINES) if c[0] == "bangla")
+        counts[b] = max(counts[b], sum(1 for it in items if role(it)))
+    return counts
+
+
+def cuisine_shares(items: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """{"bangla": 0.62, "kabab": 0.11, …, "rice house": True} — the share of the menu that sounds like each cuisine,
+    and whether it's a Bengali rice house (rice and its curries): what picks the restaurant's TYPE (knowledge/types)."""
+    from bangla_meal import is_bhaat_house
+    n = max(1, len(items))
+    out: Dict[str, Any] = {c[0]: k / n for c, k in zip(_CUISINES, _cuisine_counts(items))}
+    out["rice house"] = is_bhaat_house(items)
+    return out
+
+
 def menu_glance(items: List[Dict[str, Any]], available: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
     """{"cuisine": [("chinese", "চাইনিজ", "Chinese")…], "kinds_bn": [...], "kinds_en": [...]} — cached per menu, so it
     is worked out once and again only when the menu (or what can be ordered) changes.
@@ -138,16 +163,7 @@ def menu_glance(items: List[Dict[str, Any]], available: Optional[List[Dict[str, 
     # cuisine: how many dishes sound like it. The top one, plus others that are a real part of the menu (at least
     # half as many dishes) — a family restaurant is "চাইনিজ, ইন্ডিয়ান ও ফাস্ট ফুড"; a kabab house with two naans
     # is just "কাবাব-গ্রিল"
-    # (a Bangla-script menu is read through its dishes' English kind words — "কাবাব" is a kebab — and a Bengali rice
-    # house, rice and its curries, is Bangladeshi: Bangla names never matched these English words, so a Bangla menu had
-    # no cuisine and its cuisine knowledge never reached the waiter)
-    from bangla_meal import is_bhaat_house, role
-    from waiter_knowledge import kind_text
-    cuisine_texts = [f"{t} {kind_text(it).lower()}" for t, it in zip(all_texts, items)]
-    counts = [sum(1 for t in cuisine_texts if re.search(c[3], t)) for c in _CUISINES]
-    if is_bhaat_house(items):
-        b = next(i for i, c in enumerate(_CUISINES) if c[0] == "bangla")
-        counts[b] = max(counts[b], sum(1 for it in items if role(it)))
+    counts = _cuisine_counts(items)
     scores = sorted(((counts[i], -i, c) for i, c in enumerate(_CUISINES)), key=lambda x: (-x[0], -x[1]))
     # (a real section of the menu — 9 Chinese dishes of a 76-dish café were "not its cuisine" at a fifth)
     floor = max(3, 0.1 * n)

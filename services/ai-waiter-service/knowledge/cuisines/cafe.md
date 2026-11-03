@@ -12,9 +12,3 @@ when: coffee, কফি, latte, cappuccino, espresso, americano, mocha, লা�
 ## Tea
 Many cafés have several teas (milk tea, masala, lemon, green, herbal). "চা" alone may need "which one?".
 when: tea, চা, cha, chai
-
-## Schedule
-- morning 06:00-11:30: lead sandwich, croissant, toast, breakfast, egg, pastry, set menu
-- lunch 11:30-16:00: lead sandwich, pasta, wrap, salad, rice bowl, set menu
-- afternoon 16:00-19:00: lead cake, brownie, pastry, cookie, waffle, sandwich, snack
-- evening 19:00-06:00: lead pasta, sandwich, platter, dessert

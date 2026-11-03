@@ -21,7 +21,7 @@ CAFE = MenuIndex([
     {"id": "we", "name": "Masala Wedges", "category": "Appetizers", "price": 159},
     {"id": "bu", "name": "Royal Juicy Burger", "category": "Fast Food", "price": 159},
 ])
-CUISINES = ["fast food", "chinese", "cafe"]
+TYPE = "chinese-fast-food-cafe"
 
 
 def setup_function():
@@ -36,17 +36,28 @@ def teardown_function():
 
 
 def _picks(minute, on=None, limit=4):
-    R.SCHEDULE.set(knowledge.schedule_now(CUISINES, minute))
-    R.BASES.set(knowledge.needs_base(CUISINES))
+    R.SCHEDULE.set(knowledge.schedule_now(TYPE, minute))
+    R.BASES.set(knowledge.needs_base(TYPE))
     picks, blocked = R.rank(CAFE, on or {}, ["breakfast", "lunch", "dinner"], R.GuestProfile(), limit=limit)
     return [p.item["id"] for p in picks], picks, blocked
 
 
-def test_every_cuisine_pack_has_a_day_that_parses():
-    for name in os.listdir(os.path.join(knowledge.ROOT, "cuisines")):
-        key = name[:-3]
-        day = [knowledge.schedule_now([key], m) for m in (9 * 60, 13 * 60, 17 * 60, 20 * 60, 23 * 60 + 30)]
-        assert all(day), f"{name}: a time of day with no schedule slot"
+def test_every_restaurant_type_has_a_whole_day_that_parses():
+    assert len(knowledge.type_keys()) >= 8
+    for key in knowledge.type_keys():
+        day = [knowledge.schedule_now(key, m) for m in (2 * 60, 9 * 60, 13 * 60, 17 * 60, 20 * 60, 23 * 60 + 30)]
+        assert all(day), f"{key}: a time of day with no schedule slot"
+
+
+def test_the_type_comes_from_the_menu_and_the_same_kind_of_place_gets_the_same_type():
+    # (two Chinese + fast-food cafés, one with more burgers, one with more Chinese dishes: the same type)
+    more_burgers = {"chinese": 0.14, "fast food": 0.27, "juice": 0.16}
+    more_chinese = {"chinese": 0.30, "fast food": 0.12, "cafe": 0.10}
+    assert knowledge.restaurant_type(more_burgers) == knowledge.restaurant_type(more_chinese) == "chinese-fast-food-cafe"
+    assert knowledge.restaurant_type({"fast food": 0.41, "juice": 0.29}) == "fast-food-shop"
+    assert knowledge.restaurant_type({"juice": 0.24, "fast food": 0.15}) == "cafe-and-drinks"
+    assert knowledge.restaurant_type({"bangla": 0.41, "kabab": 0.1, "rice house": True}) == "bangladeshi-rice-house"
+    assert knowledge.restaurant_type({"seafood": 0.03}) == "general"  # (nothing clear: a sensible default day)
 
 
 def test_the_morning_is_set_menus_and_fried_rice_and_the_afternoon_snacks():
@@ -68,7 +79,7 @@ def test_a_masala_is_never_suggested_alone():
 
 
 def test_a_kebab_goes_well_with_naan_but_is_still_a_kebab_without_it():
-    R.BASES.set(knowledge.needs_base(["bangla"]))
+    R.BASES.set(knowledge.needs_base("bangladeshi-rice-house"))
     ix = MenuIndex([{"id": "k", "name": "চিকেন চাপ মাসালা", "category": "কাবাব"},
                     {"id": "n", "name": "কাশ্মীরি নান", "category": "রুটি"},
                     {"id": "c", "name": "দেশি মুরগির ঝোল", "category": "কারি"},
