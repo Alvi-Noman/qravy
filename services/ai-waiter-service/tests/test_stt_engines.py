@@ -21,7 +21,11 @@ class R:
 
 def fake(responses, seen):
     async def post(self, url, data=None, files=None, headers=None, **k):
-        seen.append(list(data or []))
+        # (the real request is built: a body only a sync client can send failed every call in production for days —
+        # "Attempted to send an sync request with an AsyncClient instance" — while this fake said all was well)
+        req = self.build_request("POST", url, data=data, files=files, headers=headers)
+        assert isinstance(req.stream, httpx.AsyncByteStream), "a request body an AsyncClient can't send"
+        seen.append([(n, v[1]) for n, v in (files or []) if isinstance(v, tuple) and v[0] is None] + list(data or []))
         return responses.pop(0)
 
     async def get(self, url, headers=None, **k):

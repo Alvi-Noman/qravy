@@ -86,8 +86,12 @@ async def elevenlabs(pcm16: bytes, rate: int, keyterms: Optional[List[str]] = No
                                                ("tag_audio_events", "false")]
                 if keyterms and _keyterms_ok:
                     data += [("keyterms", k) for k in keyterms[:100]]
+                # every field as a form part — a LIST passed as `data` (needed for the repeated "keyterms") makes httpx
+                # build a sync-only body: every call failed with "sync request with an AsyncClient" and gpt-4o heard
+                # all guests (82 of 82 turns, Oct 31 – Nov 3)
+                parts = [(k, (None, v)) for k, v in data] + [("file", ("audio.wav", _wav(pcm16, rate), "audio/wav"))]
                 r = await c.post("https://api.elevenlabs.io/v1/speech-to-text", headers={"xi-api-key": ELEVEN_KEY},
-                                 data=data, files={"file": ("audio.wav", _wav(pcm16, rate), "audio/wav")})
+                                 files=parts)
                 low = r.text.lower()
                 if r.status_code in (400, 422) and "keyterm" in low and _keyterms_ok:
                     _keyterms_ok = False  # (a model / account without keyterms: plain from now on)
