@@ -171,5 +171,7 @@ def test_i_know_what_to_order_just_listens():
 
 def test_breakfast_leads_with_paratha_and_dal():
     out, _ = run("সকালে কি পাওয়া যায়?", BANGLA, at="Tue 08:30")
-    # a Bengali breakfast: the bread, and what it's eaten with
-    assert out["replyText"].startswith("সকালে পরোটা খেতে পারেন — সাথে ডাল"), out["replyText"]
+    # a Bengali breakfast: the bread, and what it's eaten with — the dal said on its own after the dishes (the owner's
+    # wording, 2026-11-04: "… নেহারি আছে। সাথে ডালও আছে।")
+    t = out["replyText"]
+    assert t.startswith("সকালে পরোটা খেতে পারেন — সাথে ") and "সাথে ডালও আছে" in t, t

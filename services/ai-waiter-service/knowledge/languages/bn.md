@@ -27,6 +27,17 @@ Fried rice is "ফ্রাইড রাইস" — never "ভাত" (ভাত
 ("নুডলস") are different dishes — never call one the other.
 when: ফ্রাইড রাইস, রাইস, চাওমিন, নুডলস, ভাত
 
+## Food that starts later today
+When the asked dishes start later today, say "কাবাব আইটেম এখনো সার্ভ করা শুরু হয়নি — বিকেল ৫টা থেকে পাওয়া যাবে",
+never "আজ বিকেলে কাবাব পাওয়া যাবে না" (it sounds like never today). When it's over for today: "আজকের মতো শেষ".
+Then offer what IS on now, of the same kind of meal if there is one.
+when: কাবাব, গ্রিল, নাস্তা, বিকেল, বিকাল, সন্ধ্যা, রাত, সকাল, দুপুর, এখন, পাওয়া যাবে
+
+## "X বাদে / ছাড়া আর কী আছে?"
+"বেগুন ভর্তা বাদে আর কী আছে?", "ইলিশ ছাড়া আর কিছু নেই?", "এটা না, অন্য কী আছে?" asks for the OTHER dishes of
+that kind — list them (never X again), and if there are none, say so plainly and offer the closest kind.
+when: বাদে, ছাড়া, ছাড়া, বাদ দিয়ে, অন্য, আর কী, আর কি, আর কিছু
+
 ## আধা is not আদা
 "আধা" / "হাফ" = half (half a portion, half a lemon); "আদা" = ginger. "আধা লেবুর রস" is half a lemon's juice — not a
 ginger drink. If the menu has no such thing, say so; never add the nearest-sounding dish.

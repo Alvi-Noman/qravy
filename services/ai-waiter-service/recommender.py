@@ -15,6 +15,7 @@ The LLM phrases things; this module decides what may be suggested.
 """
 from __future__ import annotations
 
+import contextvars
 import math
 import re
 from dataclasses import asdict, dataclass, field
@@ -28,6 +29,8 @@ from waiter_knowledge import MenuIndex, contents_text, is_dessert, is_side, is_s
 ALLERGENS = ("nuts", "shellfish", "fish", "egg", "dairy", "gluten", "mushroom", "sesame", "soy")
 DIETS = ("vegetarian", "vegan", "no_beef", "no_pork", "pescatarian", "halal")
 MOODS = ("light", "filling", "sharing", "quick")
+# this turn, the rice meal leads, not the time's own dishes (a Bengali rice house from 9pm — set by the brain per turn)
+RICE_FIRST: contextvars.ContextVar[bool] = contextvars.ContextVar("rice_first", default=False)
 SPICE = ("", "none", "mild", "medium", "hot")
 
 
@@ -538,11 +541,16 @@ def _score(it: Dict[str, Any], f: Dict[str, Any], prof: GuestProfile, kinds: Lis
         s += 1.5; reasons.append("mild")
     if "light" in prof.mood:
         # (a biryani, a khichuri, a nehari is never "something light" — it once was, at 4:30 in the afternoon)
-        heavy = f["heavy"] or bool(re.search(r"biry?ani|polao|pulao|tehari|khichuri|nehari|haleem|rezala|kacchi", f["text"]))
-        s += 2.5 if (f["starter"] or f["soup"]) and not heavy else (-2.5 if heavy else 0)
-        if f["soup"] or f["starter"]:
+        # (nor wings, burgers or fried chicken — Hot Wings were "a light snack" at a burger place that had fries)
+        said = f"{f['text']} {kind_text(it)}"  # (its kind in English too: "চিকেন বিরিয়ানি" is a biryani)
+        heavy = f["heavy"] or bool(re.search(r"biry?ani|polao|pulao|tehari|khichuri|nehari|haleem|rezala|kacchi|"
+                                             r"burger|slider|\bwings?\b|fried chicken|tenders?|nuggets?|strips?|"
+                                             r"tower|stack|steak|curry|grill", said))
+        small = f["starter"] or f["soup"] or f["side"] or bool(re.search(r"\bfries\b|onion rings?|salad|momo", said))
+        s += 2.5 if small and not heavy else (-4.0 if heavy else 0)
+        if small and not heavy:
             reasons.append("light")
-        if f["dessert"] or (f["drink"] and re.search(r"\btea\b|coffee|lassi|juice", f["text"])):
+        if f["dessert"] or (f["drink"] and re.search(r"\btea\b|coffee|lassi|juice|lemonade", f["text"])):
             s += 1.5  # a doi, a tea, a lassi: what "something light" is at a Bengali place in the afternoon
     if "filling" in prof.mood:
         s += 2.5 if (f["heavy"] or f["complete_meal"] or f["main"]) else -1.5
@@ -665,17 +673,33 @@ def rank(
             blocked[iid] = v
             continue
         s, why = _score(it, f, prof, kinds, stats, context_ids, recent)
+        # the food the restaurant serves at just ONE time of day (the evening's kebabs, the morning's breakfast) leads
+        # while it's on — a waiter names what's on now first (the kebab section never made the evening picks)
         if iid in asked_for:
             s += 6.0
         scored.append((Pick(it, s, why), f))
 
     # Maximal-marginal-relevance style diversification: vary category and protein
     picks: List[Pick] = []
+    # …but first the main dishes the restaurant serves at just ONE time of day, while they're on (the evening's
+    # kebabs, the morning's breakfast): a waiter leads with what's on now — the kebab section never made the evening
+    # picks, and the owner's rule is "kebabs lead, then the rice and curry"
+    if only is None and not asked_for and not RICE_FIRST.get():
+        timed = sorted((x for x in scored if len(x[0].item.get("periods") or []) == 1 and x[1]["main"]
+                        and not (x[1]["drink"] or x[1]["dessert"] or x[1]["side"])), key=lambda x: -x[0].score)
+        for p, f in timed:
+            if len(picks) >= min(3, limit):
+                break
+            if not any(str(q.item.get("name")).strip() == str(p.item.get("name")).strip() for q in picks):
+                picks.append(p)
+        scored = [x for x in scored if x[0] not in picks]
     # equally good dishes keep the menu's own order — never the alphabet (a Bangla menu once got five dishes starting with আ)
     last = len(index.position)
     pool = sorted(scored, key=lambda x: (-x[0].score, index.position.get(index.item_id(x[0].item), last)))
     used_cat: Dict[str, int] = {}
     used_protein: Dict[str, int] = {}
+    for p in picks:  # (the time's own dishes already in: the rest varies from them)
+        used_cat[str(p.item.get("category"))] = used_cat.get(str(p.item.get("category")), 0) + 1
     while pool and len(picks) < limit:
         best_i, best_val = 0, -1e9
         for i, (p, f) in enumerate(pool):

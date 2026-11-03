@@ -132,6 +132,9 @@ services:
       OPENAI_BASE: https://api.openai.com
       OPENAI_STT_MODEL: gpt-4o-transcribe
       OPENAI_CHAT_MODEL: ${OPENAI_CHAT_MODEL:-gpt-4.1}
+      # AI-first: the word-pattern answers become checked facts and the AI writes the reply (on for every restaurant,
+      # 2026-11-04; "0" turns it off again)
+      WAITER_AI_FIRST: ${WAITER_AI_FIRST:-1}
       INTENT_AI: "0"
       BRAIN_TIMEOUT_S: "12.0"
       BRAIN_MAX_TOKENS: "1800"
