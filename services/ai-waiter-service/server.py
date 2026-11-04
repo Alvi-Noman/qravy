@@ -37,7 +37,8 @@ SORRY_REPEAT = {
 
 # Bangla replies: dish names in Bangla script (set BN_SCRIPT_NAMES=0 to keep English names)
 BN_SCRIPT_NAMES = os.environ.get("BN_SCRIPT_NAMES", "1") == "1"
-from waiter_knowledge import meal_kinds, reply_language
+from waiter_knowledge import kind_text, meal_kinds, reply_language
+import bangla_meal
 from recommender import OrderStats
 import wait_time
 import wait_talk
@@ -53,6 +54,7 @@ from cart_store import save_cart, load_cart
 import upsell_stats
 import conversations
 import voice_clips
+import now_answers
 import stt_engines
 from availability import (
     DEFAULT_PERIODS,
@@ -680,6 +682,94 @@ async def handle_conversations(request: web.Request) -> web.Response:
         return web.json_response({"ok": False, "error": "conversations unavailable"}, status=500, headers=_CORS)
 
 
+# ---------- Settings → AI Waiter → What to eat now: the menu, the times and the waiter's own answers to start from ----------
+_NOW_SUGGESTED: Dict[Tuple[str, str], Tuple[float, Dict[str, Any]]] = {}
+NOW_SUGGESTED_TTL_S = 600
+
+
+def _dish_kind(it: Dict[str, Any]) -> str:
+    """A dish's kind for its backups: rice / fish / chicken / meat / side, else dessert, drink, snack or curry."""
+    role = bangla_meal.role(it)
+    if role:
+        return role
+    if bangla_meal._BREAD.search(str(it.get("name") or "")):
+        return "bread"  # (পরোটা's backup is another bread, not a dal)
+    words = kind_text(it).split()
+    return next((k for k in ("dessert", "drink", "snack", "side", "curry") if k in words), "")
+
+
+async def _now_answers_suggested(tenant: str, branch: Optional[str]) -> Dict[str, Any]:
+    key = (tenant, branch or "")
+    hit = _NOW_SUGGESTED.get(key)
+    if hit and time.monotonic() - hit[0] < NOW_SUGGESTED_TTL_S:
+        return hit[1]
+    import brain as _brain
+
+    # (the waiter's own answer — never the owner's saved one, and never a paid AI call)
+    profile = {**fetch_restaurant_profile(tenant, branch), "nowAnswers": {}}
+    tz = profile.get("tz") or DEFAULT_TZ
+    lang = profile.get("language") if profile.get("language") in ("bn", "en") else "bn"
+    today = local_now(tz).date()
+    items: List[Dict[str, Any]] = []
+    on: Dict[str, List[str]] = {}
+    suggested: Dict[str, List[List[Dict[str, Any]]]] = {}
+    token = _brain.NO_MODEL.set(True)
+    try:
+        for slot, at in now_answers.SAMPLE_AT.items():
+            h, m = map(int, at.split(":"))
+            local = datetime(today.year, today.month, today.day, h, m, tzinfo=ZoneInfo(tz))
+            now = local.astimezone(ZoneInfo("UTC"))
+            snap = await asyncio.to_thread(lambda: fetch_menu_snapshot(
+                tenant, limit=MENU_SNAPSHOT_MAX, branch=branch, lang=lang, now=now, check_orderable=False))
+            its = snap.get("items") or []
+            items = items or its
+            on[slot] = [str(i.get("id")) for i in its if i.get("available", True)]
+            ctx = build_runtime_context(tenant=tenant, branch=branch, channel=None, lang_hint=lang, dialog_state={},
+                                        user_tz=tz, user_local_hour=None)
+            _clock_context(ctx, profile, now)
+            try:
+                reply = await _brain.generate_reply(transcript="what can I eat now?", tenant=tenant, branch=branch,
+                                                    channel=None, locale=lang, menu_snapshot=snap, history=[],
+                                                    dialog_state={}, context=ctx, restaurant=profile, lock_language=True)
+                text = str(reply.get("replyText") or "")
+            except Exception as e:  # noqa: BLE001 — that time starts empty
+                print("[now-answers] suggested failed:", slot, repr(e)[:120])
+                text = ""
+            suggested[slot] = now_answers.as_lines(text, its, on[slot], bangla_meal.said_name, _dish_kind,
+                                                   lambda it: str(it.get("id")))
+    finally:
+        _brain.NO_MODEL.reset(token)
+    data = {
+        "slots": [{"key": k, "from": f"{s // 60:02d}:{s % 60:02d}", "to": f"{e // 60:02d}:{e % 60:02d}",
+                   "sampleAt": now_answers.SAMPLE_AT[k]} for k, s, e in now_answers.SLOTS],
+        "items": [{"id": str(i.get("id")), "name": i.get("name"), "category": i.get("category") or "",
+                   "price": i.get("price"), "said": bangla_meal.said_name(i), "kind": _dish_kind(i)} for i in items],
+        "on": on,
+        "suggested": suggested,
+    }
+    _NOW_SUGGESTED[key] = (time.monotonic(), data)
+    return data
+
+
+async def handle_now_answers(request: web.Request) -> web.Response:
+    """GET /now-answers?tenant=<subdomain>[&branch=<id>] — owners and admins: the menu (each dish as it's said, its
+    kind), the times of day, which dishes are on at each, and the waiter's own answer for each as the owner's starting
+    point. (The owner's saved answers come and go with the restaurant's settings, like the upsell rules.)"""
+    q = request.rel_url.query
+    tenant = q.get("tenant", "").strip()
+    if not tenant:
+        return web.json_response({"ok": False, "error": "tenant required"}, status=400, headers=_CORS)
+    denied = await require_staff_of(request, tenant, roles=("owner", "admin"))
+    if denied is not None:
+        return denied
+    try:
+        data = await _now_answers_suggested(tenant, q.get("branch", "").strip() or None)
+        return web.json_response({"ok": True, **data}, headers=_CORS)
+    except Exception as e:
+        print("[now-answers] failed:", repr(e))
+        return web.json_response({"ok": False, "error": "unavailable"}, status=500, headers=_CORS)
+
+
 async def handle_alert_options(request: web.Request) -> web.Response:
     return web.Response(status=204, headers={
         "Access-Control-Allow-Origin": "*",
@@ -765,6 +855,7 @@ async def start_http_server():
     app.router.add_route("OPTIONS", "/alert/dismiss", handle_alert_options)
     app.router.add_route("OPTIONS", "/upsell/stats", handle_alert_options)
     app.router.add_route("OPTIONS", "/conversations", handle_alert_options)
+    app.router.add_route("OPTIONS", "/now-answers", handle_alert_options)
     app.router.add_route("OPTIONS", "/stt-test", handle_alert_options)
     app.router.add_route("OPTIONS", "/voice-clip", handle_alert_options)
 
@@ -776,6 +867,7 @@ async def start_http_server():
     app.router.add_post("/internal/alert/trigger", handle_alert_trigger)
     app.router.add_get("/upsell/stats", handle_upsell_stats)
     app.router.add_get("/conversations", handle_conversations)
+    app.router.add_get("/now-answers", handle_now_answers)  # (Settings → AI Waiter → What to eat now)
     app.router.add_post("/stt-test", handle_stt_test)  # the mic test page (temporary)
     app.router.add_get("/voice-clip", handle_voice_clip)
 
@@ -1776,7 +1868,7 @@ def fetch_restaurant_profile(tenant: Optional[str], branch: Optional[str] = None
             menu_db = _CLIENT[MENU_DB_NAME]
             t = menu_db["tenants"].find_one(
                 {"_id": tenant_oid},
-                {"name": 1, "restaurantInfo": 1, "menuNotes": 1, "waiterKnowledge": 1, "timezone": 1, "openingHours": 1, "servicePeriods": 1, "kitchen": 1, "waiterLanguage": 1, "waiterName": 1, "customAnswers": 1, "upsellRules": 1, "suggestRules": 1},
+                {"name": 1, "restaurantInfo": 1, "menuNotes": 1, "waiterKnowledge": 1, "timezone": 1, "openingHours": 1, "servicePeriods": 1, "kitchen": 1, "waiterLanguage": 1, "waiterName": 1, "customAnswers": 1, "upsellRules": 1, "suggestRules": 1, "nowAnswers": 1},
             ) or {}
             info = t.get("restaurantInfo") or {}
             opening = t.get("openingHours") or []
@@ -1809,6 +1901,8 @@ def fetch_restaurant_profile(tenant: Optional[str], branch: Optional[str] = None
                          "itemIds": [str(i) for i in r.get("itemIds") or []][:8], "on": r.get("on", True) is not False}
                         for r in (t.get("suggestRules") or [])[:50] if isinstance(r, dict)
                     ],
+                    # the owner's own "what can I eat now?" for each time of day (Settings → AI Waiter → What to eat now)
+                    "nowAnswers": now_answers.clean(t.get("nowAnswers")),
                     "tz": t.get("timezone") or DEFAULT_TZ,
                     "periods": t.get("servicePeriods") if isinstance(t.get("servicePeriods"), list) else DEFAULT_PERIODS,
                     "kitchen": wait_time.kitchen_settings(t),
@@ -2070,6 +2164,19 @@ async def call_staff_via_api(
 
 # ---------- One guest turn (text → waiter reply) ----------
 
+def _clock_context(ctx: Dict[str, Any], profile: Dict[str, Any], now: Optional[datetime]) -> None:
+    """The restaurant's clock into the turn: its local time, time of day, meal period, open or not."""
+    if profile.get("tz"):
+        # recommendations follow the restaurant's clock, not the guest's phone
+        now_local = local_now(profile["tz"], now)
+        ctx["localTime"] = now_local.strftime("%a %H:%M")
+        ctx["timeOfDay"] = _time_of_day_for_tz(profile["tz"], now_local.hour)
+        ctx["mealPeriod"], period_names = current_meal_period(profile.get("periods") or DEFAULT_PERIODS, profile["tz"], now)
+        ctx["mealKinds"] = meal_kinds(period_names, now_local.hour)
+    if profile.get("opening"):
+        ctx["openNow"] = is_within(profile["opening"], profile.get("tz"), now)
+
+
 async def run_text_turn(
     *,
     text: str,
@@ -2131,15 +2238,7 @@ async def run_text_turn(
         user_tz=user_tz or profile.get("tz"),
         user_local_hour=user_local_hour,
     )
-    if profile.get("tz"):
-        # recommendations follow the restaurant's clock, not the guest's phone
-        now_local = local_now(profile["tz"], now)
-        ctx["localTime"] = now_local.strftime("%a %H:%M")
-        ctx["timeOfDay"] = _time_of_day_for_tz(profile["tz"], now_local.hour)
-        ctx["mealPeriod"], period_names = current_meal_period(profile.get("periods") or DEFAULT_PERIODS, profile["tz"], now)
-        ctx["mealKinds"] = meal_kinds(period_names, now_local.hour)
-    if profile.get("opening"):
-        ctx["openNow"] = is_within(profile["opening"], profile.get("tz"), now)
+    _clock_context(ctx, profile, now)
 
     if cart_items is None:
         cart_items = load_cart(tenant or "unknown", session_id or "anon", branch) or []

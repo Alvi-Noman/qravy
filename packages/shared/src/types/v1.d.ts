@@ -209,6 +209,7 @@ export interface TenantBilling {
     daysLeft: number | null;
     status: 'none' | 'trial' | 'active' | 'due' | 'overdue';
 }
+export type NowAnswerToken = { t: 'text'; v: string } | { t: 'dish'; id: string; backups: string[]; say: string };
 export interface TenantDTO {
     id: string;
     name: string;
@@ -245,6 +246,7 @@ export interface TenantDTO {
     upsellRules?: Array<{ whenItemIds: string[]; whenCategories: string[]; offerItemIds: string[]; on: boolean }>;
     /** The owner's picks: a guest asks for one of these words → the waiter shows these dishes, in this order */
     suggestRules?: Array<{ phrases: string[]; itemIds: string[]; on: boolean }>;
+    nowAnswers?: Partial<Record<'morning' | 'lunch' | 'evening' | 'night', { lines: NowAnswerToken[][]; updatedAt?: string } | null>>;
     /** The plan and what the restaurant pays Qravy, until when, and the status (a reminder when due/overdue) */
     billing?: TenantBilling;
     /** IANA time zone for all hours (e.g. "Asia/Dhaka") */

@@ -26,6 +26,7 @@ import {
   MagnifyingGlassIcon,
   ClockIcon,
   ArrowTrendingUpIcon,
+  ChatBubbleLeftEllipsisIcon,
 } from '@heroicons/react/24/outline';
 
 type NavItem = {
@@ -45,6 +46,7 @@ const items: NavItem[] = [
   { name: 'Organization & Branding', to: '/settings/branding', icon: BuildingOffice2Icon },
   { name: 'AI Waiter', to: '/settings/ai-waiter', icon: SparklesIcon },
   { name: 'Upsell & picks', to: '/settings/upsell', icon: ArrowTrendingUpIcon },
+  { name: 'What to eat now', to: '/settings/what-to-eat', icon: ChatBubbleLeftEllipsisIcon },
   { name: 'Guest messages', to: '/settings/guest-messages', icon: ChatBubbleBottomCenterTextIcon },
   { name: 'Domain', to: '/settings/domain', icon: GlobeAltIcon },
   { name: 'Security & Sessions', to: '/settings/Security', icon: ShieldCheckIcon },

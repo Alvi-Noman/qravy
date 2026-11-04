@@ -1,6 +1,10 @@
 // apps/braincell/src/api/tenant.ts
 import api from './auth';
-import type { TenantDTO } from '../../../../packages/shared/src/types/v1';
+import type { NowAnswerToken, TenantDTO } from '../../../../packages/shared/src/types/v1';
+
+/** The times of day the owner writes "what can I eat now?" for (Settings → AI Waiter → What to eat now). */
+export type NowSlot = 'morning' | 'lunch' | 'evening' | 'night';
+export type { NowAnswerToken };
 
 /**
  * Fetch the current tenant for the logged-in user.
@@ -172,6 +176,7 @@ export async function updateTenant(
     customAnswers?: Array<{ question: string; answer: string }>;
     upsellRules?: Array<{ whenItemIds: string[]; whenCategories: string[]; offerItemIds: string[]; on: boolean }>;
     suggestRules?: Array<{ phrases: string[]; itemIds: string[]; on: boolean }>;
+    nowAnswers?: Partial<Record<NowSlot, { lines: NowAnswerToken[][] } | null>>;
   },
   token: string
 ): Promise<TenantDTO> {

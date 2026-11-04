@@ -56,6 +56,7 @@ import menu_answers
 import bhorta_bhaji
 import pairing
 import knowledge
+import now_answers
 import menu_profile
 import reco_format
 import intent as intent_mod
@@ -107,6 +108,8 @@ BRAIN_CONNECT_S = float(os.environ.get("BRAIN_CONNECT_S", "3.0"))
 # every turn is answered within this — the AI's calls and retries share it, the fallback reply comes after it
 TURN_BUDGET_S = float(os.environ.get("TURN_BUDGET_S", "20"))
 _DEADLINE: contextvars.ContextVar = contextvars.ContextVar("turn_deadline", default=None)
+# no AI for this call (the admin's suggested answers are the waiter's own words, never a paid call): it fails at once
+NO_MODEL: contextvars.ContextVar = contextvars.ContextVar("no_model", default=False)
 # OpenAI's thinking models (gpt-5 on, o-series) take max_completion_tokens and a reasoning effort instead of
 # max_tokens / temperature — "none" answers straight away, as fast as a 4.1
 REASONING_MODEL = OPENAI_BASE == "https://api.openai.com" and bool(re.match(r"(gpt-[5-9]|o\d)", OPENAI_CHAT_MODEL))
@@ -715,6 +718,8 @@ async def _read_menu(messages: List[Dict[str, str]]) -> str:
 
 async def _call_openai(messages: List[Dict[str, str]]) -> str:
     global _structured_ok, _CACHE_KEY_OK
+    if NO_MODEL.get():
+        raise RuntimeError("no model for this call")
     if not OPENAI_API_KEY:
         raise RuntimeError("OPENAI_API_KEY is not set")
 
@@ -7388,12 +7393,22 @@ async def _reply(
                 and not re.search(r"শেষ হয়ে গেছে|sold out", str(it.get("unavailableReason") or ""), re.I)]
         period_menu = _between_meals(index, orderable, list((menu_snapshot or {}).get("periods") or []),
                                      int(lt.group(1)) * 60 + int(lt.group(2)), bn, live)
+    # the owner's own answer for this time of day (Settings → AI Waiter → What to eat now) — said as they wrote it, each
+    # dish the first of its choices that can be ordered now; only for "what's on now?" with nothing more in it
+    now_min = int(lt.group(1)) * 60 + int(lt.group(2)) if lt else None
+    mine = now_answers.clean((restaurant or {}).get("nowAnswers")).get(now_answers.slot_of(now_min) or "")
+    if (mine and stage in ("none", "readback") and not tstate.get("pending") and not at_time and not side_ans
+            and not any(v for v in extract_prefs(transcript).to_dict().values())
+            and (_plain_pick_ask(transcript, index) or (period_menu is not None and not kind_scope))):
+        said_now = now_answers.render(mine, index.by_id, lambda i: orderable.get(i, True), bangla_meal.said_name)
+        if said_now:
+            period_menu = (said_now[0], [_suggestion_row(index.by_id[i]) for i in said_now[1]], "owner_now_answer")
     if AI_FIRST:
         # the owner's own words at a Bengali rice house — "এখন ভাত খেতে পারেন, ভাতের সাথে মাছের মধ্যে …", the kebabs
         # first in the evening — said as they are (the AI, given them as a fact, wrote its own: "এখন সাদা ভাত (মিনিকেট)
         # এর সাথে হাওরের বোয়াল মাছ…"); nothing more in the question than what's on (no taste, budget, people…)
-        own_words = (period_menu and bangla_meal.is_bhaat_house(index.items)
-                     and not any(v for v in extract_prefs(transcript).to_dict().values()))
+        own_words = period_menu and (period_menu[2] == "owner_now_answer" or (
+            bangla_meal.is_bhaat_house(index.items) and not any(v for v in extract_prefs(transcript).to_dict().values())))
         if period_menu and not own_words:
             facts.append("What is served at the time asked (from the restaurant's own hours): " + period_menu[0])
             period_menu = None
