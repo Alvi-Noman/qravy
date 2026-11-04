@@ -53,8 +53,9 @@ def test_the_same_opening_question_in_the_same_situation_is_answered_without_the
     out2, n2 = ask("এখন কি খেতে পারি?", at="19:52")  # (another minute of the same hour)
     assert (n1, n2) == (1, 0)
     assert out2["replyText"] == out1["replyText"] and "saved_answer" in out2["meta"]["guards"]
-    # (other words for it are told the AI differently — "answer" vs "recommend" mode — so they keep their own answer)
-    assert [ask("এখন কি খাওয়া যেতে পারে?")[1] for _ in range(2)] == [1, 0]
+    # (the same question in other words is the same answer — "খেতে পারি", "খাওয়া যেতে পারে", "কি খাব"…)
+    for said in ["এখন কি খাওয়া যেতে পারে?", "এখন কি খেতে পারবো?", "কি খাব এখন?", "খাওয়ার মত কি আছে?"]:
+        assert ask(said)[1] == 0, said
 
 
 def test_a_different_situation_asks_the_ai():

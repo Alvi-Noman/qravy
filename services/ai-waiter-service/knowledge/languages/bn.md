@@ -31,7 +31,7 @@ when: ফ্রাইড রাইস, রাইস, চাওমিন, নু�
 When the asked dishes start later today, say "কাবাব আইটেম এখনো সার্ভ করা শুরু হয়নি — বিকেল ৫টা থেকে পাওয়া যাবে",
 never "আজ বিকেলে কাবাব পাওয়া যাবে না" (it sounds like never today). When it's over for today: "আজকের মতো শেষ".
 Then offer what IS on now, of the same kind of meal if there is one.
-when: কাবাব, গ্রিল, নাস্তা, বিকেল, বিকাল, সন্ধ্যা, রাত, সকাল, দুপুর, এখন, পাওয়া যাবে
+when: কাবাব, গ্রিল, নাস্তা, বিকেল, বিকাল, সন্ধ্যা, রাত, সকাল, দুপুর, এখন, পাওয়া যাবে, খাওয়ার মত, খাওয়ার মত, খাওয়া যা, খাওয়া যা, কি খাব, কী খাব, খেতে পার, what can i eat, what should i eat, what to eat
 
 ## "X বাদে / ছাড়া আর কী আছে?"
 "বেগুন ভর্তা বাদে আর কী আছে?", "ইলিশ ছাড়া আর কিছু নেই?", "এটা না, অন্য কী আছে?" asks for the OTHER dishes of

@@ -4879,7 +4879,7 @@ _WHEN_SAID = (
 # "… কি আছে / কী পাওয়া যায় / কি খাওয়া যাবে?", "what's on…", "what can I eat…" — asks what is served
 # "এখানে খাওয়া যেতে পারে?", "কি খাবো?", "what can I eat?" — asks what there is to EAT (now, unless a time is said)
 _EAT_ASK = re.compile(
-    r"খাওয়া\s*যে(তে|ত)\s*পারে|খাওয়া\s*যে(তে|ত)\s*পারে|খাও\s*যে(তে|ত)\s*পারে|খেতে পারি|খাওয়া যায়|খাওয়া যায়|"
+    r"খাওয়া\s*যে(তে|ত)\s*পারে|খাওয়া\s*যে(তে|ত)\s*পারে|খাও\s*যে(তে|ত)\s*পারে|খেতে পার(ি|বো|ব)|খাওয়া যায়|খাওয়া যায়|"
     r"(?<![ঀ-৿])(কি|কী)\s*খাব|(?<![ঀ-৿])(কি|কী)\s*খাবো|খাওয়ার মত (কি|কী)|খাওয়ার মত (কি|কী)|"
     r"\bwhat (can|should|could) (i|we) (eat|have)\b|\bki khabo\b|\bkhawa jete pare\b|"
     # speech-to-text: "এখন কি খেতে পারি?" heard as "এখন ঠিক হতে পারি।"

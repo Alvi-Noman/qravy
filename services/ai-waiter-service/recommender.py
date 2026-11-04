@@ -1004,7 +1004,7 @@ _ASKS = re.compile(
     r"(today'?s|house|chef'?s) special|specials\b|don'?t know what|can'?t decide|help me (choose|decide|pick)|"
     r"what to (eat|order|get|have)|what can (i|we) (eat|have|get)|something (light|spicy|mild|filling|to eat|for|good|nice|different)|"
     r"anything good|what (goes|pairs) (well )?with|what else|(i'?m|we'?re) (hungry|starving)|"
-    r"কি খা|কী খা|সাজেস্ট|রেকমেন্ড|ভালো (কি|কী)|(কি|কী) ভালো|কোনটা ভালো|কী নেব|কি নেব|কি অর্ডার|কী অর্ডার|কি নেওয়া|কী নেওয়া|"
+    r"কি খা|কী খা|(কি|কী)\s*খেতে\s*পার|খাওয়ার মত|সাজেস্ট|রেকমেন্ড|ভালো (কি|কী)|(কি|কী) ভালো|কোনটা ভালো|কী নেব|কি নেব|কি অর্ডার|কী অর্ডার|কি নেওয়া|কী নেওয়া|"
     r"ভালো (কিছু|খাবার|খাওয়া)|ভালো\s+\S{1,6}\s+(আছে|হবে)|স্পেশাল (কি|কী)|মজার (কি|কী|কিছু)|বেস্ট|সেরা|"
     r"ki khabo|ki khai|ki khawa|suggest koro|kon ?ta (valo|bhalo)|ki nibo|ki order|(valo|bhalo) (ki|kichu)|ki (valo|bhalo)|"
     # a craving is a request too: "হালকা কিছু খেতে যাচ্ছি", "ঝাল কিছু দিন", "কিছু খেতে চাই", "halka kichu"
