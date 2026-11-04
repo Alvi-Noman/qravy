@@ -4334,6 +4334,32 @@ def _reco_fallback(pool: List[Dict[str, Any]], lang: str, ctx: Dict[str, Any]) -
     return f"Right now{when}, I'd suggest {listed}. Would you like to order?"
 
 
+def _mend_unavailable(text: str, bad: List[Dict[str, Any]], index: MenuIndex, orderable: Dict[str, bool]) -> Optional[str]:
+    """The reply named a dish that can't be had now — fixed here instead of asking the AI again (4–5 s more, Nov 4:
+    "ভর্তা-ভাজিও আছে" with ভাজি sold out, "পরোটা" at night — the breakfast one): a dish on now whose name holds it says
+    it instead (প্যাঁচ পরোটা), else the sentences naming only that dish go. None when a dish that IS on would go too."""
+    out = text
+    for it in bad:
+        core = re.sub(r"\s*\(.*?\)", " ", str(it.get("name") or "")).strip()
+        twin = next((bangla_meal.said_name(x) for x in index.items if x is not it and orderable.get(index.item_id(x), True)
+                     and f" {core} " in f" {bangla_meal.said_name(x)} "), None)
+        # (not in a pair of words — "ভর্তা-ভাজি" is a kind of food, not a dish to swap: that sentence goes)
+        paired = re.search(rf"-\s*{re.escape(core)}|{re.escape(core)}\s*-", out)
+        if twin and twin not in out and not paired:
+            out = twin.join(part.replace(core, twin) for part in out.split(twin))
+            continue
+        keep = []
+        for s in re.split(r"(?<=[.!?।])\s+", out):
+            if not _reply_mentions(s, core):
+                keep.append(s)
+            elif any(x is not it and orderable.get(index.item_id(x), True) for x in find_mentions(s, index, limit=6)):
+                return None  # (that sentence offers a dish that IS on as well)
+        out = " ".join(keep).strip()
+    if not out or any(it in find_mentions(out, index, limit=8) for it in bad):
+        return None
+    return out
+
+
 def _reply_mentions(reply: str, name: str) -> bool:
     r = reply.lower()
     n = name.lower()
@@ -7997,6 +8023,11 @@ async def _reply(
         bad_reco = reco_problems(obj)
         if bad_reco:
             issues.append("; ".join(bad_reco) + " — recommend from RANKED PICKS instead.")
+        # (just a dish that isn't on now — mended below without asking again, when it's the only problem)
+        off_named = [index.resolve(None, p.split(" isn't right for this guest now")[0]) for p in bad_reco
+                     if " isn't right for this guest now (not orderable now)" in p]
+        off_only = len(off_named) == len(bad_reco) and all(off_named)
+        mendable = set(issues[-1:]) if bad_reco else set()
         wrongly_out = false_unavailable(first_reply)
         if wrongly_out:
             issues.append(
@@ -8019,6 +8050,7 @@ async def _reply(
                           for it in wrongly_in)
                 + " — never say it's available now; say when it is, and offer what can be ordered now."
             )
+            mendable.add(issues[-1])
         # a table plan must come with its total (and the total must match the dishes — checked above)
         if plan and price_talk and (not obj.get("cartOps") or _is_question_not_order(transcript)):
             plan_ids = {l["itemId"] for l in plan["lines"]}
@@ -8089,6 +8121,14 @@ async def _reply(
                 "which choice (list the options with prices). Don't say anything was added."
             )
         guards += [tag for needle, tag in _GUARD_TAGS if any(needle in i for i in issues)]
+        # the only problem: a dish that isn't on now, named in passing → mend the sentence (no second call, 4–5 s)
+        only_off = bool(issues) and off_only and not obj.get("cartOps") and set(issues) <= mendable
+        mended = _mend_unavailable(first_reply, list({index.item_id(x): x for x in off_named + wrongly_in}.values()),
+                                   index, orderable) if only_off else None
+        if mended:
+            print("[brain] self-check: a dish not on now, mended without asking again:", issues)
+            obj["replyText"], issues = mended, []
+            guards.append("unavailable_mended")
         if issues and not clean_ops:
             # one self-correction pass: a wrong or missing number is worse than a slightly slower answer
             print("[brain] self-check:", issues)

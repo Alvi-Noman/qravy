@@ -85,7 +85,10 @@ async def elevenlabs(pcm16: bytes, rate: int, keyterms: Optional[List[str]] = No
                 data: List[Tuple[str, str]] = [("model_id", _eleven_model), ("language_code", language),
                                                ("tag_audio_events", "false")]
                 if keyterms and _keyterms_ok:
-                    data += [("keyterms", k) for k in keyterms[:100]]
+                    # (at most 5 words each — one longer dish name and Scribe refused the whole call: "Each keyword can
+                    # contain at most 4 spaces", every turn, Nov 4 — gpt-4o heard them all)
+                    short = [k for k in keyterms if len(k.split()) <= 5]
+                    data += [("keyterms", k) for k in short[:100]]
                 # every field as a form part — a LIST passed as `data` (needed for the repeated "keyterms") makes httpx
                 # build a sync-only body: every call failed with "sync request with an AsyncClient" and gpt-4o heard
                 # all guests (82 of 82 turns, Oct 31 – Nov 3)

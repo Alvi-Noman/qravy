@@ -1509,6 +1509,44 @@ def fetch_menu_snapshot(
         }
 
 
+# The menu for a guest's turn, read while they're still talking: the mic's hello starts it (prefetch_menu), so the
+# turn finds it ready — it was read after their words, ~3.4 s of every turn (the database, the orderable check).
+_SNAP: Dict[Tuple[str, str, str, str], Tuple[float, Dict[str, Any]]] = {}
+SNAP_FRESH_S = float(os.environ.get("MENU_SNAPSHOT_FRESH_S", "20"))  # a turn takes it up to this old
+SNAP_PREFETCH_S = 5.0  # the mic opening reads it again when older than this (a sold-out switch shows on the next turn)
+
+
+def menu_now(tenant: Optional[str], branch: Optional[str], channel: Optional[str], lang: Optional[str],
+             fresh_s: float = SNAP_FRESH_S) -> Dict[str, Any]:
+    """fetch_menu_snapshot for a guest's turn (the real clock), kept `fresh_s` — a copy: the turn changes its items."""
+    import copy
+
+    key = (str(tenant or ""), str(branch or ""), str(channel or ""), str(lang or ""))
+    hit = _SNAP.get(key)
+    if not hit or time.monotonic() - hit[0] > fresh_s:
+        snap = fetch_menu_snapshot(tenant, limit=MENU_SNAPSHOT_MAX, branch=branch, channel=channel, lang=lang,
+                                   check_orderable=True)
+        if not snap.get("items"):
+            return snap  # (never kept: an empty read may be a hiccup)
+        hit = (time.monotonic(), snap)
+        _SNAP[key] = hit
+    return copy.deepcopy(hit[1])
+
+
+def prefetch_menu(tenant: Optional[str], branch: Optional[str], channel: Optional[str], lang: Optional[str]) -> None:
+    """The mic opened: read the menu now, in the background, while the guest speaks."""
+    if not tenant:
+        return
+
+    def run() -> None:
+        try:
+            menu_now(tenant, branch, channel, lang, fresh_s=SNAP_PREFETCH_S)
+        except Exception as e:  # noqa: BLE001 — the turn reads it itself then
+            print("[ai-waiter-service] menu prefetch failed:", repr(e)[:120])
+
+    asyncio.get_event_loop().run_in_executor(None, run)
+
+
 def bangla_menu_words(snapshot: Dict[str, Any]) -> List[str]:
     """Every word of the menu's dish names as a Bangla speaker says it ("Onion Ring" → অনিয়ন, রিং)."""
     from bn_translit import word_to_bn
@@ -2066,8 +2104,10 @@ async def run_text_turn(
     t_start = time.monotonic()
     lang = locale if lock_language and locale in ("bn", "en") else reply_language(text, locale)
     # (in a worker thread: its database reads and the orderable check never hold up other guests' turns)
-    snapshot = await asyncio.to_thread(lambda: fetch_menu_snapshot(
+    # (read while the guest was talking — prefetch_menu; a test's own clock reads it fresh)
+    snapshot = await asyncio.to_thread(lambda: menu_now(tenant, branch, channel, lang) if now is None else fetch_menu_snapshot(
         tenant, limit=MENU_SNAPSHOT_MAX, branch=branch, channel=channel, lang=lang, now=now, check_orderable=True))
+    t_menu = time.monotonic()
     vocab = build_vocab_from_snapshot(snapshot)
     # (Bangla word-snapping is OFF: it cut Bangla vowel signs off as punctuation and garbled correct words —
     # "সিজলিং" → "সিজলিংিং", "চিকেনটা" → "চিকেনা". gpt-4o-transcribe + the menu hint already write dish names right.)
@@ -2244,6 +2284,7 @@ async def run_text_turn(
         # where the turn's time went (menu/db prep → model → order placing & post-processing)
         "timingMs": {
             "prep": int((t_brain - t_start) * 1000),
+            "menu": int((t_menu - t_start) * 1000),  # (of prep: the menu — ~0 when read while they spoke)
             "brain": int((t_post - t_brain) * 1000),
             "post": int((time.monotonic() - t_post) * 1000),
         },
@@ -2518,6 +2559,8 @@ async def handle_conn(ws: WebSocketServerProtocol):
                     fulfillment_hint = data["fulfillment"]
                 if isinstance(data.get("orderNote"), str):
                     order_note_hint = data["orderNote"].strip()[:500] or None
+                # the menu is read now, while they speak — the turn finds it ready
+                prefetch_menu(tenant_hint, branch_hint, channel_hint, session_lang)
 
                 # hands-free: end the turn when the guest stops talking; `listenMs` = a listen window after a
                 # question (nobody speaks → closed quietly)
@@ -2837,7 +2880,7 @@ async def handle_conn(ws: WebSocketServerProtocol):
                     tm = turn.get("timingMs") or {}
                     print(
                         f"[timing] stt={int((t_stt - t_turn) * 1000)}ms ({stt_engine}) "
-                        f"prep={tm.get('prep')}ms brain={tm.get('brain')}ms "
+                        f"prep={tm.get('prep')}ms (menu {tm.get('menu')}ms) brain={tm.get('brain')}ms "
                         f"post={tm.get('post')}ms total={int((time.monotonic() - t_turn) * 1000)}ms"
                     )
                 except Exception as e:

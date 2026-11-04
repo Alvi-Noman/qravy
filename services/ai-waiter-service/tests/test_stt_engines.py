@@ -81,3 +81,14 @@ def test_the_credits_for_cortex(monkeypatch):
     monkeypatch.setattr(httpx.AsyncClient, "get", get)
     asyncio.run(stt_engines.refresh_status(Db()))
     assert saved["left"] == 500 and saved["low"] is True and saved["out"] is False and saved["tier"] == "free"
+
+
+def test_a_dish_name_over_five_words_is_left_out_of_the_keyterms(monkeypatch):
+    # Scribe refused every call: "Each keyword can contain at most 4 spaces, but some contain 5" (Nov 4)
+    monkeypatch.setattr(stt_engines, "_keyterms_ok", True)
+    monkeypatch.setattr(stt_engines, "_eleven_model", "scribe_v2")
+    long_name = "চিকেন চাপ মাসালা উইথ বাটার নান"
+    (text, err), seen = run([R(200, "", {"text": "একটা ভাত দাও"})], ["ভাত", long_name], monkeypatch)
+    assert (text, err) == ("একটা ভাত দাও", "")
+    sent = [v for k, v in seen[0] if k == "keyterms"]
+    assert sent == ["ভাত"] and all(v.count(" ") <= 4 for v in sent)
