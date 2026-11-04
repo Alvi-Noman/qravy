@@ -118,3 +118,30 @@ def test_the_morning_says_the_dals_on_their_own():
     assert "সাথে বুটের ডাল আর মুগ ডালও আছে" in said(set())
     assert "সাথে মুগ ডালও আছে" in said({"d1"}) and "বুটের" not in said({"d1"})
     assert "ডাল" not in said({"d1", "d2"}) and "নেহারি" in said({"d1", "d2"})
+
+
+def test_a_kind_not_served_yet_is_on_the_menu_from_its_time():
+    # "কাবাব আইটেমের মধ্যে কি কি আছে?" at 16:27 got "আমাদের মেনুতে কাবাব আইটেম নেই" (they start at 17:01)
+    periods = [{"id": "lunch", "name": "Lunch", "start": "12:02", "end": "17:00"},
+               {"id": "afternoon", "name": "Evening", "start": "17:01", "end": "22:00"}]
+    ix = MenuIndex([{"id": "k1", "name": "বিফ শিক কাবাব", "category": "কাবাব", "periods": ["afternoon"]},
+                    {"id": "k2", "name": "আফগানি কাবাব", "category": "কাবাব", "periods": ["afternoon"]}])
+    fact = brain._later_today_fact({"k1", "k2"}, ix, {"k1": False, "k2": False}, periods, 16 * 60 + 27)
+    assert fact and "5pm" in fact[0] and "never that the menu doesn't have them" in fact[0]
+    assert brain._later_today_fact({"k1", "k2"}, ix, {"k1": True, "k2": True}, periods, 18 * 60) == []  # (on now)
+
+
+def test_one_of_a_kind_in_an_order_is_asked_which():
+    # "একটা ভর্তা আর একটা দেশি মুরগির ঝোল দাও" — the ঝোল added, the ভর্তা forgotten
+    fact = brain._which_one_fact("একটা ভর্তা আর একটা দেশি মুরগির ঝোল দাও।", MENU, ON)
+    assert len(fact) == 1 and "বেগুন ভর্তা" in fact[0] and "আলু ভর্তা" in fact[0] and "ঝোল" not in fact[0].split("(")[1]
+    assert brain._which_one_fact("একটা ভাত দাও আর একটা ছোট মাছ দাও।", MENU, ON) == []  # (ভাত is the white rice)
+
+
+def test_by_hand_categories_still_know_when_they_are_usually_served():
+    # switched by hand, a kebab section had no hours at all — so the waiter couldn't say "from 5pm"
+    import availability
+    periods = [{"id": "lunch", "name": "Lunch", "start": "12:00", "end": "17:00"},
+               {"id": "afternoon", "name": "Evening", "start": "17:00", "end": "22:00"}]
+    rules = {"periods": periods, "categories": {"c": {"hours": [], "usualHours": [{"start": "17:00", "end": "22:00"}]}}}
+    assert availability.served_periods({"categoryId": "c"}, rules) == ["afternoon"]
