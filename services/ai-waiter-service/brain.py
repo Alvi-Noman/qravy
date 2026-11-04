@@ -1469,7 +1469,7 @@ _NOT_FOOD_WORDS = {"আছে", "আচে", "আছেন", "নেই", "ন�
                    "price", "of", "the", "a", "how", "much", "cost", "please", "give", "me", "want", "i", "an", "got",
                    "চাই", "লাগবে", "নেব", "নিব", "প্লিজ", "please",
                    # a size is not part of the dish ("একটা বড় কাচ্চি দিন")
-                   "বড়", "বড়", "ছোট", "ফুল", "হাফ", "প্লেট", "মিডিয়াম", "full", "half", "small", "large", "medium",
+                   "বড়", "ছোট", "ফুল", "হাফ", "প্লেট", "মিডিয়াম", "full", "half", "small", "large", "medium",
                    "regular", "big", "plate",
                    # (no food in them: "আজকে স্পেশাল কি আছে?" asks for the specials, "দাম কোতো" is "দাম কত")
                    "আজকে", "আজ", "স্পেশাল", "special", "today", "কোতো", "কতো", "koto", "dam",
@@ -5117,11 +5117,12 @@ def _period_menu_reply(transcript: str, index: MenuIndex, orderable: Dict[str, b
         return closing(text + "।"), cards(breads + mains + dals), "period_menu"
     if set_for:
         lead = set_main or set_rest
-        with_it = _with_phrase(set_rest, bn) if set_main else ""
+        with_it = _with_phrase(set_rest, bn, rice_too) if set_main or rice_too else ""
         if bn:
             verb = "চলছে" if is_now else ("চলে" if on_now else "পাওয়া যায়")
             text = f"{head} আমাদের {kinds_word(lead, set_top)} {verb}: {_bn_join(names_of(lead))}।"
-            text += f"{' সাথে ' + with_it + '-ও আছে।' if with_it else ''}{' ভাত-তরকারিও আছে।' if rice_too else ''}"
+            # "সাথে নান-পরোটা আর ভাত-তরকারিও আছে।" — the rice and curry in the same breath (the owner's wording)
+            text += f"{' সাথে ' + with_it + 'ও আছে।' if with_it else ''}"
         else:
             text = f"{head} we have {kinds_word(lead, set_top)}: {', '.join(names_of(lead))}." + (
                 f" We also have {with_it}." if with_it else "")
@@ -5588,8 +5589,9 @@ def _period_role(it: Dict[str, Any]) -> str:
     return "main"
 
 
-def _with_phrase(items: List[Dict[str, Any]], bn: bool) -> str:
-    """"নান-পরোটা, ড্রিংকস আর মিষ্টি" — the rest, by kind."""
+def _with_phrase(items: List[Dict[str, Any]], bn: bool, rice_too: bool = False) -> str:
+    """"নান-পরোটা, ড্রিংকস আর মিষ্টি" — the rest, by kind; with the rice meal served too, it in place of the bhorta /
+    bhaji (they're eaten with the rice): "নান-পরোটা আর ভাত-তরকারি"."""
     roles = {_period_role(it) for it in items}
     names = " ".join(str(it.get("name") or "") for it in items if _period_role(it) == "bread")
     out = []
@@ -5597,12 +5599,14 @@ def _with_phrase(items: List[Dict[str, Any]], bn: bool) -> str:
         naan, porota = bool(re.search(r"নান|naan|\bnan\b", names, re.I)), bool(re.search(r"পরোটা|রুটি|paratha|roti", names, re.I))
         out.append(("নান-পরোটা" if naan and porota else "নান" if naan else "পরোটা-রুটি") if bn
                    else ("naan and paratha" if naan and porota else "naan" if naan else "paratha"))
-    if "side" in roles:
+    if "side" in roles and not rice_too:
         out.append("ভর্তা-ভাজি" if bn else "sides")
     if "drink" in roles:
         out.append("ড্রিংকস" if bn else "drinks")
     if "sweet" in roles:
         out.append("মিষ্টি" if bn else "desserts")
+    if rice_too:
+        out.append("ভাত-তরকারি" if bn else "rice and curry")
     return _bn_join(out) if bn else ", ".join(out)
 
 
