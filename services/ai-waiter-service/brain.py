@@ -5173,19 +5173,30 @@ def _which_one_fact(transcript: str, index: MenuIndex, orderable: Dict[str, bool
     """A part of the order that names only a KIND with several dishes — "একটা ভর্তা আর একটা দেশি মুরগির ঝোল দাও": the
     AI added the ঝোল and forgot the ভর্তা. (Not plain rice: "একটা ভাত" is the white rice.)"""
     out = []
+    for part, fits in _vague_kind_parts(transcript, index, orderable):
+        names = ", ".join(list(dict.fromkeys(bangla_meal.said_name(x) for x in fits))[:6])
+        out.append(f'"{part}" fits several dishes on the MENU ({names}) — don\'t pick one for the guest: add the '
+                   "other dishes they named, and ask which of these they want.")
+    return out[:2]
+
+
+def _vague_kind_parts(transcript: str, index: MenuIndex, orderable: Dict[str, bool]) -> List[Tuple[str, List[Dict[str, Any]]]]:
+    """[(the part of the order, the dishes it could be)] — the parts that name only a kind with several dishes on now."""
+    out = []
     for part in _DISH_JOIN.split(transcript or ""):
         if not part.strip() or _dishes_named(part, index, limit=1, exact_only=True):
             continue
         fits = [index.by_id[i] for i in _kind_ids_in(part, index) if i in index.by_id and orderable.get(i, True)]
-        # (the dishes CALLED that first — "ভর্তা" is the bhortas, not its whole section with the bhajis and the dal)
-        said = _guest_tokens(part, _menu_rev(index)) - _CAT_GENERIC
-        called = [x for x in fits if said & _name_tokens(re.sub(r"\(.*?\)", " ", str(x.get("name") or "")))]
-        fits = called if len(called) >= 2 else fits
-        if len(fits) < 2 or all(bangla_meal.is_plain_rice(x) for x in fits):
+        # (the dishes CALLED that — "ভর্তা" is the bhortas, not its whole section with the bhajis and the dal — and
+        # only when every word said fits two or more of them: "চিকেন সিজলিং" is Chicken Sizzling, "সিজলিং" is any)
+        plain = _CAT_GENERIC | set(_SIZE_TOKENS.values()) | set(_BN_WORDS.values()) | set(_NUM_TOKENS.values())
+        said = {w for w in _guest_tokens(part, _menu_rev(index)) if not w.isdigit()} - plain
+        if not said:
             continue
-        names = ", ".join(list(dict.fromkeys(bangla_meal.said_name(x) for x in fits))[:6])
-        out.append(f'"{part.strip()}" fits several dishes on the MENU ({names}) — don\'t pick one for the guest: add the '
-                   "other dishes they named, and ask which of these they want.")
+        fits = [x for x in fits if said <= _name_tokens(re.sub(r"\(.*?\)", " ", str(x.get("name") or "")))]
+        if len({_norm(bangla_meal.said_name(x)) for x in fits}) < 2 or all(bangla_meal.is_plain_rice(x) for x in fits):
+            continue
+        out.append((part.strip(), fits))
     return out[:2]
 
 
@@ -8158,6 +8169,18 @@ async def _reply(
         obj.get("cartOps"), index, dict(cart_qty), orderable, transcript, guest_words, context_ids=talked_about, rows=cart_rows,
         pick_said=pick_words,
     )
+    # "একটা ভর্তা আর একটা দেশি মুরগির ঝোল দাও" — the guest named a KIND there are several of: never pick one for them
+    # (the AI added চিকেন ভর্তা though it was told to ask); the rest of the order goes in, "কোনটা…?" asks the rest
+    named_exactly = {index.item_id(x) for p in _DISH_JOIN.split(transcript or "") if p.strip()
+                     for x in _dishes_named(p, index, limit=4, exact_only=True)}
+    for part, fits in _vague_kind_parts(transcript, index, orderable):
+        vague_ids = {index.item_id(x) for x in fits} - named_exactly  # (a dish named in another part is that dish)
+        picked = [o for o in ops if o["op"] == "add" and o["itemId"] in vague_ids and o["itemId"] not in cart_qty]
+        if picked:
+            ops = [o for o in ops if o not in picked]
+            problems.append(f"{part}: which one? the guest's words fit several dishes: "
+                            + " | ".join(list(dict.fromkeys(bangla_meal.said_name(x) for x in fits))[:5]))
+            guards.append("kind_asked_which")
     # (a line-targeted change is already exact — only item-level ops can be retargeted)
     retargetable = [o for o in ops if o["op"] == "add" or (o["itemId"] in cart_qty and not o.get("lineKey"))]
     fixed = _reconcile_ops_with_words(retargetable, transcript, index)
