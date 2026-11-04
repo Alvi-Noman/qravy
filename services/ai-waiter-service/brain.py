@@ -2397,7 +2397,10 @@ def _clarify_reply(problems: List[str], index: MenuIndex, lang: str) -> str:
             if n:  # a phrase we couldn't place, with its quantity: "দুইটা কোনটা বলছিলেন — …?"
                 return (f"{n.group(1)}টা কোনটা বলছিলেন — {joined}?" if bn
                         else f"Which one did you want {n.group(1)} of — {joined}?")
-            return f"কোনটা অর্ডার করবেন — {joined}?" if bn else f"Which one would you like — {joined}?"
+            which = f"কোনটা অর্ডার করবেন — {joined}?" if bn else f"Which one would you like — {joined}?"
+            if ": not on the menu: " in p:  # (first that it isn't on the menu, then which of the closest)
+                return p.split(": not on the menu: ")[1].split(" which one? ")[0] + " " + which
+            return which
         name = p.split(" needs ")[0].split(":")[0].strip()
         it = index.resolve(None, name)
         if not it:
@@ -5190,16 +5193,39 @@ def _which_one_fact(transcript: str, index: MenuIndex, orderable: Dict[str, bool
     return out[:2]
 
 
-def _vague_kind_parts(transcript: str, index: MenuIndex, orderable: Dict[str, bool]) -> List[Tuple[str, List[Dict[str, Any]]]]:
-    """[(the part of the order, the dishes it could be)] — the parts that name only a kind with several dishes on now."""
+def _not_on_menu_parts(transcript: str, index: MenuIndex, orderable: Dict[str, bool], done_ids: set, reply: str,
+                       lang: str) -> List[Tuple[str, str, List[str]]]:
+    """A part of a several-dish order that is no dish on this menu and the reply says nothing about — "একটা চিকেন ভুনা
+    আর একটা ভাত দিন": the AI added the rice and left the চিকেন ভুনা out. (part, "not on our menu" line, the closest)"""
+    parts = [p for p in _DISH_JOIN.split(transcript or "") if p.strip()]
     out = []
-    for part in _DISH_JOIN.split(transcript or ""):
+    for part in parts if len(parts) >= 2 else []:
+        if _dishes_named(part, index, limit=1, exact_only=True) or _kind_ids_in(part, index) & done_ids:
+            continue
+        phrase, keep = _asked_phrase(part, index)
+        if not keep or _reply_mentions(reply, phrase):
+            continue
+        # (just the dish words — "চিকেন ভুনা" said alone asks for it; the ordering verb is in the other part)
+        ans = _menu_answer(phrase, index, orderable, _kind_ids_in(phrase, index), [], lang, ok=lambda x: True)
+        if ans and ans[2] == "not_on_menu" and ans[1]:
+            out.append((part.strip(), re.split(r"(?<=[।.])\s", ans[0])[0], [str(r["title"]) for r in ans[1]]))
+    return out[:1]
+
+
+def _vague_kind_parts(transcript: str, index: MenuIndex, orderable: Dict[str, bool]) -> List[Tuple[str, List[Dict[str, Any]]]]:
+    """[(the part of the order, the dishes it could be)] — the parts that name only a kind with several dishes on now.
+    (An order of several parts only: "চিকেনটা" alone answers the "Chicken, Beef or Prawn Sizzling?" just asked.)"""
+    out = []
+    parts = [p for p in _DISH_JOIN.split(transcript or "") if p.strip()]
+    for part in parts if len(parts) >= 2 else []:
         if not part.strip() or _dishes_named(part, index, limit=1, exact_only=True):
             continue
         fits = [index.by_id[i] for i in _kind_ids_in(part, index) if i in index.by_id and orderable.get(i, True)]
         # (the dishes CALLED that — "ভর্তা" is the bhortas, not its whole section with the bhajis and the dal — and
         # only when every word said fits two or more of them: "চিকেন সিজলিং" is Chicken Sizzling, "সিজলিং" is any)
-        plain = _CAT_GENERIC | set(_SIZE_TOKENS.values()) | set(_BN_WORDS.values()) | set(_NUM_TOKENS.values())
+        # (sizes and numbers only — never a food word: "চিকেন ভুনা" is no "which ভুনা?" where no ভুনা is chicken)
+        plain = _CAT_GENERIC | set(_SIZE_TOKENS.values()) | set(_NUM_TOKENS.values()) | {
+            "half", "full", "medium", "regular", "family"}
         said = {w for w in _guest_tokens(part, _menu_rev(index)) if not w.isdigit()} - plain
         if not said:
             continue
@@ -8188,11 +8214,20 @@ async def _reply(
         vague_ids = {index.item_id(x) for x in fits} - named_exactly  # (a dish named in another part is that dish)
         which_ids |= vague_ids
         picked = [o for o in ops if o["op"] == "add" and o["itemId"] in vague_ids and o["itemId"] not in cart_qty]
-        if picked:
+        # (or it left that part out altogether: added the ঝোল, never asked which ভর্তা)
+        forgot = not picked and not (vague_ids & ({o["itemId"] for o in ops} | set(cart_qty))) and not any(
+            _reply_mentions(reply, bangla_meal.said_name(x)) for x in fits)
+        if picked or forgot:
             ops = [o for o in ops if o not in picked]
             problems.append(f"{part}: which one? the guest's words fit several dishes: "
                             + " | ".join(list(dict.fromkeys(bangla_meal.said_name(x) for x in fits))[:5]))
             guards.append("kind_asked_which")
+    # …and a part that is no dish here, which the reply never mentions: "দুঃখিত, চিকেন ভুনা আমাদের মেনুতে নেই।" + which
+    for part, no_line, closest in _not_on_menu_parts(transcript, index, orderable,
+                                                    {o["itemId"] for o in ops} | set(cart_qty), reply, lang):
+        problems.append(f"{part}: not on the menu: {no_line} which one? the guest's words fit several dishes: "
+                        + " | ".join(closest))
+        guards.append("missing_dish_said")
     # (a line-targeted change is already exact — only item-level ops can be retargeted)
     retargetable = [o for o in ops if o["op"] == "add" or (o["itemId"] in cart_qty and not o.get("lineKey"))]
     fixed = _reconcile_ops_with_words(retargetable, transcript, index)
