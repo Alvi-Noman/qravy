@@ -233,5 +233,7 @@ jobs:
           SSH_OPTS="-i $HOME/.ssh/id_ed25519 -o StrictHostKeyChecking=yes"
           printf '%s' "$GHCR_READ_TOKEN" | ssh $SSH_OPTS "$SSH_TARGET" \
             "docker login ghcr.io --username '$GHCR_READ_USER' --password-stdin"
+          # (old images are removed before the pull and after the restart — every release kept the last ones and the disk
+          # filled up completely, failing a deploy; the last 3 days' images stay for a rollback, and running ones always)
           ssh $SSH_OPTS "$SSH_TARGET" \
-            "cd '$CONTABO_DEPLOY_PATH' && IMAGE_TAG='sha-$DEPLOY_SHA' docker compose --env-file .env.production -f compose.production.yml pull && IMAGE_TAG='sha-$DEPLOY_SHA' docker compose --env-file .env.production -f compose.production.yml up -d --remove-orphans && docker compose --env-file .env.production -f compose.production.yml restart caddy"
+            "cd '$CONTABO_DEPLOY_PATH' && docker image prune -af --filter 'until=72h' >/dev/null && df -h / | tail -1 && IMAGE_TAG='sha-$DEPLOY_SHA' docker compose --env-file .env.production -f compose.production.yml pull && IMAGE_TAG='sha-$DEPLOY_SHA' docker compose --env-file .env.production -f compose.production.yml up -d --remove-orphans && docker compose --env-file .env.production -f compose.production.yml restart caddy && docker image prune -af --filter 'until=72h' >/dev/null && df -h / | tail -1"

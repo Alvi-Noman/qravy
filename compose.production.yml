@@ -1,5 +1,13 @@
+# every service's log is capped (3 × 20 MB) — the disk once filled up completely (Nov 2026)
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "3"
+
 services:
   caddy:
+    logging: *logging
     image: caddy:2-alpine
     environment:
       ADMIN_DOMAIN: ${ADMIN_DOMAIN:?Set ADMIN_DOMAIN in .env.production}
@@ -25,19 +33,23 @@ services:
     restart: unless-stopped
 
   braincell:
+    logging: *logging
     image: ${IMAGE_PREFIX:?Set IMAGE_PREFIX in .env.production}/qravy-braincell:${IMAGE_TAG:-prod}
     restart: unless-stopped
 
   tastebud:
+    logging: *logging
     image: ${IMAGE_PREFIX:?Set IMAGE_PREFIX in .env.production}/qravy-tastebud:${IMAGE_TAG:-prod}
     restart: unless-stopped
 
   # Cortex — the company admin panel (Caddy: CORTEX_DOMAIN, default cortex.qravy.com)
   cortex:
+    logging: *logging
     image: ${IMAGE_PREFIX:?Set IMAGE_PREFIX in .env.production}/qravy-cortex:${IMAGE_TAG:-prod}
     restart: unless-stopped
 
   auth-service:
+    logging: *logging
     image: ${IMAGE_PREFIX:?Set IMAGE_PREFIX in .env.production}/qravy-auth:${IMAGE_TAG:-prod}
     env_file:
       - ${AUTH_ENV_FILE:-./runtime/auth-service.env}
@@ -55,6 +67,7 @@ services:
     restart: unless-stopped
 
   upload-service:
+    logging: *logging
     image: ${IMAGE_PREFIX:?Set IMAGE_PREFIX in .env.production}/qravy-upload:${IMAGE_TAG:-prod}
     env_file:
       - ${UPLOAD_ENV_FILE:-./runtime/upload-service.env}
@@ -68,6 +81,7 @@ services:
     restart: unless-stopped
 
   api-gateway:
+    logging: *logging
     image: ${IMAGE_PREFIX:?Set IMAGE_PREFIX in .env.production}/qravy-api-gateway:${IMAGE_TAG:-prod}
     environment:
       NODE_ENV: production
@@ -87,6 +101,7 @@ services:
     restart: unless-stopped
 
   storefront-host:
+    logging: *logging
     image: ${IMAGE_PREFIX:?Set IMAGE_PREFIX in .env.production}/qravy-storefront-host:${IMAGE_TAG:-prod}
     env_file:
       - ${STOREFRONT_ENV_FILE:-./runtime/storefront-host.env}
@@ -111,6 +126,7 @@ services:
     restart: unless-stopped
 
   ai-waiter-service:
+    logging: *logging
     image: ${IMAGE_PREFIX:?Set IMAGE_PREFIX in .env.production}/qravy-ai-waiter:${IMAGE_TAG:-prod}
     env_file:
       - ${WAITER_ENV_FILE:-./runtime/ai-waiter-service.env}
@@ -153,6 +169,7 @@ services:
     restart: unless-stopped
 
   transcripts-exporter:
+    logging: *logging
     image: python:3.11-slim
     working_dir: /app
     env_file:
