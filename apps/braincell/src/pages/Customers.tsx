@@ -7,6 +7,8 @@ import { ArrowPathIcon, MagnifyingGlassIcon, PhoneIcon, UsersIcon } from '@heroi
 import PageFrame, { HEADER_BUTTON } from '../components/PageFrame';
 import { listCustomers, type Customer } from '../api/customers';
 import { useScope } from '../context/ScopeContext';
+import Modal from '../components/Modal';
+import CustomerProfile from '../components/customers/CustomerProfile';
 
 const PAGE = 50;
 const money = (n: number) => `৳${n.toLocaleString('en-BD', { maximumFractionDigits: 2 })}`;
@@ -21,6 +23,7 @@ export default function Customers() {
   const [q, setQ] = useState('');
   const [query, setQuery] = useState('');
   const [page, setPage] = useState(0);
+  const [openId, setOpenId] = useState<string | null>(null);
   const { activeLocationId } = useScope();
   useEffect(() => {
     const id = window.setTimeout(() => (setQuery(q.trim()), setPage(0)), 300);
@@ -50,7 +53,7 @@ export default function Customers() {
       }
     >
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <p className="text-sm text-[#6b6b70]">Everyone who ordered online — delivery and pickup. Saved automatically with every order.</p>
+        <p className="text-sm text-[#6b6b70]">Everyone who ordered online — delivery and pickup. Saved automatically with every order; open one to see all their orders.</p>
         <label className="relative w-full max-w-xs">
           <MagnifyingGlassIcon className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-[#9a9aa0]" />
           <input
@@ -82,10 +85,14 @@ export default function Customers() {
           {/* one row per customer — wraps on a narrow screen instead of cutting columns off */}
           <ul className="divide-y divide-[#f0f0f0] overflow-hidden rounded-lg border border-[#ececec] bg-white">
             {items.map((c) => (
-              <li key={c.id} className="flex flex-wrap items-start gap-x-6 gap-y-3 px-4 py-3">
+              <li
+                key={c.id}
+                onClick={() => setOpenId(c.id)}
+                className="flex cursor-pointer flex-wrap items-start gap-x-6 gap-y-3 px-4 py-3 hover:bg-[#fafafa]"
+              >
                 <div className="min-w-[170px] flex-1">
                   <div className="font-medium text-[#2e2e30]">{c.name}</div>
-                  <a href={`tel:${c.phone}`} className="mt-0.5 inline-flex items-center gap-1 whitespace-nowrap text-xs text-[#6b6b70] hover:underline">
+                  <a href={`tel:${c.phone}`} onClick={(e) => e.stopPropagation()} className="mt-0.5 inline-flex items-center gap-1 whitespace-nowrap text-xs text-[#6b6b70] hover:underline">
                     <PhoneIcon className="h-3 w-3" />
                     {c.phone}
                   </a>
@@ -149,6 +156,15 @@ export default function Customers() {
           </div>
         </>
       )}
+
+      <Modal
+        open={!!openId}
+        onClose={() => setOpenId(null)}
+        title={items.find((c) => c.id === openId)?.name ?? 'Customer'}
+        size="2xl"
+      >
+        {openId && <CustomerProfile id={openId} />}
+      </Modal>
     </PageFrame>
   );
 }

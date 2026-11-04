@@ -100,6 +100,60 @@ export type CustomerRow = {
   lastOrderAt: Date;
 };
 
+export type CustomerDetail = CustomerRow & {
+  /** what they order most (by portions; cancelled orders don't count) */
+  favourites: Array<{ name: string; qty: number }>;
+  averageOrder: number;
+  cancelled: number;
+  /** every order of theirs, newest first (the admin order shape) */
+  history: OrderDoc[];
+};
+
+/** One customer with their whole order history — the profile a restaurant opens from the Customers list. */
+export async function getCustomer(opts: {
+  tenantOid: ObjectId;
+  id: string;
+  locationId?: ObjectId | null;
+  limit?: number;
+}): Promise<CustomerDetail | null> {
+  if (!ObjectId.isValid(opts.id)) return null;
+  const d = await customersCol().findOne({ _id: new ObjectId(opts.id), tenantId: opts.tenantOid });
+  if (!d) return null;
+  const history = await client
+    .db('authDB')
+    .collection<OrderDoc>('orders')
+    .find({
+      tenantId: opts.tenantOid,
+      channel: 'online',
+      'online.customer.phone': { $in: d.phones ?? [d.phone] },
+      ...(opts.locationId ? { locationId: opts.locationId } : {}),
+    })
+    .sort({ createdAt: -1 })
+    .limit(Math.min(Math.max(opts.limit ?? 200, 1), 500))
+    .toArray();
+  const kept = history.filter((o) => o.status !== 'cancelled');
+  const spent = kept.reduce((s, o) => s + (o.total || 0), 0);
+  const dishes = new Map<string, number>();
+  for (const o of kept) for (const l of o.items ?? []) dishes.set(l.name, (dishes.get(l.name) ?? 0) + (l.qty || 0));
+  return {
+    id: String(d._id),
+    name: d.name,
+    phone: d.phone,
+    addresses: d.addresses ?? [],
+    lastFulfillment: d.lastFulfillment,
+    orders: kept.length,
+    deliveries: kept.filter((o) => o.online?.fulfillment === 'delivery').length,
+    pickups: kept.filter((o) => o.online?.fulfillment === 'pickup').length,
+    spent: Math.round(spent * 100) / 100,
+    averageOrder: kept.length ? Math.round((spent / kept.length) * 100) / 100 : 0,
+    cancelled: history.length - kept.length,
+    firstOrderAt: d.firstOrderAt,
+    lastOrderAt: d.lastOrderAt,
+    favourites: [...dishes.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5).map(([name, qty]) => ({ name, qty })),
+    history,
+  };
+}
+
 /** The customer list (newest order first), with each one's orders and spend; `q` searches name / phone / address. */
 export async function listCustomers(opts: {
   tenantOid: ObjectId;

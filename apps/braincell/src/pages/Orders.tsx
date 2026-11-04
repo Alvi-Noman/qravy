@@ -5,7 +5,10 @@
  */
 import { useBranchLabel } from '../hooks/useBranchLabel';
 import { useEffect, useMemo, useState } from 'react';
-import { BellAlertIcon, BellSlashIcon, ArrowPathIcon, ClockIcon, PrinterIcon } from '@heroicons/react/24/outline';
+import { BellAlertIcon, BellSlashIcon, ArrowPathIcon, ArrowDownTrayIcon, ClockIcon, MagnifyingGlassIcon, PrinterIcon } from '@heroicons/react/24/outline';
+import { useQuery, keepPreviousData } from '@tanstack/react-query';
+import Modal from '../components/Modal';
+import OrderDetail, { STATUS_LABEL } from '../components/orders/OrderDetail';
 import { useTenant } from '../hooks/useTenant';
 import { useBuzzerAlert } from '../hooks/useBuzzerAlert';
 import {
@@ -22,7 +25,7 @@ import { Link } from 'react-router-dom';
 import { useAuthContext } from '../context/AuthContext';
 import { usePermissions } from '../context/PermissionsContext';
 import { useScope } from '../context/ScopeContext';
-import { listOrders, orderWhere, type AdminOrder, type OrderStatus } from '../api/orders';
+import { orderWhere, searchOrders, type AdminOrder, type OrderStatus } from '../api/orders';
 import { toastError, toastSuccess } from '../components/Toaster';
 
 const COLUMNS: { status: OrderStatus; title: string; empty: string }[] = [
@@ -517,83 +520,243 @@ function KindFilter({ value, onChange, counts }: { value: Kind; onChange: (k: Ki
   );
 }
 
+type Range = 'today' | 'yesterday' | '7d' | '30d' | 'month' | 'custom';
+const RANGES: Array<{ id: Range; label: string }> = [
+  { id: 'today', label: 'Today' },
+  { id: 'yesterday', label: 'Yesterday' },
+  { id: '7d', label: '7 days' },
+  { id: '30d', label: '30 days' },
+  { id: 'month', label: 'This month' },
+  { id: 'custom', label: 'Custom' },
+];
+const HISTORY_PAGE = 50;
+/** a date as YYYY-MM-DD in the browser's time (the restaurant's business day, near enough) */
+const ymd = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+function rangeDays(r: Range, from: string, to: string): { from?: string; to?: string } {
+  const now = new Date();
+  const back = (n: number) => ymd(new Date(now.getFullYear(), now.getMonth(), now.getDate() - n));
+  if (r === 'today') return { from: back(0), to: back(0) };
+  if (r === 'yesterday') return { from: back(1), to: back(1) };
+  if (r === '7d') return { from: back(6), to: back(0) };
+  if (r === '30d') return { from: back(29), to: back(0) };
+  if (r === 'month') return { from: ymd(new Date(now.getFullYear(), now.getMonth(), 1)), to: back(0) };
+  return { from: from || undefined, to: to || undefined };
+}
+const STATUS_FILTERS: Array<{ id: OrderStatus | 'open' | ''; label: string }> = [
+  { id: '', label: 'Any status' },
+  { id: 'completed', label: 'Completed' },
+  { id: 'cancelled', label: 'Cancelled' },
+  { id: 'open', label: 'Still open' },
+];
+
+/** CSV of the orders that match (up to 2,000) — for the accountant or a spreadsheet. */
+function downloadCsv(rows: AdminOrder[], branchOf: (id?: string | null) => string, name: string) {
+  const cell = (v: unknown) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+  const head = ['Order', 'Date', 'Time', 'Branch', 'For', 'Customer', 'Phone', 'Items', 'Total', 'Status', 'Payment'];
+  const lines = rows.map((o) => {
+    const d = new Date(o.createdAt);
+    return [
+      `#${o.orderNumber}`,
+      ymd(d),
+      d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      branchOf(o.locationId),
+      orderWhere(o),
+      o.customer?.name ?? '',
+      o.customer?.phone ?? '',
+      o.items.map((l) => `${l.qty}x ${l.name}`).join('; '),
+      o.total,
+      o.status,
+      `${o.payment.method} ${o.payment.status}`,
+    ]
+      .map(cell)
+      .join(',');
+  });
+  const blob = new Blob(['﻿' + [head.map(cell).join(','), ...lines].join('\n')], { type: 'text/csv;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+/** The full order history: any days, searched and filtered, paged — each order opens in full. */
 function History({ token, onPrint, kind }: { token: string | null; onPrint: PrintFn; kind: Kind }) {
-  const [rows, setRows] = useState<AdminOrder[] | null>(null);
   const { activeLocationId } = useScope();
   const branchOf = useBranchLabel(); // order numbers are per branch: "#12 · Gulshan"
+  const [range, setRange] = useState<Range>('7d');
+  const [from, setFrom] = useState('');
+  const [to, setTo] = useState('');
+  const [status, setStatus] = useState<OrderStatus | 'open' | ''>('');
+  const [text, setText] = useState('');
+  const [q, setQ] = useState('');
+  const [page, setPage] = useState(0);
+  const [open, setOpen] = useState<AdminOrder | null>(null);
+  const [exporting, setExporting] = useState(false);
+  useEffect(() => {
+    const id = window.setTimeout(() => (setQ(text.trim()), setPage(0)), 300);
+    return () => window.clearTimeout(id);
+  }, [text]);
+  useEffect(() => setPage(0), [range, from, to, status, kind, activeLocationId]);
 
-  const load = async () => {
+  const query = {
+    ...rangeDays(range, from, to),
+    q: q || undefined,
+    status,
+    channel: kind === 'all' ? ('' as const) : kind,
+    location: activeLocationId || undefined,
+  };
+  const data = useQuery({
+    queryKey: ['orders-history', query, page],
+    queryFn: () => searchOrders(token!, { ...query, skip: page * HISTORY_PAGE, limit: HISTORY_PAGE }),
+    enabled: !!token,
+    placeholderData: keepPreviousData,
+  });
+  const rows = data.data?.orders ?? [];
+  const total = data.data?.total ?? 0;
+  const pages = Math.max(1, Math.ceil(total / HISTORY_PAGE));
+
+  const exportCsv = async () => {
     if (!token) return;
-    setRows(null);
+    setExporting(true);
     try {
-      setRows(await listOrders(token, 'history'));
+      const all = await searchOrders(token, { ...query, limit: 2000 });
+      downloadCsv(all.orders, (id) => branchOf(id) ?? '', `orders-${query.from ?? 'all'}-to-${query.to ?? 'now'}.csv`);
+      if (all.total > all.orders.length) toastSuccess(`Downloaded the newest ${all.orders.length} of ${all.total} orders`);
     } catch {
-      setRows([]);
-      toastError('Could not load order history');
+      toastError('Could not download the orders');
+    } finally {
+      setExporting(false);
     }
   };
 
-  useEffect(() => {
-    void load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token]);
-
-  const visible = (rows ?? [])
-    .filter((o) => !activeLocationId || !o.locationId || o.locationId === activeLocationId)
-    .filter(ofKind(kind));
-
-  if (rows === null) return <div className="h-40 animate-pulse rounded-lg bg-[#f6f6f6]" />;
-  if (!visible.length) {
-    const what = kind === 'all' ? 'orders' : `${KINDS.find((k) => k.id === kind)?.label.toLowerCase()} orders`;
-    return <p className="py-10 text-center text-sm text-[#6b6b70]">No {what} in the last 48 hours.</p>;
-  }
-
   return (
-    <div className="overflow-x-auto rounded-lg border border-[#ececec] bg-white">
-      <table className="w-full text-sm">
-        <thead className="bg-[#fafafa] text-left text-xs uppercase tracking-wide text-[#6b6b70]">
-          <tr>
-            <th className="px-4 py-3">Order</th>
-            <th className="px-4 py-3">For</th>
-            <th className="px-4 py-3">Items</th>
-            <th className="px-4 py-3">Total</th>
-            <th className="px-4 py-3">Status</th>
-            <th className="px-4 py-3">Placed</th>
-            <th className="px-4 py-3"><span className="sr-only">Print</span></th>
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-[#f0f0f0]">
-          {visible.map((o) => (
-            <tr key={o.id}>
-              <td className="px-4 py-3 font-semibold text-[#2e2e30]">
-                #{o.orderNumber}
-                {branchOf(o.locationId) && (
-                  <span className="ml-1.5 rounded bg-slate-100 px-1.5 py-0.5 text-[11px] font-semibold text-slate-700">
-                    {branchOf(o.locationId)}
-                  </span>
-                )}
-              </td>
-              <td className="px-4 py-3">
-                {o.channel === 'online' ? `${orderWhere(o)} · ${o.customer?.name ?? ''}` : o.table}
-                {o.channel !== 'online' && o.tableVerified === false && (
-                  <span className="ml-1 text-xs text-amber-700">(not verified)</span>
-                )}
-              </td>
-              <td className="px-4 py-3 text-[#6b6b70]">{o.items.map((l) => `${l.qty}× ${l.name}`).join(', ')}</td>
-              <td className="px-4 py-3">{money(o.total)}</td>
-              <td className="px-4 py-3">
-                <span className={`rounded-md px-2 py-0.5 text-xs ring-1 ${STATUS_CHIP[o.status]}`}>{o.status}</span>
-              </td>
-              <td className="px-4 py-3 text-[#6b6b70]">
-                {new Date(o.createdAt).toLocaleString([], { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })}
-              </td>
-              <td className="px-4 py-3 text-right">
-                <PrintMenu order={o} onPrint={onPrint} compact />
-              </td>
-            </tr>
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <Segmented<Range> label="Which days" value={range} onChange={setRange} options={RANGES} />
+        {range === 'custom' && (
+          <span className="flex items-center gap-1 text-sm">
+            <input
+              type="date"
+              value={from}
+              onChange={(e) => setFrom(e.target.value)}
+              aria-label="From"
+              className="rounded-md border border-[#e5e5e5] px-2 py-1.5"
+            />
+            <span className="text-[#9a9aa0]">–</span>
+            <input
+              type="date"
+              value={to}
+              onChange={(e) => setTo(e.target.value)}
+              aria-label="To"
+              className="rounded-md border border-[#e5e5e5] px-2 py-1.5"
+            />
+          </span>
+        )}
+        <select
+          value={status}
+          onChange={(e) => setStatus(e.target.value as OrderStatus | 'open' | '')}
+          aria-label="Status"
+          className="rounded-md border border-[#e5e5e5] bg-white px-2 py-1.5 text-sm"
+        >
+          {STATUS_FILTERS.map((s) => (
+            <option key={s.id} value={s.id}>
+              {s.label}
+            </option>
           ))}
-        </tbody>
-      </table>
+        </select>
+        <label className="relative min-w-[200px] flex-1 sm:max-w-xs">
+          <MagnifyingGlassIcon className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-[#9a9aa0]" />
+          <input
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            placeholder="Order #, table, name, phone or dish"
+            aria-label="Search orders"
+            className="w-full rounded-md border border-[#e5e5e5] py-1.5 pl-9 pr-3 text-sm"
+          />
+        </label>
+        <button type="button" onClick={() => void exportCsv()} disabled={exporting || !total} className={HEADER_BUTTON}>
+          <ArrowDownTrayIcon className="h-4 w-4" />
+          <span className="ml-1 hidden sm:inline">{exporting ? 'Preparing…' : 'Download CSV'}</span>
+        </button>
+      </div>
+
+      {data.data && (
+        <p className="text-sm text-[#6b6b70]">
+          <span className="font-semibold text-[#2e2e30]">{total}</span> {total === 1 ? 'order' : 'orders'} ·{' '}
+          <span className="font-semibold text-[#2e2e30]">{money(data.data.takings)}</span> taken
+          {!!data.data.cancelled && <> · {data.data.cancelled} cancelled</>}
+        </p>
+      )}
+
+      {data.isLoading ? (
+        <div className="h-40 animate-pulse rounded-lg bg-[#f6f6f6]" />
+      ) : !rows.length ? (
+        <p className="py-10 text-center text-sm text-[#6b6b70]">No orders match.</p>
+      ) : (
+        <div className="overflow-x-auto rounded-lg border border-[#ececec] bg-white">
+          <table className="w-full text-sm">
+            <thead className="bg-[#fafafa] text-left text-xs uppercase tracking-wide text-[#6b6b70]">
+              <tr>
+                <th className="px-4 py-3">Order</th>
+                <th className="px-4 py-3">For</th>
+                <th className="hidden px-4 py-3 md:table-cell">Items</th>
+                <th className="px-4 py-3">Total</th>
+                <th className="px-4 py-3">Status</th>
+                <th className="px-4 py-3">Placed</th>
+                <th className="px-4 py-3">
+                  <span className="sr-only">Print</span>
+                </th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-[#f0f0f0]">
+              {rows.map((o) => (
+                <tr key={o.id} onClick={() => setOpen(o)} className="cursor-pointer hover:bg-[#fafafa]">
+                  <td className="px-4 py-3 font-semibold text-[#2e2e30]">
+                    #{o.orderNumber}
+                    {branchOf(o.locationId) && (
+                      <span className="ml-1.5 rounded bg-slate-100 px-1.5 py-0.5 text-[11px] font-semibold text-slate-700">
+                        {branchOf(o.locationId)}
+                      </span>
+                    )}
+                  </td>
+                  <td className="px-4 py-3">{o.channel === 'online' ? `${orderWhere(o)} · ${o.customer?.name ?? ''}` : o.table}</td>
+                  <td className="hidden max-w-xs truncate px-4 py-3 text-[#6b6b70] md:table-cell">
+                    {o.items.map((l) => `${l.qty}× ${l.name}`).join(', ')}
+                  </td>
+                  <td className="px-4 py-3">{money(o.total)}</td>
+                  <td className="px-4 py-3">
+                    <span className={`rounded-md px-2 py-0.5 text-xs ring-1 ${STATUS_CHIP[o.status]}`}>{STATUS_LABEL[o.status]}</span>
+                  </td>
+                  <td className="whitespace-nowrap px-4 py-3 text-[#6b6b70]">
+                    {new Date(o.createdAt).toLocaleString([], { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })}
+                  </td>
+                  <td className="px-4 py-3 text-right" onClick={(e) => e.stopPropagation()}>
+                    <PrintMenu order={o} onPrint={onPrint} compact />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {pages > 1 && (
+        <div className="flex items-center justify-end gap-2 text-sm">
+          <span className="text-[#6b6b70]">
+            Page {page + 1} of {pages}
+          </span>
+          <button type="button" className={HEADER_BUTTON} disabled={page === 0} onClick={() => setPage((p) => p - 1)}>
+            Previous
+          </button>
+          <button type="button" className={HEADER_BUTTON} disabled={page + 1 >= pages} onClick={() => setPage((p) => p + 1)}>
+            Next
+          </button>
+        </div>
+      )}
+
+      <Modal open={!!open} onClose={() => setOpen(null)} title={open ? `Order #${open.orderNumber}` : ''} size="xl">
+        {open && <OrderDetail order={open} branch={branchOf(open.locationId)} />}
+      </Modal>
     </div>
   );
 }
@@ -756,7 +919,7 @@ export default function Orders() {
           onChange={setTab}
           options={[
             { id: 'active', label: `Active (${orders.length})` },
-            { id: 'history', label: 'Last 48 hours' },
+            { id: 'history', label: 'History' },
           ]}
         />
         <KindFilter value={kind} onChange={setKind} counts={tab === 'active' ? kindCounts : undefined} />
