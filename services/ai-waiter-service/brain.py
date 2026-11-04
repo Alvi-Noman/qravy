@@ -5057,6 +5057,10 @@ def _period_menu_reply(transcript: str, index: MenuIndex, orderable: Dict[str, b
         rice_line = bangla_meal.meal_text(meal, "bn", rice_in_tray=True).replace("ভাতের সাথে ", "", 1)
         rice_line = rice_line.split("। সাথে")[0].rstrip("।")
         text = f"{head} ভাত খেতে পারেন — ভাতের সাথে {rice_line}।"
+        # "আবার চাইলে …ও" is another kind of food (the kebabs after 9pm) — never the rice meal's own curries again (at
+        # lunch it said "আবার চাইলে মাছও খেতে পারেন — রুই মাছ, হাওরের বোয়াল মাছ…" right after those fish)
+        set_main = [x for x in set_main if bangla_meal.role(x) not in ("rice", "fish", "chicken", "meat", "side")]
+        set_top = _top_kinds(set_main)  # (the kind word of what's left — not "মাছ" for the polao)
         if set_main:
             text += f" আবার চাইলে {_TIME_KIND_SAY[set_top[0]][3] if set_top else 'এগুলো'}ও খেতে পারেন — " \
                     f"{_bn_join(names_of(set_main))}{_with_bread(set_rest)}।"
