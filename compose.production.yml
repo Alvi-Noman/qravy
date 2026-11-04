@@ -147,7 +147,10 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:?Set OPENAI_API_KEY in .env.production}
       OPENAI_BASE: https://api.openai.com
       OPENAI_STT_MODEL: gpt-4o-transcribe
-      OPENAI_CHAT_MODEL: ${OPENAI_CHAT_MODEL:-gpt-4.1}
+      # the waiter's model, kept here with the code it needs (gpt-4.1 / 4.1-mini are deprecated; terra: newer, ~4.1's
+      # quality at about mini's cost, 2026-11-04). Back to mini without a release: WAITER_CHAT_MODEL=gpt-4.1-mini
+      # in .env.production (its old OPENAI_CHAT_MODEL line no longer applies)
+      OPENAI_CHAT_MODEL: ${WAITER_CHAT_MODEL:-gpt-6.1-terra}
       # AI-first: the word-pattern answers become checked facts and the AI writes the reply (on for every restaurant,
       # 2026-11-04; "0" turns it off again)
       WAITER_AI_FIRST: ${WAITER_AI_FIRST:-1}

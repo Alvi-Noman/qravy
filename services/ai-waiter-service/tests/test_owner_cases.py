@@ -138,6 +138,34 @@ def test_one_of_a_kind_in_an_order_is_asked_which():
     assert brain._which_one_fact("একটা ভাত দাও আর একটা ছোট মাছ দাও।", MENU, ON) == []  # (ভাত is the white rice)
 
 
+def test_the_ai_picking_one_of_a_kind_is_taken_out_and_asked():
+    # the AI (told to ask) still added চিকেন ভর্তা for "একটা ভর্তা" — the code takes it out and asks which
+    import asyncio
+    import json
+    said = "একটা ভর্তা আর একটা দেশি মুরগির ঝোল দাও।"
+    add = lambda i: {"op": "add", "item": MENU.ref(MENU.by_id[i]), "quantity": 1, "variant": "", "note": "", "choices": []}
+
+    def turn(ops, reply):
+        async def fake(messages):
+            return json.dumps({"topic": "order_change", "intent": "order", "language": "bn", "mentionedItems": [],
+                               "cartOps": ops, "clearCart": False, "confirmOrder": False, "checkout": "none",
+                               "understood": True, "answerItems": [], "serviceRequest": None, "suggestions": [],
+                               "replyText": reply})
+        orig, brain._call_openai = brain._call_openai, fake
+        try:
+            return asyncio.run(brain.generate_reply(said, menu_snapshot={"items": MENU.items}, locale="bn",
+                                                    context={"cartItems": [], "table": "3"}))
+        finally:
+            brain._call_openai = orig
+    out = turn([add("b3"), add("c1")], "1টা চিকেন ভর্তা যোগ করলাম। 1টা দেশি মুরগির ঝোল যোগ করলাম।")
+    assert [o["itemId"] for o in out["meta"]["cartOps"]] == ["c1"], out["meta"]["cartOps"]
+    assert "বেগুন ভর্তা" in out["replyText"] and "চিকেন ভর্তা যোগ" not in out["replyText"], out["replyText"]
+    assert "kind_asked_which" in out["meta"]["guards"]
+    # the AI asking it right is kept — the ভর্তা it lists answer the guest, they're no upsell to cut
+    out = turn([add("c1")], "দেশি মুরগির ঝোল যোগ করলাম। ভর্তার জন্য বেগুন ভর্তা, আলু ভর্তা আর চিকেন ভর্তার মধ্যে কোনটা নিতে চান?")
+    assert "কোনটা নিতে চান" in out["replyText"] and "model_pitch_removed" not in out["meta"]["guards"], out["replyText"]
+
+
 def test_by_hand_categories_still_know_when_they_are_usually_served():
     # switched by hand, a kebab section had no hours at all — so the waiter couldn't say "from 5pm"
     import availability

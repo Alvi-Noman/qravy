@@ -92,12 +92,17 @@ OPENAI_BASE = os.environ.get("OPENAI_BASE", "https://api.openai.com").rstrip("/"
 OPENAI_CHAT_MODEL = os.environ.get("OPENAI_CHAT_MODEL", "gpt-4.1").strip()
 # experiment: the model answers menu questions and orders itself — the word-pattern answers before it are skipped
 AI_FIRST = os.environ.get("WAITER_AI_FIRST", "").strip() == "1"
-OPENAI_CHAT_URL = f"{OPENAI_BASE}/v1/chat/completions"
+# (another OpenAI-style endpoint with its own path, e.g. Gemini's .../v1beta/openai/chat/completions)
+OPENAI_CHAT_URL = os.environ.get("OPENAI_CHAT_URL", "").strip() or f"{OPENAI_BASE}/v1/chat/completions"
 
 BRAIN_MAX_TOKENS = int(os.environ.get("BRAIN_MAX_TOKENS", "1800"))
 BRAIN_TIMEOUT_S = float(os.environ.get("BRAIN_TIMEOUT_S", "10.0"))
 BRAIN_TEMP = float(os.environ.get("BRAIN_TEMP", "0.2"))
 BRAIN_RETRIES = int(os.environ.get("BRAIN_RETRIES", "1"))
+# OpenAI's thinking models (gpt-5 on, o-series) take max_completion_tokens and a reasoning effort instead of
+# max_tokens / temperature — "none" answers straight away, as fast as a 4.1
+REASONING_MODEL = OPENAI_BASE == "https://api.openai.com" and bool(re.match(r"(gpt-[5-9]|o\d)", OPENAI_CHAT_MODEL))
+BRAIN_REASONING = os.environ.get("BRAIN_REASONING", "none").strip()
 # Strict JSON-schema structured outputs; falls back to json_object if the endpoint rejects it.
 BRAIN_STRUCTURED = os.environ.get("BRAIN_STRUCTURED", "1") == "1"
 HISTORY_MESSAGES = int(os.environ.get("BRAIN_HISTORY_MESSAGES", "12"))
@@ -669,8 +674,9 @@ async def _read_menu(messages: List[Dict[str, str]]) -> str:
     r = await _client().post(
         OPENAI_CHAT_URL,
         headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"},
-        json={"model": OPENAI_CHAT_MODEL, "messages": messages, "temperature": 0.2, "max_tokens": 1500,
-              "response_format": {"type": "json_object"}},
+        json={"model": OPENAI_CHAT_MODEL, "messages": messages, "response_format": {"type": "json_object"},
+              **({"max_completion_tokens": 1500, "reasoning_effort": BRAIN_REASONING} if REASONING_MODEL
+                 else {"temperature": 0.2, "max_tokens": 1500})},
         timeout=60,
     )
     r.raise_for_status()
@@ -695,6 +701,10 @@ async def _call_openai(messages: List[Dict[str, str]]) -> str:
                 else {"type": "json_object"}
             ),
         }
+        if REASONING_MODEL:
+            del body["temperature"]
+            body["max_completion_tokens"] = body.pop("max_tokens")
+            body["reasoning_effort"] = BRAIN_REASONING
         if _CACHE_KEY_OK:
             body["prompt_cache_key"] = _prefix_key(messages)
         return body
@@ -5173,19 +5183,30 @@ def _which_one_fact(transcript: str, index: MenuIndex, orderable: Dict[str, bool
     """A part of the order that names only a KIND with several dishes — "একটা ভর্তা আর একটা দেশি মুরগির ঝোল দাও": the
     AI added the ঝোল and forgot the ভর্তা. (Not plain rice: "একটা ভাত" is the white rice.)"""
     out = []
+    for part, fits in _vague_kind_parts(transcript, index, orderable):
+        names = ", ".join(list(dict.fromkeys(bangla_meal.said_name(x) for x in fits))[:6])
+        out.append(f'"{part}" fits several dishes on the MENU ({names}) — don\'t pick one for the guest: add the '
+                   "other dishes they named, and ask which of these they want.")
+    return out[:2]
+
+
+def _vague_kind_parts(transcript: str, index: MenuIndex, orderable: Dict[str, bool]) -> List[Tuple[str, List[Dict[str, Any]]]]:
+    """[(the part of the order, the dishes it could be)] — the parts that name only a kind with several dishes on now."""
+    out = []
     for part in _DISH_JOIN.split(transcript or ""):
         if not part.strip() or _dishes_named(part, index, limit=1, exact_only=True):
             continue
         fits = [index.by_id[i] for i in _kind_ids_in(part, index) if i in index.by_id and orderable.get(i, True)]
-        # (the dishes CALLED that first — "ভর্তা" is the bhortas, not its whole section with the bhajis and the dal)
-        said = _guest_tokens(part, _menu_rev(index)) - _CAT_GENERIC
-        called = [x for x in fits if said & _name_tokens(re.sub(r"\(.*?\)", " ", str(x.get("name") or "")))]
-        fits = called if len(called) >= 2 else fits
-        if len(fits) < 2 or all(bangla_meal.is_plain_rice(x) for x in fits):
+        # (the dishes CALLED that — "ভর্তা" is the bhortas, not its whole section with the bhajis and the dal — and
+        # only when every word said fits two or more of them: "চিকেন সিজলিং" is Chicken Sizzling, "সিজলিং" is any)
+        plain = _CAT_GENERIC | set(_SIZE_TOKENS.values()) | set(_BN_WORDS.values()) | set(_NUM_TOKENS.values())
+        said = {w for w in _guest_tokens(part, _menu_rev(index)) if not w.isdigit()} - plain
+        if not said:
             continue
-        names = ", ".join(list(dict.fromkeys(bangla_meal.said_name(x) for x in fits))[:6])
-        out.append(f'"{part.strip()}" fits several dishes on the MENU ({names}) — don\'t pick one for the guest: add the '
-                   "other dishes they named, and ask which of these they want.")
+        fits = [x for x in fits if said <= _name_tokens(re.sub(r"\(.*?\)", " ", str(x.get("name") or "")))]
+        if len({_norm(bangla_meal.said_name(x)) for x in fits}) < 2 or all(bangla_meal.is_plain_rice(x) for x in fits):
+            continue
+        out.append((part.strip(), fits))
     return out[:2]
 
 
@@ -8158,6 +8179,20 @@ async def _reply(
         obj.get("cartOps"), index, dict(cart_qty), orderable, transcript, guest_words, context_ids=talked_about, rows=cart_rows,
         pick_said=pick_words,
     )
+    # "একটা ভর্তা আর একটা দেশি মুরগির ঝোল দাও" — the guest named a KIND there are several of: never pick one for them
+    # (the AI added চিকেন ভর্তা though it was told to ask); the rest of the order goes in, "কোনটা…?" asks the rest
+    named_exactly = {index.item_id(x) for p in _DISH_JOIN.split(transcript or "") if p.strip()
+                     for x in _dishes_named(p, index, limit=4, exact_only=True)}
+    which_ids: set = set()  # (the dishes that answer "which one?" — never cut as an upsell below)
+    for part, fits in _vague_kind_parts(transcript, index, orderable):
+        vague_ids = {index.item_id(x) for x in fits} - named_exactly  # (a dish named in another part is that dish)
+        which_ids |= vague_ids
+        picked = [o for o in ops if o["op"] == "add" and o["itemId"] in vague_ids and o["itemId"] not in cart_qty]
+        if picked:
+            ops = [o for o in ops if o not in picked]
+            problems.append(f"{part}: which one? the guest's words fit several dishes: "
+                            + " | ".join(list(dict.fromkeys(bangla_meal.said_name(x) for x in fits))[:5]))
+            guards.append("kind_asked_which")
     # (a line-targeted change is already exact — only item-level ops can be retargeted)
     retargetable = [o for o in ops if o["op"] == "add" or (o["itemId"] in cart_qty and not o.get("lineKey"))]
     fixed = _reconcile_ops_with_words(retargetable, transcript, index)
@@ -8515,7 +8550,7 @@ async def _reply(
                          or (understood is not None and u_intent in ("recommend", "dish_question")))
         if not checkout_spoke and not asked_too:
             named_ids = {index.item_id(i) for i in _dishes_named(transcript, index, limit=6)}
-            cut = _strip_pitches(reply, {o["itemId"] for o in ops} | set(final_qty) | named_ids, index)
+            cut = _strip_pitches(reply, {o["itemId"] for o in ops} | set(final_qty) | named_ids | which_ids, index)
             if cut != reply:
                 print("[brain] model pitch cut:", reply[:120])
                 reply, voice = cut, (cut if lang == "bn" else voice)
