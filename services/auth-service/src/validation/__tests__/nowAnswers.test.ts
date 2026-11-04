@@ -1,5 +1,5 @@
 // The owner's "what can I eat now?" (Settings → What to eat now) as the admin saves it: real dishes, within limits.
-import { tenantUpdateSchema } from '../schemas';
+import { tenantUpdateSchema } from '../schemas.js';
 
 const ID = 'aaaaaaaaaaaaaaaaaaaaaaaa';
 const B1 = 'bbbbbbbbbbbbbbbbbbbbbbbb';
