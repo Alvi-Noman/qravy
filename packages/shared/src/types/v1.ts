@@ -264,6 +264,9 @@ export interface TenantBilling {
   status: 'none' | 'trial' | 'active' | 'due' | 'overdue';
 }
 
+/** One piece of an owner's "what can I eat now?" sentence: their own words, or a dish with up to two backups. */
+export type NowAnswerToken = { t: 'text'; v: string } | { t: 'dish'; id: string; backups: string[]; say: string };
+
 export interface TenantDTO {
   id: string;
   name: string;
@@ -300,6 +303,8 @@ export interface TenantDTO {
   upsellRules?: Array<{ whenItemIds: string[]; whenCategories: string[]; offerItemIds: string[]; on: boolean }>;
   /** The owner's picks: a guest asks for one of these words → the waiter shows these dishes, in this order */
   suggestRules?: Array<{ phrases: string[]; itemIds: string[]; on: boolean }>;
+  /** the owner's own "what can I eat now?" for each time of day: sentences of words and dish pills (none = the waiter's own) */
+  nowAnswers?: Partial<Record<'morning' | 'lunch' | 'evening' | 'night', { lines: NowAnswerToken[][]; updatedAt?: string } | null>>;
   /** The plan and what the restaurant pays Qravy (a custom price when one was agreed), until when, and the status
    *  from the dates — the dashboard shows a reminder when it's due or overdue (nothing is locked) */
   billing?: TenantBilling;

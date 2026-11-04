@@ -1,5 +1,8 @@
 import { ObjectId } from 'mongodb';
 
+/** One piece of an owner's sentence: their own words, or a dish (a first choice, up to two backups, how it's said). */
+export type NowAnswerToken = { t: 'text'; v: string } | { t: 'dish'; id: string; backups: string[]; say: string };
+
 export interface TenantDoc {
   _id?: ObjectId;
   name: string;
@@ -32,6 +35,9 @@ export interface TenantDoc {
   upsellRules?: Array<{ whenItemIds: string[]; whenCategories: string[]; offerItemIds: string[]; on: boolean }>;
   /** the owner's picks: a guest asks for one of these words → the waiter shows these dishes, in this order */
   suggestRules?: Array<{ phrases: string[]; itemIds: string[]; on: boolean }>;
+  /** the owner's own "what can I eat now?" for each time of day (morning / lunch / evening / night) — the waiter says
+   *  it with each dish's first choice that can be ordered then (ai-waiter-service now_answers.py); none = its own */
+  nowAnswers?: Record<string, { lines: NowAnswerToken[][]; updatedAt?: Date } | null>;
   pronunciations?: Array<{ word: string; sayAs: string; spoken: string }>;
   /** this restaurant's own way of saying words (Menu Items): its voice only, over Qravy's dictionary (routes/pronounceRoutes.ts) */
   ownPronunciations?: Array<{ word: string; sayAs: string; spoken: string; by: string; updatedAt: Date }>;

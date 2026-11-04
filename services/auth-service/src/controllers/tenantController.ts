@@ -780,6 +780,16 @@ export async function updateMyTenant(req: Request, res: Response, next: NextFunc
           on: r.on !== false,
         }));
     }
+    if (parsed.nowAnswers) {
+      // only the times sent change; null puts that time back to the waiter's own answer
+      for (const [slot, value] of Object.entries(parsed.nowAnswers)) {
+        if (value === undefined) continue;
+        const lines = (value?.lines ?? [])
+          .map((line) => line.filter((t: any) => t.t === 'dish' || (t.t === 'text' && t.v)))
+          .filter((line) => line.some((t: any) => t.t === 'dish' || String(t.v).trim()));
+        (update as Record<string, unknown>)[`nowAnswers.${slot}`] = value === null || !lines.length ? null : { lines, updatedAt: new Date() };
+      }
+    }
     if (parsed.suggestRules) {
       update.suggestRules = parsed.suggestRules
         .map((r) => ({

@@ -13,6 +13,7 @@ Public API: generate_reply(...) → {"replyText": str, "meta": {...}}  (shape us
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import functools
 import hashlib
 import json
@@ -55,6 +56,7 @@ import menu_answers
 import bhorta_bhaji
 import pairing
 import knowledge
+import now_answers
 import menu_profile
 import reco_format
 import intent as intent_mod
@@ -100,6 +102,14 @@ BRAIN_MAX_TOKENS = int(os.environ.get("BRAIN_MAX_TOKENS", "1800"))
 BRAIN_TIMEOUT_S = float(os.environ.get("BRAIN_TIMEOUT_S", "10.0"))
 BRAIN_TEMP = float(os.environ.get("BRAIN_TEMP", "0.2"))
 BRAIN_RETRIES = int(os.environ.get("BRAIN_RETRIES", "1"))
+# connecting to the AI takes well under a second — not reached in this long, it is down: try again / give up at once
+# (a 10 s connect limit, twice, left a guest on "Thinking…" past the app's 30 s: ConnectTimeout, Nov 4)
+BRAIN_CONNECT_S = float(os.environ.get("BRAIN_CONNECT_S", "3.0"))
+# every turn is answered within this — the AI's calls and retries share it, the fallback reply comes after it
+TURN_BUDGET_S = float(os.environ.get("TURN_BUDGET_S", "20"))
+_DEADLINE: contextvars.ContextVar = contextvars.ContextVar("turn_deadline", default=None)
+# no AI for this call (the admin's suggested answers are the waiter's own words, never a paid call): it fails at once
+NO_MODEL: contextvars.ContextVar = contextvars.ContextVar("no_model", default=False)
 # OpenAI's thinking models (gpt-5 on, o-series) take max_completion_tokens and a reasoning effort instead of
 # max_tokens / temperature — "none" answers straight away, as fast as a 4.1
 REASONING_MODEL = OPENAI_BASE == "https://api.openai.com" and bool(re.match(r"(gpt-[5-9]|o\d)", OPENAI_CHAT_MODEL))
@@ -669,8 +679,24 @@ def _client() -> httpx.AsyncClient:
     global _http
     loop = asyncio.get_running_loop()
     if _http is None or _http[0] is not loop or _http[1].is_closed:
-        _http = (loop, httpx.AsyncClient(timeout=BRAIN_TIMEOUT_S))
+        _http = (loop, httpx.AsyncClient(timeout=httpx.Timeout(BRAIN_TIMEOUT_S, connect=BRAIN_CONNECT_S),
+                                         # (kept open between turns: no new handshake for each guest)
+                                         limits=httpx.Limits(keepalive_expiry=120)))
     return _http[1]
+
+
+async def keep_warm(every_s: float = 50.0) -> None:
+    """The connection to the AI kept open — this model's (free) details now and then: the first guest after a restart
+    or a quiet spell doesn't wait for a new handshake, and a dead connection is noticed before a guest asks."""
+    while True:
+        if OPENAI_API_KEY and OPENAI_BASE == "https://api.openai.com":
+            try:
+                await _client().get(f"{OPENAI_BASE}/v1/models/{OPENAI_CHAT_MODEL}",
+                                    headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
+                                    timeout=httpx.Timeout(5.0, connect=BRAIN_CONNECT_S))
+            except Exception as e:  # noqa: BLE001 — a guest's turn retries on its own
+                print("[brain] keep-warm failed:", repr(e)[:100])
+        await asyncio.sleep(every_s)
 
 
 MENU_PROFILE_AI = os.environ.get("MENU_PROFILE_AI", "1").strip().lower() not in ("0", "false", "no", "off")
@@ -692,6 +718,8 @@ async def _read_menu(messages: List[Dict[str, str]]) -> str:
 
 async def _call_openai(messages: List[Dict[str, str]]) -> str:
     global _structured_ok, _CACHE_KEY_OK
+    if NO_MODEL.get():
+        raise RuntimeError("no model for this call")
     if not OPENAI_API_KEY:
         raise RuntimeError("OPENAI_API_KEY is not set")
 
@@ -718,19 +746,25 @@ async def _call_openai(messages: List[Dict[str, str]]) -> str:
 
     headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
     last_err: Optional[Exception] = None
+    deadline = _DEADLINE.get()
     for attempt in range(BRAIN_RETRIES + 1):
+        # (only what is left of the turn's budget — the guest always gets an answer before the app gives up)
+        left = (deadline - time.monotonic()) if deadline else BRAIN_TIMEOUT_S
+        if left < 1.5:
+            raise httpx.TimeoutException("the turn's time is spent")
+        limit = httpx.Timeout(min(BRAIN_TIMEOUT_S, left), connect=min(BRAIN_CONNECT_S, left))
         try:
             client = _client()
             t0 = time.monotonic()
-            r = await client.post(OPENAI_CHAT_URL, headers=headers, json=payload(_structured_ok))
+            r = await client.post(OPENAI_CHAT_URL, headers=headers, json=payload(_structured_ok), timeout=limit)
             if r.status_code == 400 and _CACHE_KEY_OK and "prompt_cache_key" in r.text:
                 print("[brain] endpoint rejected prompt_cache_key → sending without it")
                 _CACHE_KEY_OK = False
-                r = await client.post(OPENAI_CHAT_URL, headers=headers, json=payload(_structured_ok))
+                r = await client.post(OPENAI_CHAT_URL, headers=headers, json=payload(_structured_ok), timeout=limit)
             if r.status_code == 400 and _structured_ok and "response_format" in r.text:
                 print("[brain] endpoint rejected json_schema → falling back to json_object")
                 _structured_ok = False
-                r = await client.post(OPENAI_CHAT_URL, headers=headers, json=payload(False))
+                r = await client.post(OPENAI_CHAT_URL, headers=headers, json=payload(False), timeout=limit)
             if r.status_code in (429, 500, 502, 503, 504) and attempt < BRAIN_RETRIES:
                 raise httpx.HTTPStatusError("retryable", request=r.request, response=r)
             r.raise_for_status()
@@ -1163,7 +1197,7 @@ _SEE_MENU = re.compile(
     r"\b(show|see|open|view|look at|check)\b.{0,15}\bmenu\b|\bfull menu\b|\bmenu (please|card)\b"
     # "মেনু দেখতে চাচ্ছি / চাইছিলাম", "মেনুটা দেখব", "মেনু দেখাতে পারবেন?", "মেনু কোথায়?" — every way of asking to see it
     r"|মেনু(টা|টি|গুলো)?\s*(একটু\s*)?(দেখান|দেখাও|দেখাবেন|দেখাবে|দেখাতে\s*পারবেন|দেখাতে\s*পারেন"
-    r"|দেখতে\s*(চাই|চাচ্ছি|চাচ্ছিলাম|চাইছি|চাইছিলাম|চেয়েছিলাম|পারি)|দেখবো?|দেখতাম|দেখা\s*যাবে|দেখি"
+    r"|দেখতে\s*(চাই|চাচ্ছি|চাচ্ছিলাম|চাইছি|চাইছিলাম|চেয়েছিলাম|পারি)|দেখবো?|দেখতাম|দেখা\s*যাবে|দেখি|দেখ(?![ঀ-৿])"
     r"|খুলুন|খোলেন|দিন|দেন|দাও|দিও|দে(?![ঀ-৿]))|মেনু কার্ড|মেনু(টা)?\s*কোথায়"
     # "মেনু কার্ডটা দাও" heard as "মেনু কাটটা / কাডটা দাও"
     r"|মেনু\s*(কার্ড|কাড|কাট)(টা|টি)?\s*(দাও|দিন|দেন|দিও|দে(?![ঀ-৿])|দেখাও|দেখান|আনো|আনুন)"
@@ -4342,7 +4376,8 @@ def _reco_fallback(pool: List[Dict[str, Any]], lang: str, ctx: Dict[str, Any]) -
     listed = ", ".join(picks[:-1]) + (" or " if not bn else " অথবা ") + picks[-1] if len(picks) > 1 else picks[0]
     period = str(ctx.get("mealPeriod") or "").split(" (")[0]
     if bn:
-        return f"এখন{(' ' + period + ' এর জন্য') if period and 'between' not in period else ''} আপনার জন্য ভালো হবে {listed}। অর্ডার করতে চান?"
+        # (never the period's own English name: "এখন Evening এর জন্য…" — the AI was unreachable, Nov 4)
+        return f"এখন আপনার জন্য ভালো হবে {listed}। অর্ডার করতে চান?"
     when = f" for {period.lower()}" if period and "between" not in period else ""
     return f"Right now{when}, I'd suggest {listed}. Would you like to order?"
 
@@ -5028,6 +5063,10 @@ def _period_menu_reply(transcript: str, index: MenuIndex, orderable: Dict[str, b
         rice_line = bangla_meal.meal_text(meal, "bn", rice_in_tray=True).replace("ভাতের সাথে ", "", 1)
         rice_line = rice_line.split("। সাথে")[0].rstrip("।")
         text = f"{head} ভাত খেতে পারেন — ভাতের সাথে {rice_line}।"
+        # "আবার চাইলে …ও" is another kind of food (the kebabs after 9pm) — never the rice meal's own curries again (at
+        # lunch it said "আবার চাইলে মাছও খেতে পারেন — রুই মাছ, হাওরের বোয়াল মাছ…" right after those fish)
+        set_main = [x for x in set_main if bangla_meal.role(x) not in ("rice", "fish", "chicken", "meat", "side")]
+        set_top = _top_kinds(set_main)  # (the kind word of what's left — not "মাছ" for the polao)
         if set_main:
             text += f" আবার চাইলে {_TIME_KIND_SAY[set_top[0]][3] if set_top else 'এগুলো'}ও খেতে পারেন — " \
                     f"{_bn_join(names_of(set_main))}{_with_bread(set_rest)}।"
@@ -6328,7 +6367,12 @@ async def generate_reply(transcript: str, **kw: Any) -> Dict[str, Any]:
       chooseOptions stays for screens without the tray picker)
     · H: what became of last turn's offer (meta.upsellOutcome: accepted / declined / ignored) and the tray's total
       after this turn (meta.traySubtotal) — the server keeps both for the upsell stats."""
-    out = await _reply(transcript, **kw)
+    # the turn's time budget starts now (the AI's calls share it — TURN_BUDGET_S)
+    token = _DEADLINE.set(time.monotonic() + TURN_BUDGET_S)
+    try:
+        out = await _reply(transcript, **kw)
+    finally:
+        _DEADLINE.reset(token)
     meta = out.get("meta") or {}
     index = MenuIndex((kw.get("menu_snapshot") or {}).get("items") or [])
     pending = (meta.get("tray") or {}).get("pending") if isinstance(meta.get("tray"), dict) else None
@@ -6448,10 +6492,12 @@ async def _reply(
     facts: List[str] = []
     if AI_FIRST:
         facts += _closed_fact(list((restaurant or {}).get("opening") or []), str(ctx.get("localTime") or ""))
+    day_fact: Optional[str] = None  # (on every turn — never "a fact that answers this question")
     if day_slot is not None:
-        facts.append(f"It's {day_slot.name} here. When recommending, lead with what this time is for at this kind of "
-                     f"restaurant ({', '.join(day_slot.lead[:8])}) where the MENU has it — the RANKED PICKS already "
-                     "follow this. A dish marked \"with X\" is eaten with X: always say them together, never alone.")
+        day_fact = (f"It's {day_slot.name} here. When recommending, lead with what this time is for at this kind of "
+                    f"restaurant ({', '.join(day_slot.lead[:8])}) where the MENU has it — the RANKED PICKS already "
+                    "follow this. A dish marked \"with X\" is eaten with X: always say them together, never alone.")
+        facts.append(day_fact)
     cart_rows, subtotal = cart_lines(index, ctx.get("cartItems") or [])
     _tray.with_refs(cart_rows)  # L1, L2 … + the storefront's line keys
     cart_qty: Dict[str, int] = {}
@@ -7347,10 +7393,25 @@ async def _reply(
                 and not re.search(r"শেষ হয়ে গেছে|sold out", str(it.get("unavailableReason") or ""), re.I)]
         period_menu = _between_meals(index, orderable, list((menu_snapshot or {}).get("periods") or []),
                                      int(lt.group(1)) * 60 + int(lt.group(2)), bn, live)
+    # the owner's own answer for this time of day (Settings → AI Waiter → What to eat now) — said as they wrote it, each
+    # dish the first of its choices that can be ordered now; only for "what's on now?" with nothing more in it
+    now_min = int(lt.group(1)) * 60 + int(lt.group(2)) if lt else None
+    mine = now_answers.clean((restaurant or {}).get("nowAnswers")).get(now_answers.slot_of(now_min) or "")
+    if (mine and stage in ("none", "readback") and not tstate.get("pending") and not at_time and not side_ans
+            and not any(v for v in extract_prefs(transcript).to_dict().values())
+            and (_plain_pick_ask(transcript, index) or (period_menu is not None and not kind_scope))):
+        said_now = now_answers.render(mine, index.by_id, lambda i: orderable.get(i, True), bangla_meal.said_name)
+        if said_now:
+            period_menu = (said_now[0], [_suggestion_row(index.by_id[i]) for i in said_now[1]], "owner_now_answer")
     if AI_FIRST:
-        if period_menu:
+        # the owner's own words at a Bengali rice house — "এখন ভাত খেতে পারেন, ভাতের সাথে মাছের মধ্যে …", the kebabs
+        # first in the evening — said as they are (the AI, given them as a fact, wrote its own: "এখন সাদা ভাত (মিনিকেট)
+        # এর সাথে হাওরের বোয়াল মাছ…"); nothing more in the question than what's on (no taste, budget, people…)
+        own_words = period_menu and (period_menu[2] == "owner_now_answer" or (
+            bangla_meal.is_bhaat_house(index.items) and not any(v for v in extract_prefs(transcript).to_dict().values())))
+        if period_menu and not own_words:
             facts.append("What is served at the time asked (from the restaurant's own hours): " + period_menu[0])
-        period_menu = None
+            period_menu = None
     if period_menu:
         text, rows, note = period_menu
         if stage == "readback":
@@ -7458,7 +7519,9 @@ async def _reply(
         and not reco_format.taste_asked(transcript)
         and not period_asked  # "বিকেলের মেনুতে কী আছে?" → suggestions for the afternoon
         and extract_prefs(transcript).summary() == "nothing specific yet"
-        and not (AI_FIRST and facts)  # (a question the facts answer — the AI answers it)
+        # (a question the facts answer — the AI answers it; the time of day's fact is on every turn, it answers nothing:
+        # it stopped "কী আছে তোমাদের মেনুতে?" opening the menu at all)
+        and not (AI_FIRST and [f for f in facts if f is not day_fact])
     ):
         text = ("এই যে আমাদের মেনু — দেখে বলুন, কোনটা অর্ডার করতে চান? নাকি আমি কিছু সাজেস্ট করব?" if bn
                 else "Here's our menu — have a look and tell me what you'd like to order. Or shall I suggest something?")
@@ -8209,6 +8272,12 @@ async def _reply(
                 and obj.get("checkout") in (None, "", "none") and not obj.get("serviceRequest")
                 and str(obj.get("replyText") or "").strip()):
             _save_pick(saved_key, raw)
+        # (too little of the turn's time left for a second answer: this one, checked as it is — never a guest left
+        # waiting past the app's limit)
+        deadline = _DEADLINE.get()
+        if issues and not clean_ops and deadline and deadline - time.monotonic() < 6:
+            print("[brain] self-check skipped — the turn's time is nearly spent:", issues)
+            issues = []
         if issues and not clean_ops:
             # one self-correction pass: a wrong or missing number is worse than a slightly slower answer
             print("[brain] self-check:", issues)

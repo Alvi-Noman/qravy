@@ -156,8 +156,10 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
         markVoicePending(false);
         ttsStartedAtRef.current = Date.now();
         if (!owns()) return;
-        const liveNow = (useConversationStore as any).getState?.().aiTextLive || '';
-        const cont = inSpeechRef.current || !!liveNow;
+        // a continuation only of THIS screen's reply in progress — "এই যে আমাদের মেনু…" left half-revealed when the home
+        // screen closed for the menu, and the menu page then took every new reply for more of it: the old answer
+        // stayed on screen while the voice said the new one
+        const cont = inSpeechRef.current;
         if (!cont) {
           speakGenRef.current += 1;
           activeGenRef.current = speakGenRef.current;

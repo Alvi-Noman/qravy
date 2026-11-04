@@ -81,3 +81,11 @@ def test_an_answer_the_checks_had_to_correct_is_never_kept():
     # a dish that isn't on the menu → the self-check asks again; nothing is kept
     ask("এখন কি খেতে পারি?", reply="এখন বিফ তেহারি খেতে পারেন।", extra={"foodsNamed": ["বিফ তেহারি"]})
     assert not brain._SAVED_PICKS
+
+
+def test_what_do_you_have_opens_the_menu():
+    # "কী আছে তোমাদের মেনুতে?" → "এই যে আমাদের মেনু — দেখে বলুন…" and the menu opens (the time of day's fact, on every
+    # turn, once kept it from ever firing)
+    out, n = ask("কী আছে তোমাদের মেনুতে?")
+    assert n == 0 and (out["meta"].get("decision") or {}).get("openMenu"), out["replyText"]
+    assert "মেনু" in out["replyText"]

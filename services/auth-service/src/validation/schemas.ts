@@ -8,6 +8,30 @@ import { RESERVED_SUBDOMAINS } from '../utils/subdomains.js';
 export const GUEST_MESSAGE_KEYS = ['welcome', 'dineInTitle', 'dineInBody', 'deliveryTitle', 'deliveryBody', 'pickupTitle', 'pickupBody', 'waiterCall'] as const;
 
 const objectId = z.string().regex(/^[a-fA-F0-9]{24}$/, 'Invalid id');
+
+// one time of day of the owner's "what can I eat now?": sentences of their words and dish pills
+const nowAnswerSlot = z
+  .object({
+    lines: z
+      .array(
+        z
+          .array(
+            z.discriminatedUnion('t', [
+              z.object({ t: z.literal('text'), v: z.string().max(300) }),
+              z.object({
+                t: z.literal('dish'),
+                id: objectId,
+                backups: z.array(objectId).max(2).default([]),
+                say: z.string().trim().max(40).default(''),
+              }),
+            ])
+          )
+          .max(40)
+      )
+      .max(8),
+  })
+  .nullable()
+  .optional();
 export const channelEnum = z.enum(['dine-in', 'online']);
 // NEW: category channel can also allow "both"
 export const categoryChannelEnum = z.enum(['dine-in', 'online', 'both']);
@@ -513,6 +537,11 @@ export const tenantUpdateSchema = z
         })
       )
       .max(50)
+      .optional(),
+    // the owner's own answer to "what can I eat now?" for each time of day (Settings → AI Waiter → What to eat now):
+    // sentences of their words and dish pills (a first choice, two backups, how it's said). null = the waiter's own.
+    nowAnswers: z
+      .object({ morning: nowAnswerSlot, lunch: nowAnswerSlot, evening: nowAnswerSlot, night: nowAnswerSlot })
       .optional(),
     // … and over its suggestions: "a guest asks for <words> → show these dishes" (in this order)
     suggestRules: z

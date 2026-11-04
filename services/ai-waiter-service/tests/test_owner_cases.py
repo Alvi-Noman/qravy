@@ -229,3 +229,32 @@ def test_a_dish_not_on_now_said_in_passing_is_mended_without_asking_again():
             == "চিকেন গ্রিল খেতে পারেন। কোনটা দেব?")
     # (a sentence offering a dish that IS on as well → not mended here: the AI answers again)
     assert brain._mend_unavailable("চিকেন গ্রিল আর ভর্তা-ভাজি খেতে পারেন।", [by["v1"]], m, on) is None
+
+
+def test_the_owners_rice_words_are_said_as_they_are():
+    # AI-first: given "এখন ভাত খেতে পারেন, ভাতের সাথে মাছের মধ্যে …" as a fact, the AI wrote its own ("এখন সাদা ভাত
+    # (মিনিকেট) এর সাথে হাওরের বোয়াল মাছ…") — at a rice house the owner's words are said, no AI
+    import asyncio
+    import json
+    calls = []
+
+    async def fake(messages):
+        calls.append(1)
+        return json.dumps({"topic": "recommendation", "intent": "suggestions", "language": "bn", "mentionedItems": [],
+                           "cartOps": [], "clearCart": False, "confirmOrder": False, "checkout": "none",
+                           "understood": True, "answerItems": [], "serviceRequest": None, "suggestions": [],
+                           "foodsNamed": [], "guestPrefs": None, "replyText": "(the AI)"})
+    orig, ai_first = brain._call_openai, brain.AI_FIRST
+    brain._call_openai, brain.AI_FIRST = fake, True
+    try:
+        periods = [{"id": "breakfast", "name": "Breakfast", "start": "06:00", "end": "12:01"},
+                   {"id": "lunch", "name": "Lunch", "start": "12:02", "end": "17:00"},
+                   {"id": "afternoon", "name": "Evening", "start": "17:01", "end": "22:00"},
+                   {"id": "dinner", "name": "Dinner", "start": "22:01", "end": "00:01"}]
+        out = asyncio.run(brain.generate_reply("এখন কি খাওয়া যেতে পারে?", locale="bn",
+                                               menu_snapshot={"items": [dict(i, periods=["lunch", "afternoon", "dinner"])
+                                                                        for i in MENU.items], "periods": periods},
+                                               context={"cartItems": [], "localTime": "21:30"}))
+    finally:
+        brain._call_openai, brain.AI_FIRST = orig, ai_first
+    assert not calls and out["replyText"].startswith("এখন ভাত খেতে পারেন — ভাতের সাথে মাছের মধ্যে"), out["replyText"]

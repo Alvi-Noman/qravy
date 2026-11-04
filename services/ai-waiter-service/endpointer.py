@@ -21,7 +21,7 @@ import numpy as np
 
 RATE = 16000
 FRAME = 512  # 32 ms at 16 kHz — Silero's frame
-END_MS = int(os.environ.get("VAD_END_MS", "700"))  # this much quiet after speech = they're done (1 s felt slow)
+END_MS = int(os.environ.get("VAD_END_MS", "1000"))  # this much quiet after speech = they're done (0.7 s cut people off)
 MIN_SPEECH_MS = int(os.environ.get("VAD_MIN_SPEECH_MS", "250"))  # shorter than this is a cough / clink
 MARGIN_DB = float(os.environ.get("VAD_MARGIN_DB", "10"))  # speech must be this far above the room to start
 REF_DROP_DB = float(os.environ.get("VAD_REF_DROP_DB", "6"))  # in a listen window: within this of the guest's level
@@ -31,6 +31,10 @@ KEEP_PROB = 0.3  # once speaking, a softer frame still counts (hysteresis)
 FLOOR_MIN_DB = -75.0
 _ROOM_FRAMES = 94  # ~3 s of sound to estimate the room's level from
 _WARMUP = 6  # ~0.2 s heard before anything can start
+# a mic they PRESSED never stays on: nothing clearly heard for this long → sent as it is (the speech-to-text says if
+# anything was said); a room that never goes quiet (music, chatter) → sent after this long in all
+NO_START_MS = int(os.environ.get("VAD_NO_START_MS", "10000"))
+MAX_TURN_MS = int(os.environ.get("VAD_MAX_TURN_MS", "20000"))
 
 _MODEL = None
 
@@ -101,7 +105,10 @@ class Endpointer:
         f = self.floor()
         if f is None or prob < SPEECH_PROB or db < f + self.margin:
             return False
-        return self.ref_db is None or db >= self.ref_db - REF_DROP_DB
+        # their level from the last turn is the bar only in a LISTEN WINDOW (the mic opened by itself — the next table
+        # mustn't start a turn): a mic they pressed is them talking — a softer "না, থাক" after an upsell question
+        # never started, so it never ended either, and the mic stayed on
+        return self.ref_db is None or not self.listen_window or db >= self.ref_db - REF_DROP_DB
 
     def _keeps(self, prob: float, db: float) -> bool:
         f = self.floor() or FLOOR_MIN_DB
@@ -151,4 +158,7 @@ class Endpointer:
                         self.speech, self.voice, self.voice_frames = 0, [], []
                 if not self.started and self.listen_frames and self.frames >= self.listen_frames:
                     self.done = event = "silence"
+            if not self.done and not self.listen_window and (
+                    self.frames >= MAX_TURN_MS // 32 or (not self.started and self.frames >= NO_START_MS // 32)):
+                self.done = event = "end"
         return event

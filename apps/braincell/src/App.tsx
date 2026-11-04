@@ -54,6 +54,7 @@ const SettingsLocalization = lazy(() => import('./pages/settings/Localization'))
 const SettingsAiWaiter = lazy(() => import('./pages/settings/AiWaiter'));
 const SettingsGuestMessages = lazy(() => import('./pages/settings/GuestMessages'));
 const SettingsUpsellPicks = lazy(() => import('./pages/settings/UpsellPicks'));
+const SettingsNowAnswers = lazy(() => import('./pages/settings/NowAnswers'));
 const SettingsAccessibility = lazy(() => import('./pages/settings/Accessibility'));
 const SettingsLabs = lazy(() => import('./pages/settings/Labs'));
 const SettingsPrivacy = lazy(() => import('./pages/settings/Privacy'));
@@ -416,6 +417,14 @@ function App() {
                   element={
                     <Suspense fallback={null}>
                       <SettingsUpsellPicks />
+                    </Suspense>
+                  }
+                />
+                <Route
+                  path="what-to-eat"
+                  element={
+                    <Suspense fallback={null}>
+                      <SettingsNowAnswers />
                     </Suspense>
                   }
                 />

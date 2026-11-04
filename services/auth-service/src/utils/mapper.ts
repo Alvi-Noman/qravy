@@ -178,6 +178,7 @@ export function toTenantDTO(doc: TenantDoc): v1.TenantDTO {
     billing: billingDTO(doc),
     upsellRules: doc.upsellRules ?? [],
     suggestRules: doc.suggestRules ?? [],
+    nowAnswers: doc.nowAnswers ?? {},
     timezone: doc.timezone ?? DEFAULT_TIMEZONE,
     openingHours: doc.openingHours ?? [],
     dailyResetTime: doc.dailyResetTime ?? DEFAULT_RESET_TIME,
