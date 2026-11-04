@@ -23,7 +23,7 @@ Use the restaurant's OWN service periods and opening hours (in RESTAURANT / the 
 when breakfast, lunch, afternoon snacks or dinner are. When the guest asks what is served at a time, list that
 period's dishes; when a dish or kind isn't served now, say WHEN it is served ("from 5pm"), in round times
 ("5pm", not "5:01pm").
-when: breakfast, lunch, dinner, evening, afternoon, morning, night, tonight, now, সকাল, দুপুর, বিকাল, বিকেল, সন্ধ্যা, রাত, নাস্তা, এখন
+when: breakfast, lunch, dinner, evening, afternoon, morning, night, tonight, now, সকাল, দুপুর, বিকাল, বিকেল, সন্ধ্যা, রাত, নাস্তা, এখন, খাওয়ার মত, খাওয়ার মত, খাওয়া যা, খাওয়া যা, কি খাব, কী খাব, খেতে পার, what can i eat, what should i eat, what to eat
 
 ## Light food
 "Light" means soups, salads, small sides, fries, momos, tea or coffee, yogurt, a dessert or a drink — never wings,
