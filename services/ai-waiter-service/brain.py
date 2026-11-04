@@ -13,6 +13,7 @@ Public API: generate_reply(...) → {"replyText": str, "meta": {...}}  (shape us
 from __future__ import annotations
 
 import asyncio
+import functools
 import hashlib
 import json
 import os
@@ -175,26 +176,32 @@ RESPONSE_SCHEMA: Dict[str, Any] = {
                 "properties": {"item": _STR, "reason": _STR},
             },
         },
+        # null on most turns (nothing said about the guest): the empty block was ~50 tokens of every answer to write
         "guestPrefs": {
-            "type": "object",
-            "additionalProperties": False,
-            "required": [
-                "diet", "allergies", "avoid", "spice", "budget", "partySize", "vegetariansInParty", "kids", "mood",
-                "declined", "liked",
-            ],
-            "properties": {
-                "diet": {"type": "array", "items": {"type": "string", "enum": list(DIETS)}},
-                "allergies": {"type": "array", "items": {"type": "string", "enum": list(ALLERGENS)}},
-                "avoid": {"type": "array", "items": _STR},
-                "spice": {"type": "string", "enum": list(SPICE)},
-                "budget": {"type": "integer"},
-                "partySize": {"type": "integer"},
-                "vegetariansInParty": {"type": "integer"},
-                "kids": {"type": "boolean"},
-                "mood": {"type": "array", "items": {"type": "string", "enum": list(MOODS)}},
-                "declined": {"type": "array", "items": _STR},
-                "liked": {"type": "array", "items": _STR},
-            },
+            "anyOf": [
+                {"type": "null"},
+                {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": [
+                        "diet", "allergies", "avoid", "spice", "budget", "partySize", "vegetariansInParty", "kids",
+                        "mood", "declined", "liked",
+                    ],
+                    "properties": {
+                        "diet": {"type": "array", "items": {"type": "string", "enum": list(DIETS)}},
+                        "allergies": {"type": "array", "items": {"type": "string", "enum": list(ALLERGENS)}},
+                        "avoid": {"type": "array", "items": _STR},
+                        "spice": {"type": "string", "enum": list(SPICE)},
+                        "budget": {"type": "integer"},
+                        "partySize": {"type": "integer"},
+                        "vegetariansInParty": {"type": "integer"},
+                        "kids": {"type": "boolean"},
+                        "mood": {"type": "array", "items": {"type": "string", "enum": list(MOODS)}},
+                        "declined": {"type": "array", "items": _STR},
+                        "liked": {"type": "array", "items": _STR},
+                    },
+                },
+            ]
         },
         "replyText": _STR,
     },
@@ -404,7 +411,7 @@ PLAYBOOK = """You are the virtual waiter of the restaurant described below. Gues
   Star-marked (SIGNATURE) dishes lead only when they are in RANKED PICKS (i.e. they suit the time and the guest) — never push one that doesn't.
 - SIGNATURE dishes are the owner's pride: lead with one when it's in RANKED PICKS and fits, and say so naturally — but don't mention signatures every turn.
 - Time: match the CURRENT meal period from "Meal period now" / "Local time" — never name another one (no "lunch"/"দুপুর" at night, no "dinner" in the morning). Late at night say "এত রাতে"/"late tonight", or simply don't mention the time. A dish outside its serving time can't be ordered — say when it's served and suggest what's available now.
-- guestPrefs: record ONLY what the guest said about themselves or their table this turn (allergies, diet, dislikes, spice, budget, party size, kids, mood; "declined"/"liked" = refs of dishes they turned down or liked). Asking "does it have gluten?" is not an allergy. Leave fields empty/0 when not said.
+- guestPrefs: record ONLY what the guest said about themselves or their table this turn (allergies, diet, dislikes, spice, budget, party size, kids, mood; "declined"/"liked" = refs of dishes they turned down or liked). Asking "does it have gluten?" is not an allergy. null when they said nothing about themselves this turn (most turns); otherwise fill what they said and leave the rest empty/0.
 - Never claim a dish serves a number of people unless the menu says so (set menus are one person's meal).
 - Cheapest / budget questions: use the PRICE GUIDE (and the MEAL PLAN when given). For a budget, propose one concrete combination for the whole party (respecting any diets mentioned) and ALWAYS say its total in ৳, and say it fits (e.g. "2 × Set Menu A-02 is ৳700, within your ৳800 before VAT"). "Main dish" = the chicken, beef, prawn, fish, vegetable, sizzling, rice & noodles or set-menu sections — not starters, soups, salads or drinks.
 - Asked about a choice that matches a NOT ORDERABLE NOW dish: mention it may be unavailable today.
@@ -2690,6 +2697,12 @@ def _name_tokens(name: str) -> set:
     """'Mineral Water (small)' → {mineral, water, small}; 'Set Menu A-01' → {set, menu, a, 1}.
     A Bangla name's words count too, as the guest's words do ('চিকেন চাপ মাসালা' → {chicken, চাপ, masala}) —
     a menu written in Bangla once had no name words at all, so every order on it looked like a guess."""
+    return set(_name_tokens_of(str(name)))  # (a copy: the caller may change it)
+
+
+@functools.lru_cache(maxsize=32768)
+def _name_tokens_of(name: str) -> frozenset:
+    # (worked out once per name — the same dishes' names came round ~19,000 times a turn)
     toks = set()
     for w in re.findall(r"[a-z]+|\d+", str(name).lower()):
         if w in _STOP:
@@ -2698,7 +2711,7 @@ def _name_tokens(name: str) -> set:
     for w in re.findall(r"[ঀ-৿]+", str(name).translate(_BN_DIGITS)):
         if w not in _BN_STOP:
             toks |= _bn_word_tokens(w)
-    return toks
+    return frozenset(toks)
 
 
 # Bangla words in a dish name that aren't part of what it's called ("ডাল ও ভাত", "ভাত দিয়ে")

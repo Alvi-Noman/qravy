@@ -21,7 +21,7 @@ import numpy as np
 
 RATE = 16000
 FRAME = 512  # 32 ms at 16 kHz — Silero's frame
-END_MS = int(os.environ.get("VAD_END_MS", "1000"))  # this much quiet after speech = they're done
+END_MS = int(os.environ.get("VAD_END_MS", "700"))  # this much quiet after speech = they're done (1 s felt slow)
 MIN_SPEECH_MS = int(os.environ.get("VAD_MIN_SPEECH_MS", "250"))  # shorter than this is a cough / clink
 MARGIN_DB = float(os.environ.get("VAD_MARGIN_DB", "10"))  # speech must be this far above the room to start
 REF_DROP_DB = float(os.environ.get("VAD_REF_DROP_DB", "6"))  # in a listen window: within this of the guest's level
