@@ -8173,8 +8173,10 @@ async def _reply(
     # (the AI added চিকেন ভর্তা though it was told to ask); the rest of the order goes in, "কোনটা…?" asks the rest
     named_exactly = {index.item_id(x) for p in _DISH_JOIN.split(transcript or "") if p.strip()
                      for x in _dishes_named(p, index, limit=4, exact_only=True)}
+    which_ids: set = set()  # (the dishes that answer "which one?" — never cut as an upsell below)
     for part, fits in _vague_kind_parts(transcript, index, orderable):
         vague_ids = {index.item_id(x) for x in fits} - named_exactly  # (a dish named in another part is that dish)
+        which_ids |= vague_ids
         picked = [o for o in ops if o["op"] == "add" and o["itemId"] in vague_ids and o["itemId"] not in cart_qty]
         if picked:
             ops = [o for o in ops if o not in picked]
@@ -8538,7 +8540,7 @@ async def _reply(
                          or (understood is not None and u_intent in ("recommend", "dish_question")))
         if not checkout_spoke and not asked_too:
             named_ids = {index.item_id(i) for i in _dishes_named(transcript, index, limit=6)}
-            cut = _strip_pitches(reply, {o["itemId"] for o in ops} | set(final_qty) | named_ids, index)
+            cut = _strip_pitches(reply, {o["itemId"] for o in ops} | set(final_qty) | named_ids | which_ids, index)
             if cut != reply:
                 print("[brain] model pitch cut:", reply[:120])
                 reply, voice = cut, (cut if lang == "bn" else voice)
