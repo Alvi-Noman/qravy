@@ -15,9 +15,6 @@ export const MIC_AUDIO: MediaTrackConstraints = {
   autoGainControl: false,
 };
 
-/** Said the moment the guest has finished talking, while the AI thinks (like a waiter nodding) — the answer follows. */
-export const HEARD_CUE: Record<'bn' | 'en', string> = { bn: 'জি, দেখছি।', en: 'Sure, one moment.' };
-
 /** After the waiter's question, the mic stays open this long for the answer. */
 export const FOLLOW_UP_LISTEN_MS = 6_000;
 /** Listen windows in a row without a tap — then the guest taps again (a noisy room can't keep the mic open). */
