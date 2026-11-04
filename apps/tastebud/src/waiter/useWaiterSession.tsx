@@ -22,7 +22,7 @@ import { clearOrderNote, contactMissingNow, fulfillmentNow, readOrderNote, useFu
 import type { Channel } from '../api/storefront';
 import { useWaiterLang } from '../utils/waiter-lang';
 import {
-  FOLLOW_UP_LISTEN_MS, MIC_AUDIO, PENDING_AUDIO_MAX, chooseOptionsOf, pickOptionsOf, handsFreeOn, type ChooseOption, type PickOption,
+  FOLLOW_UP_LISTEN_MS, HEARD_CUE, MIC_AUDIO, PENDING_AUDIO_MAX, chooseOptionsOf, pickOptionsOf, handsFreeOn, type ChooseOption, type PickOption,
 } from '../utils/handsfree';
 import { earcon } from '../utils/earcon';
 
@@ -37,6 +37,7 @@ export const VOICE_STATUS: Record<VoiceState, [string, string]> = {
 };
 
 type UIMode = 'idle' | 'thinking' | 'talking';
+
 
 // 🔒 Welcome overlay persistence (the home screen's "tap to start"): any talk to the waiter counts as activity
 export const WELCOME_INTERACT_KEY = 'qravy:aiwaiter:lastInteractionAt';
@@ -155,8 +156,10 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
         markVoicePending(false);
         ttsStartedAtRef.current = Date.now();
         if (!owns()) return;
-        const liveNow = (useConversationStore as any).getState?.().aiTextLive || '';
-        const cont = inSpeechRef.current || !!liveNow;
+        // a continuation only of THIS screen's reply in progress — "এই যে আমাদের মেনু…" left half-revealed when the home
+        // screen closed for the menu, and the menu page then took every new reply for more of it: the old answer
+        // stayed on screen while the voice said the new one
+        const cont = inSpeechRef.current;
         if (!cont) {
           speakGenRef.current += 1;
           activeGenRef.current = speakGenRef.current;
@@ -834,6 +837,8 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
     const typed = opts?.typed?.trim() || '';
     // inside the guest's tap (hold / pill): unlock sound — on the menu page this is the first tap (iPhone, tts.ts)
     if (!followUp) tts.unlock();
+    // the "জি, দেখছি।" for when they finish — made now (once per voice), while they talk
+    if (!typed) tts.prepareCue(HEARD_CUE[selectedLang === 'en' ? 'en' : 'bn']);
     try {
       // any voice interaction counts as activity for welcome timer
       markWelcomeInteraction();
@@ -1490,6 +1495,12 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
     const replyComing = !opts?.quiet && (opts?.serverEnded || hadSocket);
     if (replyComing) awaitingReplyRef.current = true;
     setUiMode(replyComing ? 'thinking' : 'idle');
+    // …and the waiter says so at once ("জি, দেখছি।") — the mic is closed now, so it's never heard as their words
+    if (replyComing && !silentReplyRef.current) {
+      try {
+        tts.cue(HEARD_CUE[selectedLang === 'en' ? 'en' : 'bn']);
+      } catch {}
+    }
   }
 
   // "Get started": ask for the microphone NOW, so the browser's permission popup never interrupts the first

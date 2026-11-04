@@ -25,6 +25,11 @@ export type TTSPublicAPI = {
   /** Fetch the speech token ahead of time (safe before any tap — no audio is set up). */
   prefetch: () => void;
   stop: () => void;
+  /** A short spoken cue the moment the guest has finished ("জি, দেখছি।") — the waiter answers at once while it
+   *  thinks. Made once per voice (prepareCue, in memory) and played straight away; the reply waits for it to end. */
+  cue: (text: string) => void;
+  /** Make a cue ready ahead of time (no sound). */
+  prepareCue: (text: string) => void;
   /** The guest cut in: the voice fades out quickly (then stops, like stop()). Already silent → stop() at once. */
   fadeOut: (ms?: number) => void;
   pause: () => void;
@@ -330,6 +335,8 @@ class TTSManager implements TTSPublicAPI {
     const clean = (text ?? "").trim();
     if (!clean) return;
 
+    // the cue ("জি, দেখছি।") finishes first — the reply never cuts it off mid-word
+    if (this.cueDone) await this.cueDone;
     await this._ensureReady();
 
     return new Promise<void>((resolve, reject) => {
@@ -337,6 +344,98 @@ class TTSManager implements TTSPublicAPI {
       this.queue.push(item);
       this._pump();
     });
+  }
+
+  /* ---------- the cue: "জি, দেখছি।" the moment the guest has finished ---------- */
+  private cues = new Map<string, Promise<ArrayBuffer | null>>();
+  private cueEl: HTMLAudioElement | null = null;
+  private cueDone: Promise<void> | null = null;
+  private cueEnd: (() => void) | null = null;
+
+  prepareCue = (text: string) => {
+    void this._cueAudio(text);
+  };
+
+  /** The cue in this voice as MP3 bytes, synthesized to memory once (a failure is retried next time). */
+  private _cueAudio(text: string): Promise<ArrayBuffer | null> {
+    const key = `${this.voice}|${text}`;
+    let p = this.cues.get(key);
+    if (!p) {
+      p = (async () => {
+        await this._ensureToken();
+        const cfg = sdk.SpeechConfig.fromAuthorizationToken(this.authToken, this.region);
+        cfg.speechSynthesisVoiceName = this.voice;
+        cfg.speechSynthesisLanguage = localeFromVoice(this.voice);
+        try {
+          cfg.speechSynthesisOutputFormat = sdk.SpeechSynthesisOutputFormat.Audio16Khz32KBitRateMonoMp3;
+        } catch {}
+        const synth = new sdk.SpeechSynthesizer(cfg, null as any); // (no speaker: to memory)
+        return await new Promise<ArrayBuffer | null>((resolve) => {
+          synth.speakTextAsync(
+            speechPlan(text).spoken,
+            (r) => {
+              synth.close();
+              resolve(r.reason === sdk.ResultReason.SynthesizingAudioCompleted ? r.audioData : null);
+            },
+            () => {
+              synth.close();
+              resolve(null);
+            },
+          );
+        });
+      })().catch(() => null);
+      this.cues.set(key, p);
+      void p.then((a) => {
+        if (!a) this.cues.delete(key);
+      });
+    }
+    return p;
+  }
+
+  cue = (text: string) => {
+    if (this.muted || this.playing || this.cueDone) return; // (the waiter is already speaking)
+    const ready = this.cues.get(`${this.voice}|${text}`);
+    if (!ready) return this.prepareCue(text); // (not made yet: from the next turn)
+    const asked = Date.now();
+    this.cueDone = new Promise<void>((resolve) => {
+      const end = () => {
+        if (this.cueEnd !== end) return;
+        this.cueEnd = null;
+        this.cueDone = null;
+        resolve();
+      };
+      this.cueEnd = end;
+      window.setTimeout(end, 2500); // (never holds a reply up for long)
+    });
+    void ready.then((mp3) => {
+      const end = this.cueEnd;
+      // not ready in time → no cue (a late "জি, দেখছি" is worse than none)
+      if (!mp3 || !end || Date.now() - asked > 400) return end?.();
+      // iPhones: the tap-unlocked <audio> the replies use (a reply that starts later takes it over anyway)
+      const el = NEEDS_SHARED_AUDIO ? sharedAudioEl() : (this.cueEl ??= new Audio());
+      const url = URL.createObjectURL(new Blob([mp3], { type: "audio/mpeg" }));
+      const done = () => {
+        URL.revokeObjectURL(url);
+        end();
+      };
+      el.onplaying = null;
+      el.onended = done;
+      try {
+        el.volume = Math.max(0, Math.min(1, this.volume01));
+      } catch {}
+      el.src = url;
+      el.play()?.catch(done);
+    });
+  };
+
+  /** The guest cut in / the voice stopped: the cue too. */
+  private _stopCue() {
+    const end = this.cueEnd;
+    if (!end) return;
+    try {
+      (NEEDS_SHARED_AUDIO ? sharedAudio : this.cueEl)?.pause();
+    } catch {}
+    end();
   }
 
   prefetch = () => {
@@ -394,6 +493,7 @@ class TTSManager implements TTSPublicAPI {
       clearInterval(this.fading);
       this.fading = null;
     }
+    this._stopCue();
     // Cancel current + future items
     this.paused = false;
     const q = this.queue.splice(0);

@@ -102,3 +102,25 @@ if __name__ == "__main__":
         if name.startswith("test_") and callable(fn):
             fn()
             print("ok", name)
+
+
+def test_a_pressed_mic_is_never_held_to_the_last_turns_level():
+    # after an upsell question a softer "না, থাক" never started (their last turn's level was the bar) → never ended
+    pressed, window = E.Endpointer(ref_db=-12.0), E.Endpointer(ref_db=-12.0, listen_ms=6000)
+    for ep in (pressed, window):
+        ep.room.extend([-60.0] * 20)  # a quiet room
+    soft = -30.0  # well above the room, 18 dB under their last turn
+    assert pressed._starts(0.9, soft)
+    assert not window._starts(0.9, soft)  # (the mic opened by itself: the next table must not start a turn)
+
+
+def test_a_pressed_mic_never_stays_on():
+    # nothing said → sent after 10 s (the speech-to-text says there was nothing); a listen window still closes quietly
+    ev, _ = run(np.zeros(16000 * 12, np.float32))
+    assert "end" in ev and 9.9 <= ev["end"] <= 10.2, ev
+    ev, _ = run(np.zeros(16000 * 8, np.float32), listen_ms=6000)
+    assert "silence" in ev and "end" not in ev, ev
+    # a room that never goes quiet → never more than 20 s
+    hum = (0.3 * np.sin(2 * np.pi * 180 * np.arange(16000 * 22) / 16000)).astype(np.float32)
+    ev, _ = run(hum)
+    assert "end" in ev and ev["end"] <= 20.1, ev

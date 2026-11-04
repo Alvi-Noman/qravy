@@ -23,7 +23,7 @@ from session_ctx import (
 )
 
 # ✅ In-process brain (OpenAI) call
-from brain import generate_reply
+from brain import generate_reply, keep_warm as brain_keep_warm
 import checkout
 import endpointer
 import voiceprint
@@ -755,6 +755,7 @@ async def handle_voice_clip(request: web.Request) -> web.Response:
 async def start_http_server():
     await asyncio.to_thread(_load_alerts)  # buzzers that were ringing before this restart keep ringing
     asyncio.get_event_loop().create_task(_elevenlabs_status_loop())  # (Cortex: ElevenLabs credits)
+    asyncio.get_event_loop().create_task(brain_keep_warm())  # (the connection to the AI kept open)
     app = web.Application()
 
     # CORS / preflight

@@ -13,6 +13,7 @@ Public API: generate_reply(...) → {"replyText": str, "meta": {...}}  (shape us
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import functools
 import hashlib
 import json
@@ -100,6 +101,12 @@ BRAIN_MAX_TOKENS = int(os.environ.get("BRAIN_MAX_TOKENS", "1800"))
 BRAIN_TIMEOUT_S = float(os.environ.get("BRAIN_TIMEOUT_S", "10.0"))
 BRAIN_TEMP = float(os.environ.get("BRAIN_TEMP", "0.2"))
 BRAIN_RETRIES = int(os.environ.get("BRAIN_RETRIES", "1"))
+# connecting to the AI takes well under a second — not reached in this long, it is down: try again / give up at once
+# (a 10 s connect limit, twice, left a guest on "Thinking…" past the app's 30 s: ConnectTimeout, Nov 4)
+BRAIN_CONNECT_S = float(os.environ.get("BRAIN_CONNECT_S", "3.0"))
+# every turn is answered within this — the AI's calls and retries share it, the fallback reply comes after it
+TURN_BUDGET_S = float(os.environ.get("TURN_BUDGET_S", "20"))
+_DEADLINE: contextvars.ContextVar = contextvars.ContextVar("turn_deadline", default=None)
 # OpenAI's thinking models (gpt-5 on, o-series) take max_completion_tokens and a reasoning effort instead of
 # max_tokens / temperature — "none" answers straight away, as fast as a 4.1
 REASONING_MODEL = OPENAI_BASE == "https://api.openai.com" and bool(re.match(r"(gpt-[5-9]|o\d)", OPENAI_CHAT_MODEL))
@@ -669,8 +676,24 @@ def _client() -> httpx.AsyncClient:
     global _http
     loop = asyncio.get_running_loop()
     if _http is None or _http[0] is not loop or _http[1].is_closed:
-        _http = (loop, httpx.AsyncClient(timeout=BRAIN_TIMEOUT_S))
+        _http = (loop, httpx.AsyncClient(timeout=httpx.Timeout(BRAIN_TIMEOUT_S, connect=BRAIN_CONNECT_S),
+                                         # (kept open between turns: no new handshake for each guest)
+                                         limits=httpx.Limits(keepalive_expiry=120)))
     return _http[1]
+
+
+async def keep_warm(every_s: float = 50.0) -> None:
+    """The connection to the AI kept open — this model's (free) details now and then: the first guest after a restart
+    or a quiet spell doesn't wait for a new handshake, and a dead connection is noticed before a guest asks."""
+    while True:
+        if OPENAI_API_KEY and OPENAI_BASE == "https://api.openai.com":
+            try:
+                await _client().get(f"{OPENAI_BASE}/v1/models/{OPENAI_CHAT_MODEL}",
+                                    headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
+                                    timeout=httpx.Timeout(5.0, connect=BRAIN_CONNECT_S))
+            except Exception as e:  # noqa: BLE001 — a guest's turn retries on its own
+                print("[brain] keep-warm failed:", repr(e)[:100])
+        await asyncio.sleep(every_s)
 
 
 MENU_PROFILE_AI = os.environ.get("MENU_PROFILE_AI", "1").strip().lower() not in ("0", "false", "no", "off")
@@ -718,19 +741,25 @@ async def _call_openai(messages: List[Dict[str, str]]) -> str:
 
     headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
     last_err: Optional[Exception] = None
+    deadline = _DEADLINE.get()
     for attempt in range(BRAIN_RETRIES + 1):
+        # (only what is left of the turn's budget — the guest always gets an answer before the app gives up)
+        left = (deadline - time.monotonic()) if deadline else BRAIN_TIMEOUT_S
+        if left < 1.5:
+            raise httpx.TimeoutException("the turn's time is spent")
+        limit = httpx.Timeout(min(BRAIN_TIMEOUT_S, left), connect=min(BRAIN_CONNECT_S, left))
         try:
             client = _client()
             t0 = time.monotonic()
-            r = await client.post(OPENAI_CHAT_URL, headers=headers, json=payload(_structured_ok))
+            r = await client.post(OPENAI_CHAT_URL, headers=headers, json=payload(_structured_ok), timeout=limit)
             if r.status_code == 400 and _CACHE_KEY_OK and "prompt_cache_key" in r.text:
                 print("[brain] endpoint rejected prompt_cache_key → sending without it")
                 _CACHE_KEY_OK = False
-                r = await client.post(OPENAI_CHAT_URL, headers=headers, json=payload(_structured_ok))
+                r = await client.post(OPENAI_CHAT_URL, headers=headers, json=payload(_structured_ok), timeout=limit)
             if r.status_code == 400 and _structured_ok and "response_format" in r.text:
                 print("[brain] endpoint rejected json_schema → falling back to json_object")
                 _structured_ok = False
-                r = await client.post(OPENAI_CHAT_URL, headers=headers, json=payload(False))
+                r = await client.post(OPENAI_CHAT_URL, headers=headers, json=payload(False), timeout=limit)
             if r.status_code in (429, 500, 502, 503, 504) and attempt < BRAIN_RETRIES:
                 raise httpx.HTTPStatusError("retryable", request=r.request, response=r)
             r.raise_for_status()
@@ -6328,7 +6357,12 @@ async def generate_reply(transcript: str, **kw: Any) -> Dict[str, Any]:
       chooseOptions stays for screens without the tray picker)
     · H: what became of last turn's offer (meta.upsellOutcome: accepted / declined / ignored) and the tray's total
       after this turn (meta.traySubtotal) — the server keeps both for the upsell stats."""
-    out = await _reply(transcript, **kw)
+    # the turn's time budget starts now (the AI's calls share it — TURN_BUDGET_S)
+    token = _DEADLINE.set(time.monotonic() + TURN_BUDGET_S)
+    try:
+        out = await _reply(transcript, **kw)
+    finally:
+        _DEADLINE.reset(token)
     meta = out.get("meta") or {}
     index = MenuIndex((kw.get("menu_snapshot") or {}).get("items") or [])
     pending = (meta.get("tray") or {}).get("pending") if isinstance(meta.get("tray"), dict) else None
@@ -6448,10 +6482,12 @@ async def _reply(
     facts: List[str] = []
     if AI_FIRST:
         facts += _closed_fact(list((restaurant or {}).get("opening") or []), str(ctx.get("localTime") or ""))
+    day_fact: Optional[str] = None  # (on every turn — never "a fact that answers this question")
     if day_slot is not None:
-        facts.append(f"It's {day_slot.name} here. When recommending, lead with what this time is for at this kind of "
-                     f"restaurant ({', '.join(day_slot.lead[:8])}) where the MENU has it — the RANKED PICKS already "
-                     "follow this. A dish marked \"with X\" is eaten with X: always say them together, never alone.")
+        day_fact = (f"It's {day_slot.name} here. When recommending, lead with what this time is for at this kind of "
+                    f"restaurant ({', '.join(day_slot.lead[:8])}) where the MENU has it — the RANKED PICKS already "
+                    "follow this. A dish marked \"with X\" is eaten with X: always say them together, never alone.")
+        facts.append(day_fact)
     cart_rows, subtotal = cart_lines(index, ctx.get("cartItems") or [])
     _tray.with_refs(cart_rows)  # L1, L2 … + the storefront's line keys
     cart_qty: Dict[str, int] = {}
@@ -7458,7 +7494,9 @@ async def _reply(
         and not reco_format.taste_asked(transcript)
         and not period_asked  # "বিকেলের মেনুতে কী আছে?" → suggestions for the afternoon
         and extract_prefs(transcript).summary() == "nothing specific yet"
-        and not (AI_FIRST and facts)  # (a question the facts answer — the AI answers it)
+        # (a question the facts answer — the AI answers it; the time of day's fact is on every turn, it answers nothing:
+        # it stopped "কী আছে তোমাদের মেনুতে?" opening the menu at all)
+        and not (AI_FIRST and [f for f in facts if f is not day_fact])
     ):
         text = ("এই যে আমাদের মেনু — দেখে বলুন, কোনটা অর্ডার করতে চান? নাকি আমি কিছু সাজেস্ট করব?" if bn
                 else "Here's our menu — have a look and tell me what you'd like to order. Or shall I suggest something?")
@@ -8209,6 +8247,12 @@ async def _reply(
                 and obj.get("checkout") in (None, "", "none") and not obj.get("serviceRequest")
                 and str(obj.get("replyText") or "").strip()):
             _save_pick(saved_key, raw)
+        # (too little of the turn's time left for a second answer: this one, checked as it is — never a guest left
+        # waiting past the app's limit)
+        deadline = _DEADLINE.get()
+        if issues and not clean_ops and deadline and deadline - time.monotonic() < 6:
+            print("[brain] self-check skipped — the turn's time is nearly spent:", issues)
+            issues = []
         if issues and not clean_ops:
             # one self-correction pass: a wrong or missing number is worse than a slightly slower answer
             print("[brain] self-check:", issues)
