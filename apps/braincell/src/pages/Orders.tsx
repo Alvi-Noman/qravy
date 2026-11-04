@@ -766,7 +766,7 @@ export default function Orders() {
   const { token } = useAuthContext();
   const { has } = usePermissions();
   const canUpdate = has('orders:update');
-  // past orders have their own address (Sidebar → Order History): /orders/history
+  // past orders have their own address (the header's Order history button): /orders/history
   const navigate = useNavigate();
   const tab: 'active' | 'history' = useLocation().pathname.endsWith('/history') ? 'history' : 'active';
   const setTab = (t: 'active' | 'history') => navigate(t === 'history' ? '/orders/history' : '/orders');
@@ -874,6 +874,11 @@ export default function Orders() {
       badge={<LiveBadge connected={connected} />}
       actions={
         <>
+          {/* past orders: their own view of this page (/orders/history), the board one click back */}
+          <button type="button" onClick={() => setTab(tab === 'history' ? 'active' : 'history')} className={HEADER_BUTTON}>
+            <ClockIcon className="h-4 w-4" />
+            {tab === 'history' ? 'Active orders' : 'Order history'}
+          </button>
           <PrintSettingsButton value={printSettings} onChange={updatePrintSettings} onTest={testPrint} />
           <button type="button" onClick={() => setSoundOn(!soundOn)} aria-pressed={soundOn} className={HEADER_BUTTON}>
             {soundOn ? <BellAlertIcon className="h-4 w-4" /> : <BellSlashIcon className="h-4 w-4" />}

@@ -11,8 +11,7 @@ const sections: {
     heading: 'Operations',
     items: [
       { name: 'Dashboard', to: '/dashboard', end: true },
-      { name: 'Orders', to: '/orders', end: true },
-      { name: 'Order History', to: '/orders/history' },
+      { name: 'Orders', to: '/orders' },
       { name: 'Service Requests', to: '/service-requests' },
       { name: 'Menu Items', to: '/menu-items' },
       { name: 'Categories', to: '/categories' },
