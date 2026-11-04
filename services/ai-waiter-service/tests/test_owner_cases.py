@@ -211,3 +211,21 @@ def test_a_dish_not_on_the_menu_the_ai_left_out_is_said():
     # (a dish of ours the AI did add is never said to be missing)
     out = _turn("একটা গরুর কালা ভুনা আর একটা ভাত দিন।", ["m1", "r1"], "1টা গরুর কালা ভুনা আর 1টা সাদা ভাত যোগ করলাম।")
     assert "নেই" not in out["replyText"] and "missing_dish_said" not in out["meta"]["guards"], out["replyText"]
+
+
+def test_a_dish_not_on_now_said_in_passing_is_mended_without_asking_again():
+    # gpt-6.1-terra said "পরোটা" at night (the breakfast one) and "ভর্তা-ভাজিও আছে" with ভাজি sold out — the AI was
+    # asked a second time for each (4–5 s); the code mends the sentence itself
+    m = MenuIndex([
+        {"id": "p1", "name": "পরোটা", "category": "নাস্তা", "price": 20},
+        {"id": "p2", "name": "প্যাঁচ পরোটা", "category": "রুটি", "price": 40},
+        {"id": "v1", "name": "ভাজি", "category": "নাস্তা", "price": 30},
+        {"id": "g1", "name": "চিকেন গ্রিল", "category": "গ্রিল", "price": 350},
+    ])
+    on = {"p1": False, "p2": True, "v1": False, "g1": True}
+    by = m.by_id
+    assert brain._mend_unavailable("জি, পরোটা আছে। কোনটা দেব?", [by["p1"]], m, on) == "জি, প্যাঁচ পরোটা আছে। কোনটা দেব?"
+    assert (brain._mend_unavailable("চিকেন গ্রিল খেতে পারেন। ভর্তা-ভাজিও আছে। কোনটা দেব?", [by["v1"]], m, on)
+            == "চিকেন গ্রিল খেতে পারেন। কোনটা দেব?")
+    # (a sentence offering a dish that IS on as well → not mended here: the AI answers again)
+    assert brain._mend_unavailable("চিকেন গ্রিল আর ভর্তা-ভাজি খেতে পারেন।", [by["v1"]], m, on) is None
