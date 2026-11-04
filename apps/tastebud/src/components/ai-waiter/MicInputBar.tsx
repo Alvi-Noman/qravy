@@ -586,7 +586,9 @@ export default function MicInputBar({
     } else {
       followUpsRef.current += 1;
     }
-    helloExtraRef.current = { autoEnd: handsFreeOn(), listenMs: opts?.listenMs };
+    // a press: the server ends the turn when the guest stops talking (a second tap still sends it sooner; a HOLD
+    // turns this off — see onPointerDown). A listen window by itself only in hands-free.
+    helloExtraRef.current = { autoEnd: followUp ? handsFreeOn() : true, listenMs: opts?.listenMs };
     setListening(followUp);
     recRef.current = true;
     setIsRecording(true);
@@ -813,6 +815,12 @@ export default function MicInputBar({
     holdTimerRef.current = window.setTimeout(() => {
       if (!pointerActiveRef.current) return;
       isHoldModeRef.current = true;
+      // push-to-talk: a pause while holding never ends the turn — letting go does
+      helloExtraRef.current.autoEnd = false;
+      const ws = wsRef.current;
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        try { ws.send(JSON.stringify({ t: "hold" })); } catch {}
+      }
     }, HOLD_MS);
   }, [disabled, isRecording, start, startTtsReveal, finishTtsReveal, setAi]);
 
@@ -832,7 +840,8 @@ export default function MicInputBar({
 
     const pressedFor = Date.now() - lastDownAtRef.current;
     if (pressedFor < HOLD_MS) {
-      // a quick tap: this press started the mic → it stays on (tap again to send); it was already on → send
+      // a quick tap: this press started the mic → it stays on until they go quiet (or tap again to send); it was
+      // already on → send
       if (!startedByPressRef.current && recRef.current) {
         await stop();
       }
@@ -1003,7 +1012,7 @@ export default function MicInputBar({
         {/* MAIN CONTROL BAR */}
         <div
           className={[
-            "relative overflow-hidden rounded-full transition-all duration-300",
+            "relative overflow-hidden rounded-full transition-all duration-150",
             isRecording
               ? "bg-gradient-to-r from-rose-500 to-pink-600 shadow-lg shadow-rose-500/30 border border-rose-400/50"
               : "bg-white shadow-md hover:shadow-lg border border-gray-100",

@@ -257,7 +257,8 @@ export default function TenminOrb({ mode = "idle", size = 120, className = "" }:
     transform: `scale(${showRing ? LISTEN_SCALE : 1})`,
     transformOrigin: `${C}px ${C}px`,
     transformBox: "view-box",
-    transition: "transform 300ms cubic-bezier(0.34, 1.56, 0.64, 1)",
+    // quick and only a touch springy: a press must feel immediate (300 ms with a big overshoot felt slow)
+    transition: "transform 160ms cubic-bezier(0.2, 1.2, 0.4, 1)",
   };
 
   return (
@@ -301,7 +302,7 @@ export default function TenminOrb({ mode = "idle", size = 120, className = "" }:
         </g>
 
         {/* Listening (hold-to-talk) ring */}
-        <g style={{ opacity: showRing ? 1 : 0, transition: "opacity 250ms ease" }}>
+        <g style={{ opacity: showRing ? 1 : 0, transition: "opacity 120ms ease-out" }}>
           <g ref={ringRef}>
             <circle
               cx={C}
@@ -317,7 +318,7 @@ export default function TenminOrb({ mode = "idle", size = 120, className = "" }:
         </g>
 
         <g style={orbStyle}>
-          <circle cx={C} cy={C} r={R + RING_GAP / LISTEN_SCALE} fill="#FFFFFF" style={{ opacity: showRing ? 1 : 0, transition: "opacity 250ms ease" }} />
+          <circle cx={C} cy={C} r={R + RING_GAP / LISTEN_SCALE} fill="#FFFFFF" style={{ opacity: showRing ? 1 : 0, transition: "opacity 120ms ease-out" }} />
           <g ref={bodyRef}>
             <circle cx={C} cy={C} r={R} fill={`url(#${bodyGrad})`} />
 
