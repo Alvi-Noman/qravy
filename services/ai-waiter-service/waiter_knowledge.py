@@ -8,6 +8,7 @@ Everything here is pure (no I/O) so it is cheap to unit-test.
 from __future__ import annotations
 
 import re
+from functools import lru_cache
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from rapidfuzz import fuzz
@@ -180,8 +181,10 @@ _BN_HEAT: Tuple[Tuple[Tuple[str, ...], str], ...] = ((("ঝাল", "মরি�
 _LATIN_HEAT: Tuple[Tuple[str, str], ...] = ((r"\bjhal\b|morich|mirchi?\b", "spicy"),)
 
 
+@lru_cache(maxsize=16384)
 def contents_text(text: str) -> str:
-    """Dish text + the English ingredient words its Bangla / Banglish words mean (for allergy / diet checks)."""
+    """Dish text + the English ingredient words its Bangla / Banglish words mean (for allergy / diet checks).
+    (Worked out once per text — the same dishes come round many times a turn.)"""
     extra = _gloss(text, _BN_CONTENTS, _LATIN_CONTENTS)
     return f"{text} {' '.join(extra)}" if extra else text
 
@@ -397,7 +400,12 @@ def _gloss(text: str, bn: Tuple[Tuple[Tuple[str, ...], str], ...], latin: Tuple[
 
 def kind_text(it: Dict[str, Any]) -> str:
     """name + category, lower-case, + the English kind words its Bangla/Banglish words mean."""
-    text = " ".join(str(x or "") for x in (it.get("name"), it.get("category"))).lower()
+    return _kind_text(" ".join(str(x or "") for x in (it.get("name"), it.get("category"))).lower())
+
+
+@lru_cache(maxsize=16384)
+def _kind_text(text: str) -> str:
+    # (the same dish's words every time: worked out once — it was ~5,000 times a turn, most of the code's own time)
     extra = _gloss(text, _BN_KIND, _LATIN_KIND)
     if "curry main" in extra and "snack" in extra:
         extra.remove("snack")  # চিকেন ঝাল ফ্রাই is a curry; চিকেন ফ্রাই alone is the fried snack
