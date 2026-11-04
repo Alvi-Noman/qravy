@@ -20,6 +20,14 @@ describe('learned pronunciations', () => {
     expect(forSpeech('sholo')).toBe('শোলো');
   });
 
+  it('an accent never matters: a name taught as "Café Rosé" is said that way however it is written', () => {
+    setPronunciations([{ word: 'Café Rosé', spoken: 'ক্যাফে রোজে' }]);
+    expect(forSpeech('Café Rosé-এ স্বাগতম')).toBe('ক্যাফে রোজে-এ স্বাগোতম');
+    expect(forSpeech('Welcome to Cafe Rose!')).toBe('Welcome to ক্যাফে রোজে!');
+    expect(forSpeech('CAFÉ ROSÉ')).toBe('ক্যাফে রোজে');
+    expect(forSpeech('Cafés Roses')).toBe('Cafés Roses'); // part of another word: untouched
+  });
+
   it('one written word said as several shows once, as written — by position (sholoaanabangali)', () => {
     setPronunciations([{ word: 'ষোলআনা', spoken: 'শোলো আনা' }]);
     const text = 'আমাদের রেস্টুরেন্টের নাম "ষোলআনা বাঙালি"। আনা দিন।';

@@ -1,5 +1,5 @@
 // apps/braincell/src/pages/settings/Branding.tsx — Settings → Organization & Branding: how the restaurant looks to guests.
-// Its name, its logo (link previews, and the AI waiter's start screen — with or without a shape behind it, its
+// Its name (and how the AI waiter says it), its logo (link previews, and the AI waiter's start screen — with or without a shape behind it, its
 // corners and size), its browser-tab icon (favicon) and the digits its prices show in. The AI waiter's
 // own name, voice and answers are under Settings → AI Waiter.
 import { useState, useEffect, useRef, type ReactNode } from 'react';
@@ -8,6 +8,7 @@ import { useTenant } from '../../hooks/useTenant';
 import { updateTenant } from '../../api/tenant';
 import { useAuthContext } from '../../context/AuthContext';
 import { useQueryClient } from '@tanstack/react-query';
+import ItemPronunciation from '../../components/menu-item-modal/ItemPronunciation';
 
 export default function SettingsBranding(): JSX.Element {
   const { token } = useAuthContext();
@@ -61,6 +62,8 @@ export default function SettingsBranding(): JSX.Element {
           onChange={(e) => (setName(e.target.value), setDirty(true))}
           aria-label="Restaurant name"
         />
+        {/* how the AI waiter says the saved name ("Café Rosé" → "kafe roze") — its own word, applied at once */}
+        {tenant?.name && <div className="max-w-md"><ItemPronunciation name={tenant.name} source="restaurant name" /></div>}
       </div>
 
       <ImageCard

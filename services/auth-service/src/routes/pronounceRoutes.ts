@@ -105,6 +105,17 @@ export function withOwnWords(
 
 const BN = 'ঀ-৿';
 const escRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+// English letters, accents too — and an accent never matters: "Café" is also "Cafe" (the same as the guest's voice,
+// apps/tastebud/src/state/speechWords.ts, and the waiter's, server.py _say_learned)
+const LATIN = 'A-Za-zÀ-ÖØ-öø-ÿ';
+const ACCENTED: Record<string, string> = { a: 'àáâãäå', c: 'ç', e: 'èéêë', i: 'ìíîï', n: 'ñ', o: 'òóôõöø', u: 'ùúûü', y: 'ýÿ' };
+const loose = (w: string) =>
+  [...w]
+    .map((ch) => {
+      const base = Object.keys(ACCENTED).find((b) => ch.toLowerCase() === b || ACCENTED[b].includes(ch.toLowerCase()));
+      return base ? `[${base}${ACCENTED[base]}]` : escRe(ch);
+    })
+    .join('');
 
 /** The text as the voice will be given it: each word of the list, whole words only, longest first (as the guest's
  *  app does it — apps/tastebud/src/state/speechWords.ts). */
@@ -112,7 +123,7 @@ export function sayText(text: string, words: Array<{ word: string; spoken: strin
   const rules = [...words].sort((a, b) => b.word.length - a.word.length);
   if (!rules.length) return text;
   const pat = rules
-    .map((r) => (new RegExp(`[${BN}]`).test(r.word) ? `(?<![${BN}])${escRe(r.word)}(?![${BN}])` : `(?<![A-Za-z])${escRe(r.word)}(?![A-Za-z])`))
+    .map((r) => (new RegExp(`[${BN}]`).test(r.word) ? `(?<![${BN}])${escRe(r.word)}(?![${BN}])` : `(?<![${LATIN}])${loose(r.word)}(?![${LATIN}])`))
     .map((p) => `(${p})`)
     .join('|');
   return text.replace(new RegExp(pat, 'gi'), (...m) => {

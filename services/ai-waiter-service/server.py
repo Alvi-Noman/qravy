@@ -353,6 +353,18 @@ def _cart_cors_headers() -> Dict[str, str]:
 
 # ------------------------------------------------------------------ the pronunciation learner (English-letter words)
 _LEARNED: Dict[str, Tuple[float, List[Tuple["re.Pattern[str]", str]]]] = {}
+# a word in English letters, accents too ("Café Rosé" was never applied — its é wasn't A–Z)
+_LATIN = "A-Za-zÀ-ÖØ-öø-ÿ"
+_ACCENTED = {"a": "àáâãäå", "c": "ç", "e": "èéêë", "i": "ìíîï", "n": "ñ", "o": "òóôõöø", "u": "ùúûü", "y": "ýÿ"}
+
+
+def _loose_word(w: str) -> str:
+    """The pattern for a taught word that ignores accents: "Café" matches "Cafe", "CAFÉ" (the AI writes it either way)."""
+    out = []
+    for ch in w:
+        base = next((b for b, alts in _ACCENTED.items() if ch.lower() == b or ch.lower() in alts), "")
+        out.append(f"[{base}{_ACCENTED[base]}]" if base else re.escape(ch))
+    return "".join(out)
 
 
 def _say_learned(text: str, tenant: Optional[str]) -> str:
@@ -369,7 +381,7 @@ def _say_learned(text: str, tenant: Optional[str]) -> str:
         rules: List[Tuple["re.Pattern[str]", str]] = []
         try:
             words: Dict[str, str] = {}
-            english = lambda w: bool(re.fullmatch(r"[A-Za-z][A-Za-z' -]*", w))  # noqa: E731
+            english = lambda w: bool(re.fullmatch(rf"[{_LATIN}][{_LATIN}' -]*", w))  # noqa: E731
             for x in _CLIENT[MENU_DB_NAME]["lexicon"].find({"removed": {"$ne": True}}, {"word": 1, "spoken": 1}):
                 w, sp = str(x.get("word") or "").strip(), str(x.get("spoken") or "").strip()
                 if w and sp and english(w):
@@ -381,7 +393,7 @@ def _say_learned(text: str, tenant: Optional[str]) -> str:
                     if w and sp and english(w):
                         words[w.lower()] = sp
             for w in sorted(words, key=len, reverse=True):
-                rules.append((re.compile(r"(?<![A-Za-z])" + re.escape(w) + r"(?![A-Za-z])", re.I), words[w]))
+                rules.append((re.compile(rf"(?<![{_LATIN}])" + _loose_word(w) + rf"(?![{_LATIN}])", re.I), words[w]))
         except Exception as e:  # never break a reply over this
             print("[pronounce] load failed:", str(e)[:120])
         hit = (now, rules)
