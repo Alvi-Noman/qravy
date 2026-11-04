@@ -5141,6 +5141,54 @@ def _excluding_fact(transcript: str, index: MenuIndex, orderable: Dict[str, bool
     return [f"The guest wants something OTHER than {said} (never offer it again). The others of that kind on now: {names}."]
 
 
+def _later_today_fact(asked: set, index: MenuIndex, orderable: Dict[str, bool], periods: List[Dict[str, Any]],
+                      now: Optional[int]) -> List[str]:
+    """A kind asked about that can't be ordered now but is served later today — "কাবাব আইটেমের মধ্যে কি কি আছে?" at
+    16:27, kebabs from 17:01: the AI told the guest "আমাদের মেনুতে কাবাব আইটেম নেই"."""
+    if not asked or now is None:
+        return []
+    dishes = [index.by_id[i] for i in asked if i in index.by_id]
+    if not dishes or any(orderable.get(index.item_id(it), True) for it in dishes):
+        return []
+    starts = {str(p.get("id")): p.get("start") for p in periods or [] if p.get("start")}
+    later = []
+    for it in dishes:
+        for pid in it.get("periods") or []:
+            s = starts.get(str(pid))
+            if s:
+                m = int(str(s)[:2]) * 60 + int(str(s)[3:5])
+                if m > now:
+                    later.append(m)
+    if not later:
+        return []
+    first = min(later)
+    from availability import _fmt_time
+    names = ", ".join(list(dict.fromkeys(bangla_meal.said_name(it) for it in dishes))[:5])
+    return [f"The dishes the guest asked about ARE on the menu ({names}) but aren't served yet — they start at "
+            f"{_fmt_time(f'{first // 60:02d}:{first % 60:02d}')} today. Say they're not served yet and when they start "
+            "(never that the menu doesn't have them), then offer what can be ordered now."]
+
+
+def _which_one_fact(transcript: str, index: MenuIndex, orderable: Dict[str, bool]) -> List[str]:
+    """A part of the order that names only a KIND with several dishes — "একটা ভর্তা আর একটা দেশি মুরগির ঝোল দাও": the
+    AI added the ঝোল and forgot the ভর্তা. (Not plain rice: "একটা ভাত" is the white rice.)"""
+    out = []
+    for part in _DISH_JOIN.split(transcript or ""):
+        if not part.strip() or _dishes_named(part, index, limit=1, exact_only=True):
+            continue
+        fits = [index.by_id[i] for i in _kind_ids_in(part, index) if i in index.by_id and orderable.get(i, True)]
+        # (the dishes CALLED that first — "ভর্তা" is the bhortas, not its whole section with the bhajis and the dal)
+        said = _guest_tokens(part, _menu_rev(index)) - _CAT_GENERIC
+        called = [x for x in fits if said & _name_tokens(re.sub(r"\(.*?\)", " ", str(x.get("name") or "")))]
+        fits = called if len(called) >= 2 else fits
+        if len(fits) < 2 or all(bangla_meal.is_plain_rice(x) for x in fits):
+            continue
+        names = ", ".join(list(dict.fromkeys(bangla_meal.said_name(x) for x in fits))[:6])
+        out.append(f'"{part.strip()}" fits several dishes on the MENU ({names}) — don\'t pick one for the guest: add the '
+                   "other dishes they named, and ask which of these they want.")
+    return out[:2]
+
+
 def _closed_fact(opening: List[Dict[str, Any]], local_time: str) -> List[str]:
     """The restaurant closed right now → the fact the model must say (with when it opens). Before, a 1am order got
     "your tray is empty" and "try again later", never "we're closed, we open at 9"."""
@@ -7099,6 +7147,14 @@ async def _reply(
     other_kind = _not_this_version(transcript, index) if stage == "none" and not side_ans else None
     if stage == "none" and not side_ans:
         facts += _excluding_fact(transcript, index, orderable)  # ("ইলিশ বাদে আর কিছু নেই?" — in both flows)
+        facts += _later_today_fact(asked_kind, index, orderable, list((menu_snapshot or {}).get("periods") or []),
+                                   int(lt_now.group(1)) * 60 + int(lt_now.group(2)) if lt_now else None)
+        facts += _which_one_fact(transcript, index, orderable)
+        if _WITH_WHAT.search(transcript):
+            named_with = _dishes_named(transcript, index, limit=1) or [index.by_id[i] for i in list(asked_kind)[:1] if i in index.by_id]
+            facts.append(f"The guest asks what to have WITH {named_with[0].get('name') if named_with else 'that'} — not whether "
+                         "it's there. Suggest 2–3 real MENU dishes that go with it and can be ordered now (the time of day's "
+                         "own food), each by name.")
     not_this_version = other_kind if AI_FIRST else None  # (checked against the model's cart changes below)
     if other_kind and AI_FIRST:
         asked_as, it = other_kind

@@ -82,6 +82,34 @@ export async function listOrders(token: string, view: 'active' | 'history' = 'ac
   return (res.data?.orders ?? []) as AdminOrder[];
 }
 
+export type OrderHistoryQuery = {
+  /** business days, YYYY-MM-DD (inclusive) */
+  from?: string;
+  to?: string;
+  /** order number, table, guest name or phone, or a dish */
+  q?: string;
+  status?: OrderStatus | 'open' | '';
+  channel?: 'dine-in' | 'online' | 'delivery' | 'pickup' | '';
+  /** one branch (the owner's branch picker) */
+  location?: string;
+  skip?: number;
+  limit?: number;
+};
+
+export type OrderHistoryPage = { orders: AdminOrder[]; total: number; takings: number; cancelled: number };
+
+/** The full order history — any days, searched and filtered, newest first, with the count and takings of all matches. */
+export async function searchOrders(token: string, query: OrderHistoryQuery): Promise<OrderHistoryPage> {
+  const params = Object.fromEntries(Object.entries({ view: 'all', ...query }).filter(([, v]) => v !== '' && v !== undefined));
+  const res = await api.get('/api/v1/orders', { headers: { Authorization: `Bearer ${token}` }, params });
+  return {
+    orders: (res.data?.orders ?? []) as AdminOrder[],
+    total: Number(res.data?.total ?? 0),
+    takings: Number(res.data?.takings ?? 0),
+    cancelled: Number(res.data?.cancelled ?? 0),
+  };
+}
+
 export async function updateOrderStatus(token: string, id: string, status: OrderStatus): Promise<AdminOrder> {
   const res = await api.post(
     `/api/v1/orders/${encodeURIComponent(id)}/status`,

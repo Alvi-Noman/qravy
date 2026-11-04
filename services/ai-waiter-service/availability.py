@@ -295,11 +295,15 @@ def load_rules(db, tenant_oid, location_id=None, channel: Optional[str] = None) 
                     if str(b.get("locationId")) == str(location_id):
                         hours = b.get("availability") or []
                         break
+            # (by hand: the owner's switch decides what can be ordered — but its serving hours still say WHEN it is
+            # usually served, so "কাবাব কি আছে?" at 4pm is "from 5pm", never "we have no kebabs")
+            usual = hours
             if manual_cats:
                 hours = []
             rules["categories"][str(c["_id"])] = {
                 "name": c.get("name"),
                 "hours": hours,
+                "usualHours": usual,
                 # a branch's own category ("scope: location") is only on that branch's menu
                 "branchOnly": str(c.get("locationId") or "") if c.get("scope") == "location" else None,
             }
@@ -390,7 +394,7 @@ def served_periods(item: Dict[str, Any], rules: Dict[str, Any]) -> Optional[List
     category's hours and its own; None when neither is set (all day: it belongs to no particular period)."""
     periods = rules.get("periods") or DEFAULT_PERIODS
     cat = (rules.get("categories") or {}).get(str(item.get("categoryId") or "")) or {}
-    limits = [s for s in (_spans(cat.get("hours") or []),
+    limits = [s for s in (_spans(cat.get("hours") or cat.get("usualHours") or []),
                           _spans(resolve_windows(item.get("servicePeriodIds"), item.get("availability"), periods)))
               if s]
     if not limits:

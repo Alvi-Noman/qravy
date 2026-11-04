@@ -180,11 +180,78 @@ export async function createOrder(req: Request, res: Response, next: NextFunctio
   }
 }
 
+/**
+ * GET /api/v1/orders?view=all&from=YYYY-MM-DD&to=YYYY-MM-DD&q=&status=&channel=&skip=&limit= — the full order history:
+ * any business days, search by order number / table / guest name or phone / dish, newest first, paged, with the count
+ * and takings of everything that matches (cancelled orders don't count as takings).
+ */
+async function listOrderHistory(req: Request, res: Response, tenantId: string) {
+  const q: Record<string, unknown> = { tenantId: new ObjectId(tenantId) };
+  const loc = scopeLocation(req);
+  if (loc) q.locationId = loc;
+  // (the owner looking at one branch — a branch login is always kept to its own, whatever it asks)
+  else if (typeof req.query.location === 'string' && ObjectId.isValid(req.query.location)) {
+    q.locationId = new ObjectId(req.query.location);
+  }
+  const day = (v: unknown) => (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : null);
+  const from = day(req.query.from);
+  const to = day(req.query.to);
+  if (from || to) q.businessDay = { ...(from ? { $gte: from } : {}), ...(to ? { $lte: to } : {}) };
+  const statuses: OrderStatus[] = ['placed', 'accepted', 'preparing', 'ready', 'completed', 'cancelled'];
+  const status = String(req.query.status ?? '');
+  if (status === 'open') q.status = { $in: ['placed', 'accepted', 'preparing', 'ready'] };
+  else if ((statuses as string[]).includes(status)) q.status = status;
+  const channel = String(req.query.channel ?? '');
+  if (channel === 'dine-in' || channel === 'online') q.channel = channel;
+  else if (channel === 'delivery' || channel === 'pickup') {
+    q.channel = 'online';
+    q['online.fulfillment'] = channel;
+  }
+  const text = typeof req.query.q === 'string' ? req.query.q.trim().slice(0, 80) : '';
+  if (text) {
+    const rx = { $regex: text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' };
+    const num = Number(text.replace(/^#/, ''));
+    q.$or = [
+      ...(Number.isInteger(num) && num > 0 ? [{ orderNumber: num }] : []),
+      { 'dineIn.tableNumber': text },
+      { 'online.customer.name': rx },
+      { 'online.customer.phone': rx },
+      { 'items.name': rx },
+    ];
+  }
+  const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 2000);
+  const skip = Math.max(0, Number(req.query.skip) || 0);
+  const [docs, totals] = await Promise.all([
+    ordersCol().find(q).sort({ createdAt: -1 }).skip(skip).limit(limit).toArray(),
+    ordersCol()
+      .aggregate<{ count: number; takings: number; cancelled: number }>([
+        { $match: q },
+        {
+          $group: {
+            _id: null,
+            count: { $sum: 1 },
+            takings: { $sum: { $cond: [{ $eq: ['$status', 'cancelled'] }, 0, '$total'] } },
+            cancelled: { $sum: { $cond: [{ $eq: ['$status', 'cancelled'] }, 1, 0] } },
+          },
+        },
+      ])
+      .toArray(),
+  ]);
+  const t = totals[0] ?? { count: 0, takings: 0, cancelled: 0 };
+  return res.ok({
+    orders: docs.map(toAdminOrder),
+    total: t.count,
+    takings: Math.round(t.takings * 100) / 100,
+    cancelled: t.cancelled,
+  });
+}
+
 /** GET /api/v1/orders?view=active|history&limit= — the board. Branch sessions only see their branch. */
 export async function listOrders(req: Request, res: Response, next: NextFunction) {
   try {
     const tenantId = req.user?.tenantId;
     if (!tenantId) return res.fail(409, 'Tenant not set');
+    if (req.query.view === 'all') return await listOrderHistory(req, res, tenantId);
     const view = req.query.view === 'history' ? 'history' : 'active';
     const limit = Math.min(Math.max(Number(req.query.limit) || 100, 1), 300);
     const q: Record<string, unknown> = { tenantId: new ObjectId(tenantId) };
