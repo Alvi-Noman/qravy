@@ -119,6 +119,12 @@
 	import storefront
 }
 
+# Muvance: a separate project on this server, with its own compose stack in /opt/muvance. It handles its own
+# routing; this only adds HTTPS. If it's down these domains return 502 and Qravy is unaffected.
+muvance.com, www.muvance.com, admin.muvance.com {
+	reverse_proxy muvance-proxy:80
+}
+
 # Online shop: <restaurant>.qravy.com — dine-in: <restaurant>.qravy.com/dine-in?table=12
 # Every other host name, with a certificate per restaurant on its first visit — the on_demand_tls check (storefront-host
 # /internal/tls-ask) only says yes to real restaurants (and Qravy's own hosts). Not "*.qravy.com": Caddy then treats

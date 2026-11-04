@@ -24,6 +24,9 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
+    networks:
+      - default
+      - shared-edge
     depends_on:
       - braincell
       - cortex
@@ -187,6 +190,11 @@ services:
       - ./fine_tuning/export_transcripts.py:/app/export_transcripts.py:ro
       - ./fine_tuning:/output
     restart: unless-stopped
+
+# Shared with other projects on this server. Create it once: docker network create shared-edge
+networks:
+  shared-edge:
+    external: true
 
 volumes:
   caddy_data:
