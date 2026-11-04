@@ -4347,6 +4347,52 @@ def _reco_fallback(pool: List[Dict[str, Any]], lang: str, ctx: Dict[str, Any]) -
     return f"Right now{when}, I'd suggest {listed}. Would you like to order?"
 
 
+# The guest's opening "এখন কি খেতে পারি?": the AI's answer is kept and the next guests in exactly the same situation get
+# it at once (4–5 s less). The key is everything the AI is told — the menu, what's on, the facts, the rules — so anything
+# different (a dish sold out, another hour, another restaurant / language / channel) is a new answer from the AI.
+_SAVED_PICKS: Dict[str, Tuple[float, str]] = {}
+SAVED_PICK_TTL_S = float(os.environ.get("SAVED_PICK_TTL_S", str(6 * 3600)))  # (a day's other hours have their own keys)
+_SAVED_PICKS_MAX = 500
+
+
+def _plain_pick_ask(transcript: str, index: MenuIndex) -> bool:
+    """"এখন কি খেতে পারি?" and nothing more — no dish or kind, no taste, people, budget, diet, other time, "except" or
+    "with" in it. In doubt: no (the AI answers it)."""
+    t = (transcript or "").strip()
+    if not t or len(t.split()) > 7 or not _EAT_ASK.search(t):
+        return False
+    if (_dishes_named(t, index, limit=1) or _kind_ids_in(t, index) or _orders_now(t) or _EXCEPT.search(t)
+            or _WITH_WHAT.search(t) or _POPULAR_Q.search(t) or reco_format.taste_asked(t) or reco_format.audience_asked(t)
+            or any(re.search(pat, t, re.I) for _l, pat, at in _WHEN_SAID if at is not None)  # (another time than now)
+            or re.search(r"\d", t.translate(_BN_DIGITS)) or any(w in _NUM_TOKENS for w in t.split())):
+        return False
+    return not any(v for v in extract_prefs(t).to_dict().values())
+
+
+def _saved_pick_key(messages: List[Dict[str, Any]], transcript: str) -> str:
+    """What the AI is told this turn, minus the guest's own words and the clock's minutes (the hour stays)."""
+    s = json.dumps(messages, ensure_ascii=False, sort_keys=True)
+    if transcript:
+        s = s.replace(transcript, "\x00ASK\x00")
+    s = re.sub(r"(Local time: [^(\"\\]*?\b\d{1,2}):\d{2}", r"\1:**", s)
+    return hashlib.sha256(f"{OPENAI_CHAT_MODEL}|{s}".encode("utf-8")).hexdigest()
+
+
+def _saved_pick(key: str) -> Optional[str]:
+    hit = _SAVED_PICKS.get(key)
+    if hit and time.time() - hit[0] < SAVED_PICK_TTL_S:
+        return hit[1]
+    _SAVED_PICKS.pop(key, None)
+    return None
+
+
+def _save_pick(key: str, raw: str) -> None:
+    if len(_SAVED_PICKS) >= _SAVED_PICKS_MAX:  # (the oldest go first)
+        for k in sorted(_SAVED_PICKS, key=lambda k: _SAVED_PICKS[k][0])[: _SAVED_PICKS_MAX // 5]:
+            _SAVED_PICKS.pop(k, None)
+    _SAVED_PICKS[key] = (time.time(), raw)
+
+
 def _mend_unavailable(text: str, bad: List[Dict[str, Any]], index: MenuIndex, orderable: Dict[str, bool]) -> Optional[str]:
     """The reply named a dish that can't be had now — fixed here instead of asking the AI again (4–5 s more, Nov 4:
     "ভর্তা-ভাজিও আছে" with ভাজি sold out, "পরোটা" at night — the breakfast one): a dish on now whose name holds it says
@@ -7970,6 +8016,7 @@ async def _reply(
         clean_ops = (_take_out(transcript, index, cart_rows) or _swap_dish(transcript, index, orderable, cart_rows)
                      or _each_to(transcript, index, cart_rows)
                      or _take_all_listed(transcript, index, orderable, list(just_suggested), dict(cart_qty), last_waiter))
+    saved_key: Optional[str] = None  # (the opening question's saved answer, below)
     try:
         if clean_ops:
             print(f"[brain] clean order → no model:{[(o['op'], o['item'], o.get('quantity')) for o in clean_ops]}")
@@ -7979,7 +8026,20 @@ async def _reply(
                               "understood": True, "suggestions": [], "mentionedItems": [], "answerItems": [],
                               "serviceRequest": None})
         else:
-            raw = await _call_openai(messages)
+            # the guest's opening "এখন কি খেতে পারি?" (their first words, nothing in the tray, nothing said about them):
+            # the same situation's earlier AI answer, at once — then checked below like any answer
+            saved_key = (_saved_pick_key(messages, transcript)
+                         if AI_FIRST and stage == "none" and not tstate.get("pending") and not cart_qty
+                         and not any(m.get("role") == "user" for m in history or [])
+                         and not ctx.get("shownItems") and not any(v for v in profile.to_dict().values())
+                         and _plain_pick_ask(transcript, index) else None)
+            raw = _saved_pick(saved_key) if saved_key else None
+            if raw:
+                print("[brain] the same opening question, the same situation → the saved answer (no model)")
+                guards.append("saved_answer")
+                saved_key = None  # (already saved)
+            else:
+                raw = await _call_openai(messages)
         obj = _parse_model_json(raw)
         first_reply = str(obj.get("replyText") or "")
         issues: List[str] = []
@@ -8142,6 +8202,13 @@ async def _reply(
             print("[brain] self-check: a dish not on now, mended without asking again:", issues)
             obj["replyText"], issues = mended, []
             guards.append("unavailable_mended")
+        # an opening answer that passed every check as it came → kept for the next guests in the same situation
+        # (an answer only: never one that changed the tray, started the checkout or called staff)
+        if (not clean_ops and saved_key and not issues and not mended and obj.get("understood", True) is not False
+                and not obj.get("cartOps") and not obj.get("clearCart") and not obj.get("confirmOrder")
+                and obj.get("checkout") in (None, "", "none") and not obj.get("serviceRequest")
+                and str(obj.get("replyText") or "").strip()):
+            _save_pick(saved_key, raw)
         if issues and not clean_ops:
             # one self-correction pass: a wrong or missing number is worse than a slightly slower answer
             print("[brain] self-check:", issues)
