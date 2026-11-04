@@ -11,7 +11,7 @@ import { waiterLang } from "../../utils/ui-lang";
 import { claimReveal, ownsReveal } from "../../state/reveal-owner";
 import RecordingRing from "./RecordingRing";
 import {
-  FOLLOW_UP_LISTEN_MS, HEARD_CUE, PENDING_AUDIO_MAX, chooseOptionsOf, handsFreeOn, wantsFollowUp,
+  FOLLOW_UP_LISTEN_MS, PENDING_AUDIO_MAX, chooseOptionsOf, handsFreeOn, wantsFollowUp,
 } from "../../utils/handsfree";
 import { money } from '../../utils/ui-lang';
 
@@ -216,8 +216,6 @@ export default function MicInputBar({
   const getGlobalLang = (): "bn" | "en" => waiterLang();
 
   const [currentLang, setCurrentLang] = useState<"bn" | "en">(getGlobalLang());
-  const currentLangRef = useRef(currentLang); // (for the cue, said from a callback)
-  currentLangRef.current = currentLang;
   useEffect(() => {
     if (typeof window === "undefined") return;
     const handler = (e: Event) => {
@@ -582,8 +580,6 @@ export default function MicInputBar({
   const start = useCallback(async (opts?: { listenMs?: number }) => {
     if (disabled || recRef.current) return;
     const followUp = !!opts?.listenMs;
-    // the "জি, দেখছি।" for when they finish — made now (once per voice), while they talk
-    try { getTTS().prepareCue(HEARD_CUE[currentLangRef.current]); } catch {}
     if (!followUp) {
       followUpRef.current = false; // the guest tapped — no pending follow-up any more
       followUpsRef.current = 0;
@@ -736,10 +732,6 @@ export default function MicInputBar({
 
     await stopCaptureOnly();
     try { getTTS().unduck(); } catch {}
-    // a reply is coming → "জি, দেখছি।" at once (the mic is closed now: it's never heard as their words)
-    if (serverEnded || (ws && ws.readyState <= WebSocket.OPEN)) {
-      try { getTTS().cue(HEARD_CUE[currentLangRef.current]); } catch {}
-    }
   }, [isRecording, setAi, startTtsReveal, finishTtsReveal, stopCaptureOnly, giveUpWaiting]);
   stopRef.current = stop;
   serverEndedRef.current = () => { void stop(true); };
