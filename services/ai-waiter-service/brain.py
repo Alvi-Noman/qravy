@@ -4404,6 +4404,35 @@ def _plain_pick_ask(transcript: str, index: MenuIndex) -> bool:
     return not any(v for v in extract_prefs(t).to_dict().values())
 
 
+def _conditions(t: str) -> Dict[str, Any]:
+    """What the guest asked for besides "something to eat" — diet, spice, budget, people, kids, a mood. Being hungry
+    isn't one ("খিদে পেয়েছে": the time's full meal is the answer)."""
+    prefs = {k: v for k, v in extract_prefs(t).to_dict().items() if v}
+    mood = [m for m in prefs.get("mood") or [] if m != "filling"]
+    if mood:
+        prefs["mood"] = mood
+    else:
+        prefs.pop("mood", None)
+    return prefs
+
+
+def _general_pick_ask(transcript: str, index: MenuIndex, kind_scope: Iterable[str] = ()) -> bool:
+    """A suggestion asked with no condition — "কিছু সাজেস্ট করেন", "ভালো কি আছে?", "আপনার রেকমেন্ডেশন কি?", "কি নেওয়া
+    যায়?", "খিদে পেয়েছে, কি খাওয়া যায়?", "what do you recommend?" — answered like "what's on now?". A taste, people,
+    a budget, a dish or kind, another time, "except" / "with", "most popular", an order: not general — the AI's."""
+    t = (transcript or "").strip()
+    if not t or len(t.split()) > 9:
+        return False
+    if not (asks_for_recommendation(t) or _WANTS_A_PICK.search(t) or _EAT_ASK.search(t)):
+        return False
+    if (kind_scope or _dishes_named(t, index, limit=1) or _kind_ids_in(t, index) or _orders_now(t) or _EXCEPT.search(t)
+            or _WITH_WHAT.search(t) or _POPULAR_Q.search(t) or reco_format.taste_asked(t) or reco_format.audience_asked(t)
+            or any(re.search(pat, t, re.I) for _l, pat, at in _WHEN_SAID if at is not None)
+            or re.search(r"\d", t.translate(_BN_DIGITS)) or any(w in _NUM_TOKENS for w in t.split())):
+        return False
+    return not _conditions(t)
+
+
 def _saved_pick_key(messages: List[Dict[str, Any]], transcript: str) -> str:
     """What the AI is told this turn, minus the guest's own words and the clock's minutes (the hour stays)."""
     s = json.dumps(messages, ensure_ascii=False, sort_keys=True)
@@ -7384,6 +7413,13 @@ async def _reply(
                            _named_kind_ids(re.sub(r"নাস্তা\S*|নাশতা\S*|\bbreakfast\b|\bnasta\S*", " ", transcript, flags=re.I), index)
                            if re.search(r"নাস্তা|নাশতা|\bbreakfast\b|\bnasta", transcript, re.I) else (kind_scope or asked_kind), lang,
                            opening=list((restaurant or {}).get("opening") or []), in_tray=set(cart_qty))
+    # every general suggestion — "কিছু সাজেস্ট করেন", "ভালো কি আছে?", "কি নেওয়া যায়?", "খিদে পেয়েছে" — is "what's on now":
+    # the time's answer (the owner's way), not a pick of the AI's; only a question with a condition goes on to the AI
+    if (not period_menu and not at_time and not side_ans and stage in ("none", "readback") and lt
+            and not tstate.get("pending") and not profile.allergies and _general_pick_ask(transcript, index, kind_scope)):
+        period_menu = _period_menu_reply("what can I eat now?", index, orderable, list((menu_snapshot or {}).get("periods") or []),
+                                         int(lt.group(1)) * 60 + int(lt.group(2)), set(), lang,
+                                         opening=list((restaurant or {}).get("opening") or []), in_tray=set(cart_qty))
     # "এখন ভালো কি আছে?" / "কিছু সাজেস্ট করেন" between two meals (only sweets and drinks on): when the food is — never
     # "দুপুরের খাবারে সরা দই, ডাবের পুডিং…" as the pick
     if not period_menu and not at_time and not side_ans and stage in ("none", "readback") and not kind_scope and lt \
@@ -7402,7 +7438,7 @@ async def _reply(
     now_min = int(lt.group(1)) * 60 + int(lt.group(2)) if lt else None
     mine = now_answers.clean((restaurant or {}).get("nowAnswers")).get(now_answers.slot_of(now_min) or "")
     if (mine and stage in ("none", "readback") and not tstate.get("pending") and not at_time and not side_ans
-            and not any(v for v in extract_prefs(transcript).to_dict().values())
+            and not _conditions(transcript)
             and (_plain_pick_ask(transcript, index) or (period_menu is not None and not kind_scope))):
         said_now = now_answers.render(mine, index.by_id, lambda i: orderable.get(i, True), bangla_meal.said_name)
         if said_now:
@@ -7412,7 +7448,7 @@ async def _reply(
         # first in the evening — said as they are (the AI, given them as a fact, wrote its own: "এখন সাদা ভাত (মিনিকেট)
         # এর সাথে হাওরের বোয়াল মাছ…"); nothing more in the question than what's on (no taste, budget, people…)
         own_words = period_menu and (period_menu[2] == "owner_now_answer" or (
-            bangla_meal.is_bhaat_house(index.items) and not any(v for v in extract_prefs(transcript).to_dict().values())))
+            bangla_meal.is_bhaat_house(index.items) and not _conditions(transcript)))
         if period_menu and not own_words:
             facts.append("What is served at the time asked (from the restaurant's own hours): " + period_menu[0])
             period_menu = None

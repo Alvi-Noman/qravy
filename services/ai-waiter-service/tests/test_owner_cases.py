@@ -258,3 +258,40 @@ def test_the_owners_rice_words_are_said_as_they_are():
     finally:
         brain._call_openai, brain.AI_FIRST = orig, ai_first
     assert not calls and out["replyText"].startswith("এখন ভাত খেতে পারেন — ভাতের সাথে মাছের মধ্যে"), out["replyText"]
+
+
+def test_every_general_suggestion_gets_the_times_answer_and_a_condition_goes_to_the_ai():
+    # the owner: every general suggestion question gets the time's answer — only one with a condition is the AI's
+    import asyncio
+    import json
+    periods = [{"id": "breakfast", "name": "Breakfast", "start": "06:00", "end": "12:01"},
+               {"id": "lunch", "name": "Lunch", "start": "12:02", "end": "17:00"},
+               {"id": "afternoon", "name": "Evening", "start": "17:01", "end": "22:00"},
+               {"id": "dinner", "name": "Dinner", "start": "22:01", "end": "00:01"}]
+    items = [dict(i, periods=["lunch", "afternoon", "dinner"]) for i in MENU.items]
+
+    def ask(said):
+        calls = []
+
+        async def fake(messages):
+            calls.append(1)
+            return json.dumps({"topic": "recommendation", "intent": "suggestions", "language": "bn", "mentionedItems": [],
+                               "cartOps": [], "clearCart": False, "confirmOrder": False, "checkout": "none",
+                               "understood": True, "answerItems": [], "serviceRequest": None, "suggestions": [],
+                               "foodsNamed": [], "guestPrefs": None, "replyText": "(the AI)"})
+        orig, ai_first = brain._call_openai, brain.AI_FIRST
+        brain._call_openai, brain.AI_FIRST = fake, True
+        try:
+            out = asyncio.run(brain.generate_reply(said, locale="bn", menu_snapshot={"items": items, "periods": periods},
+                                                   context={"cartItems": [], "localTime": "21:30"}))
+        finally:
+            brain._call_openai, brain.AI_FIRST = orig, ai_first
+        return out["replyText"], len(calls)
+
+    for said in ["কিছু সাজেস্ট করেন", "ভালো কি আছে?", "আপনার রেকমেন্ডেশন কি?", "কি নেওয়া যায়?", "কি অর্ডার করবো?",
+                 "খিদে পেয়েছে, কি খাওয়া যায়?"]:
+        text, n = ask(said)
+        assert n == 0 and text.startswith("এখন ভাত খেতে পারেন"), (said, text)
+    for said in ["ঝাল ছাড়া কি আছে?", "২ জনের জন্য কি খাব?", "বাচ্চার জন্য কি ভালো?", "হালকা কিছু দিন",
+                 "সবচেয়ে জনপ্রিয় কি?", "৫০০ টাকার মধ্যে কি খাব?"]:
+        assert ask(said)[1] >= 1, said
