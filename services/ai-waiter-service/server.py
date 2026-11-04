@@ -2567,6 +2567,11 @@ async def handle_conn(ws: WebSocketServerProtocol):
                 )
                 break
 
+            # the guest is HOLDING the mic (push-to-talk): a pause never ends their turn — letting go does
+            if t == "hold":
+                ep = None
+                continue
+
             # the guest TAPPED an answer ("which one?" → "2টা Beef Sizzling দিন"): the same turn as speech,
             # minus the speech recognition — the words are exactly the menu's
             # the app stopped listening without a turn (e.g. the guest tapped away) — nothing to answer

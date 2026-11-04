@@ -828,7 +828,8 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
   // `silent`: a button that asks the waiter something ("AI suggestions") — its reply shows (text + cards) but is
   // never spoken, and the mic doesn't reopen after it: the guest tapped, they didn't start a conversation
   // `tap`: the orb was tapped, not held — it listens until the guest taps again (never ended by a pause in their speech)
-  async function startListening(opts?: { listenMs?: number; typed?: string; afterStop?: boolean; silent?: boolean; tap?: boolean }) {
+  // `press`: the orb was pressed — the turn ends when the guest stops talking (unless it becomes a hold, orbPressStart)
+  async function startListening(opts?: { listenMs?: number; typed?: string; afterStop?: boolean; silent?: boolean; tap?: boolean; press?: boolean }) {
     const followUp = !!opts?.listenMs;
     const typed = opts?.typed?.trim() || '';
     // inside the guest's tap (hold / pill): unlock sound — on the menu page this is the first tap (iPhone, tts.ts)
@@ -979,9 +980,9 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
                 // online: which of name / phone / address the checkout form still lacks — the waiter only asks for those
                 contactMissing: channelRef.current === 'online' ? contactMissingNow(resolvedSub) : undefined,
                 fulfillment: channelRef.current === 'online' ? fulfillmentNow(resolvedSub) : undefined,
-                // hands-free: the server ends the turn when the guest stops talking / closes a quiet listen window
-                // (never for a tapped orb: only the guest's second tap sends it)
-                autoEnd: !typed && !opts?.tap && handsFreeOn(),
+                // the server ends the turn when the guest stops talking — a pressed orb (tap: they go quiet, or tap
+                // again; a hold turns it off), and in hands-free a quiet listen window is closed
+                autoEnd: !typed && !opts?.tap && (opts?.press ? !pressHeldRef.current : handsFreeOn()),
                 listenMs: opts?.listenMs,
                 ...(extra || {}),
               }),
@@ -1526,10 +1527,16 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
   startRef.current = startListening;
 
   // Talking to the orb: TAP or HOLD.
-  //   hold (200 ms+) → listens while the finger is down; letting go sends (push-to-talk)
-  //   tap            → listens until the guest taps again (that tap sends) — a pause in their speech doesn't end it
+  //   hold (200 ms+) → listens while the finger is down; letting go sends (push-to-talk) — a pause never ends it
+  //   tap            → listens until the guest stops talking (the server hears it) — or taps again to send sooner
   //   a press while it's already listening → sends what was said
   const HOLD_MS = 200;
+  const pressHeldRef = useRef(false); // this press became a hold: the server must not end the turn on a pause
+  const [sending, setSending] = useState(false); // finished talking, the last word's tail still recording
+  useEffect(() => {
+    if (!listening) setSending(false);
+  }, [listening]);
+  const holdTimerRef = useRef<number | null>(null);
   const stopPressRef = useRef(false); // this press sends what was said — its release does nothing more
   const orbBallRef = useRef<HTMLButtonElement | null>(null); // the home orb: the popups' orb starts here and travels into their dock
   const pressAtRef = useRef(0); // when the finger touched the orb (a release within HOLD_MS = a tap)
@@ -1560,6 +1567,7 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
     if (tailTimerRef.current) {
       window.clearTimeout(tailTimerRef.current);
       tailTimerRef.current = null;
+      setSending(false);
       pressAtRef.current = Date.now();
       holdingRef.current = true;
       setHolding(true);
@@ -1579,10 +1587,26 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
     stopWhenOpenRef.current = false;
     setHoldHintOn(false);
     setHeldOnce(true);
-    void startListening();
+    pressHeldRef.current = false;
+    if (holdTimerRef.current) window.clearTimeout(holdTimerRef.current);
+    holdTimerRef.current = window.setTimeout(() => {
+      holdTimerRef.current = null;
+      if (!holdingRef.current) return; // let go already: a tap
+      pressHeldRef.current = true;
+      // still connecting → its hello goes without autoEnd (above); already open → tell the server now
+      const ws = wsRef.current;
+      if (ws && ws.readyState === WebSocket.OPEN && helloSentRef.current) {
+        try {
+          ws.send(JSON.stringify({ t: 'hold' }));
+        } catch {}
+      }
+    }, HOLD_MS);
+    void startListening({ press: true });
   };
-  // stop a moment later: the last word is still on its way from the mic (stopping at once chopped it)
+  // stop a moment later: the last word is still on its way from the mic (stopping at once chopped it) — the orb
+  // leaves "listening" at once though (it waited out the tail, then shrank: the stop felt slow)
   const sendSoon = () => {
+    setSending(true);
     if (tailTimerRef.current) window.clearTimeout(tailTimerRef.current);
     tailTimerRef.current = window.setTimeout(() => {
       tailTimerRef.current = null;
@@ -1597,10 +1621,13 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
     if (!holdingRef.current) return;
     holdingRef.current = false;
     setHolding(false);
-    // a quick press → a tap: keep listening until they tap again
+    // a quick press → a tap: keep listening until they stop talking (the server ends it) or tap again
     if (Date.now() - pressAtRef.current < HOLD_MS) return;
     if (listening) sendSoon();
-    else stopWhenOpenRef.current = true;
+    else {
+      stopWhenOpenRef.current = true;
+      setSending(true);
+    }
   };
   useEffect(() => {
     if (listening && stopWhenOpenRef.current) {
@@ -1622,13 +1649,13 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
   const voiceState: VoiceState =
     session === 'paused'
       ? 'paused'
-      : listening
+      : listening && !sending
       ? followListen
         ? 'listening'
         : 'hearing'
       : speaking
       ? 'speaking'
-      : uiMode === 'thinking' || voicePending
+      : uiMode === 'thinking' || voicePending || sending
       ? 'thinking'
       : 'waiting';
 
@@ -1657,11 +1684,11 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
 
   // what the orb shows
   const orbMode: 'idle' | 'listening' | 'thinking' | 'talking' =
-    listening || holding
+    (listening || holding) && !sending
       ? 'listening'
       : speaking
       ? 'talking'
-      : uiMode === 'thinking' || voicePending
+      : uiMode === 'thinking' || voicePending || sending
       ? 'thinking'
       : 'idle';
 
