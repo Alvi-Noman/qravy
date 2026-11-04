@@ -1192,7 +1192,7 @@ _SEE_MENU = re.compile(
     r"\b(show|see|open|view|look at|check)\b.{0,15}\bmenu\b|\bfull menu\b|\bmenu (please|card)\b"
     # "মেনু দেখতে চাচ্ছি / চাইছিলাম", "মেনুটা দেখব", "মেনু দেখাতে পারবেন?", "মেনু কোথায়?" — every way of asking to see it
     r"|মেনু(টা|টি|গুলো)?\s*(একটু\s*)?(দেখান|দেখাও|দেখাবেন|দেখাবে|দেখাতে\s*পারবেন|দেখাতে\s*পারেন"
-    r"|দেখতে\s*(চাই|চাচ্ছি|চাচ্ছিলাম|চাইছি|চাইছিলাম|চেয়েছিলাম|পারি)|দেখবো?|দেখতাম|দেখা\s*যাবে|দেখি"
+    r"|দেখতে\s*(চাই|চাচ্ছি|চাচ্ছিলাম|চাইছি|চাইছিলাম|চেয়েছিলাম|পারি)|দেখবো?|দেখতাম|দেখা\s*যাবে|দেখি|দেখ(?![ঀ-৿])"
     r"|খুলুন|খোলেন|দিন|দেন|দাও|দিও|দে(?![ঀ-৿]))|মেনু কার্ড|মেনু(টা)?\s*কোথায়"
     # "মেনু কার্ডটা দাও" heard as "মেনু কাটটা / কাডটা দাও"
     r"|মেনু\s*(কার্ড|কাড|কাট)(টা|টি)?\s*(দাও|দিন|দেন|দিও|দে(?![ঀ-৿])|দেখাও|দেখান|আনো|আনুন)"
@@ -4371,7 +4371,8 @@ def _reco_fallback(pool: List[Dict[str, Any]], lang: str, ctx: Dict[str, Any]) -
     listed = ", ".join(picks[:-1]) + (" or " if not bn else " অথবা ") + picks[-1] if len(picks) > 1 else picks[0]
     period = str(ctx.get("mealPeriod") or "").split(" (")[0]
     if bn:
-        return f"এখন{(' ' + period + ' এর জন্য') if period and 'between' not in period else ''} আপনার জন্য ভালো হবে {listed}। অর্ডার করতে চান?"
+        # (never the period's own English name: "এখন Evening এর জন্য…" — the AI was unreachable, Nov 4)
+        return f"এখন আপনার জন্য ভালো হবে {listed}। অর্ডার করতে চান?"
     when = f" for {period.lower()}" if period and "between" not in period else ""
     return f"Right now{when}, I'd suggest {listed}. Would you like to order?"
 
@@ -7388,9 +7389,14 @@ async def _reply(
         period_menu = _between_meals(index, orderable, list((menu_snapshot or {}).get("periods") or []),
                                      int(lt.group(1)) * 60 + int(lt.group(2)), bn, live)
     if AI_FIRST:
-        if period_menu:
+        # the owner's own words at a Bengali rice house — "এখন ভাত খেতে পারেন, ভাতের সাথে মাছের মধ্যে …", the kebabs
+        # first in the evening — said as they are (the AI, given them as a fact, wrote its own: "এখন সাদা ভাত (মিনিকেট)
+        # এর সাথে হাওরের বোয়াল মাছ…"); nothing more in the question than what's on (no taste, budget, people…)
+        own_words = (period_menu and bangla_meal.is_bhaat_house(index.items)
+                     and not any(v for v in extract_prefs(transcript).to_dict().values()))
+        if period_menu and not own_words:
             facts.append("What is served at the time asked (from the restaurant's own hours): " + period_menu[0])
-        period_menu = None
+            period_menu = None
     if period_menu:
         text, rows, note = period_menu
         if stage == "readback":
