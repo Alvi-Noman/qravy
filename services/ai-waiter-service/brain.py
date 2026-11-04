@@ -92,12 +92,17 @@ OPENAI_BASE = os.environ.get("OPENAI_BASE", "https://api.openai.com").rstrip("/"
 OPENAI_CHAT_MODEL = os.environ.get("OPENAI_CHAT_MODEL", "gpt-4.1").strip()
 # experiment: the model answers menu questions and orders itself — the word-pattern answers before it are skipped
 AI_FIRST = os.environ.get("WAITER_AI_FIRST", "").strip() == "1"
-OPENAI_CHAT_URL = f"{OPENAI_BASE}/v1/chat/completions"
+# (another OpenAI-style endpoint with its own path, e.g. Gemini's .../v1beta/openai/chat/completions)
+OPENAI_CHAT_URL = os.environ.get("OPENAI_CHAT_URL", "").strip() or f"{OPENAI_BASE}/v1/chat/completions"
 
 BRAIN_MAX_TOKENS = int(os.environ.get("BRAIN_MAX_TOKENS", "1800"))
 BRAIN_TIMEOUT_S = float(os.environ.get("BRAIN_TIMEOUT_S", "10.0"))
 BRAIN_TEMP = float(os.environ.get("BRAIN_TEMP", "0.2"))
 BRAIN_RETRIES = int(os.environ.get("BRAIN_RETRIES", "1"))
+# OpenAI's thinking models (gpt-5 on, o-series) take max_completion_tokens and a reasoning effort instead of
+# max_tokens / temperature — "none" answers straight away, as fast as a 4.1
+REASONING_MODEL = OPENAI_BASE == "https://api.openai.com" and bool(re.match(r"(gpt-[5-9]|o\d)", OPENAI_CHAT_MODEL))
+BRAIN_REASONING = os.environ.get("BRAIN_REASONING", "none").strip()
 # Strict JSON-schema structured outputs; falls back to json_object if the endpoint rejects it.
 BRAIN_STRUCTURED = os.environ.get("BRAIN_STRUCTURED", "1") == "1"
 HISTORY_MESSAGES = int(os.environ.get("BRAIN_HISTORY_MESSAGES", "12"))
@@ -669,8 +674,9 @@ async def _read_menu(messages: List[Dict[str, str]]) -> str:
     r = await _client().post(
         OPENAI_CHAT_URL,
         headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"},
-        json={"model": OPENAI_CHAT_MODEL, "messages": messages, "temperature": 0.2, "max_tokens": 1500,
-              "response_format": {"type": "json_object"}},
+        json={"model": OPENAI_CHAT_MODEL, "messages": messages, "response_format": {"type": "json_object"},
+              **({"max_completion_tokens": 1500, "reasoning_effort": BRAIN_REASONING} if REASONING_MODEL
+                 else {"temperature": 0.2, "max_tokens": 1500})},
         timeout=60,
     )
     r.raise_for_status()
@@ -695,6 +701,10 @@ async def _call_openai(messages: List[Dict[str, str]]) -> str:
                 else {"type": "json_object"}
             ),
         }
+        if REASONING_MODEL:
+            del body["temperature"]
+            body["max_completion_tokens"] = body.pop("max_tokens")
+            body["reasoning_effort"] = BRAIN_REASONING
         if _CACHE_KEY_OK:
             body["prompt_cache_key"] = _prefix_key(messages)
         return body
