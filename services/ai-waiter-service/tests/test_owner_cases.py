@@ -173,3 +173,41 @@ def test_by_hand_categories_still_know_when_they_are_usually_served():
                {"id": "afternoon", "name": "Evening", "start": "17:00", "end": "22:00"}]
     rules = {"periods": periods, "categories": {"c": {"hours": [], "usualHours": [{"start": "17:00", "end": "22:00"}]}}}
     assert availability.served_periods({"categoryId": "c"}, rules) == ["afternoon"]
+
+
+def _turn(said, ops, reply):
+    import asyncio
+    import json
+
+    async def fake(messages):
+        return json.dumps({"topic": "order_change", "intent": "order", "language": "bn", "mentionedItems": [],
+                           "cartOps": [{"op": "add", "item": MENU.ref(MENU.by_id[i]), "quantity": 1, "variant": "",
+                                        "note": "", "choices": []} for i in ops],
+                           "clearCart": False, "confirmOrder": False, "checkout": "none", "understood": True,
+                           "answerItems": [], "serviceRequest": None, "suggestions": [], "replyText": reply})
+    orig, brain._call_openai = brain._call_openai, fake
+    try:
+        return asyncio.run(brain.generate_reply(said, menu_snapshot={"items": MENU.items}, locale="bn",
+                                                context={"cartItems": [], "table": "3"}))
+    finally:
+        brain._call_openai = orig
+
+
+def test_a_kind_the_ai_left_out_of_the_order_is_asked_which():
+    # gpt-6.1-terra added the ঝোল and never asked which ভর্তা
+    out = _turn("একটা ভর্তা আর একটা দেশি মুরগির ঝোল দাও।", ["c1"], "1টা দেশি মুরগির ঝোল যোগ করলাম। সাথে ভাত দেব?")
+    assert [o["itemId"] for o in out["meta"]["cartOps"]] == ["c1"]
+    assert "বেগুন ভর্তা" in out["replyText"] and "কোনটা" in out["replyText"], out["replyText"]
+    assert {o["itemId"] for o in out["meta"]["decision"]["chooseOptions"]} == {"b1", "b2", "b3"}
+
+
+def test_a_dish_not_on_the_menu_the_ai_left_out_is_said():
+    # gpt-6.1-terra added the rice and said nothing about the চিকেন ভুনা (none on this menu)
+    out = _turn("ভাই, একটা চিকেন ভুনা আর একটা ভাত দিন।", ["r1"], "একটা সাদা ভাত যোগ করলাম।")
+    assert [o["itemId"] for o in out["meta"]["cartOps"]] == ["r1"]
+    reply = out["replyText"]
+    assert "চিকেন ভুনা আমাদের মেনুতে নেই" in reply and "চিকেন ঝাল ফ্রাই" in reply, reply
+    assert "missing_dish_said" in out["meta"]["guards"]
+    # (a dish of ours the AI did add is never said to be missing)
+    out = _turn("একটা গরুর কালা ভুনা আর একটা ভাত দিন।", ["m1", "r1"], "1টা গরুর কালা ভুনা আর 1টা সাদা ভাত যোগ করলাম।")
+    assert "নেই" not in out["replyText"] and "missing_dish_said" not in out["meta"]["guards"], out["replyText"]
