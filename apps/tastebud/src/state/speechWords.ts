@@ -9,9 +9,20 @@ const BN_SAY: Array<[written: string, said: string]> = [
 ];
 const BN_LETTER = "ঀ-৿";
 const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+// English letters, accents too — and an accent never matters: "Café" is also "Cafe" (as the AI may write it)
+const LATIN = "A-Za-zÀ-ÖØ-öø-ÿ";
+const ACCENTED: Record<string, string> = { a: "àáâãäå", c: "ç", e: "èéêë", i: "ìíîï", n: "ñ", o: "òóôõöø", u: "ùúûü", y: "ýÿ" };
+const loose = (w: string) =>
+  w
+    .split("")
+    .map((ch) => {
+      const base = Object.keys(ACCENTED).find((b) => ch.toLowerCase() === b || ACCENTED[b].includes(ch.toLowerCase()));
+      return base ? `[${base}${ACCENTED[base]}]` : escapeRe(ch);
+    })
+    .join("");
 // the pattern for one word: Bangla as written, English letters whatever their capitals (the whole pass is /gi)
 const pattern = (w: string) =>
-  /[ঀ-৿]/.test(w) ? `(?<![${BN_LETTER}])${escapeRe(w)}(?![${BN_LETTER}])` : `(?<![A-Za-z])${escapeRe(w)}(?![A-Za-z])`;
+  /[ঀ-৿]/.test(w) ? `(?<![${BN_LETTER}])${escapeRe(w)}(?![${BN_LETTER}])` : `(?<![${LATIN}])${loose(w)}(?![${LATIN}])`;
 
 type SayRule = { written: string; said: string };
 const BUILT_IN: SayRule[] = BN_SAY.map(([written, said]) => ({ written, said }));

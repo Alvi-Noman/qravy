@@ -44,8 +44,8 @@ export type OwnWord = { word: string; sayAs: string; spoken: string; updatedAt: 
 export const listOwnWords = async (): Promise<OwnWord[]> => (await api.get('/api/v1/pronunciations/own')).data.items as OwnWord[];
 
 /** How this restaurant wants `word` said — its voice uses it right away. */
-export const setOwnWord = async (word: string, sayAs: string): Promise<OwnWord> =>
-  (await api.put('/api/v1/pronunciations/own', { word, sayAs, source: 'menu item' })).data.item as OwnWord;
+export const setOwnWord = async (word: string, sayAs: string, source = 'menu item'): Promise<OwnWord> =>
+  (await api.put('/api/v1/pronunciations/own', { word, sayAs, source })).data.item as OwnWord;
 
 /** Back to the default reading. */
 export const resetOwnWord = async (word: string) => (await api.delete(`/api/v1/pronunciations/own/${encodeURIComponent(word)}`)).data;

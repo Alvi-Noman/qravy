@@ -47,7 +47,8 @@ export function useSayIt(): [boolean, (text: string, raw?: boolean) => Promise<v
   return [playing, play, stop];
 }
 
-export default function ItemPronunciation({ name }: { name: string }) {
+/** `source`: where it was changed, for Qravy's hint in Cortex (a dish, or Settings → Branding's restaurant name). */
+export default function ItemPronunciation({ name, source }: { name: string; source?: string }) {
   const qc = useQueryClient();
   const own = useQuery({ queryKey: ['own-words'], queryFn: listOwnWords, staleTime: 30_000 });
   const word = name.trim();
@@ -71,7 +72,7 @@ export default function ItemPronunciation({ name }: { name: string }) {
   const save = async () => {
     setSaving(true);
     try {
-      await setOwnWord(word, sayAs.trim());
+      await setOwnWord(word, sayAs.trim(), source);
       await qc.invalidateQueries({ queryKey: ['own-words'] });
       toastSuccess(`The waiter now says “${word}” this way`);
       setOpen(false);

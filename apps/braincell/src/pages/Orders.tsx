@@ -21,7 +21,7 @@ import {
 import { useOrdersLive } from '../context/OrdersLiveContext';
 import BuzzerBanner from '../components/BuzzerBanner';
 import PageFrame, { HEADER_BUTTON, LiveBadge, Segmented } from '../components/PageFrame';
-import { Link } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useAuthContext } from '../context/AuthContext';
 import { usePermissions } from '../context/PermissionsContext';
 import { useScope } from '../context/ScopeContext';
@@ -766,7 +766,10 @@ export default function Orders() {
   const { token } = useAuthContext();
   const { has } = usePermissions();
   const canUpdate = has('orders:update');
-  const [tab, setTab] = useState<'active' | 'history'>('active');
+  // past orders have their own address (Sidebar → Order History): /orders/history
+  const navigate = useNavigate();
+  const tab: 'active' | 'history' = useLocation().pathname.endsWith('/history') ? 'history' : 'active';
+  const setTab = (t: 'active' | 'history') => navigate(t === 'history' ? '/orders/history' : '/orders');
   // all, or one kind of order — remembered on this device (a delivery desk keeps "Delivery")
   const [kind, setKindState] = useState<Kind>(() => {
     try {

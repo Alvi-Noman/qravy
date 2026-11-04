@@ -4,6 +4,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   HomeIcon,
   ClipboardDocumentListIcon,
+  ClockIcon,
   BellAlertIcon,
   Squares2X2Icon,
   TagIcon,
@@ -49,6 +50,7 @@ export default function Sidebar(): JSX.Element {
     // Manage
     Dashboard: 'dashboard:view',
     Orders: 'orders:read',
+    'Order History': 'orders:read',
     'Service Requests': 'serviceRequests:read',
     'Menu Items': 'menuItems:read',
     Categories: 'categories:read',
@@ -73,7 +75,8 @@ export default function Sidebar(): JSX.Element {
       heading: 'Manage',
       items: [
         { name: 'Dashboard', to: '/dashboard', icon: HomeIcon, end: true },
-        { name: 'Orders', to: '/orders', icon: ClipboardDocumentListIcon },
+        { name: 'Orders', to: '/orders', icon: ClipboardDocumentListIcon, end: true },
+        { name: 'Order History', to: '/orders/history', icon: ClockIcon },
         { name: 'Service Requests', to: '/service-requests', icon: BellAlertIcon },
         { name: 'Menu Items', to: '/menu-items', icon: Squares2X2Icon },
         { name: 'Categories', to: '/categories', icon: TagIcon },

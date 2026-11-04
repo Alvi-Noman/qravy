@@ -201,14 +201,17 @@ function App() {
                   </RequireVerifiedAndOnboarded>
                 }
               >
-                <Route
-                  path="/orders"
-                  element={
-                    <Suspense fallback={null}>
-                      <Orders />
-                    </Suspense>
-                  }
-                />
+                {['/orders', '/orders/history'].map((path) => (
+                  <Route
+                    key={path}
+                    path={path}
+                    element={
+                      <Suspense fallback={null}>
+                        <Orders />
+                      </Suspense>
+                    }
+                  />
+                ))}
                 <Route
                   path="/menu-items"
                   element={
