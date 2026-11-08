@@ -41,6 +41,9 @@ type UIMode = 'idle' | 'thinking' | 'talking';
 // 🔒 Welcome overlay persistence (the home screen's "tap to start"): any talk to the waiter counts as activity
 export const WELCOME_INTERACT_KEY = 'qravy:aiwaiter:lastInteractionAt';
 const IS_IPHONE = typeof navigator !== 'undefined' && /iPhone|iPod/.test(navigator.userAgent || '');
+// the AI's opening line ("let me check what's mild…") is said only when the answer still isn't here this long after
+// the line arrived — a quick answer comes on its own, never held back behind "let me check…"
+const PREAMBLE_GRACE_MS = 500;
 /** The mic stays open this long after a turn (not on iPhones), so the next one starts at once — no first words lost. */
 const MIC_WARM_MS = 30_000;
 /** Recording goes on this long after the finger lifts / the second tap: the last word is still on its way. */
@@ -129,6 +132,14 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
     setVoicePending(on);
   };
   const ttsStartedAtRef = useRef(0); // when the waiter's voice last started (the voice session waits for it)
+  // measuring only (track 'voice_timing'): when the guest's spoken turn ended, and the reply's timing waiting for
+  // its first sound — guest quiet → reply in → voice heard
+  const turnEndAtRef = useRef<number | null>(null);
+  const voiceTimingRef = useRef<{ data: Record<string, number | string>; replyAt: number; replyMs: number } | null>(null);
+  // the opening line: waiting for its moment, being said now (the answer then follows it, never cutting it off), said
+  const preambleTimerRef = useRef<number | null>(null);
+  const preambleSayingRef = useRef(false);
+  const preambleSaidRef = useRef(false);
   // the welcome is being spoken → its text is revealed with the voice (see visibleText); never longer than 8 s
   const [welcomePending, setWelcomePending] = useState(false);
   useEffect(() => {
@@ -193,6 +204,13 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
         placeWordRef.current(w, off);
       },
       onPlaybackStart: () => {
+        const vt = voiceTimingRef.current;
+        if (vt) {
+          // the guest hears the reply now: how long it took, step by step
+          voiceTimingRef.current = null;
+          const voiceMs = Math.round(performance.now() - vt.replyAt);
+          track('voice_timing', { data: { ...vt.data, voiceMs, totalMs: vt.replyMs + voiceMs } });
+        }
         if (!owns()) return;
         anchorRevealRef.current();
         // the conversation is on: get the mic ready while the waiter speaks, so it opens at once for the answer
@@ -844,6 +862,10 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
       // block the mic: holding the orb after tapping "AI suggestions" / a pill did nothing at all
       if (wsRef.current && wsRef.current.readyState >= WebSocket.CLOSING) wsRef.current = null;
       if ((listening && !opts?.afterStop) || wsRef.current || ctxRef.current) return;
+      turnEndAtRef.current = null; // (a new turn: set again when the guest stops talking)
+      preambleSaidRef.current = false;
+      if (preambleTimerRef.current) window.clearTimeout(preambleTimerRef.current);
+      preambleTimerRef.current = null;
       silentReplyRef.current = !!(typed && opts?.silent);
       if (!typed) setListening(true); // "Listening" at once — not a blank moment while the mic starts
       if (!followUp) {
@@ -1024,6 +1046,7 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
 
           // hands-free: the server heard the guest stop talking → it's answering now (no tap needed)
           if (msg.t === 'auto_end') {
+            turnEndAtRef.current = performance.now();
             void stopListening({ serverEnded: true });
             return;
           }
@@ -1064,8 +1087,30 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
             return;
           }
 
+          // the AI's opening line, written before its answer: said if the answer is slow (not for a silent button)
+          if (msg.t === 'ai_preamble') {
+            const line = String(msg.text || '').trim();
+            if (!line || silentReplyRef.current || !awaitingReplyRef.current) return;
+            if (preambleTimerRef.current) window.clearTimeout(preambleTimerRef.current);
+            preambleTimerRef.current = window.setTimeout(() => {
+              preambleTimerRef.current = null;
+              if (!awaitingReplyRef.current) return; // the answer came first — nothing before it
+              preambleSayingRef.current = true;
+              preambleSaidRef.current = true;
+              tts
+                .speak(line, { aside: true })
+                .catch(() => {})
+                .finally(() => {
+                  preambleSayingRef.current = false;
+                });
+            }, PREAMBLE_GRACE_MS);
+            return;
+          }
+
           if (msg.t === 'ai_reply') {
             awaitingReplyRef.current = false;
+            if (preambleTimerRef.current) window.clearTimeout(preambleTimerRef.current);
+            preambleTimerRef.current = null;
             // one socket per utterance: the reply is in, so close it now (not on a fixed timer)
             setTimeout(() => {
               try {
@@ -1093,10 +1138,31 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
             // (before its text is set: the dock shows only what was said from this reply on — WaiterSheets)
             if (!silent || silentQuestion) setLastReplyAt(Date.now());
 
+            // measuring only: a spoken turn's reply → its timing goes out when its first sound plays (onPlaybackStart)
+            voiceTimingRef.current = null;
+            const endAt = turnEndAtRef.current;
+            turnEndAtRef.current = null;
+            if (speakText && !silent && endAt !== null && msg.timing && typeof msg.timing === 'object') {
+              const replyAt = performance.now();
+              const replyMs = Math.round(replyAt - endAt);
+              const data: Record<string, number | string> = {
+                replyMs,
+                replyChars: speakText.length,
+                ios: IS_IPHONE ? 1 : 0,
+                preamble: preambleSaidRef.current ? 1 : 0,
+              };
+              for (const [k, v] of Object.entries(msg.timing as Record<string, unknown>)) {
+                if (typeof v === 'number' && isFinite(v)) data[k] = v;
+              }
+              voiceTimingRef.current = { data, replyAt, replyMs };
+            }
             if (speakText && !silent) {
-              try {
-                tts.stop();
-              } catch {}
+              // (the opening line being said finishes first — the answer follows it in the voice's queue)
+              if (!preambleSayingRef.current) {
+                try {
+                  tts.stop();
+                } catch {}
+              }
               markVoicePending(true);
               tts.speak(speakText).catch((err) => {
                 console.warn('[AIWaiterHome] TTS speak failed, showing text directly:', err);
@@ -1398,6 +1464,7 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
       if (!opts?.serverEnded && !opts?.quiet && wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
         const sid = getStableSessionId();
         wsRef.current.send(JSON.stringify({ t: 'end', sid }));
+        turnEndAtRef.current = performance.now(); // (tapped / let go: the guest's turn ends here)
       }
     } catch {
       // ignore

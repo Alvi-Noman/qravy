@@ -1,0 +1,8 @@
+# services/ai-waiter-service/requirements-dev.txt
+# What the tests need on top of the service (not in the live image):
+#   pip install -r requirements-dev.txt
+#   python -m pytest -q tests
+-r requirements.txt
+pytest==9.2.0
+pytest-asyncio==1.4.1.post1
+mongomock==4.3.0

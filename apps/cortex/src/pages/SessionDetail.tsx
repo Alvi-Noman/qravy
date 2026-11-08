@@ -30,7 +30,8 @@ export default function SessionDetail() {
   const q = useQuery({ queryKey: ['session', vid], queryFn: () => api<Detail>(`/sessions/${encodeURIComponent(vid ?? '')}`) });
   const d = q.data;
   const s = d?.session;
-  const steps = (d?.events ?? []).filter((e) => e.type !== 'ping');
+  // (pings and the waiter's voice timings are measurements, not something the guest did)
+  const steps = (d?.events ?? []).filter((e) => e.type !== 'ping' && e.type !== 'voice_timing');
 
   return (
     <div className="space-y-6">

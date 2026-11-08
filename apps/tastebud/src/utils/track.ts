@@ -17,7 +17,8 @@ export type TrackType =
   | 'checkout_started'
   | 'order_placed'
   | 'call_waiter'
-  | 'ping';
+  | 'ping'
+  | 'voice_timing'; // how long a spoken turn took, step by step (numbers only)
 
 type Page = 'home' | 'menu' | 'checkout' | 'order' | 'other';
 type Ev = { type: TrackType; at: number; page?: Page; data?: Record<string, string | number> };

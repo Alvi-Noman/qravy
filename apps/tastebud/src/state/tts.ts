@@ -2,7 +2,7 @@
 import * as sdk from "microsoft-cognitiveservices-speech-sdk";
 import { speechPlan, wordToShow, type SpeechPlan } from "./speechWords";
 
-type QueueItem = { id: string; text: string; resolve: () => void; reject: (e: any) => void };
+type QueueItem = { id: string; text: string; aside?: boolean; resolve: () => void; reject: (e: any) => void };
 
 export type TtsEvents = {
   onStart?: (originalText: string) => void;
@@ -17,7 +17,9 @@ export type TtsEvents = {
 };
 
 export type TTSPublicAPI = {
-  speak: (text: string) => Promise<void>;
+  /** `aside`: the waiter's opening line while it looks something up ("let me check…") — spoken, but no events
+   *  (the screen's reveal and the mic ignore it); resolves once it has been HEARD, so what's spoken next follows it. */
+  speak: (text: string, opts?: { aside?: boolean }) => Promise<void>;
   /** Call INSIDE a tap ("Get started", holding the orb): unlocks sound on iPhones (see sharedAudio below). */
   unlock: () => void;
   /** Get a connected speech pipeline ready in the background (call while the waiter is thinking). */
@@ -140,6 +142,69 @@ class SharedAudioSpeaker {
   }
 }
 const DEFAULT_VOICE = import.meta.env.VITE_AZURE_SPEECH_VOICE || "bn-BD-PradeepNeural";
+
+// ---------- saved voice for short lines that come back ("please say that again", the welcome) ----------
+// A short line the voice has said once is kept (its MP3 + its words' timings) and played straight from here the next
+// time the very same words are said in the same voice — no wait for the speech service. Exactly the same audio the
+// service made, so nothing the guest hears changes. Kept in this browser only (a few, newest first), across visits.
+type Clip = { audio: ArrayBuffer; words: Array<[string, number | undefined, number | undefined]>; durMs: number };
+// a saved line playing now: `done` tells the queue it's over (heard to the end, stopped, or its safety timer)
+type Replay = { el: HTMLAudioElement; url: string; done: () => void; onEnded?: () => void };
+const CLIP_MAX_CHARS = 160; // (longer replies are nearly always new words — not worth keeping)
+const CLIP_MAX = 12;
+const LS_CLIPS = "tts.clips.v1";
+const clips = new Map<string, Clip>(); // (insertion order = least recently used first)
+let clipsLoaded = false;
+
+function b64FromBuf(buf: ArrayBuffer): string {
+  const bytes = new Uint8Array(buf);
+  let s = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+function bufFromB64(b64: string): ArrayBuffer {
+  const s = atob(b64);
+  const bytes = new Uint8Array(s.length);
+  for (let i = 0; i < s.length; i++) bytes[i] = s.charCodeAt(i);
+  return bytes.buffer;
+}
+function loadClips() {
+  if (clipsLoaded) return;
+  clipsLoaded = true;
+  try {
+    const raw = JSON.parse(localStorage.getItem(LS_CLIPS) || "[]");
+    if (!Array.isArray(raw)) return;
+    for (const c of raw) {
+      if (c && typeof c.k === "string" && typeof c.a === "string" && Array.isArray(c.w)) {
+        clips.set(c.k, { audio: bufFromB64(c.a), words: c.w, durMs: Number(c.d) || 0 });
+      }
+    }
+  } catch { /* nothing saved, or storage blocked */ }
+}
+function saveClips() {
+  try {
+    const out = [...clips.entries()].map(([k, c]) => ({ k, a: b64FromBuf(c.audio), w: c.words, d: c.durMs }));
+    localStorage.setItem(LS_CLIPS, JSON.stringify(out));
+  } catch { /* full or blocked: they stay for this visit only */ }
+}
+function clipKey(voice: string, spoken: string) {
+  return `${voice}|${spoken}`;
+}
+function getClip(key: string): Clip | null {
+  loadClips();
+  const c = clips.get(key);
+  if (!c) return null;
+  clips.delete(key);
+  clips.set(key, c); // most recently used
+  return c;
+}
+function putClip(key: string, clip: Clip) {
+  loadClips();
+  clips.delete(key);
+  clips.set(key, clip);
+  while (clips.size > CLIP_MAX) clips.delete(clips.keys().next().value as string);
+  saveClips();
+}
 
 const LS_MUTED = "tts.muted";
 const LS_VOLUME = "tts.volume"; // 0..1
@@ -293,6 +358,13 @@ class TTSManager implements TTSPublicAPI {
   // Event subscribers
   private listeners = new Set<TtsEvents>();
 
+  // a saved line playing on the shared <audio> (see Clip), and the words of the line being synthesized now (kept
+  // with its audio when it is short)
+  private replay: Replay | null = null;
+  private capturing: Clip["words"] | null = null;
+  // an aside (see speak) being said: its events go nowhere, and `done` lets the queue go on once it's been heard
+  private aside: { done: () => void } | null = null;
+
   private constructor() {}
 
   // ---------- public API ----------
@@ -326,14 +398,15 @@ class TTSManager implements TTSPublicAPI {
 
   unlock = () => unlockAudioOutput();
 
-  async speak(text: string): Promise<void> {
+  async speak(text: string, opts?: { aside?: boolean }): Promise<void> {
     const clean = (text ?? "").trim();
     if (!clean) return;
 
-    await this._ensureReady();
+    // a saved line plays without the speech service — no token / connection to wait for
+    if (!this._savedClip(clean)) await this._ensureReady();
 
     return new Promise<void>((resolve, reject) => {
-      const item: QueueItem = { id: crypto.randomUUID(), text: clean, resolve, reject };
+      const item: QueueItem = { id: crypto.randomUUID(), text: clean, aside: !!opts?.aside, resolve, reject };
       this.queue.push(item);
       this._pump();
     });
@@ -353,6 +426,7 @@ class TTSManager implements TTSPublicAPI {
 
   fadeOut(ms = 200) {
     if (this.fading) return; // already fading
+    if (this.replay) return this.stop(); // (a saved line: short — it just stops)
     const sp = this.speaker;
     let from = 0;
     try {
@@ -399,6 +473,8 @@ class TTSManager implements TTSPublicAPI {
     const q = this.queue.splice(0);
     q.forEach((it) => it.reject(new Error("stopped")));
 
+    this._endReplay();
+    this.capturing = null;
     // Pause speaker (halts playback), then close synthesizer to fully stop
     try { this.speaker?.pause(); } catch {}
     try { this.synthesizer?.close(); } catch {}
@@ -410,13 +486,15 @@ class TTSManager implements TTSPublicAPI {
 
     this.playing = false;
 
-    // Notify listeners that playback ended
+    // Notify listeners that playback ended (an aside's end goes to the queue, never to them)
     this._emitEnd();
     this._emitPlaybackEnd();
+    this.aside?.done();
   }
 
   pause() {
     try { this.speaker?.pause(); } catch {}
+    try { this.replay?.el.pause(); } catch {}
     this.paused = true;
     this.playing = false;
   }
@@ -425,6 +503,7 @@ class TTSManager implements TTSPublicAPI {
     if (!this.paused) return;
     this.paused = false;
     try { this.speaker?.resume(); } catch {}
+    try { this.replay?.el.play()?.catch(() => {}); } catch {}
     if (!this.playing) this._pump();
   }
 
@@ -459,6 +538,7 @@ class TTSManager implements TTSPublicAPI {
 
   // ---------- internals ----------
   private _emitStart(text: string) {
+    if (this.aside) return;
     this.listeners.forEach(h => { h.onStart?.(text); });
   }
   // the utterance being spoken: which stretches of its text stand for a different written word (speechWords)
@@ -466,6 +546,7 @@ class TTSManager implements TTSPublicAPI {
 
   private _emitWord(word: string, offsetMs?: number, textOffset?: number) {
     if (!word) return;
+    this.capturing?.push([word, offsetMs, textOffset]); // (kept with the line's audio — see Clip)
     // the speech engine reports SSML-escaped text ("&amp;") — show what was actually said
     const shown = word
       .replace(/&amp;/g, '&')
@@ -475,10 +556,11 @@ class TTSManager implements TTSPublicAPI {
       .replace(/&apos;/g, "'");
     // a learned word said as several ("ষোলআনা" → "শোলো আনা") shows once, as written; its other spoken words show nothing
     const word2 = wordToShow(this.plan, shown, textOffset);
-    if (!word2) return;
+    if (!word2 || this.aside) return;
     this.listeners.forEach(h => { h.onWord?.(word2, offsetMs); });
   }
   private _emitEnd() {
+    if (this.aside) return;
     this.listeners.forEach(h => { h.onEnd?.(); });
   }
 
@@ -490,6 +572,8 @@ class TTSManager implements TTSPublicAPI {
     if (!this.playbackPending) return;
     this.playbackPending = false;
     if (this.playbackTimer) { clearTimeout(this.playbackTimer); this.playbackTimer = null; }
+    // (an aside heard to the end: the queue goes on — the listeners never heard it start)
+    if (this.aside) return this.aside.done();
     this.listeners.forEach(h => { h.onPlaybackEnd?.(); });
   }
 
@@ -582,7 +666,7 @@ class TTSManager implements TTSPublicAPI {
     };
     // …and the moment the guest STARTS hearing it (the words' clock: shown text follows the voice, not the synthesis)
     (speaker as any).onAudioStart = () => {
-      if (this.speaker === speaker) this.listeners.forEach((h) => { h.onPlaybackStart?.(); });
+      if (this.speaker === speaker && !this.aside) this.listeners.forEach((h) => { h.onPlaybackStart?.(); });
     };
     const audioConfig = speaker instanceof SharedAudioSpeaker ? null : sdk.AudioConfig.fromSpeakerOutput(speaker);
 
@@ -647,6 +731,78 @@ class TTSManager implements TTSPublicAPI {
     try {
       if (this.speaker) this.speaker.volume = effective;
     } catch {}
+    try {
+      if (this.replay) this.replay.el.volume = effective / 100; // (an <audio> takes 0..1)
+    } catch {}
+  }
+
+  /** A saved copy of exactly this line in this voice (see Clip), or null. */
+  private _savedClip(input: string): Clip | null {
+    if (isLikelySsml(input)) return null;
+    const spoken = speechPlan(input).spoken;
+    if (spoken.length > CLIP_MAX_CHARS) return null;
+    return getClip(clipKey(this.voice, spoken));
+  }
+
+  /** Stop a saved line that is playing (no events — the caller says what happened). */
+  private _endReplay() {
+    const r = this.replay;
+    if (!r) return;
+    this.replay = null;
+    // (only this line's own handler and sound — the iPhone voice uses the same <audio> after it)
+    if (r.onEnded && r.el.onended === r.onEnded) r.el.onended = null;
+    try { if (r.el.src === r.url) r.el.pause(); } catch {}
+    URL.revokeObjectURL(r.url);
+    r.done();
+  }
+
+  /** Play a saved line: true once its sound is coming out; false (nothing announced) when there is no saved copy or
+   *  the browser won't play it — then the speech service says it as usual. */
+  private async _playSaved(input: string, finished: () => void): Promise<boolean> {
+    const clip = this._savedClip(input);
+    if (!clip) return false;
+    const plan = speechPlan(input);
+    this._endReplay();
+    const el = sharedAudioEl();
+    const url = URL.createObjectURL(new Blob([clip.audio], { type: "audio/mpeg" }));
+    let told = false;
+    const me: Replay = { el, url, done: () => { if (!told) { told = true; finished(); } } };
+    me.onEnded = () => {
+      if (this.replay !== me) return;
+      this._endReplay();
+      this._emitPlaybackEnd();
+    };
+    this.replay = me;
+    el.onplaying = null;
+    el.onended = me.onEnded;
+    el.src = url;
+    this._applySpeakerVolume();
+    try {
+      await el.play();
+    } catch (e) {
+      console.debug("[TTS] saved line could not play here → the speech service says it", e);
+      told = true; // (not finished: it never started — the caller speaks it the usual way)
+      if (this.replay === me) this._endReplay();
+      return false;
+    }
+    if (this.replay !== me) return true; // (stopped already — stop() has said so)
+    // the same events, in the same order, as a line from the speech service: start → words → sound → (synthesis
+    // done) → heard to the end
+    this.currentUtteranceText = input;
+    this.plan = plan;
+    this.playbackPending = true;
+    if (this.playbackTimer) { clearTimeout(this.playbackTimer); this.playbackTimer = null; }
+    this._emitStart(input);
+    this.capturing = null;
+    for (const [w, off, tOff] of clip.words) this._emitWord(w, off, tOff);
+    if (!this.aside) this.listeners.forEach((h) => { h.onPlaybackStart?.(); });
+    this._emitEnd();
+    // safety net: the audio's own length + a margin, like a line from the service
+    this.playbackTimer = setTimeout(() => {
+      if (this.replay === me) this._endReplay();
+      this._emitPlaybackEnd();
+    }, (clip.durMs || 8000) + 3000);
+    return true;
   }
 
   private async _refreshAuthIfNeeded() {
@@ -672,8 +828,21 @@ class TTSManager implements TTSPublicAPI {
 
     this.playing = true;
 
+    if (next.aside) {
+      void this._runAside(next);
+      return;
+    }
+
     const run = async () => {
       try {
+        // said before, in this voice → the saved sound, at once (the next line waits until it has been heard)
+        let heard: () => void = () => {};
+        const over = new Promise<void>((r) => { heard = r; });
+        if (await this._playSaved(next.text, () => heard())) {
+          await over;
+          next.resolve();
+          return;
+        }
         await this._refreshAuthIfNeeded();
         try {
           await this._speakOnce(next.text);
@@ -704,6 +873,30 @@ class TTSManager implements TTSPublicAPI {
     run();
   }
 
+  /** An aside (see speak): said like any line, but quietly — and the queue waits until it has been heard. */
+  private async _runAside(next: QueueItem) {
+    let heard: () => void = () => {};
+    const over = new Promise<void>((r) => { heard = r; });
+    let told = false;
+    this.aside = { done: () => { if (told) return; told = true; this.aside = null; heard(); } };
+    const me = this.aside;
+    try {
+      if (!(await this._playSaved(next.text, () => me.done()))) {
+        await this._refreshAuthIfNeeded();
+        await this._speakOnce(next.text);
+      }
+      await over;
+      next.resolve();
+    } catch (e) {
+      console.debug("[TTS] the opening line could not be said", e);
+      me.done();
+      next.reject(e);
+    } finally {
+      this.playing = false;
+      if (!this.paused) this._pump();
+    }
+  }
+
   /** Throw away the live and the warm pipeline (the next speak builds a fresh one). */
   private _resetPipeline() {
     try { this.speaker?.pause(); } catch {}
@@ -730,14 +923,24 @@ class TTSManager implements TTSPublicAPI {
           this.playbackPending = true;
           if (this.playbackTimer) { clearTimeout(this.playbackTimer); this.playbackTimer = null; }
           const startedAt = Date.now();
+          let clipAs = ""; // (the saved-line key when this line is short enough to keep)
 
           // 🔔 announce start for reveal
           this._emitStart(input);
 
           const onSuccess = (result: sdk.SpeechSynthesisResult) => {
+            const words = this.capturing;
+            this.capturing = null;
             if (result.reason === sdk.ResultReason.SynthesizingAudioCompleted) {
               // safety net: if the speaker never reports "ended", the audio's own length (100-ns ticks) + a margin
               const durMs = typeof (result as any).audioDuration === "number" ? (result as any).audioDuration / 10000 : 0;
+              // a short line: kept, so the next time these words come back they play at once (see Clip)
+              const audio = (result as any).audioData as ArrayBuffer | undefined;
+              if (words && clipAs && audio && audio.byteLength > 0) {
+                try {
+                  putClip(clipAs, { audio: audio.slice(0), words, durMs });
+                } catch {}
+              }
               // iPhones: the whole reply is here now — play it on the tap-unlocked <audio>. It starts NOW (not at the
               // synthesis start), so the safety net counts from now.
               const shared = this.speaker instanceof SharedAudioSpeaker ? this.speaker : null;
@@ -767,6 +970,7 @@ class TTSManager implements TTSPublicAPI {
           };
 
           const onError = (err: any) => {
+            this.capturing = null;
             console.error("[TTS] speak*Async error", err);
             reject(err);
           };
@@ -774,12 +978,15 @@ class TTSManager implements TTSPublicAPI {
           if (isLikelySsml(input)) {
             // Use SSML verbatim, but sanitize to single-language
             this.plan = null;
+            this.capturing = null;
             const singleLang = sanitizeSingleLanguageSsml(input);
             this.synthesizer!.speakSsmlAsync(singleLang, onSuccess, onError);
           } else {
             // 🔁 Plain text path to avoid SSML language-validation errors
             const plan = speechPlan(input);
             this.plan = plan;
+            clipAs = plan.spoken.length <= CLIP_MAX_CHARS ? clipKey(this.voice, plan.spoken) : "";
+            this.capturing = clipAs ? [] : null;
             this.synthesizer!.speakTextAsync(plan.spoken, onSuccess, onError);
           }
         });
