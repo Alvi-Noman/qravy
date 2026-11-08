@@ -17,6 +17,7 @@ const STEPS: Array<[string, string]> = [
   ['modelMs', '  of which the AI'],
   ['postMs', 'after the brain'],
   ['serverMs', 'server total'],
+  ['preambleMs', 'opening line ready (if any)'],
   ['replyMs', 'quiet → reply in phone'],
   ['voiceMs', 'reply → first sound'],
   ['totalMs', 'quiet → first sound'],
@@ -44,7 +45,8 @@ function table(title: string, rows: Row[]) {
   console.log(
     `  AI asked twice (self-check): ${share((r) => (r.modelCalls ?? 0) >= 2)} · ` +
       `speech-to-text retried: ${share((r) => (r.sttCalls ?? 0) >= 2)} · ` +
-      `hands-free (silence wait): ${share((r) => (r.vadMs ?? 0) > 0)}`,
+      `hands-free (silence wait): ${share((r) => (r.vadMs ?? 0) > 0)} · ` +
+      `opening line said: ${share((r) => r.preamble === 1)}`,
   );
 }
 

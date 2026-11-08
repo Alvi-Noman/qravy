@@ -112,6 +112,12 @@ _DEADLINE: contextvars.ContextVar = contextvars.ContextVar("turn_deadline", defa
 NO_MODEL: contextvars.ContextVar = contextvars.ContextVar("no_model", default=False)
 # the turn's model calls, for the timing record ({"ms": …, "calls": …} set by the caller; measured only, never read)
 MODEL_USE: contextvars.ContextVar = contextvars.ContextVar("model_use", default=None)
+# the opening line ("preamble" — the AI's first words, e.g. "let me check what's nut-free…"): where the server wants it
+# (an async fn taking the text — the voice socket sends it to the app, which says it only when the answer is slow).
+# PREAMBLE_TO is set by the caller for the whole turn; _PREAMBLE_NOW only around the turn's FIRST model call, already
+# checked — a self-check's second answer never says another one.
+PREAMBLE_TO: contextvars.ContextVar = contextvars.ContextVar("preamble_to", default=None)
+_PREAMBLE_NOW: contextvars.ContextVar = contextvars.ContextVar("preamble_now", default=None)
 # OpenAI's thinking models (gpt-5 on, o-series) take max_completion_tokens and a reasoning effort instead of
 # max_tokens / temperature — "none" answers straight away, as fast as a 4.1
 REASONING_MODEL = OPENAI_BASE == "https://api.openai.com" and bool(re.match(r"(gpt-[5-9]|o\d)", OPENAI_CHAT_MODEL))
@@ -136,11 +142,15 @@ _STR = {"type": "string"}
 RESPONSE_SCHEMA: Dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
+    # (sayFirst FIRST: the answer streams in field order, so the opening line is out before the rest is written)
     "required": [
-        "topic", "intent", "language", "mentionedItems", "cartOps", "clearCart", "confirmOrder", "checkout", "understood", "answerItems",
-        "serviceRequest", "suggestions", "guestPrefs", "replyText",
+        "sayFirst", "topic", "intent", "language", "mentionedItems", "cartOps", "clearCart", "confirmOrder", "checkout",
+        "understood", "answerItems", "serviceRequest", "suggestions", "guestPrefs", "replyText",
     ],
     "properties": {
+        "sayFirst": {"type": "string", "description": (
+            "Words spoken OUT LOUD to the guest first, while you look it up ('Sure - let me check what is mild...'). "
+            "2-6 words. Never a note about the guest or your plan. Empty for simple turns.")},
         "topic": {"type": "string", "enum": list(TOPICS)},
         "intent": {"type": "string", "enum": list(INTENTS)},
         "language": {"type": "string", "enum": ["bn", "en"]},
@@ -483,6 +493,7 @@ PLAYBOOK = """You are the virtual waiter of the restaurant described below. Gues
   · say what YOU did, in your own voice: "একটা অনিয়ন রিং কমিয়ে দিলাম", "যোগ করলাম" — never "আপনি … দিয়েছি".
 
 # Fields
+- sayFirst: the words you SAY OUT LOUD TO THE GUEST in the first second, like a live waiter, when they ask something you have to look into — a condition (an allergy, a diet, spice, a budget, cheap or pricey, for kids, for several people), a comparison, a meal plan, a question about the menu or the restaurant. 2–6 natural spoken words in the reply language that show you understood WHAT they asked and are checking it (e.g. "Sure — let me check what's nut-free…", "Okay, something mild… let me see"). Vary it from turn to turn. It is speech to the guest — never a note about them, a summary or your plan ("The user asked…" is wrong). Say only THAT you are checking, never WHAT you found ("there are some great options" is wrong — the answer may say otherwise). Never a dish name, a number or a price, and never a claim (added, available, ordered, sent). "" for simple turns: an order or a change to the cart, yes / no, thanks, a greeting, when you must ask them to say it again. It is said only when your answer is slow, so replyText must make sense on its own: replyText never repeats sayFirst and never starts with a filler.
 - topic: what the guest wanted. intent: "order" if you changed/cleared/confirmed the cart or reviewed the order; "suggestions" if you recommended or listed several dishes to choose from (also fill suggestions with their refs and a 3–6 word reason); "menu" for questions about specific dishes, prices, availability or the restaurant; "chitchat" for greetings, thanks, service requests and anything else.
 - mentionedItems: refs of dishes this turn is about (for follow-up questions).
 - answerItems: when the guest asks WHICH dish ("which of these is least spicy / cheapest / best for kids?"), the ref(s) of the dish(es) your answer picks — usually ONE (two only if truly tied). It is highlighted on their screen. Otherwise [].
@@ -718,6 +729,75 @@ async def _read_menu(messages: List[Dict[str, str]]) -> str:
     return (r.json().get("choices") or [{}])[0].get("message", {}).get("content", "") or "{}"
 
 
+# the opening line, as soon as it is written: the answer's JSON starts {"sayFirst": "…"
+_PREAMBLE_HEAD = re.compile(r'^\s*\{\s*"sayFirst"\s*:\s*"((?:[^"\\]|\\.)*)"')
+
+
+async def _post_streamed(client: httpx.AsyncClient, headers: Dict[str, str], body: Dict[str, Any], limit: httpx.Timeout,
+                         budget_s: float, on_preamble) -> Tuple[httpx.Response, str, Dict[str, Any]]:
+    """The same request, read as it is written (stream): the opening line goes to `on_preamble` the moment it's
+    complete, the whole answer is returned as before. (response, content, usage); content is "" when not a 200."""
+    body = {**body, "stream": True}
+    if OPENAI_BASE == "https://api.openai.com":
+        body["stream_options"] = {"include_usage": True}
+    parts: List[str] = []
+    usage: Dict[str, Any] = {}
+    head = ""
+    looking = True
+
+    async def read() -> httpx.Response:
+        nonlocal head, looking, usage
+        async with client.stream("POST", OPENAI_CHAT_URL, headers=headers, json=body, timeout=limit) as r:
+            if r.status_code != 200:
+                await r.aread()  # (the error text, for the same checks as a plain answer)
+                return r
+            async for line in r.aiter_lines():
+                if not line.startswith("data:"):
+                    continue
+                data = line[5:].strip()
+                if data == "[DONE]":
+                    break
+                try:
+                    ev = json.loads(data)
+                except json.JSONDecodeError:
+                    continue
+                if ev.get("usage"):
+                    usage = ev["usage"]
+                for ch in ev.get("choices") or []:
+                    piece = (ch.get("delta") or {}).get("content")
+                    if not piece:
+                        continue
+                    parts.append(piece)
+                    if not looking:
+                        continue
+                    head += piece
+                    m = _PREAMBLE_HEAD.match(head)
+                    if m:
+                        looking = False
+                        try:
+                            said = json.loads(f'"{m.group(1)}"')
+                        except json.JSONDecodeError:
+                            said = ""
+                        if said.strip():
+                            try:
+                                await on_preamble(said)
+                            except Exception as e:  # (the opening line never costs the answer)
+                                print("[brain] opening line not sent:", repr(e))
+                    else:
+                        rest = head.lstrip()
+                        rest = rest[1:].lstrip() if rest.startswith("{") else rest
+                        # not where it should be (another field first, json_object mode) → no opening line this turn
+                        if len(head) > 600 or (rest and not (rest.startswith('"sayFirst"') or '"sayFirst"'.startswith(rest))):
+                            looking = False
+            return r
+
+    try:
+        r = await asyncio.wait_for(read(), timeout=max(1.0, budget_s))
+    except asyncio.TimeoutError:
+        raise httpx.TimeoutException("the answer took too long")
+    return r, "".join(parts), usage
+
+
 async def _call_openai(messages: List[Dict[str, str]]) -> str:
     global _structured_ok, _CACHE_KEY_OK
     if NO_MODEL.get():
@@ -758,7 +838,16 @@ async def _call_openai(messages: List[Dict[str, str]]) -> str:
         try:
             client = _client()
             t0 = time.monotonic()
-            r = await client.post(OPENAI_CHAT_URL, headers=headers, json=payload(_structured_ok), timeout=limit)
+            # an opening line wanted (the voice socket's first call of a turn) → the same request, read as it is
+            # written; otherwise exactly as before
+            on_preamble = _PREAMBLE_NOW.get()
+            streamed: Optional[Tuple[httpx.Response, str, Dict[str, Any]]] = None
+            if on_preamble is not None:
+                streamed = await _post_streamed(client, headers, payload(_structured_ok), limit,
+                                                min(BRAIN_TIMEOUT_S, left), on_preamble)
+                r = streamed[0]
+            else:
+                r = await client.post(OPENAI_CHAT_URL, headers=headers, json=payload(_structured_ok), timeout=limit)
             if r.status_code == 400 and _CACHE_KEY_OK and "prompt_cache_key" in r.text:
                 print("[brain] endpoint rejected prompt_cache_key → sending without it")
                 _CACHE_KEY_OK = False
@@ -770,7 +859,11 @@ async def _call_openai(messages: List[Dict[str, str]]) -> str:
             if r.status_code in (429, 500, 502, 503, 504) and attempt < BRAIN_RETRIES:
                 raise httpx.HTTPStatusError("retryable", request=r.request, response=r)
             r.raise_for_status()
-            data = r.json()
+            if streamed is not None and r is streamed[0]:
+                # (the streamed answer, put back into the plain answer's shape)
+                data = {"choices": [{"message": {"content": streamed[1]}}], "usage": streamed[2]}
+            else:
+                data = r.json()
             usage = data.get("usage") or {}
             cached = (usage.get("prompt_tokens_details") or {}).get("cached_tokens")
             model_ms = int((time.monotonic() - t0) * 1000)
@@ -4464,6 +4557,20 @@ def _save_pick(key: str, raw: str) -> None:
     _SAVED_PICKS[key] = (time.time(), raw)
 
 
+def _preamble_ok(text: str, index: MenuIndex) -> str:
+    """The AI's opening line, if it is safe to say before the answer is checked: short, no dish, no number or price,
+    no claim that something was added / sent / confirmed. "" otherwise (then nothing is said before the answer)."""
+    t = re.sub(r"\s+", " ", str(text or "")).strip()
+    if not t or len(t) > 70:
+        return ""
+    # (digits in any script, and money signs — written as escapes: Bangla digits, the taka sign, euro, pound)
+    if re.search(r"[0-9\u09e6-\u09ef\u09f3$\u20ac\u00a3]", t) or re.search(r"\b(tk|taka|price|added|ordered|available)\b", t, re.I):
+        return ""
+    if _CLAIMS_CONFIRMED.search(t) or _KITCHEN_CLAIM.search(t) or find_mentions(t, index, limit=1):
+        return ""
+    return t
+
+
 def _mend_unavailable(text: str, bad: List[Dict[str, Any]], index: MenuIndex, orderable: Dict[str, bool]) -> Optional[str]:
     """The reply named a dish that can't be had now — fixed here instead of asking the AI again (4–5 s more, Nov 4:
     "ভর্তা-ভাজিও আছে" with ভাজি sold out, "পরোটা" at night — the breakfast one): a dish on now whose name holds it says
@@ -8127,6 +8234,7 @@ async def _reply(
                      or _each_to(transcript, index, cart_rows)
                      or _take_all_listed(transcript, index, orderable, list(just_suggested), dict(cart_qty), last_waiter))
     saved_key: Optional[str] = None  # (the opening question's saved answer, below)
+    preamble_said: List[str] = []  # (the opening line sent before the answer, if any — kept in meta for review)
     try:
         if clean_ops:
             print(f"[brain] clean order → no model:{[(o['op'], o['item'], o.get('quantity')) for o in clean_ops]}")
@@ -8149,7 +8257,26 @@ async def _reply(
                 guards.append("saved_answer")
                 saved_key = None  # (already saved)
             else:
-                raw = await _call_openai(messages)
+                # the AI's opening line (preamble) goes out the moment it's written — checked first, once per turn
+                send_to = PREAMBLE_TO.get()
+                pre_token = None
+                if send_to is not None:
+                    async def _say_first(said: str) -> None:
+                        ok = _preamble_ok(said, index)
+                        if not ok:
+                            print(f"[brain] opening line not said (not safe before the answer): {said!r}")
+                            return
+                        if preamble_said:
+                            return
+                        preamble_said.append(ok)
+                        print(f"[brain] opening line: {ok!r}")
+                        await send_to(ok)
+                    pre_token = _PREAMBLE_NOW.set(_say_first)
+                try:
+                    raw = await _call_openai(messages)
+                finally:
+                    if pre_token is not None:
+                        _PREAMBLE_NOW.reset(pre_token)
         obj = _parse_model_json(raw)
         first_reply = str(obj.get("replyText") or "")
         issues: List[str] = []
@@ -9238,6 +9365,8 @@ async def _reply(
     meta["guards"] = list(dict.fromkeys(guards))
     meta["recoMode"] = mode
     meta["guestProfile"] = profile.summary()
+    if preamble_said:
+        meta["preamble"] = preamble_said[0]  # (said before the answer when it was slow — shown in conversation review)
     if voice and lang == "bn":
         meta["voiceReplyText"] = voice
     print("[brain] reply:", reply, "| intent:", intent, "| mode:", mode, "| ops:", ops, "| clear:", clear)

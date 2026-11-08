@@ -41,3 +41,7 @@ pnpm-debug.log*
 .env.local
 .env.development
 .env.production
+
+# Python bytecode (made by every run — never committed)
+__pycache__/
+*.pyc

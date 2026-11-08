@@ -28,7 +28,7 @@ export const GUEST_EVENT_TYPES = [
 // voice_timing's numbers (ms, counts, flags) — scripts/voice-timing-report.ts sums them up
 const TIMING_KEYS = [
   'vadMs', 'sttMs', 'sttCalls', 'prepMs', 'menuMs', 'brainMs', 'modelMs', 'modelCalls', 'postMs', 'serverMs',
-  'replyMs', 'voiceMs', 'totalMs', 'replyChars', 'ios',
+  'replyMs', 'voiceMs', 'totalMs', 'replyChars', 'ios', 'preambleMs', 'preamble',
 ];
 type GuestEventType = (typeof GUEST_EVENT_TYPES)[number];
 const TYPES = new Set<string>(GUEST_EVENT_TYPES);

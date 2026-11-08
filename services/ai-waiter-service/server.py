@@ -23,7 +23,7 @@ from session_ctx import (
 )
 
 # ✅ In-process brain (OpenAI) call
-from brain import MODEL_USE, generate_reply, keep_warm as brain_keep_warm
+from brain import MODEL_USE, PREAMBLE_TO, generate_reply, keep_warm as brain_keep_warm
 import checkout
 import endpointer
 import voiceprint
@@ -164,6 +164,8 @@ GROQ_TIMEOUT_MS = int(os.environ.get("GROQ_TIMEOUT_MS", "3000"))  # 3s
 
 # Silence → finalize threshold (ms)
 IDLE_FINALIZE_MS = int(os.environ.get("IDLE_FINALIZE_MS", "1200"))
+# the AI's opening line before a slow answer ("let me check what's mild…") — WAITER_SAY_FIRST=0 turns it off
+SAY_FIRST = os.environ.get("WAITER_SAY_FIRST", "1").strip().lower() not in ("0", "false", "no", "off")
 
 # Normalizer knobs
 FUZZY_THRESHOLD = float(os.environ.get("NORMALIZER_FUZZY_THRESHOLD", "0.83"))
@@ -2199,8 +2201,10 @@ async def run_text_turn(
     fulfillment: Optional[str] = None,
     order_note: Optional[str] = None,
     lock_language: bool = False,
+    on_preamble=None,
 ) -> Dict[str, Any]:
     """
+    `on_preamble`: an async fn the AI's opening line goes to the moment it's written (the voice socket; None = none).
     `now` (UTC) overrides the clock — used by the eval to simulate breakfast/dinner/closed hours.
     `table` comes from the storefront (?table=12), `table_key` from its QR code (&k=…) — it goes with the order so
     the restaurant knows the guest really scanned that table. `place_order` overrides the order placer (evals never
@@ -2279,6 +2283,7 @@ async def run_text_turn(
     t_brain = time.monotonic()
     model_use: Dict[str, int] = {"ms": 0, "calls": 0}  # (the model calls of this turn — for the timing record)
     use_token = MODEL_USE.set(model_use)
+    pre_token = PREAMBLE_TO.set(on_preamble) if on_preamble is not None else None
     try:
         reply = await generate_reply(
             transcript=norm_text,
@@ -2298,6 +2303,8 @@ async def run_text_turn(
         )
     finally:
         MODEL_USE.reset(use_token)
+        if pre_token is not None:
+            PREAMBLE_TO.reset(pre_token)
     t_post = time.monotonic()
     reply_text = reply.get("replyText") or ""
     meta = reply.get("meta") or {}
@@ -2447,6 +2454,7 @@ async def handle_conn(ws: WebSocketServerProtocol):
     # speech-to-text calls this turn made (a wrong-language retry is a 2nd)
     vad_ms = 0
     stt_calls = 0
+    preamble_ms = 0  # (when the AI's opening line went to the app, from the guest going quiet; 0 = none)
 
     def cap_buffer():
         MAX_ACCUM_BYTES = 60 * rate * 2
@@ -2962,6 +2970,16 @@ async def handle_conn(ws: WebSocketServerProtocol):
 
 
                 turn: Dict[str, Any] = {"replyText": "", "meta": {}, "textNorm": selected_text, "normChanges": []}
+
+                # the AI's opening line ("let me check what's mild…"), the moment it's written — the app says it only
+                # when the answer itself is slow (useWaiterSession)
+                async def send_preamble(text: str) -> None:
+                    nonlocal preamble_ms
+                    if ws.closed:
+                        return
+                    preamble_ms = int((time.monotonic() - t_turn) * 1000)
+                    await ws.send(json.dumps({"t": "ai_preamble", "text": text}))
+
                 try:
                     turn = await run_text_turn(
                         text=selected_text,
@@ -2982,6 +3000,7 @@ async def handle_conn(ws: WebSocketServerProtocol):
                         order_note=order_note_hint,
                         # the storefront's language (restaurant default or the guest's switch) decides the reply
                         lock_language=session_lang in ("bn", "en"),
+                        on_preamble=send_preamble if SAY_FIRST else None,
                     )
                     meta = turn.get("meta") or {}
                     print(
@@ -3002,6 +3021,7 @@ async def handle_conn(ws: WebSocketServerProtocol):
                         "modelCalls": tm.get("modelCalls"),
                         "postMs": tm.get("post"),
                         "serverMs": int((time.monotonic() - t_turn) * 1000),
+                        "preambleMs": preamble_ms,
                     }
                     if not ws.closed:
                         await ws.send(

@@ -2,7 +2,7 @@
 import * as sdk from "microsoft-cognitiveservices-speech-sdk";
 import { speechPlan, wordToShow, type SpeechPlan } from "./speechWords";
 
-type QueueItem = { id: string; text: string; resolve: () => void; reject: (e: any) => void };
+type QueueItem = { id: string; text: string; aside?: boolean; resolve: () => void; reject: (e: any) => void };
 
 export type TtsEvents = {
   onStart?: (originalText: string) => void;
@@ -17,7 +17,9 @@ export type TtsEvents = {
 };
 
 export type TTSPublicAPI = {
-  speak: (text: string) => Promise<void>;
+  /** `aside`: the waiter's opening line while it looks something up ("let me check…") — spoken, but no events
+   *  (the screen's reveal and the mic ignore it); resolves once it has been HEARD, so what's spoken next follows it. */
+  speak: (text: string, opts?: { aside?: boolean }) => Promise<void>;
   /** Call INSIDE a tap ("Get started", holding the orb): unlocks sound on iPhones (see sharedAudio below). */
   unlock: () => void;
   /** Get a connected speech pipeline ready in the background (call while the waiter is thinking). */
@@ -360,6 +362,8 @@ class TTSManager implements TTSPublicAPI {
   // with its audio when it is short)
   private replay: Replay | null = null;
   private capturing: Clip["words"] | null = null;
+  // an aside (see speak) being said: its events go nowhere, and `done` lets the queue go on once it's been heard
+  private aside: { done: () => void } | null = null;
 
   private constructor() {}
 
@@ -394,7 +398,7 @@ class TTSManager implements TTSPublicAPI {
 
   unlock = () => unlockAudioOutput();
 
-  async speak(text: string): Promise<void> {
+  async speak(text: string, opts?: { aside?: boolean }): Promise<void> {
     const clean = (text ?? "").trim();
     if (!clean) return;
 
@@ -402,7 +406,7 @@ class TTSManager implements TTSPublicAPI {
     if (!this._savedClip(clean)) await this._ensureReady();
 
     return new Promise<void>((resolve, reject) => {
-      const item: QueueItem = { id: crypto.randomUUID(), text: clean, resolve, reject };
+      const item: QueueItem = { id: crypto.randomUUID(), text: clean, aside: !!opts?.aside, resolve, reject };
       this.queue.push(item);
       this._pump();
     });
@@ -482,9 +486,10 @@ class TTSManager implements TTSPublicAPI {
 
     this.playing = false;
 
-    // Notify listeners that playback ended
+    // Notify listeners that playback ended (an aside's end goes to the queue, never to them)
     this._emitEnd();
     this._emitPlaybackEnd();
+    this.aside?.done();
   }
 
   pause() {
@@ -533,6 +538,7 @@ class TTSManager implements TTSPublicAPI {
 
   // ---------- internals ----------
   private _emitStart(text: string) {
+    if (this.aside) return;
     this.listeners.forEach(h => { h.onStart?.(text); });
   }
   // the utterance being spoken: which stretches of its text stand for a different written word (speechWords)
@@ -550,10 +556,11 @@ class TTSManager implements TTSPublicAPI {
       .replace(/&apos;/g, "'");
     // a learned word said as several ("ষোলআনা" → "শোলো আনা") shows once, as written; its other spoken words show nothing
     const word2 = wordToShow(this.plan, shown, textOffset);
-    if (!word2) return;
+    if (!word2 || this.aside) return;
     this.listeners.forEach(h => { h.onWord?.(word2, offsetMs); });
   }
   private _emitEnd() {
+    if (this.aside) return;
     this.listeners.forEach(h => { h.onEnd?.(); });
   }
 
@@ -565,6 +572,8 @@ class TTSManager implements TTSPublicAPI {
     if (!this.playbackPending) return;
     this.playbackPending = false;
     if (this.playbackTimer) { clearTimeout(this.playbackTimer); this.playbackTimer = null; }
+    // (an aside heard to the end: the queue goes on — the listeners never heard it start)
+    if (this.aside) return this.aside.done();
     this.listeners.forEach(h => { h.onPlaybackEnd?.(); });
   }
 
@@ -657,7 +666,7 @@ class TTSManager implements TTSPublicAPI {
     };
     // …and the moment the guest STARTS hearing it (the words' clock: shown text follows the voice, not the synthesis)
     (speaker as any).onAudioStart = () => {
-      if (this.speaker === speaker) this.listeners.forEach((h) => { h.onPlaybackStart?.(); });
+      if (this.speaker === speaker && !this.aside) this.listeners.forEach((h) => { h.onPlaybackStart?.(); });
     };
     const audioConfig = speaker instanceof SharedAudioSpeaker ? null : sdk.AudioConfig.fromSpeakerOutput(speaker);
 
@@ -786,7 +795,7 @@ class TTSManager implements TTSPublicAPI {
     this._emitStart(input);
     this.capturing = null;
     for (const [w, off, tOff] of clip.words) this._emitWord(w, off, tOff);
-    this.listeners.forEach((h) => { h.onPlaybackStart?.(); });
+    if (!this.aside) this.listeners.forEach((h) => { h.onPlaybackStart?.(); });
     this._emitEnd();
     // safety net: the audio's own length + a margin, like a line from the service
     this.playbackTimer = setTimeout(() => {
@@ -818,6 +827,11 @@ class TTSManager implements TTSPublicAPI {
     if (!next) return;
 
     this.playing = true;
+
+    if (next.aside) {
+      void this._runAside(next);
+      return;
+    }
 
     const run = async () => {
       try {
@@ -857,6 +871,30 @@ class TTSManager implements TTSPublicAPI {
     };
 
     run();
+  }
+
+  /** An aside (see speak): said like any line, but quietly — and the queue waits until it has been heard. */
+  private async _runAside(next: QueueItem) {
+    let heard: () => void = () => {};
+    const over = new Promise<void>((r) => { heard = r; });
+    let told = false;
+    this.aside = { done: () => { if (told) return; told = true; this.aside = null; heard(); } };
+    const me = this.aside;
+    try {
+      if (!(await this._playSaved(next.text, () => me.done()))) {
+        await this._refreshAuthIfNeeded();
+        await this._speakOnce(next.text);
+      }
+      await over;
+      next.resolve();
+    } catch (e) {
+      console.debug("[TTS] the opening line could not be said", e);
+      me.done();
+      next.reject(e);
+    } finally {
+      this.playing = false;
+      if (!this.paused) this._pump();
+    }
   }
 
   /** Throw away the live and the warm pipeline (the next speak builds a fresh one). */
