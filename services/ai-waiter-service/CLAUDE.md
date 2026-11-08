@@ -58,7 +58,8 @@ FACTS for the model instead of replies. New work follows it; the old paths are b
 Then add the conversation to the replay set (below) so it never comes back.
 
 ## Proof before shipping (required)
-- `python -m pytest -q tests` — all unit tests pass.
+- `python -m pytest -q tests` — all unit tests pass (Python 3.10 like the live image; `pip install -r requirements-dev.txt`
+  first — the service's packages plus pytest and mongomock).
 - Replay set: `evals/replay/` — real guest turns with their restaurant's menu and the time of day. Run
   `python evals/replay/run.py --mode both` (needs `OPENAI_API_KEY`) before and after a change; every case's
   `expect` must hold, and the report must show no case that got worse. Add every new bad conversation as a case.

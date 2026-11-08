@@ -15,7 +15,10 @@ def _load_pairs():
                 if not line: 
                     continue
                 obj = json.loads(line)
-                EXACT_MAP[obj["noisy"]] = obj["clean"]
+                # (only {"noisy", "clean"} pairs; the file in the repo is {"input", "output"} — skipped, never a crash.
+                # The live image has no fine_tuning/ at all, so a full checkout now hears exactly what production does.)
+                if isinstance(obj, dict) and isinstance(obj.get("noisy"), str) and isinstance(obj.get("clean"), str):
+                    EXACT_MAP[obj["noisy"]] = obj["clean"]
 
 _load_pairs()
 
