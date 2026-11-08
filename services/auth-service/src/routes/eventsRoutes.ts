@@ -23,7 +23,13 @@ export const GUEST_EVENT_TYPES = [
   'order_placed', // the order went in (data: token, orderNumber, total)
   'call_waiter', // called staff from the table
   'ping', // still on the page (every minute while visible) — for time spent
+  'voice_timing', // how long a spoken turn took, step by step: guest quiet → speech-to-text → AI → first sound (ms)
 ] as const;
+// voice_timing's numbers (ms, counts, flags) — scripts/voice-timing-report.ts sums them up
+const TIMING_KEYS = [
+  'vadMs', 'sttMs', 'sttCalls', 'prepMs', 'menuMs', 'brainMs', 'modelMs', 'modelCalls', 'postMs', 'serverMs',
+  'replyMs', 'voiceMs', 'totalMs', 'replyChars', 'ios',
+];
 type GuestEventType = (typeof GUEST_EVENT_TYPES)[number];
 const TYPES = new Set<string>(GUEST_EVENT_TYPES);
 const PAGES = new Set(['home', 'menu', 'checkout', 'order', 'other']);
@@ -93,7 +99,8 @@ router.post('/public/events', async (req: Request, res: Response) => {
         // a few known fields only (nothing free-form from the guest)
         const data: Record<string, unknown> = {};
         for (const k of ['itemId', 'token', 'source', 'kind']) if (typeof raw[k] === 'string') data[k] = str(raw[k], 64);
-        for (const k of ['orderNumber', 'total', 'qty']) if (typeof raw[k] === 'number' && Number.isFinite(raw[k])) data[k] = raw[k];
+        const nums = e.type === 'voice_timing' ? TIMING_KEYS : ['orderNumber', 'total', 'qty'];
+        for (const k of nums) if (typeof raw[k] === 'number' && Number.isFinite(raw[k])) data[k] = raw[k];
         return {
           tenantId,
           sub,

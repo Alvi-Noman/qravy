@@ -129,6 +129,10 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
     setVoicePending(on);
   };
   const ttsStartedAtRef = useRef(0); // when the waiter's voice last started (the voice session waits for it)
+  // measuring only (track 'voice_timing'): when the guest's spoken turn ended, and the reply's timing waiting for
+  // its first sound — guest quiet → reply in → voice heard
+  const turnEndAtRef = useRef<number | null>(null);
+  const voiceTimingRef = useRef<{ data: Record<string, number | string>; replyAt: number; replyMs: number } | null>(null);
   // the welcome is being spoken → its text is revealed with the voice (see visibleText); never longer than 8 s
   const [welcomePending, setWelcomePending] = useState(false);
   useEffect(() => {
@@ -193,6 +197,13 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
         placeWordRef.current(w, off);
       },
       onPlaybackStart: () => {
+        const vt = voiceTimingRef.current;
+        if (vt) {
+          // the guest hears the reply now: how long it took, step by step
+          voiceTimingRef.current = null;
+          const voiceMs = Math.round(performance.now() - vt.replyAt);
+          track('voice_timing', { data: { ...vt.data, voiceMs, totalMs: vt.replyMs + voiceMs } });
+        }
         if (!owns()) return;
         anchorRevealRef.current();
         // the conversation is on: get the mic ready while the waiter speaks, so it opens at once for the answer
@@ -844,6 +855,7 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
       // block the mic: holding the orb after tapping "AI suggestions" / a pill did nothing at all
       if (wsRef.current && wsRef.current.readyState >= WebSocket.CLOSING) wsRef.current = null;
       if ((listening && !opts?.afterStop) || wsRef.current || ctxRef.current) return;
+      turnEndAtRef.current = null; // (a new turn: set again when the guest stops talking)
       silentReplyRef.current = !!(typed && opts?.silent);
       if (!typed) setListening(true); // "Listening" at once — not a blank moment while the mic starts
       if (!followUp) {
@@ -1024,6 +1036,7 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
 
           // hands-free: the server heard the guest stop talking → it's answering now (no tap needed)
           if (msg.t === 'auto_end') {
+            turnEndAtRef.current = performance.now();
             void stopListening({ serverEnded: true });
             return;
           }
@@ -1093,6 +1106,19 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
             // (before its text is set: the dock shows only what was said from this reply on — WaiterSheets)
             if (!silent || silentQuestion) setLastReplyAt(Date.now());
 
+            // measuring only: a spoken turn's reply → its timing goes out when its first sound plays (onPlaybackStart)
+            voiceTimingRef.current = null;
+            const endAt = turnEndAtRef.current;
+            turnEndAtRef.current = null;
+            if (speakText && !silent && endAt !== null && msg.timing && typeof msg.timing === 'object') {
+              const replyAt = performance.now();
+              const replyMs = Math.round(replyAt - endAt);
+              const data: Record<string, number | string> = { replyMs, replyChars: speakText.length, ios: IS_IPHONE ? 1 : 0 };
+              for (const [k, v] of Object.entries(msg.timing as Record<string, unknown>)) {
+                if (typeof v === 'number' && isFinite(v)) data[k] = v;
+              }
+              voiceTimingRef.current = { data, replyAt, replyMs };
+            }
             if (speakText && !silent) {
               try {
                 tts.stop();
@@ -1398,6 +1424,7 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
       if (!opts?.serverEnded && !opts?.quiet && wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
         const sid = getStableSessionId();
         wsRef.current.send(JSON.stringify({ t: 'end', sid }));
+        turnEndAtRef.current = performance.now(); // (tapped / let go: the guest's turn ends here)
       }
     } catch {
       // ignore

@@ -110,6 +110,8 @@ TURN_BUDGET_S = float(os.environ.get("TURN_BUDGET_S", "20"))
 _DEADLINE: contextvars.ContextVar = contextvars.ContextVar("turn_deadline", default=None)
 # no AI for this call (the admin's suggested answers are the waiter's own words, never a paid call): it fails at once
 NO_MODEL: contextvars.ContextVar = contextvars.ContextVar("no_model", default=False)
+# the turn's model calls, for the timing record ({"ms": …, "calls": …} set by the caller; measured only, never read)
+MODEL_USE: contextvars.ContextVar = contextvars.ContextVar("model_use", default=None)
 # OpenAI's thinking models (gpt-5 on, o-series) take max_completion_tokens and a reasoning effort instead of
 # max_tokens / temperature — "none" answers straight away, as fast as a 4.1
 REASONING_MODEL = OPENAI_BASE == "https://api.openai.com" and bool(re.match(r"(gpt-[5-9]|o\d)", OPENAI_CHAT_MODEL))
@@ -771,10 +773,15 @@ async def _call_openai(messages: List[Dict[str, str]]) -> str:
             data = r.json()
             usage = data.get("usage") or {}
             cached = (usage.get("prompt_tokens_details") or {}).get("cached_tokens")
+            model_ms = int((time.monotonic() - t0) * 1000)
             print(
                 f"[brain] tokens in={usage.get('prompt_tokens')} cached={cached} out={usage.get('completion_tokens')} "
-                f"model_ms={int((time.monotonic() - t0) * 1000)}"
+                f"model_ms={model_ms}"
             )
+            use = MODEL_USE.get()
+            if isinstance(use, dict):
+                use["ms"] = use.get("ms", 0) + model_ms
+                use["calls"] = use.get("calls", 0) + 1
             return (data.get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
         except (httpx.TimeoutException, httpx.TransportError, httpx.HTTPStatusError) as e:
             last_err = e

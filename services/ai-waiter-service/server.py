@@ -23,7 +23,7 @@ from session_ctx import (
 )
 
 # ✅ In-process brain (OpenAI) call
-from brain import generate_reply, keep_warm as brain_keep_warm
+from brain import MODEL_USE, generate_reply, keep_warm as brain_keep_warm
 import checkout
 import endpointer
 import voiceprint
@@ -2277,22 +2277,27 @@ async def run_text_turn(
     upsell_candidates = build_upsell_candidates(snapshot, ctx, {"items": ctx["cartItems"]}, limit=16)
 
     t_brain = time.monotonic()
-    reply = await generate_reply(
-        transcript=norm_text,
-        tenant=tenant,
-        branch=branch,
-        channel=channel,
-        locale=locale,
-        menu_snapshot=snapshot,
-        conversation_id=session_id,
-        user_id=user_id,
-        history=history,
-        dialog_state=dialog_state,
-        context=ctx,
-        upsell_candidates=upsell_candidates,
-        restaurant=profile,
-        lock_language=lock_language,
-    )
+    model_use: Dict[str, int] = {"ms": 0, "calls": 0}  # (the model calls of this turn — for the timing record)
+    use_token = MODEL_USE.set(model_use)
+    try:
+        reply = await generate_reply(
+            transcript=norm_text,
+            tenant=tenant,
+            branch=branch,
+            channel=channel,
+            locale=locale,
+            menu_snapshot=snapshot,
+            conversation_id=session_id,
+            user_id=user_id,
+            history=history,
+            dialog_state=dialog_state,
+            context=ctx,
+            upsell_candidates=upsell_candidates,
+            restaurant=profile,
+            lock_language=lock_language,
+        )
+    finally:
+        MODEL_USE.reset(use_token)
     t_post = time.monotonic()
     reply_text = reply.get("replyText") or ""
     meta = reply.get("meta") or {}
@@ -2386,6 +2391,8 @@ async def run_text_turn(
             "prep": int((t_brain - t_start) * 1000),
             "menu": int((t_menu - t_start) * 1000),  # (of prep: the menu — ~0 when read while they spoke)
             "brain": int((t_post - t_brain) * 1000),
+            "model": model_use["ms"],  # (of brain: the AI itself — 0 when the code answered without it)
+            "modelCalls": model_use["calls"],  # (2 = the self-check asked it again)
             "post": int((time.monotonic() - t_post) * 1000),
         },
     }
@@ -2436,6 +2443,10 @@ async def handle_conn(ws: WebSocketServerProtocol):
     ep: Optional[endpointer.Endpointer] = None
     cancelled = False  # nobody spoke in a listen window / the app cancelled → no turn, no reply
     said_hello = False  # a connection that never introduced itself gets no "please repeat" (nobody is there)
+    # for the timing record: the quiet waited before the turn ended by itself (0 for a tap / hold), and the
+    # speech-to-text calls this turn made (a wrong-language retry is a 2nd)
+    vad_ms = 0
+    stt_calls = 0
 
     def cap_buffer():
         MAX_ACCUM_BYTES = 60 * rate * 2
@@ -2568,6 +2579,7 @@ async def handle_conn(ws: WebSocketServerProtocol):
                     if heard == "end":
                         # they stopped talking → answer now (the app shows "Thinking…", no tap needed)
                         print("[ai-waiter-service] 🎙️ end of speech (auto)")
+                        vad_ms = ep.quiet * 32
                         try:
                             await ws.send(json.dumps({"t": "auto_end"}))
                         except Exception:
@@ -2787,6 +2799,7 @@ async def handle_conn(ws: WebSocketServerProtocol):
                     print(
                         f"[ai-waiter-service] lang preference for final: {lang_pref or 'auto'}"
                     )
+                    stt_calls += 1
                     groq_text, stt_engine = await cloud_transcribe(
                         final_bytes, lang_pref, rate=rate, tenant=tenant_hint, session=session_id, branch=branch_hint
                     )
@@ -2796,6 +2809,7 @@ async def handle_conn(ws: WebSocketServerProtocol):
                     if wrong_script(groq_text):
                         retry_lang = "en" if lang_pref == "en" else "bn"
                         print(f"[ai-waiter-service] foreign script ({groq_text[:40]}) → retry {retry_lang}")
+                        stt_calls += 1
                         fixed, stt_engine = await cloud_transcribe(
                             final_bytes, retry_lang, rate=rate, tenant=tenant_hint, session=session_id, branch=branch_hint
                         )
@@ -2815,6 +2829,7 @@ async def handle_conn(ws: WebSocketServerProtocol):
                         print(
                             "[ai-waiter-service] BN expected but got EN → retry en"
                         )
+                        stt_calls += 1
                         en_text, stt_engine = await cloud_transcribe(
                             final_bytes, "en", rate=rate, tenant=tenant_hint, session=session_id, branch=branch_hint
                         )
@@ -2831,6 +2846,7 @@ async def handle_conn(ws: WebSocketServerProtocol):
                         print(
                             "[ai-waiter-service] EN expected but got BN → retry bn"
                         )
+                        stt_calls += 1
                         bn_text, stt_engine = await cloud_transcribe(
                             final_bytes, "bn", rate=rate, tenant=tenant_hint, session=session_id, branch=branch_hint
                         )
@@ -2972,15 +2988,31 @@ async def handle_conn(ws: WebSocketServerProtocol):
                         f"[ai-waiter-service] 🧠 reply='{turn['replyText'][:80]}' intent={meta.get('intent')} "
                         f"topic={meta.get('topic')} fallback={meta.get('fallback')}"
                     )
+                    tm = turn.get("timingMs") or {}
+                    # where this turn's time went, from the guest going quiet — numbers only; the app adds how long
+                    # the voice took to start and reports it (track 'voice_timing'). Not in meta: never stored.
+                    timing = {
+                        "vadMs": vad_ms,
+                        "sttMs": int((t_stt - t_turn) * 1000),
+                        "sttCalls": stt_calls,
+                        "prepMs": tm.get("prep"),
+                        "menuMs": tm.get("menu"),
+                        "brainMs": tm.get("brain"),
+                        "modelMs": tm.get("model"),
+                        "modelCalls": tm.get("modelCalls"),
+                        "postMs": tm.get("post"),
+                        "serverMs": int((time.monotonic() - t_turn) * 1000),
+                    }
                     if not ws.closed:
                         await ws.send(
-                            json.dumps({"t": "ai_reply", "replyText": turn["replyText"], "meta": meta}, default=str)
+                            json.dumps({"t": "ai_reply", "replyText": turn["replyText"], "meta": meta,
+                                        "timing": timing}, default=str)
                         )
                         print("[ai-waiter-service] ✅ ai_reply sent")
-                    tm = turn.get("timingMs") or {}
                     print(
-                        f"[timing] stt={int((t_stt - t_turn) * 1000)}ms ({stt_engine}) "
+                        f"[timing] vad={vad_ms}ms stt={timing['sttMs']}ms ({stt_engine} x{stt_calls}) "
                         f"prep={tm.get('prep')}ms (menu {tm.get('menu')}ms) brain={tm.get('brain')}ms "
+                        f"(model {tm.get('model')}ms x{tm.get('modelCalls')}) "
                         f"post={tm.get('post')}ms total={int((time.monotonic() - t_turn) * 1000)}ms"
                     )
                 except Exception as e:
