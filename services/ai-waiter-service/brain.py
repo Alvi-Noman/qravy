@@ -90,13 +90,19 @@ from wait_time import ORDER_WORDS, PLACED_Q, asks_quickest, asks_time
 
 # --------------------------- Configuration ---------------------------
 
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
+# the waiter's AI may be another OpenAI-style provider than the speech-to-text's OpenAI (e.g. Gemini while the OpenAI
+# credits are out): WAITER_CHAT_KEY + OPENAI_CHAT_URL (+ OPENAI_CHAT_MODEL) — unset, it is OpenAI as before
+OPENAI_API_KEY = (os.environ.get("WAITER_CHAT_KEY", "").strip() or os.environ.get("OPENAI_API_KEY", "").strip())
 OPENAI_BASE = os.environ.get("OPENAI_BASE", "https://api.openai.com").rstrip("/")
 OPENAI_CHAT_MODEL = os.environ.get("OPENAI_CHAT_MODEL", "gpt-4.1").strip()
 # experiment: the model answers menu questions and orders itself — the word-pattern answers before it are skipped
 AI_FIRST = os.environ.get("WAITER_AI_FIRST", "").strip() == "1"
 # (another OpenAI-style endpoint with its own path, e.g. Gemini's .../v1beta/openai/chat/completions)
 OPENAI_CHAT_URL = os.environ.get("OPENAI_CHAT_URL", "").strip() or f"{OPENAI_BASE}/v1/chat/completions"
+# the AI is OpenAI's own (its extra fields — prompt_cache_key, reasoning, stream usage — only it knows)
+ON_OPENAI = OPENAI_CHAT_URL.startswith("https://api.openai.com/")
+# another provider's thinking level ("none" / "low" — e.g. Gemini thinks before answering unless told): unset = theirs
+CHAT_REASONING = os.environ.get("WAITER_CHAT_REASONING", "").strip()
 
 BRAIN_MAX_TOKENS = int(os.environ.get("BRAIN_MAX_TOKENS", "1800"))
 BRAIN_TIMEOUT_S = float(os.environ.get("BRAIN_TIMEOUT_S", "10.0"))
@@ -120,7 +126,7 @@ PREAMBLE_TO: contextvars.ContextVar = contextvars.ContextVar("preamble_to", defa
 _PREAMBLE_NOW: contextvars.ContextVar = contextvars.ContextVar("preamble_now", default=None)
 # OpenAI's thinking models (gpt-5 on, o-series) take max_completion_tokens and a reasoning effort instead of
 # max_tokens / temperature — "none" answers straight away, as fast as a 4.1
-REASONING_MODEL = OPENAI_BASE == "https://api.openai.com" and bool(re.match(r"(gpt-[5-9]|o\d)", OPENAI_CHAT_MODEL))
+REASONING_MODEL = ON_OPENAI and bool(re.match(r"(gpt-[5-9]|o\d)", OPENAI_CHAT_MODEL))
 BRAIN_REASONING = os.environ.get("BRAIN_REASONING", "none").strip()
 # Strict JSON-schema structured outputs; falls back to json_object if the endpoint rejects it.
 BRAIN_STRUCTURED = os.environ.get("BRAIN_STRUCTURED", "1") == "1"
@@ -652,7 +658,7 @@ def _parse_model_json(text: str) -> Dict[str, Any]:
 _structured_ok = BRAIN_STRUCTURED
 # the ~10k-token playbook + menu prefix is identical every turn; a key per prefix routes the requests to the same
 # OpenAI cache so it isn't re-read from scratch (only api.openai.com knows this field)
-_CACHE_KEY_OK = OPENAI_BASE == "https://api.openai.com"
+_CACHE_KEY_OK = ON_OPENAI
 
 
 def _prefix_key(messages: List[Dict[str, str]]) -> str:
@@ -702,7 +708,7 @@ async def keep_warm(every_s: float = 50.0) -> None:
     """The connection to the AI kept open — this model's (free) details now and then: the first guest after a restart
     or a quiet spell doesn't wait for a new handshake, and a dead connection is noticed before a guest asks."""
     while True:
-        if OPENAI_API_KEY and OPENAI_BASE == "https://api.openai.com":
+        if OPENAI_API_KEY and ON_OPENAI:
             try:
                 await _client().get(f"{OPENAI_BASE}/v1/models/{OPENAI_CHAT_MODEL}",
                                     headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
@@ -738,7 +744,7 @@ async def _post_streamed(client: httpx.AsyncClient, headers: Dict[str, str], bod
     """The same request, read as it is written (stream): the opening line goes to `on_preamble` the moment it's
     complete, the whole answer is returned as before. (response, content, usage); content is "" when not a 200."""
     body = {**body, "stream": True}
-    if OPENAI_BASE == "https://api.openai.com":
+    if ON_OPENAI:
         body["stream_options"] = {"include_usage": True}
     parts: List[str] = []
     usage: Dict[str, Any] = {}
@@ -822,6 +828,8 @@ async def _call_openai(messages: List[Dict[str, str]]) -> str:
             del body["temperature"]
             body["max_completion_tokens"] = body.pop("max_tokens")
             body["reasoning_effort"] = BRAIN_REASONING
+        elif CHAT_REASONING:
+            body["reasoning_effort"] = CHAT_REASONING  # (another provider told how much to think — Gemini: "none")
         if _CACHE_KEY_OK:
             body["prompt_cache_key"] = _prefix_key(messages)
         return body
