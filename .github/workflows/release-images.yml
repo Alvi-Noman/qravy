@@ -179,8 +179,7 @@ jobs:
           mkdir -p apps/rider/public/download apps/rider/public/.well-known
           gh release download rider-apk -p qravy-rider.apk -p version.json -D apps/rider/public/download --clobber || echo "No rider APK built yet (run the Rider APK workflow)"
           if [ -n "$RIDER_APK_SHA256" ]; then
-            prints=$(echo "$RIDER_APK_SHA256" | tr ',' '
-' | sed 's/^ *//;s/ *$//' | jq -R . | jq -s .)
+            prints=$(echo "$RIDER_APK_SHA256" | tr ',' '\n' | sed 's/^ *//;s/ *$//' | jq -R . | jq -s .)
             jq -n --argjson p "$prints" '[{relation:["delegate_permission/common.handle_all_urls"],target:{namespace:"android_app",package_name:"com.qravy.rider",sha256_cert_fingerprints:$p}}]' > apps/rider/public/.well-known/assetlinks.json
           fi
 
