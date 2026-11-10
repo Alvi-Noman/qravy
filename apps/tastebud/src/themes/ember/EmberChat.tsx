@@ -57,7 +57,8 @@ export function useChatLog(w: WaiterSession, sub: string) {
     const t = text.trim();
     if (!t) return;
     save([...logRef.current, { who: 'guest', text: t, at: Date.now() }]);
-    void w.sendTyped(t, opts);
+    // its answer is shown in the chat (and spoken only in a voice conversation) — a typed message never goes unanswered
+    void w.sendTyped(t, { showText: true, ...opts });
   };
   return { log, say };
 }

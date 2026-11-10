@@ -25,6 +25,9 @@ FROM node:20-alpine
 
 WORKDIR /app
 RUN corepack enable
+# fonts for the images the service draws (a restaurant app's icon with its initials, when it has no logo yet):
+# Latin, and Bangla for Bangla names — without fonts the letters silently don't appear
+RUN apk add --no-cache fontconfig font-dejavu font-noto-bengali
 
 # Monorepo roots
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml turbo.json ./
