@@ -364,7 +364,11 @@ export default function EmberMenu() {
     return () => el.removeEventListener('scroll', onScroll);
   }, [sections]);
   useEffect(() => {
-    tabsRef.current?.querySelector(`[data-tab="${activeKey}"]`)?.scrollIntoView({ inline: 'center', block: 'nearest', behavior: 'smooth' });
+    // centre the active tab by scrolling the tab row ONLY — scrollIntoView also scrolled the page around it, and the
+    // tab row is a little wider than the screen (edge to edge): at the menu's end the whole page slid to the left
+    const row = tabsRef.current;
+    const tab = row?.querySelector<HTMLElement>(`[data-tab="${activeKey}"]`);
+    if (row && tab) row.scrollTo({ left: tab.offsetLeft - (row.clientWidth - tab.offsetWidth) / 2, behavior: 'smooth' });
   }, [activeKey]);
   const jump = (key: string) => {
     const go = () => {
