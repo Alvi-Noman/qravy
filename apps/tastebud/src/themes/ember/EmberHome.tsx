@@ -392,6 +392,16 @@ export default function EmberHome() {
   // Pixie's words: said ones white, still-to-come dimmed, the menu's dish names amber
   const dishNames = useMemo(() => menu.map((m: any) => String(m.name || '')), [menu]);
   const speakingNow = talking && !!w.sayingText;
+  // the welcome's words said so far — they only ever grow: as the voice stops (a moment before the welcome is marked
+  // done) the live words empty, and the whole welcome flashed grey before turning white again
+  const sameText = (a: string, b: string) => a.replace(/\s+/g, ' ').trim() === b.replace(/\s+/g, ' ').trim();
+  const welcomeSpeaking = talking && !!w.sayingText && sameText(w.sayingText, welcome);
+  const welcomeSaidRef = useRef('');
+  if (welcomeSpeaking) {
+    const now = aiLive || '';
+    if (now.length >= welcomeSaidRef.current.length) welcomeSaidRef.current = now;
+  } else if (!welcomePending) welcomeSaidRef.current = ''; // (done — ready for the next welcome)
+  const welcomeStarted = welcomeSaidRef.current.length > 0;
   const captionOf = (text: string, dim?: string) =>
     captionSpans({ text: speakingNow ? w.sayingText : text, spoken: speakingNow ? aiLive || '' : null, dishes: dishNames, dim });
 
@@ -698,8 +708,7 @@ export default function EmberHome() {
     // caption before, while and after it's said (nothing jumps). "Being spoken" is the voice saying the welcome's own
     // text — not only the first seconds (the 8 s no-voice fallback once ended it mid-sentence: the greeting vanished
     // and the text restarted from the words said so far)
-    const same = (a: string, b: string) => a.replace(/\s+/g, ' ').trim() === b.replace(/\s+/g, ' ').trim();
-    const welcomeSpeaking = talking && !!w.sayingText && same(w.sayingText, welcome);
+    const same = sameText;
     const welcoming = welcomePending || welcomeSpeaking;
     const talkingReply = talking && !welcoming;
     const line = welcoming ? welcome : talking ? said : said || returnLine || welcome;
@@ -707,7 +716,9 @@ export default function EmberHome() {
     // spoken words white, the ones still to come dim; waiting for the voice: all dim; said (or no voice): all white
     const welcomeSpans = captionSpans({
       text: welcome,
-      spoken: welcomeSpeaking ? aiLive || '' : welcomePending ? '' : null,
+      // speaking: the words said so far (never fewer); before the voice starts: all dim; once it has started and
+      // stopped: all lit — never back to grey
+      spoken: welcomeSpeaking ? welcomeSaidRef.current : welcomePending && !welcomeStarted ? '' : null,
       dishes: dishNames,
       dim: EM.faint,
       firstSentenceBright: false,
