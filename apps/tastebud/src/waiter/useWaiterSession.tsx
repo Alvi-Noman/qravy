@@ -793,6 +793,9 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
   // "Thinking…" is shown between ai_reply_pending and ai_reply; if the reply never comes, recover
   const awaitingReplyRef = useRef(false);
   const silentReplyRef = useRef(false); // the reply on its way was asked by a button — its cards only: no text, no voice
+  // the reply on its way answers a message the guest TYPED (a chat): its words are shown even when not spoken — "silent"
+  // only means no voice then (outside a voice conversation, text in → text out)
+  const showTextRef = useRef(false);
   const [lastReplyAt, setLastReplyAt] = useState(0); // the waiter's last spoken reply (the dock grows for it)
   function giveUpWaiting() {
     if (!awaitingReplyRef.current) return;
@@ -864,7 +867,7 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
   // never spoken, and the mic doesn't reopen after it: the guest tapped, they didn't start a conversation
   // `tap`: the orb was tapped, not held — it listens until the guest taps again (never ended by a pause in their speech)
   // `press`: the orb was pressed — the turn ends when the guest stops talking (unless it becomes a hold, orbPressStart)
-  async function startListening(opts?: { listenMs?: number; typed?: string; afterStop?: boolean; silent?: boolean; tap?: boolean; press?: boolean }) {
+  async function startListening(opts?: { listenMs?: number; typed?: string; afterStop?: boolean; silent?: boolean; tap?: boolean; press?: boolean; showText?: boolean }) {
     const followUp = !!opts?.listenMs;
     const typed = opts?.typed?.trim() || '';
     // inside the guest's tap (hold / pill): unlock sound — on the menu page this is the first tap (iPhone, tts.ts)
@@ -882,6 +885,7 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
       if (preambleTimerRef.current) window.clearTimeout(preambleTimerRef.current);
       preambleTimerRef.current = null;
       silentReplyRef.current = !!(typed && opts?.silent);
+      showTextRef.current = !!(typed && opts?.showText);
       if (!typed) setListening(true); // "Listening" at once — not a blank moment while the mic starts
       if (!followUp) {
         followUpRef.current = false; // the guest acted — no pending listen window, and the count starts over
@@ -1168,10 +1172,12 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
             const speakText = voiceText || replyText;
             const silent = silentReplyRef.current; // asked by a button: never spoken
             silentReplyRef.current = false;
+            const showText = showTextRef.current; // a typed message: its answer is shown even when not spoken
+            showTextRef.current = false;
             // a tap whose reply asks another "which one?" (new answer buttons): its question is shown, not spoken
             const silentQuestion = silent && !!replyText && chooseOptionsOf(meta).length > 0 && !pickOptionsOf(meta).length;
             // (before its text is set: the dock shows only what was said from this reply on — WaiterSheets)
-            if (!silent || silentQuestion) setLastReplyAt(Date.now());
+            if (!silent || silentQuestion || showText) setLastReplyAt(Date.now());
 
             // measuring only: a spoken turn's reply → its timing goes out when its first sound plays (onPlaybackStart)
             voiceTimingRef.current = null;
@@ -1212,7 +1218,7 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
               try {
                 tts.stop();
               } catch {}
-              if (silentQuestion) setAi(replyText);
+              if (silentQuestion || (showText && replyText)) setAi(replyText);
             }
 
             aiSeenRef.current = true;
@@ -1483,10 +1489,12 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
   // first — otherwise the tap was dropped while the mic waited for the guest to speak.
   // A guest using buttons is not talking to the waiter: the reply is never spoken (only a follow-up question that
   // comes with new answer buttons is shown) — unless a hands-free conversation is live right now.
-  async function sendTyped(say: string, opts?: { silent?: boolean }) {
+  /** The guest's words without the mic: a tapped answer, or a message typed in a chat. Outside a voice conversation
+   *  the reply isn't spoken; `showText` (a chat) still shows its words — without it (a button) only its cards show. */
+  async function sendTyped(say: string, opts?: { silent?: boolean; showText?: boolean }) {
     const open = listening || !!wsRef.current || !!ctxRef.current;
     if (open && !awaitingReplyRef.current) await stopListening({ quiet: true });
-    await startListening({ typed: say, afterStop: open, silent: opts?.silent ?? sessionRef.current !== 'on' });
+    await startListening({ typed: say, afterStop: open, silent: opts?.silent ?? sessionRef.current !== 'on', showText: opts?.showText });
   }
 
   async function stopListening(opts?: { serverEnded?: boolean; quiet?: boolean }) {
