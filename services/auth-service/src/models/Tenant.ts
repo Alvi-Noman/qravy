@@ -27,6 +27,9 @@ export interface TenantDoc {
   logoSize?: number;
   /** the digits prices are shown in: 'bn' → ৳২৫০ (set by a menu import that prints Bangla prices) */
   priceDigits?: 'latin' | 'bn';
+  /** the guest site's look (Digital Menu → Themes): 'ember' (dark, voice-first — new restaurants) or 'petal' (the
+   *  original light look). Missing = 'petal', so restaurants from before themes keep the site they had. */
+  storefrontTheme?: 'petal' | 'ember';
   guestMessages?: Record<string, { bn?: string; en?: string }>;
   waiterName?: string | null;
   waiterVoice?: 'female' | 'male';

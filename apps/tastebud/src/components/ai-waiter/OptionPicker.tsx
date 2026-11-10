@@ -17,9 +17,9 @@ type Props = {
 
 const money = (n: number) => `৳${priceNumber(n)}`;
 
-type Sel = { variant: string; choices: string[] };
+export type Sel = { variant: string; choices: string[] };
 
-function gaps(p: PickOption, s: Sel): string[] {
+export function gaps(p: PickOption, s: Sel): string[] {
   const out: string[] = [];
   if (p.sizes.length > 1 && !s.variant) out.push('size');
   for (const g of p.groups) {
@@ -29,12 +29,12 @@ function gaps(p: PickOption, s: Sel): string[] {
   return out;
 }
 
-function sayFor(p: PickOption, s: Sel, lang: 'bn' | 'en'): string {
+export function sayFor(p: PickOption, s: Sel, lang: 'bn' | 'en'): string {
   const parts = [s.variant, ...s.choices].filter(Boolean).join(', ');
   return lang === 'en' ? `${p.quantity} ${p.name} — ${parts}, please` : `${p.quantity}টা ${p.name} — ${parts} দিন`;
 }
 
-function unitPrice(p: PickOption, s: Sel): number | null {
+export function unitPrice(p: PickOption, s: Sel): number | null {
   const size = p.sizes.find((v) => v.name === s.variant) ?? (p.sizes.length === 1 ? p.sizes[0] : undefined);
   if (p.sizes.length > 1 && !size) return null;
   const extra = p.groups.flatMap((g) => g.options).filter((o) => s.choices.includes(o.name)).reduce((n, o) => n + (o.price || 0), 0);

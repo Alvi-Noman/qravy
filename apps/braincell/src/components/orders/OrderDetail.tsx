@@ -6,6 +6,7 @@ import { orderWhere, type AdminOrder, type OrderStatus } from '../../api/orders'
 const money = (n: number) => `৳${new Intl.NumberFormat('en-BD', { maximumFractionDigits: 2 }).format(n)}`;
 const when = (d: string) =>
   new Date(d).toLocaleString([], { day: 'numeric', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit' });
+const clock = (d: string) => new Date(d).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 
 export const STATUS_LABEL: Record<OrderStatus, string> = {
   placed: 'New',
@@ -57,6 +58,36 @@ export default function OrderDetail({ order: o, branch }: { order: AdminOrder; b
           <p className="font-medium text-[#2e2e30]">{o.customer.name}</p>
           <p className="text-[#6b6b70]">{o.customer.phone}</p>
           {o.customer.address && <p className="text-[#6b6b70]">{o.customer.address}</p>}
+        </div>
+      )}
+
+      {/* who delivered it (the restaurant's own rider), when, and the cash they took */}
+      {o.delivery && (
+        <div className="flex items-start gap-3 rounded-lg border border-[#ececf0] p-3">
+          {o.delivery.rider.photoUrl ? (
+            <img src={o.delivery.rider.photoUrl} alt="" className="h-10 w-10 shrink-0 rounded-full object-cover" />
+          ) : (
+            <span aria-hidden="true" className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[#efe9df] text-sm font-semibold text-[#6b5e44]">
+              {o.delivery.rider.name.split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]?.toUpperCase()).join('')}
+            </span>
+          )}
+          <div className="min-w-0 flex-1">
+            <p className="font-medium text-[#2e2e30]">
+              Delivered by {o.delivery.rider.name} <span className="font-normal text-[#6b6b70]">· {o.delivery.rider.phone}</span>
+            </p>
+            <p className="text-[#6b6b70]">
+              Assigned {clock(o.delivery.assignedAt)}
+              {o.delivery.pickedUpAt ? ` · picked up ${clock(o.delivery.pickedUpAt)}` : ''}
+              {o.delivery.deliveredAt ? ` · delivered ${clock(o.delivery.deliveredAt)}` : ' · not delivered'}
+            </p>
+            {o.delivery.cashCollected > 0 && (
+              <p className="text-[#6b6b70]">
+                Took ৳{o.delivery.cashCollected.toLocaleString('en-BD')} cash ·{' '}
+                {o.delivery.cashSettledAt ? `handed in ${clock(o.delivery.cashSettledAt)}` : <b className="text-amber-700">not handed in yet</b>}
+              </p>
+            )}
+            {o.delivery.problem && <p className="text-red-600">Reported a problem: {o.delivery.problem.reason.replace('-', ' ')}{o.delivery.problem.note ? ` — “${o.delivery.problem.note}”` : ''}</p>}
+          </div>
         </div>
       )}
 

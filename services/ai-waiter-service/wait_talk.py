@@ -240,7 +240,12 @@ def facts(kitchen: Kitchen, *, cart: Optional[Dict[str, Any]] = None,
     if fastest:
         bits.append("quickest dishes for this guest: " + ", ".join(f"{it.get('name')} ~{m} min" for it, m in fastest))
     for o in k.get("myOrders") or []:
-        if o.get("status") == "ready":
+        rider = o.get("rider") or {}
+        if rider.get("pickedUpMinAgo") is not None:  # the restaurant's own rider has it
+            state = f"OUT FOR DELIVERY with rider {rider.get('name')} (picked up ~{rider['pickedUpMinAgo']} min ago)"
+        elif rider.get("name"):
+            state = f"{o.get('status')}; rider {rider.get('name')} assigned, collecting it from the restaurant"
+        elif o.get("status") == "ready":
             state = "READY — on its way to the table"
         elif o.get("late"):
             state = f"{o.get('status')}, running a little late"

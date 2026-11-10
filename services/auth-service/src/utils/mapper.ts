@@ -170,6 +170,7 @@ export function toTenantDTO(doc: TenantDoc): v1.TenantDTO {
     logoRadius: typeof doc.logoRadius === 'number' ? doc.logoRadius : null,
     logoSize: typeof doc.logoSize === 'number' ? doc.logoSize : null,
     priceDigits: doc.priceDigits === 'bn' ? 'bn' : 'latin',
+    storefrontTheme: doc.storefrontTheme === 'ember' ? 'ember' : 'petal',
     guestMessages: doc.guestMessages ?? {},
     waiterName: doc.waiterName ?? null,
     waiterVoice: doc.waiterVoice === 'female' ? 'female' : 'male',

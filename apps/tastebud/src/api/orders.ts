@@ -75,6 +75,13 @@ export type PublicOrder = {
   notes?: string;
   /** Wait-time estimate — the countdown (older orders have none) */
   eta?: OrderEta;
+  /** Delivery by one of the restaurant's own riders: who, and how far it got */
+  delivery?: {
+    rider: { name: string; phone: string; photoUrl: string | null; vehicle: string | null };
+    assignedAt: string;
+    pickedUpAt: string | null;
+    deliveredAt: string | null;
+  };
   createdAt: string;
   updatedAt: string;
 };

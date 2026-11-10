@@ -8,6 +8,8 @@ export const RESERVED_SUBDOMAINS = new Set([
   'cdn', 'static', 'assets', 'img', 'images', 'media', 'menu', 'order', 'orders', 'waiter',
   'staging', 'dev', 'test', 'demo', 'status', 'docs', 'help', 'support', 'blog', 'cname',
   'ns1', 'ns2', 'qravy', 'cortex', 'events',
+  // the riders' app (rider.qravy.com) — no restaurant may take its address
+  'rider', 'riders',
 ]);
 
 export function isValidSubdomain(s: string): boolean {

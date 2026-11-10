@@ -1,4 +1,5 @@
 import { ObjectId } from 'mongodb';
+import type { OrderDelivery } from './Rider.js';
 
 /** Kitchen/service flow. Terminal: completed, cancelled. */
 export const ORDER_STATUSES = ['placed', 'accepted', 'preparing', 'ready', 'completed', 'cancelled'] as const;
@@ -78,6 +79,8 @@ export interface OrderDoc {
   idempotencyKey?: string;
   sessionId?: string;
   eta?: OrderEta;
+  /** Delivery orders handed to one of the restaurant's riders (see models/Rider.ts) */
+  delivery?: OrderDelivery | null;
   createdAt: Date;
   updatedAt: Date;
 }

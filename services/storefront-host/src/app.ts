@@ -352,7 +352,11 @@ export function createApp(): Application {
 
           // the restaurant's own title, icon and link-preview tags (WhatsApp / Facebook read them before any script runs)
           const card = tenant ? await tenantCard(GATEWAY_URL, tenant) : null;
-          const branded = card ? brandHead(raw, card, channel === 'dine-in', reqUrl.toString()) : raw;
+          // (+ the restaurant's app: on /t/<sub> in development, on its own address in production)
+          const appBase = tenant && pathname.startsWith(`/t/${tenant}`) ? `/t/${tenant}` : '';
+          const branded = card
+            ? brandHead(raw, card, channel === 'dine-in', reqUrl.toString(), tenant ? { sub: tenant, base: appBase, branch: branch ?? null } : undefined)
+            : raw;
 
           const html = injectRuntime(branded, {
             subdomain: tenant,
@@ -419,7 +423,8 @@ function parseChannel(
 function parseBranch(pathname: string, search: URLSearchParams): string | null {
   // 1) NEW dev routes: /t/:subdomain/:branchSlug(/...)
   //    Reserve special segments so they are NOT treated as branch
-  const RESERVED = new Set(['dine-in', 'online', 'menu', 'checkout', 'order', 'confirmation']);
+  // ("app": the restaurant's app install page, /app — not a branch)
+  const RESERVED = new Set(['dine-in', 'online', 'menu', 'checkout', 'order', 'confirmation', 'app']);
   const mNew = pathname.match(/^\/t\/[^/]+\/([^/]+)(?:\/|$)/);
   const cand = mNew?.[1];
   if (cand && !RESERVED.has(cand)) {

@@ -17,6 +17,11 @@ export default defineConfig({
     hmr: { host: 'localhost', port: DEV_PORT, protocol: 'ws' },
     watch: usePolling ? { usePolling: true, interval: 300 } : undefined,
     proxy: {
+      // the restaurant's app (manifest + icons) must come from the page's own address — as storefront-host does in production
+      '/api/v1/public/app': {
+        target: process.env.API_PROXY_TARGET || 'http://localhost:8080',
+        changeOrigin: true,
+      },
       '/ws/voice': {
         target: VOICE_WS_PROXY_TARGET,
         changeOrigin: true,

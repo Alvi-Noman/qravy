@@ -27,6 +27,8 @@ import { usePermissions } from '../context/PermissionsContext';
 import { useScope } from '../context/ScopeContext';
 import { orderWhere, searchOrders, type AdminOrder, type OrderStatus } from '../api/orders';
 import { toastError, toastSuccess } from '../components/Toaster';
+import RiderPanel from '../components/orders/RiderPanel';
+import { listRiders, type Rider } from '../api/riders';
 
 const COLUMNS: { status: OrderStatus; title: string; empty: string }[] = [
   { status: 'placed', title: 'New', empty: 'No new orders' },
@@ -307,10 +309,14 @@ function EtaStrip({
   );
 }
 
+/** For the card's rider part (restaurants with riders): who rides, and where the rider's page is. */
+type RiderCtx = { riders: Rider[]; restaurant: string; onChanged: () => void } | null;
+
 function OrderCard({
   order,
   now,
   canUpdate,
+  rider,
   onMove,
   onAdjust,
   onPrint,
@@ -318,6 +324,7 @@ function OrderCard({
   order: AdminOrder;
   now: number;
   canUpdate: boolean;
+  rider?: RiderCtx;
   onMove: (o: AdminOrder, to: OrderStatus) => Promise<void>;
   onAdjust: (o: AdminOrder, minutes: number) => Promise<void>;
   onPrint: PrintFn;
@@ -325,7 +332,10 @@ function OrderCard({
   const [busy, setBusy] = useState(false);
   const [confirmCancel, setConfirmCancel] = useState(false);
   const branch = useBranchLabel()(order.locationId);
-  const next = NEXT[order.status];
+  const delivery = order.channel === 'online' && order.fulfillment === 'delivery';
+  const withRider = !!rider && delivery && order.status !== 'cancelled';
+  // out with a rider: their "Mark delivered" (on the rider part) closes it, not "Complete"
+  const next = withRider && order.delivery?.pickedUpAt ? undefined : NEXT[order.status];
   const waitingMins = (now - new Date(order.createdAt).getTime()) / 60000;
   const isNew = order.status === 'placed';
 
@@ -438,6 +448,10 @@ function OrderCard({
         </span>
         <span className="font-semibold text-[#2e2e30]">{money(order.total)}</span>
       </div>
+
+      {withRider && rider && (
+        <RiderPanel order={order} riders={rider.riders} restaurant={rider.restaurant} canUpdate={canUpdate} onChanged={rider.onChanged} />
+      )}
 
       {canUpdate && (
         <div className="mt-3 flex flex-wrap gap-2">
@@ -552,7 +566,7 @@ const STATUS_FILTERS: Array<{ id: OrderStatus | 'open' | ''; label: string }> = 
 /** CSV of the orders that match (up to 2,000) — for the accountant or a spreadsheet. */
 function downloadCsv(rows: AdminOrder[], branchOf: (id?: string | null) => string, name: string) {
   const cell = (v: unknown) => `"${String(v ?? '').replace(/"/g, '""')}"`;
-  const head = ['Order', 'Date', 'Time', 'Branch', 'For', 'Customer', 'Phone', 'Items', 'Total', 'Status', 'Payment'];
+  const head = ['Order', 'Date', 'Time', 'Branch', 'For', 'Customer', 'Phone', 'Items', 'Total', 'Status', 'Payment', 'Rider', 'Delivered at'];
   const lines = rows.map((o) => {
     const d = new Date(o.createdAt);
     return [
@@ -567,6 +581,8 @@ function downloadCsv(rows: AdminOrder[], branchOf: (id?: string | null) => strin
       o.total,
       o.status,
       `${o.payment.method} ${o.payment.status}`,
+      o.delivery?.rider.name ?? '',
+      o.delivery?.deliveredAt ? new Date(o.delivery.deliveredAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '',
     ]
       .map(cell)
       .join(',');
@@ -719,7 +735,11 @@ function History({ token, onPrint, kind }: { token: string | null; onPrint: Prin
                       </span>
                     )}
                   </td>
-                  <td className="px-4 py-3">{o.channel === 'online' ? `${orderWhere(o)} · ${o.customer?.name ?? ''}` : o.table}</td>
+                  <td className="px-4 py-3">
+                    {o.channel === 'online' ? `${orderWhere(o)} · ${o.customer?.name ?? ''}` : o.table}
+                    {/* who delivered it (the restaurant's own rider) */}
+                    {o.delivery && <div className="text-xs text-[#6b6b70]">Rider: {o.delivery.rider.name}</div>}
+                  </td>
                   <td className="hidden max-w-xs truncate px-4 py-3 text-[#6b6b70] md:table-cell">
                     {o.items.map((l) => `${l.qty}× ${l.name}`).join(', ')}
                   </td>
@@ -843,11 +863,32 @@ export default function Orders() {
   }, [orders]);
   const shown = useMemo(() => orders.filter(ofKind(kind)), [orders, kind]);
 
+  // the restaurant's riders (pages/Riders.tsx): with any, delivery cards get a rider and the board an "On the way" column
+  const ridersQ = useQuery({ queryKey: ['riders'], queryFn: listRiders, enabled: !!token, refetchInterval: 60_000 });
+  const riders = ridersQ.data ?? [];
+  const hasRiders = riders.length > 0;
+  const riderCtx: RiderCtx = hasRiders
+    ? {
+        riders,
+        restaurant: tenant?.name ?? '',
+        onChanged: () => {
+          void ridersQ.refetch();
+          if (!connected) void refresh();
+        },
+      }
+    : null;
+  const columns: { key: string; title: string; empty: string }[] = [
+    ...COLUMNS.map((c) => ({ key: c.status as string, title: c.title, empty: c.empty })),
+    ...(hasRiders ? [{ key: 'on-the-way', title: 'On the way', empty: 'No rider out' }] : []),
+  ];
   const byStatus = useMemo(() => {
-    const m = new Map<OrderStatus, AdminOrder[]>();
-    for (const o of shown) m.set(o.status, [...(m.get(o.status) ?? []), o]);
+    const m = new Map<string, AdminOrder[]>();
+    for (const o of shown) {
+      const key = hasRiders && o.delivery?.pickedUpAt && !o.delivery.deliveredAt && o.status !== 'cancelled' ? 'on-the-way' : o.status;
+      m.set(key, [...(m.get(key) ?? []), o]);
+    }
     return m;
-  }, [shown]);
+  }, [shown, hasRiders]);
 
   const onMove = async (o: AdminOrder, to: OrderStatus) => {
     try {
@@ -937,17 +978,17 @@ export default function Orders() {
         <History token={token} onPrint={onPrint} kind={kind} />
       ) : (
         <div className="grid grid-cols-[repeat(auto-fill,minmax(270px,1fr))] gap-4">
-          {COLUMNS.map((col) => {
-            const list = byStatus.get(col.status) ?? [];
+          {columns.map((col) => {
+            const list = byStatus.get(col.key) ?? [];
             return (
-              <section key={col.status} className="rounded-lg border border-[#ececec] bg-[#f7f7f8] p-3" aria-label={col.title}>
+              <section key={col.key} className="rounded-lg border border-[#ececec] bg-[#f7f7f8] p-3" aria-label={col.title}>
                 <h2 className="mb-3 flex items-center justify-between text-sm font-semibold text-[#2e2e30]">
                   {col.title}
                   <span className="rounded-full bg-white px-2 py-0.5 text-xs text-[#6b6b70] ring-1 ring-[#ececec]">{list.length}</span>
                 </h2>
                 <div className="space-y-3">
                   {list.length ? (
-                    list.map((o) => <OrderCard key={o.id} order={o} now={now} canUpdate={canUpdate} onMove={onMove} onAdjust={onAdjust} onPrint={onPrint} />)
+                    list.map((o) => <OrderCard key={o.id} order={o} now={now} canUpdate={canUpdate} rider={riderCtx} onMove={onMove} onAdjust={onAdjust} onPrint={onPrint} />)
                   ) : (
                     <p className="py-6 text-center text-xs text-[#9a9aa0]">{col.empty}</p>
                   )}

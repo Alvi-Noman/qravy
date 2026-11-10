@@ -36,6 +36,7 @@ const disabledInStarter = new Set([
 export default function StepPlanPricing({ value, onChange }: StepPlanPricingProps) {
   const [billingCycle, setBillingCycle] = useState<'monthly' | 'yearly'>('monthly');
   const [loadingPlan, setLoadingPlan] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
   // a price agreed with Qravy (negotiated) — optional; Qravy sees it in Cortex next to the list price
   const [customOpen, setCustomOpen] = useState(false);
   const [customAmount, setCustomAmount] = useState('');
@@ -86,6 +87,8 @@ export default function StepPlanPricing({ value, onChange }: StepPlanPricingProp
     setLoadingPlan(id);
 
     const start = Date.now();
+    setSaveError(null);
+    let saved = false;
     try {
       await api.post('/api/v1/auth/tenants/onboarding-step', {
         step: 'plan',
@@ -98,12 +101,18 @@ export default function StepPlanPricing({ value, onChange }: StepPlanPricingProp
       });
       await completeOnboarding();
       await reloadUser();
+      saved = true;
+    } catch (err) {
+      setLoadingPlan(null);
+      setSaveError((err as any)?.response?.data?.message || (err as any)?.response?.data?.error || (err as Error)?.message || 'Could not save. Please try again.');
     } finally {
-      const elapsed = Date.now() - start;
-      const minDelay = 3000;
-      setTimeout(() => {
-        navigate('/dashboard', { replace: true });
-      }, Math.max(0, minDelay - elapsed));
+      if (saved) {
+        const elapsed = Date.now() - start;
+        const minDelay = 3000;
+        setTimeout(() => {
+          navigate('/dashboard', { replace: true });
+        }, Math.max(0, minDelay - elapsed));
+      }
     }
   };
 
@@ -118,6 +127,11 @@ export default function StepPlanPricing({ value, onChange }: StepPlanPricingProp
         <p className="mt-2 text-base text-[#555]">
           Select the subscription that fits your restaurant best
         </p>
+        {saveError && (
+          <p role="alert" className="mx-auto mt-4 max-w-md rounded-md bg-red-50 px-4 py-2 text-sm text-red-600">
+            {saveError}
+          </p>
+        )}
         <div className="mt-5 flex justify-center items-center gap-4">
           <span className={billingCycle === 'monthly' ? 'font-medium text-[#2e2e30]' : 'text-[#777]'}>Monthly</span>
           <button

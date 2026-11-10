@@ -58,10 +58,14 @@ export default function StepOwnerAdmin({ value, onChange, onNext }: Props) {
     if (!value.fullName.trim()) return setError('Please enter your name.');
     if (!value.phone.trim()) return setError('Please enter your phone number.');
 
-    await api.post('/api/v1/auth/tenants/onboarding-step', {
-      step: 'owner',
-      data: value,
-    });
+    try {
+      await api.post('/api/v1/auth/tenants/onboarding-step', {
+        step: 'owner',
+        data: value,
+      });
+    } catch (err) {
+      return setError((err as any)?.response?.data?.message || (err as any)?.response?.data?.error || (err as Error)?.message || 'Could not save. Please try again.');
+    }
 
     onNext();
   };

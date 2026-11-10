@@ -11,6 +11,7 @@ import type { ItemAvailabilityDoc } from '../models/ItemAvailability.js';
 import { DEFAULT_TIMEZONE, isWithinWindows, nextOpeningAt, resolveWindows, tenantServicePeriods } from '../utils/availability.js';
 import { checkOrderable } from '../utils/orderability.js';
 import { resolveBranchLocationId } from '../controllers/categoriesController.js';
+import { soldOutUntilByItem } from '../controllers/menuItemsController.js';
 import { branchForUnnamed, publicBranches } from '../utils/branches.js';
 import { lexiconList, withOwnWords } from './pronounceRoutes.js';
 
@@ -82,6 +83,8 @@ function toPublicTenantItem(
     logoRadius: typeof (tenant as any).logoRadius === 'number' ? (tenant as any).logoRadius : null,
     logoSize: typeof (tenant as any).logoSize === 'number' ? (tenant as any).logoSize : null,
     priceDigits: (tenant as any).priceDigits === 'bn' ? 'bn' : 'latin',
+    // the guest site's look (Digital Menu → Themes); none set = the original look
+    theme: (tenant as any).storefrontTheme === 'ember' ? 'ember' : 'petal',
     // the restaurant's own words for the intro, thank-you and waiter-call messages (missing = the default)
     guestMessages: (tenant as any).guestMessages ?? {},
     // the waiter's voice reads these words this way — Qravy's dictionary, with this restaurant's own words on top
@@ -450,6 +453,15 @@ export async function publicMenuItems(
       o.orderable = !o.hidden && !!r?.ok;
       o.servedNow = !o.hidden && !!s?.ok;
       if (r && !r.ok) o.unavailable = { reason: r.reason, message: r.message };
+    }
+    // sold out with a time set to come back ("back at 6pm" — the owner's Sold out → until …): the menu says when
+    const soldOut = out.filter((o) => (o as any).unavailable?.reason === 'sold-out').map((o) => new ObjectId(String(o.id)));
+    if (soldOut.length) {
+      const until = await soldOutUntilByItem(tenantOid, soldOut, locId);
+      for (const o of out) {
+        const at = until.get(String(o.id));
+        if (at && at.getTime() > Date.now()) (o as any).soldOutUntil = at.toISOString();
+      }
     }
 
     return out;

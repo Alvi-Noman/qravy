@@ -147,6 +147,7 @@ export async function createDemo(source: ImportSource, pageCount: number, fileNa
     ownerId,
     onboardingCompleted: true,
     subscriptionStatus: 'none',
+    storefrontTheme: 'ember',
     restaurantInfo: {
       restaurantType: '',
       country: '',

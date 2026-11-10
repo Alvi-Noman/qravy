@@ -145,6 +145,8 @@ export async function createTenant(req: Request, res: Response, next: NextFuncti
       trialStartedAt: now,
       trialEndsAt: addDays(now, DEFAULT_TRIAL_DAYS),
       subscriptionStatus: 'none',
+      // new restaurants start on the default theme (older ones have none → the original look)
+      storefrontTheme: 'ember',
       restaurantInfo: {
         restaurantType: '',
         country: '',
@@ -753,6 +755,7 @@ export async function updateMyTenant(req: Request, res: Response, next: NextFunc
     if (parsed.logoRadius !== undefined) update.logoRadius = parsed.logoRadius;
     if (parsed.logoSize !== undefined) update.logoSize = parsed.logoSize;
     if (parsed.priceDigits) update.priceDigits = parsed.priceDigits;
+    if (parsed.storefrontTheme) update.storefrontTheme = parsed.storefrontTheme;
     if (parsed.guestMessages) {
       // only what they wrote: an empty text means "use the default"
       const msgs: Record<string, { bn?: string; en?: string }> = {};

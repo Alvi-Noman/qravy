@@ -241,3 +241,18 @@ export async function getHours(subdomain: string, branch?: string | null): Promi
     return null;
   }
 }
+
+/** Each dish's kind as the waiter reads it — { itemId: 'drink' | 'dessert' | 'rice' | 'curry' | … } (dishes of no
+ *  kind are left out). The Ember home uses it for "Same again?" (drinks) and "Something sweet?" after the mains.
+ *  Best-effort: {} on any error. */
+export async function getMenuKinds(params: { subdomain?: string | null; branch?: string | null }): Promise<Record<string, string>> {
+  try {
+    const { data } = await axios.get(`${CART_API_BASE}/menu/kinds`, {
+      params: { tenant: params.subdomain ?? undefined, branch: params.branch ?? undefined },
+      withCredentials: false,
+    });
+    return data && (data as any).ok === true && typeof (data as any).kinds === 'object' ? ((data as any).kinds as Record<string, string>) : {};
+  } catch {
+    return {};
+  }
+}

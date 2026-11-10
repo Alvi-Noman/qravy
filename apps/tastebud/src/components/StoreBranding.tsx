@@ -10,6 +10,7 @@ import { getTenant } from '../api/storefront';
 import { isDineInPath, storeSubFromPath } from '../utils/table';
 import { getTTS, setPronunciations } from '../state/tts';
 import { setPriceDigits } from '../utils/ui-lang';
+import { useAppHead } from '../pwa/AppHead';
 
 // Azure's Bangladeshi Bangla voices — they read English too
 export const VOICES = { female: 'bn-BD-NabanitaNeural', male: 'bn-BD-PradeepNeural' } as const;
@@ -43,12 +44,15 @@ export default function StoreBranding() {
     refetchOnWindowFocus: false,
   });
   const t = data as
-    | { name?: string; logoUrl?: string | null; faviconUrl?: string | null; waiter?: { voice?: string }; pronunciations?: Array<{ word: string; spoken: string }>; priceDigits?: string }
+    | { name?: string; logoUrl?: string | null; faviconUrl?: string | null; waiter?: { voice?: string }; pronunciations?: Array<{ word: string; spoken: string }>; priceDigits?: string; channels?: { online?: boolean } }
     | null
     | undefined;
   const dineIn = isDineInPath(pathname);
   // prices in the restaurant's digits (৳২৫০ / ৳250) — set while rendering, before the pages below show any price
   setPriceDigits(t?.priceDigits);
+
+  // the restaurant's app: installable from its online shop (src/pwa)
+  useAppHead(sub, pathname, t);
 
   useEffect(() => {
     if (!t?.name) return;

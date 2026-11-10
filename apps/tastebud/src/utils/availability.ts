@@ -76,11 +76,13 @@ export function isAvailableAt(windows: AvailabilityWindow[] | undefined | null, 
 }
 
 /** Next opening time, e.g. "7am", "tomorrow 7am" or "Mon 7am"; null if never. */
-export function nextOpening(
+/** When these hours next start: days from today (0 = later today), that day (0 = Sun) and the start ("HH:MM").
+ *  For callers that word it themselves (the Ember menu, in Bangla or English). */
+export function nextStart(
   windows: AvailabilityWindow[] | undefined | null,
   at: Date,
   tz?: string | null
-): string | null {
+): { offset: number; day: number; start: string } | null {
   if (!windows?.length) return null;
   const { day: today, minutes: now } = wallClock(at, tz);
   for (let offset = 0; offset < 8; offset++) {
@@ -90,12 +92,20 @@ export function nextOpening(
       .map((w) => w.start)
       .filter((s) => offset > 0 || toMin(s) > now)
       .sort((a, b) => toMin(a) - toMin(b));
-    if (starts.length) {
-      const t = formatTime(starts[0]);
-      return offset === 0 ? t : offset === 1 ? `tomorrow ${t}` : `${DAY[day]} ${t}`;
-    }
+    if (starts.length) return { offset, day, start: starts[0] };
   }
   return null;
+}
+
+export function nextOpening(
+  windows: AvailabilityWindow[] | undefined | null,
+  at: Date,
+  tz?: string | null
+): string | null {
+  const n = nextStart(windows, at, tz);
+  if (!n) return null;
+  const t = formatTime(n.start);
+  return n.offset === 0 ? t : n.offset === 1 ? `tomorrow ${t}` : `${DAY[n.day]} ${t}`;
 }
 
 /**

@@ -1,0 +1,114 @@
+/* apps/tastebud/src/themes/ember/ember.css — the Ember theme's motion (its colours live in ui.tsx: EM) */
+
+.em-root {
+  font-family: Inter, 'Noto Sans Bengali', system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
+}
+.em-tight {
+  font-family: 'Inter Tight', Inter, 'Noto Sans Bengali', system-ui, sans-serif;
+}
+.em-noscroll {
+  scrollbar-width: none;
+}
+.em-noscroll::-webkit-scrollbar {
+  display: none;
+}
+
+/* the orb while listening: rings breathe outwards */
+@keyframes em-ring {
+  0% { transform: scale(0.92); opacity: 0.55; }
+  100% { transform: scale(1.18); opacity: 0; }
+}
+.em-ring { animation: em-ring 1.6s cubic-bezier(.2, .7, .3, 1) infinite; }
+
+/* waveform bars inside the orb */
+@keyframes em-wave {
+  0%, 100% { transform: scaleY(0.45); }
+  50% { transform: scaleY(1); }
+}
+.em-wave > span { animation: em-wave 0.9s ease-in-out infinite; transform-origin: center; }
+.em-wave > span:nth-child(2) { animation-delay: -0.15s; }
+.em-wave > span:nth-child(3) { animation-delay: -0.3s; }
+.em-wave > span:nth-child(4) { animation-delay: -0.45s; }
+.em-wave > span:nth-child(5) { animation-delay: -0.6s; }
+.em-wave > span:nth-child(6) { animation-delay: -0.75s; }
+
+/* thinking: the dashed ring turns, the dots blink in turn */
+@keyframes em-spin { to { transform: rotate(360deg); } }
+.em-spin { animation: em-spin 6s linear infinite; }
+@keyframes em-dot {
+  0%, 80%, 100% { opacity: 0.3; }
+  40% { opacity: 1; }
+}
+.em-dots > span { animation: em-dot 1.2s ease-in-out infinite; }
+.em-dots > span:nth-child(2) { animation-delay: 0.2s; }
+.em-dots > span:nth-child(3) { animation-delay: 0.4s; }
+
+/* speaking: the orb's glow swells softly */
+@keyframes em-speak {
+  0%, 100% { box-shadow: 0 0 50px 8px rgba(245, 165, 36, 0.35); }
+  50% { box-shadow: 0 0 64px 14px rgba(245, 165, 36, 0.5); }
+}
+.em-speak { animation: em-speak 1.4s ease-in-out infinite; }
+
+/* waiting for approval: the dot in the ring pulses */
+@keyframes em-pulse {
+  0%, 100% { box-shadow: 0 0 0 10px rgba(245, 165, 36, 0.14), 0 0 0 22px rgba(245, 165, 36, 0.06); }
+  50% { box-shadow: 0 0 0 14px rgba(245, 165, 36, 0.18), 0 0 0 30px rgba(245, 165, 36, 0.04); }
+}
+.em-pulse { animation: em-pulse 1.8s ease-in-out infinite; }
+
+/* bars and chips slide in from below; screens fade up */
+@keyframes em-rise {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.em-rise { animation: em-rise 320ms cubic-bezier(.2, .8, .2, 1) both; }
+@keyframes em-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.em-fade { animation: em-fade 260ms ease-out both; }
+
+/* a bottom sheet slides up */
+@keyframes em-sheet {
+  from { transform: translateY(100%); }
+  to { transform: translateY(0); }
+}
+.em-sheet { animation: em-sheet 300ms cubic-bezier(.2, .8, .2, 1) both; }
+
+/* a ghost (suggested) item turns solid when accepted */
+@keyframes em-solidify {
+  0% { transform: scale(0.97); background: rgba(245, 165, 36, 0.18); }
+  60% { transform: scale(1.02); }
+  100% { transform: scale(1); background: transparent; }
+}
+.em-solidify { animation: em-solidify 520ms cubic-bezier(.2, .8, .2, 1) both; border-radius: 12px; }
+
+/* the screen edge glows while the guest talks on the menu */
+@keyframes em-glow {
+  0%, 100% { opacity: 0.85; }
+  50% { opacity: 1; }
+}
+.em-glow { animation: em-glow 1.6s ease-in-out infinite; }
+
+/* the dish Pixie is talking about: a brief amber flash, then the outline stays */
+@keyframes em-flash {
+  0% { background: rgba(245, 165, 36, 0.2); }
+  100% { background: rgba(245, 165, 36, 0.07); }
+}
+.em-flash { animation: em-flash 900ms ease-out both; }
+
+/* suggestion cards ease in once, sliding a little from the right */
+@keyframes em-card-in {
+  from { opacity: 0; transform: translateX(28px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+.em-card-in { animation: em-card-in 420ms cubic-bezier(.2, .8, .2, 1) both; }
+
+@media (prefers-reduced-motion: reduce) {
+  .em-card-in { animation: none !important; }
+  .em-ring, .em-wave > span, .em-spin, .em-dots > span, .em-speak, .em-pulse, .em-glow { animation: none !important; }
+  .em-rise, .em-fade, .em-sheet, .em-solidify, .em-flash { animation-duration: 1ms !important; }
+}

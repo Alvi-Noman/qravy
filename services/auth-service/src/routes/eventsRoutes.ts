@@ -24,6 +24,12 @@ export const GUEST_EVENT_TYPES = [
   'call_waiter', // called staff from the table
   'ping', // still on the page (every minute while visible) — for time spent
   'voice_timing', // how long a spoken turn took, step by step: guest quiet → speech-to-text → AI → first sound (ms)
+  // the restaurant's app (home-screen install): the /app page opened (data.source: card | link | offer), the install
+  // offered / accepted (data.kind: android | ios), installed (Android tells us; iPhones don't), opened from the home screen
+  'app_page',
+  'app_install_offered',
+  'app_installed',
+  'app_open',
 ] as const;
 // voice_timing's numbers (ms, counts, flags) — scripts/voice-timing-report.ts sums them up
 const TIMING_KEYS = [
