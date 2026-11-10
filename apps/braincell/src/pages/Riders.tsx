@@ -12,14 +12,13 @@ import Modal from '../components/Modal';
 import { useTenant } from '../hooks/useTenant';
 import { useLocations } from '../components/locations/useLocations';
 import { useAuthContext } from '../context/AuthContext';
-import RiderAppGuide, { useRiderApk } from '../components/riders/RiderAppGuide';
+import RiderAppGuide from '../components/riders/RiderAppGuide';
 import {
   VEHICLE_LABEL,
   createRider,
   listRiders,
   removeRider,
   resetRiderLink,
-  riderApkUrl,
   riderLink,
   settleRiderCash,
   updateRider,
@@ -67,12 +66,12 @@ function Status({ r }: { r: Rider }) {
   );
 }
 
-/** The message staff send the rider with their link (WhatsApp opens with it written) — with the Android app's
- *  download when it's there: install it, then open the link to sign in. */
-function linkMessage(restaurant: string, link: string, withApp: boolean) {
-  return withApp
-    ? `${restaurant}: your deliveries.\n1. Install the Qravy Rider app (Android): ${riderApkUrl()}\n2. Then open your own link to sign in:\n${link}\n(iPhone: just open the link in Safari.)`
-    : `${restaurant}: your deliveries page. Keep this link — new orders show up here.\n${link}`;
+/** The message staff send the rider with their link (WhatsApp opens with it written): open it, put it on the home
+ *  screen (the page shows how), and it opens their deliveries from then on. */
+function linkMessage(restaurant: string, link: string) {
+  return `${restaurant}: your deliveries.
+Open your link, then tap "Install" (Android) or Share → "Add to Home Screen" (iPhone):
+${link}`;
 }
 
 const API_BASE = (import.meta.env.VITE_API_URL as string) || '';
@@ -152,8 +151,8 @@ function RiderQr({ r, link, onClose }: { r: Rider; link: string; onClose: () => 
       <div>
         <div className="font-semibold text-[#2e2e30]">{r.name}</div>
         <p className="mt-1 max-w-sm text-sm text-[#6b6b70]">
-          The rider opens the Qravy Rider app and taps <b>Scan the QR code</b> — or points the phone's camera here. It opens their deliveries and the
-          app remembers them.
+          The rider points their phone's camera here. It opens their link, shows how to put the app on their home screen, and signs
+          them in. (Already have the app? Open it and tap <b>Scan the QR code</b>.)
         </p>
       </div>
       <button type="button" onClick={onClose} className="rounded-md bg-[#2e2e30] px-4 py-2 text-sm font-semibold text-white">
@@ -264,8 +263,6 @@ export default function Riders() {
   const [confirm, setConfirm] = useState<{ kind: 'remove' | 'reset' | 'cash'; r: Rider } | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [qrFor, setQrFor] = useState<Rider | null>(null);
-  const apk = useRiderApk();
-  const appReady = apk !== 'loading' && apk !== null;
   const reload = () => qc.invalidateQueries({ queryKey: ['riders'] });
   const linkOf = (r: Rider) => riderLink(r.linkToken);
   const branchName = (id: string | null) => (id ? branches.find((b) => b.id === id)?.name ?? 'Branch' : branches.length > 1 ? 'Every branch' : '');
@@ -311,7 +308,7 @@ export default function Riders() {
         Your own delivery riders. Hand them a delivery order on the order board — they get it on their page and tap Picked up, then Delivered. No app, no login.
         {holding > 0 && <span className="font-semibold text-[#2e2e30]"> Riders are holding {money(holding)} in cash.</span>}
       </p>
-      <RiderAppGuide restaurant={tenant?.name ?? ''} onCopied={setNote} />
+      <RiderAppGuide />
       {note && (
         <div role="status" className="flex items-start justify-between gap-3 rounded-md bg-slate-50 px-3 py-2 text-sm text-[#2e2e30] ring-1 ring-slate-200">
           <span className="break-all">{note}</span>
@@ -366,12 +363,12 @@ export default function Riders() {
                   On duty
                 </label>
                 <a
-                  href={whatsappTo(r.phone, linkMessage(tenant?.name ?? '', linkOf(r), appReady))}
+                  href={whatsappTo(r.phone, linkMessage(tenant?.name ?? '', linkOf(r)))}
                   target="_blank"
                   rel="noreferrer"
                   className="rounded-md bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-800 ring-1 ring-emerald-200"
                 >
-                  {appReady ? 'Send app & link' : 'Send link'}
+                  Send link
                 </a>
                 <button type="button" onClick={() => void copy(r)} className="rounded-md border border-[#e2e2e2] px-3 py-1.5 text-xs font-medium">
                   Copy link

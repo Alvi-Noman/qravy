@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="bn">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Offline</title>
+<style>
+  html, body { height: 100%; margin: 0; }
+  body { display: flex; align-items: center; justify-content: center; background: #0B0B0C; color: #F5F5F7;
+         font-family: "Noto Sans Bengali", Inter, system-ui, sans-serif; text-align: center; padding: 24px; }
+  .box { max-width: 320px; display: flex; flex-direction: column; gap: 12px; align-items: center; }
+  h1 { font-size: 22px; margin: 0; }
+  p { margin: 0; color: #A1A1A6; line-height: 1.5; }
+  button { margin-top: 8px; height: 48px; padding: 0 24px; border: 0; border-radius: 24px; background: #F5A524; color: #0B0B0C;
+           font: 700 16px inherit; }
+</style>
+</head>
+<body>
+  <div class="box">
+    <h1>ইন্টারনেট নেই</h1>
+    <p>সংযোগ ফিরলে আবার চেষ্টা করুন।<br />You're offline — try again when you're connected.</p>
+    <button onclick="location.reload()">আবার চেষ্টা করুন · Try again</button>
+  </div>
+</body>
+</html>

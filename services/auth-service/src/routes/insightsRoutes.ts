@@ -527,4 +527,49 @@ router.get(
   })
 );
 
+/* ------------------------------------------------------------------ the restaurant's app (home-screen install) */
+
+/** GET /insights/app?days=30 — how the restaurant's app is doing: the install page opened (by where from: the QR
+ *  card, a shared link, the offer after a meal / an order), installs (Android reports them; iPhones don't, so iPhone
+ *  guests who were shown the steps are counted instead), and opens from the home screen (and by how many phones). */
+router.get(
+  '/insights/app',
+  ...guard,
+  wrap(async (req, res) => {
+    const s = await scopeOf(req);
+    if (!s) return res.status(404).json({ success: false, message: 'Not found' });
+    const { f } = s;
+    const match: Document = {
+      tenantId: f.tenantId,
+      type: { $in: ['app_page', 'app_install_offered', 'app_installed', 'app_open'] },
+      at: { $gte: sinceOf(f.days) },
+      ...(f.locationId ? { locationId: f.locationId } : {}),
+    };
+    const rows = await db()
+      .collection('guestEvents')
+      .aggregate([
+        { $match: match },
+        { $group: { _id: { type: '$type', source: '$data.source', kind: '$data.kind' }, n: { $sum: 1 }, phones: { $addToSet: '$did' } } },
+      ])
+      .toArray();
+    const sum = (type: string, pick?: (id: { source?: string; kind?: string }) => boolean) =>
+      rows.filter((r) => r._id.type === type && (!pick || pick(r._id))).reduce((n, r) => n + (r.n as number), 0);
+    const phones = (type: string) => new Set(rows.filter((r) => r._id.type === type).flatMap((r) => r.phones as string[])).size;
+    return res.json({
+      success: true,
+      days: f.days,
+      pageViews: {
+        total: sum('app_page'),
+        card: sum('app_page', (id) => id.source === 'card'),
+        link: sum('app_page', (id) => id.source !== 'card' && id.source !== 'offer'),
+        offer: sum('app_page', (id) => id.source === 'offer') + sum('app_install_offered', (id) => id.source === 'offer'),
+      },
+      installsAndroid: sum('app_installed'),
+      iphoneGuides: sum('app_install_offered', (id) => id.kind === 'ios'),
+      opens: sum('app_open'),
+      openPhones: phones('app_open'),
+    });
+  })
+);
+
 export default router;

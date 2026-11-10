@@ -4,6 +4,7 @@
 import { Navigate, Route, Routes } from 'react-router-dom';
 import Deliveries from './pages/Deliveries';
 import Connect from './pages/Connect';
+import InstallGuide from './pages/InstallGuide';
 import { savedLinks } from './links';
 
 function Start() {
@@ -17,9 +18,10 @@ export default function App() {
     <Routes>
       <Route path="/" element={<Start />} />
       <Route path="/connect" element={<Connect />} />
-      <Route path="/r/:token" element={<Deliveries />} />
+      {/* opened in a browser: first the way to put it on the home screen (it then opens right here, signed in) */}
+      <Route path="/r/:token" element={<InstallGuide><Deliveries /></InstallGuide>} />
       {/* (the first links pointed at the guest site's /rider/<link>) */}
-      <Route path="/rider/:token" element={<Deliveries />} />
+      <Route path="/rider/:token" element={<InstallGuide><Deliveries /></InstallGuide>} />
       <Route path="*" element={<Navigate replace to="/" />} />
     </Routes>
   );

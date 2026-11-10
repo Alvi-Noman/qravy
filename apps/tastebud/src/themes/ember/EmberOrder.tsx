@@ -17,6 +17,7 @@ import { money } from '../../utils/ui-lang';
 import { useEmberChrome } from './Chrome';
 import { clockTime, useOrderClock, useStoreRoute } from './store';
 import { placedAt, useVisitSync } from './visit';
+import AppOffer from './AppOffer';
 import { bnDigits, clockText } from './when';
 import { BottomBar, EM, I, Orb, Sheet, Shell, TopBar, tx, type Lang } from './ui';
 
@@ -391,6 +392,8 @@ export default function EmberOrder() {
               </div>
             </div>
             {delivery && <RiderCard o={o} lang={lang} />}
+            {/* the restaurant's app: offered once the order is in (src/pwa) */}
+            <AppOffer sub={sub} name={route.info?.name ?? ''} lang={lang} show={(route.info as any)?.channels?.online !== false} />
             {delivery ? (
               <div className="flex flex-col gap-2.5 rounded-[20px] p-[18px]" style={{ background: EM.card, border: '1px solid #222225' }}>
                 <span className="text-[13px] font-medium" style={{ color: EM.text3 }}>{tx(lang, 'যেখানে যাবে', 'DELIVERING TO')}</span>
@@ -516,6 +519,12 @@ export default function EmberOrder() {
           </div>
           {!online && (
             <TableSoFar orders={all} lang={lang} table={o.table} current={o.token} onOpen={(t) => navigate(orderPath(t, sub, branch), { replace: true })} />
+          )}
+          {!online && done && (
+            // the meal is over: the restaurant's app, for delivery next time (src/pwa)
+            <div className="mx-5 mt-5">
+              <AppOffer sub={sub} name={route.info?.name ?? ''} lang={lang} show={(route.info as any)?.channels?.online !== false} />
+            </div>
           )}
         </div>
       </div>

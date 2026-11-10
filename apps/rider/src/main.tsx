@@ -3,6 +3,10 @@ import { createRoot } from 'react-dom/client';
 import { BrowserRouter } from 'react-router-dom';
 import App from './App';
 import './index.css';
+import { initInstall } from './install';
+
+// Chrome offers installing early — kept for the install guide (pages/InstallGuide.tsx)
+initInstall();
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

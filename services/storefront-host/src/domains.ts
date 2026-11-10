@@ -80,7 +80,14 @@ export async function tenantCard(gatewayUrl: string, sub: string): Promise<Tenan
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
 
 /** The page's title, icon and link-preview tags for this restaurant ("Burger House · Order online"). */
-export function brandHead(html: string, card: TenantCard, dineIn: boolean, pageUrl: string): string {
+export function brandHead(
+  html: string,
+  card: TenantCard,
+  dineIn: boolean,
+  pageUrl: string,
+  /** the restaurant's own app (home-screen install): its manifest and iPhone icon — auth-service routes/appRoutes.ts */
+  app?: { sub: string; base: string; branch: string | null },
+): string {
   const title = `${card.name} · ${dineIn ? 'Dine-in' : 'Order online'}`;
   const desc = dineIn
     ? `Order from your table at ${card.name} — browse the menu or just ask the AI waiter.`
@@ -102,5 +109,19 @@ export function brandHead(html: string, card: TenantCard, dineIn: boolean, pageU
     ...(card.logoUrl ? [`<meta property="og:image" content="${esc(card.logoUrl)}" />`] : []),
     `<meta name="twitter:card" content="summary" />`,
   ].join('\n    ');
-  return out.replace('</head>', `    ${og}\n  </head>`);
+  const appTags = app
+    ? [
+        `<link rel="manifest" href="/api/v1/public/app/${esc(app.sub)}/manifest.webmanifest?base=${encodeURIComponent(app.base)}${
+          app.branch ? `&amp;branch=${encodeURIComponent(app.branch)}` : ''
+        }" />`,
+        `<meta name="mobile-web-app-capable" content="yes" />`,
+        `<meta name="apple-mobile-web-app-capable" content="yes" />`,
+        `<meta name="apple-mobile-web-app-title" content="${esc(card.name)}" />`,
+      ]
+    : [];
+  if (app) {
+    // the iPhone's home-screen icon: the square one made from the logo (Safari reads it on "Add to Home Screen")
+    out = out.replace(/<link rel="apple-touch-icon"[^>]*>/i, `<link rel="apple-touch-icon" href="/api/v1/public/app/${esc(app.sub)}/icon-180.png" />`);
+  }
+  return out.replace('</head>', `    ${[og, ...appTags].join('\n    ')}\n  </head>`);
 }

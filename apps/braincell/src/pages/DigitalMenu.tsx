@@ -5,6 +5,7 @@
 //   Ember — dark, voice-first (the default for new restaurants)
 //   Petal — the original light look (restaurants from before themes keep it until they switch)
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import RestaurantApp from '../components/digital-menu/RestaurantApp';
 import { Link } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import {
@@ -415,6 +416,9 @@ export default function DigitalMenuPage(): JSX.Element {
           ))}
         </div>
       </div>
+
+      {/* the restaurant's own app: its online shop on guests' home screens (Android & iPhone) */}
+      <RestaurantApp tenant={tenant as any} />
 
       {previewTheme && (
         <PreviewModal

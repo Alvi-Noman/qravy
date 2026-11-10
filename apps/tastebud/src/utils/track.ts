@@ -18,7 +18,12 @@ export type TrackType =
   | 'order_placed'
   | 'call_waiter'
   | 'ping'
-  | 'voice_timing'; // how long a spoken turn took, step by step (numbers only)
+  | 'voice_timing' // how long a spoken turn took, step by step (numbers only)
+  // the restaurant's app (src/pwa): the /app page opened, the install offered, installed (Android), opened from the home screen
+  | 'app_page'
+  | 'app_install_offered'
+  | 'app_installed'
+  | 'app_open';
 
 type Page = 'home' | 'menu' | 'checkout' | 'order' | 'other';
 type Ev = { type: TrackType; at: number; page?: Page; data?: Record<string, string | number> };
@@ -73,7 +78,7 @@ function contextNow(): Ctx | null {
 }
 
 // the same moment reported twice (a page re-rendering, dev mode's double effects) counts once
-const ONCE: ReadonlySet<TrackType> = new Set(['visit', 'scan', 'checkout_started', 'waiter_start', 'suggestions_opened']);
+const ONCE: ReadonlySet<TrackType> = new Set<TrackType>(['visit', 'scan', 'checkout_started', 'waiter_start', 'suggestions_opened', 'app_page']);
 const lastOnce = new Map<string, number>();
 
 let queue: Ev[] = [];
