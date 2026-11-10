@@ -100,6 +100,28 @@
 	}
 }
 
+# Rider — the restaurants' own delivery riders: their deliveries (no login: each rider's private link), and the
+# Android app to download (/download/qravy-rider.apk). /api goes to the gateway (same address: no CORS).
+{$RIDER_DOMAIN:rider.qravy.com} {
+	header X-Robots-Tag "noindex, nofollow"
+
+	@api path /api/*
+	handle @api {
+		reverse_proxy api-gateway:8080
+	}
+
+	# the APK downloads as a file, with the type Android installs from
+	@apk path /download/*.apk
+	header @apk Content-Type "application/vnd.android.package-archive"
+	header @apk Content-Disposition "attachment; filename=\"qravy-rider.apk\""
+	# the admin (another address) reads version.json for its download card
+	header /download/* Access-Control-Allow-Origin "*"
+
+	handle {
+		reverse_proxy rider:80
+	}
+}
+
 # Cortex — the company admin panel (Qravy staff only: its own sign-in). Not for search engines.
 {$CORTEX_DOMAIN:cortex.qravy.com} {
 	header X-Robots-Tag "noindex, nofollow"

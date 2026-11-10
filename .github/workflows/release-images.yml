@@ -74,12 +74,21 @@ jobs:
               VITE_API_URL=https://${{ vars.ADMIN_DOMAIN }}
               VITE_AI_WAITER_API=/waiter
               VITE_STOREFRONT_URL=https://{subdomain}.qravy.com
+              VITE_RIDER_APP_URL=https://${{ vars.RIDER_DOMAIN || 'rider.qravy.com' }}
           - name: cortex
             file: apps/Dockerfile.prod
             context: .
             image_suffix: qravy-cortex
             build_args: |
               APP=cortex
+              VITE_API_URL=/api/v1
+          # the restaurants' riders (apps/rider) — Caddy: RIDER_DOMAIN, default rider.qravy.com
+          - name: rider
+            file: apps/Dockerfile.prod
+            context: .
+            image_suffix: qravy-rider
+            build_args: |
+              APP=rider
               VITE_API_URL=/api/v1
           - name: tastebud
             file: apps/Dockerfile.prod
@@ -159,6 +168,21 @@ jobs:
             exit 1
           fi
           echo "Logged into ghcr.io"
+
+      # the rider app serves its Android app (built by rider-apk.yml) and the file that ties the app to the site
+      - name: Rider app — the APK and the Android link file
+        if: matrix.service.name == 'rider'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RIDER_APK_SHA256: ${{ vars.RIDER_APK_SHA256 }}
+        run: |
+          mkdir -p apps/rider/public/download apps/rider/public/.well-known
+          gh release download rider-apk -p qravy-rider.apk -p version.json -D apps/rider/public/download --clobber || echo "No rider APK built yet (run the Rider APK workflow)"
+          if [ -n "$RIDER_APK_SHA256" ]; then
+            prints=$(echo "$RIDER_APK_SHA256" | tr ',' '
+' | sed 's/^ *//;s/ *$//' | jq -R . | jq -s .)
+            jq -n --argjson p "$prints" '[{relation:["delegate_permission/common.handle_all_urls"],target:{namespace:"android_app",package_name:"com.qravy.rider",sha256_cert_fingerprints:$p}}]' > apps/rider/public/.well-known/assetlinks.json
+          fi
 
       - name: Build & Push ${{ matrix.service.name }}
         uses: docker/build-push-action@v6

@@ -170,6 +170,8 @@ export async function updateTenant(
     logoRadius?: number | null;
     logoSize?: number | null;
     priceDigits?: 'latin' | 'bn';
+    /** the guest site's theme (Digital Menu → Themes) */
+    storefrontTheme?: 'petal' | 'ember';
     guestMessages?: Record<string, { bn?: string; en?: string }>;
     waiterName?: string | null;
     waiterVoice?: 'female' | 'male';

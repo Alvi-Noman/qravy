@@ -120,3 +120,17 @@ if __name__ == "__main__":
         if name.startswith("test_") and callable(fn):
             fn()
             print("ok", name)
+
+
+def test_live_words_show_only_sensible_text_in_the_guests_language():
+    # what the phone may show while the guest talks (display only; the real transcript replaces it)
+    assert srv.live_words("একটা চিকেন বিরিয়ানি", "bn") == "একটা চিকেন বিরিয়ানি"
+    assert srv.live_words("  one chicken biryani please ", "en") == "one chicken biryani please"
+    # the quick model's filler on noise never shows
+    assert srv.live_words("Thank you.", "bn") is None
+    assert srv.live_words("Thanks for watching!", "en") is None
+    assert srv.live_words("ভিডিওটি দেখার জন্য ধন্যবাদ", "bn") is None
+    # another script than the selected language never shows
+    assert srv.live_words("one biryani", "bn") is None
+    assert srv.live_words("", "bn") is None
+    assert srv.live_words(None, "en") is None

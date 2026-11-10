@@ -20,6 +20,7 @@ import SettingsLayout from './layout/SettingsLayout';
 const Dashboard = lazy(() => import('./pages/Dashboard'));
 const Orders = lazy(() => import('./pages/Orders'));
 const Customers = lazy(() => import('./pages/Customers'));
+const Riders = lazy(() => import('./pages/Riders'));
 const ServiceRequests = lazy(() => import('./pages/ServiceRequests'));
 const Categories = lazy(() => import('./pages/Categories'));
 const MenuItemsPage = lazy(() => import('./pages/MenuItems'));
@@ -36,6 +37,7 @@ const Onboarding = lazy(() => import('./pages/Onboarding'));
 const ManageCategories = lazy(() => import('./pages/ManageCategories'));
 const SelectLocation = lazy(() => import('./pages/SelectLocation')); // ADD
 const QrCodesPage = lazy(() => import('./pages/QrCodes'));
+const DigitalMenuPage = lazy(() => import('./pages/DigitalMenu')); // themes for the guest site
 const QuickDemoPage = lazy(() => import('./pages/QuickDemo'));
 const ConversationsPage = lazy(() => import('./pages/Conversations'));
 const SalesReportPage = lazy(() => import('./pages/reports/SalesReport'));
@@ -100,7 +102,9 @@ function RequireVerifiedAndOnboarded({ children }: { children: React.ReactNode }
       } else if (!user?.isVerified) {
         navigate('/login', { replace: true });
       } else if (!user?.isOnboarded) {
-        navigate('/onboarding', { replace: true });
+        // onboarding fills in the restaurant — without one yet, it is created first (every onboarding step failed
+        // with "No tenant found", and "Start free trial" looped back here)
+        navigate(user?.tenantId ? '/onboarding' : '/create-restaurant', { replace: true });
       }
     }
   }, [token, user, loading, navigate, location]);
@@ -116,6 +120,8 @@ function RequireOnboarding({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (user && user.isOnboarded) {
       navigate('/dashboard');
+    } else if (user && !user.tenantId) {
+      navigate('/create-restaurant', { replace: true }); // nothing to onboard yet
     }
   }, [user, navigate]);
 
@@ -320,6 +326,14 @@ function App() {
                 />
                 <Route path="/offers" element={<div className="p-6 text-sm text-slate-700">Offers coming soon</div>} />
                 <Route
+                  path="/riders"
+                  element={
+                    <Suspense fallback={null}>
+                      <Riders />
+                    </Suspense>
+                  }
+                />
+                <Route
                   path="/customers"
                   element={
                     <Suspense fallback={null}>
@@ -327,7 +341,14 @@ function App() {
                     </Suspense>
                   }
                 />
-                <Route path="/digital-menu" element={<div className="p-6 text-sm text-slate-700">Digital Menu coming soon</div>} />
+                <Route
+                  path="/digital-menu"
+                  element={
+                    <Suspense fallback={null}>
+                      <DigitalMenuPage />
+                    </Suspense>
+                  }
+                />
                 <Route path="/qravy-store" element={<div className="p-6 text-sm text-slate-700">Qravy Store coming soon</div>} />
 
                 {/* NEW: Bangla TTS Lab route (protected, uses Dashboard shell) */}

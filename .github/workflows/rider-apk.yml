@@ -1,0 +1,81 @@
+# The rider Android app (apps/rider/android): a thin wrapper around rider.qravy.com, built with Bubblewrap and signed
+# with the rider key. Run it by hand when the app's name/icon/Android target changes — web changes need no new APK.
+# Puts qravy-rider.apk (forwarded to riders) and qravy-rider.aab (Google Play) on the GitHub release "rider-apk";
+# the rider web app's image serves the APK at /download/qravy-rider.apk (release-images.yml).
+name: Rider APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_name:
+        description: "Version name (e.g. 1.0.1)"
+        required: true
+        default: "1.0.0"
+      version_code:
+        description: "Version code — a whole number, higher than the last build"
+        required: true
+        default: "1"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Signing key
+        env:
+          KEYSTORE_B64: ${{ secrets.RIDER_KEYSTORE_BASE64 }}
+        run: |
+          test -n "$KEYSTORE_B64" || { echo "Set the RIDER_KEYSTORE_BASE64 secret (apps/rider/android/README.md)"; exit 1; }
+          echo "$KEYSTORE_B64" | base64 -d > apps/rider/android/android.keystore
+
+      - name: Bubblewrap settings (the runner's JDK and Android SDK)
+        run: |
+          mkdir -p ~/.bubblewrap
+          echo "{\"jdkPath\":\"$JAVA_HOME\",\"androidSdkPath\":\"$ANDROID_SDK_ROOT\"}" > ~/.bubblewrap/config.json
+          cd apps/rider/android
+          jq --arg n "${{ inputs.version_name }}" --argjson c "${{ inputs.version_code }}" \
+            '.appVersionName = $n | .appVersionCode = $c' twa-manifest.json > t.json && mv t.json twa-manifest.json
+
+      - name: Build
+        working-directory: apps/rider/android
+        env:
+          BUBBLEWRAP_KEYSTORE_PASSWORD: ${{ secrets.RIDER_KEYSTORE_PASSWORD }}
+          BUBBLEWRAP_KEY_PASSWORD: ${{ secrets.RIDER_KEY_PASSWORD }}
+        run: |
+          # (the Android project is generated from twa-manifest.json; it isn't kept in git)
+          yes | npx --yes @bubblewrap/cli@1 update --skipVersionUpgrade --manifest=./twa-manifest.json
+          npx --yes @bubblewrap/cli@1 build --skipPwaValidation --manifest=./twa-manifest.json
+          cp app-release-signed.apk qravy-rider.apk
+          cp app-release-bundle.aab qravy-rider.aab
+          # what the admin's download card shows (version, size, when)
+          jq -n --arg v "${{ inputs.version_name }}" --argjson c "${{ inputs.version_code }}" --argjson s "$(stat -c%s qravy-rider.apk)" --arg d "$(date -u +%FT%TZ)" \n            '{version:$v, code:$c, bytes:$s, builtAt:$d}' > version.json
+
+      - name: Publish to the "rider-apk" release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        working-directory: apps/rider/android
+        run: |
+          gh release view rider-apk >/dev/null 2>&1 || gh release create rider-apk --title "Rider app (Android)" \
+            --notes "Built by the Rider APK workflow. The newest build replaces the files here."
+          gh release upload rider-apk qravy-rider.apk qravy-rider.aab version.json --clobber
+          gh release edit rider-apk --notes "Version ${{ inputs.version_name }} (${{ inputs.version_code }}), built $(date -u +%F)."
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rider-android-${{ inputs.version_name }}
+          path: |
+            apps/rider/android/qravy-rider.apk
+            apps/rider/android/qravy-rider.aab

@@ -510,6 +510,8 @@ export const tenantUpdateSchema = z
     logoRadius: z.number().int().min(0).max(50).optional(),
     logoSize: z.number().int().min(56).max(200).optional(),
     priceDigits: z.enum(['latin', 'bn']).optional(),
+    // the guest site's theme (Digital Menu → Themes)
+    storefrontTheme: z.enum(['petal', 'ember']).optional(),
     // the restaurant's own words for what guests see (empty = Qravy's default): the intro, the thank-you after a
     // dine-in / delivery / pickup order, the waiter-call confirmation — each in Bangla and English
     guestMessages: z
@@ -731,4 +733,23 @@ export const bulkHoursSchema = z.object({
   ids: z.array(objectId).min(1).max(500),
   availability: z.array(availabilityWindowSchema).max(7),
   servicePeriodIds: periodIdsSchema.optional(),
+});
+
+/* ---------- the restaurant's riders (services/orders/riders.ts) ---------- */
+const riderPhone = z.string().trim().regex(/^\+?[0-9][0-9 -]{5,18}$/, 'Enter a valid phone number');
+export const riderCreateSchema = z.object({
+  name: z.string().trim().min(1, 'Enter the rider\'s name').max(60),
+  phone: riderPhone,
+  photoUrl: z.string().trim().url().max(500).nullable().optional(),
+  vehicle: z.enum(['bike', 'cycle', 'car', 'walk']).nullable().optional(),
+  locationId: z.string().trim().nullable().optional(),
+  onDuty: z.boolean().optional(),
+});
+export const riderUpdateSchema = riderCreateSchema.partial();
+export const orderRiderSchema = z.object({ riderId: z.string().trim().min(1).nullable() });
+export const orderTripSchema = z.object({ action: z.enum(['picked_up', 'delivered', 'problem']) });
+export const riderTripSchema = z.object({
+  action: z.enum(['picked_up', 'delivered', 'problem']),
+  reason: z.enum(['no-answer', 'wrong-address', 'refused', 'other']).optional(),
+  note: z.string().trim().max(300).optional(),
 });

@@ -140,6 +140,9 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
   const preambleTimerRef = useRef<number | null>(null);
   const preambleSayingRef = useRef(false);
   const preambleSaidRef = useRef(false);
+  // the whole line the waiter is saying now (its words appear as they're spoken: aiLive) — so a screen can show the
+  // words still to come, dimmed, ahead of the voice
+  const [sayingText, setSayingText] = useState('');
   // the welcome is being spoken → its text is revealed with the voice (see visibleText); never longer than 8 s
   const [welcomePending, setWelcomePending] = useState(false);
   useEffect(() => {
@@ -176,6 +179,7 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
           inSpeechRef.current = true;
           lastDueRef.current = 0;
           startedTextRef.current = text || '';
+          setSayingText(text || '');
           // a new utterance: its words wait for the sound to start (see onPlaybackStart)
           playAnchorRef.current = null;
           queuedWordsRef.current = [];
@@ -381,6 +385,11 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
 
   const [listening, setListening] = useState(false);
   const [uiMode, setUiMode] = useState<UIMode>('idle');
+  // what the guest said this turn, for the screen: the quick live guess while they talk (grey — may be wrong), then
+  // the real transcript once they stop (the words the waiter answers). Display only — the server hears the audio.
+  const [heardLive, setHeardLive] = useState('');
+  const [heard, setHeard] = useState('');
+  const [heardAt, setHeardAt] = useState(0);
 
   // hands-free (utils/handsfree): the server ends the turn when the guest stops talking; after the waiter's
   // question the mic reopens for a short listen window; "which one?" answers are buttons
@@ -509,6 +518,12 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
   const showSuggestionsRef = useRef(false);
   const showTrayRef = useRef(false);
   const shownIdsRef = useRef<string[]>([]); // the dishes on screen — "which of these…" is about them
+  // a page that shows its own list (the Ember theme's suggestions in the order) says which, in its order — so "the
+  // first one" means the first one THERE (null: the default above)
+  const shownOverrideRef = useRef<string[] | null>(null);
+  const setShownOnScreen = useCallback((ids: string[] | null) => {
+    shownOverrideRef.current = ids && ids.length ? ids : null;
+  }, []);
   showSuggestionsRef.current = showSuggestions;
   showTrayRef.current = showTray;
   shownIdsRef.current = showSuggestions
@@ -880,6 +895,10 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
       }
       setChoices([]);
       setFollowListen(followUp);
+      // a new turn: last turn's words go (a typed one shows exactly what was typed)
+      setHeardLive('');
+      setHeard(typed);
+      setHeardAt(typed ? Date.now() : 0);
       pendingAudioRef.current = [];
       helloSentRef.current = false;
       try {
@@ -1000,7 +1019,7 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
                 cart: cartItemsRef.current,
                 // the tray's "Note for the kitchen" — goes with an order the guest confirms by voice
                 orderNote: readOrderNote(resolvedSub) || undefined,
-                shown: shownIdsRef.current, // the cards / picks on screen — "which of these…" is about them
+                shown: shownOverrideRef.current ?? shownIdsRef.current, // the cards / picks on screen — "which of these…" is about them
                 // online: which of name / phone / address the checkout form still lacks — the waiter only asks for those
                 contactMissing: channelRef.current === 'online' ? contactMissingNow(resolvedSub) : undefined,
                 fulfillment: channelRef.current === 'online' ? fulfillmentNow(resolvedSub) : undefined,
@@ -1067,6 +1086,22 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
             }
             return;
           }
+          // the guest's words: the live guess while they talk, then what was really heard
+          if (msg.t === 'stt_partial') {
+            const sofar = typeof msg.sofar === 'string' ? msg.sofar.trim() : '';
+            if (sofar) setHeardLive(sofar);
+            return;
+          }
+          if (msg.t === 'heard') {
+            const text = String(msg.text || '').trim();
+            if (text) {
+              setHeard(text);
+              setHeardLive('');
+              setHeardAt(Date.now());
+            }
+            return;
+          }
+
           if (msg.t === 'speech_start') {
             setFollowListen(false); // they're talking — the orb shows their voice
             emptyWindowsRef.current = 0;
@@ -1766,12 +1801,12 @@ export function useWaiterSession({ subdomain, branch, channel, onOpenMenu, onChe
     // where the conversation is
     resolvedSub, resolvedBranch, resolvedChannel, selectedLang, setSelectedLang, tts, setAi, setMeta, lastMeta, lastReplyAt,
     isSilentPending: () => silentReplyRef.current,
-    aiLive, aiFinal, aiAt, uiMode, speaking, voicePending, welcomePending, setWelcomePending, listening, holding, micLevel,
+    aiLive, aiFinal, aiAt, uiMode, heardLive, heard, heardAt, sayingText, speaking, voicePending, welcomePending, setWelcomePending, listening, holding, micLevel,
     session, voiceState, followListen, orbMode,
     // the mic
     startListening, stopListening, sendTyped, askMicAccess, orbPressProps, orbBallRef, holdHint, holdHintText, showHoldPill, heldOnce,
     // what's on screen
-    choices, pickOptions, offerItemIds, suggestedItems, highlightIds, setHighlightIds, trayPicks, setTrayPicks,
+    choices, pickOptions, offerItemIds, suggestedItems, highlightIds, setHighlightIds, trayPicks, setTrayPicks, setShownOnScreen,
     upsellItems, trayAskTable, setTrayAskTable, trayAskAt, showSuggestions, setShowSuggestions, showTray, setShowTray,
     manualOrder, setManualOrder,
     openSuggestions, openTray, goMenu, mapUpsell, handleSuggestionsReply, handleTrayReply,

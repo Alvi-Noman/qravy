@@ -3,10 +3,11 @@
 import { useEffect, useState } from 'react';
 import { useCart, type CartChange, type CartItem } from '../../context/CartContext';
 import { tr, uiLang, type UiLang } from '../../utils/ui-lang';
+import { useStoreTheme } from '../../themes/theme';
 
 const SHOW_MS = 6000;
 
-function describe(c: CartChange, lang: UiLang): string {
+export function describe(c: CartChange, lang: UiLang): string {
   const name = (it: CartItem) => it.name + (it.variation ? ` (${it.variation})` : '');
   const parts: string[] = [];
   if (c.added.length) {
@@ -27,6 +28,8 @@ function describe(c: CartChange, lang: UiLang): string {
 export default function UndoToast() {
   const { lastChange, undoLast, dismissChange } = useCart();
   const [visible, setVisible] = useState(false);
+  // the Ember theme has its own (themes/ember/UndoBar — in the guest's language, for Pixie's changes)
+  const theme = useStoreTheme();
 
   useEffect(() => {
     if (!lastChange) {
@@ -38,7 +41,7 @@ export default function UndoToast() {
     return () => window.clearTimeout(t);
   }, [lastChange]);
 
-  if (!lastChange || !visible) return null;
+  if (!lastChange || !visible || theme === 'ember') return null;
   const lang = 'en' as const; // UI chrome stays English
   const text = describe(lastChange, lang);
   if (!text) return null;

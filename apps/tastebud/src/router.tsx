@@ -10,11 +10,12 @@ import TrackPageViews from './components/TrackPageViews';
 import StoreBranding from './components/StoreBranding';
 
 const Home = lazy(() => import('./pages/Directory'));
-const Restaurant = lazy(() => import('./pages/DigitalMenu'));
-const AIWaiter = lazy(() => import('./pages/AIWaiterHome'));
-const ConfirmationPage = lazy(() => import('./pages/ConfirmationPage'));
-const CheckoutPage = lazy(() => import('./pages/CheckoutPage'));
-const OrderStatusPage = lazy(() => import('./pages/OrderStatusPage'));
+// the restaurant's theme (Digital Menu → Themes) decides how these pages look — themes/ThemedPages.tsx
+const Restaurant = lazy(() => import('./themes/ThemedPages').then((m) => ({ default: m.ThemedMenu })));
+const AIWaiter = lazy(() => import('./themes/ThemedPages').then((m) => ({ default: m.ThemedHome })));
+const ConfirmationPage = lazy(() => import('./themes/ThemedPages').then((m) => ({ default: m.ThemedCheckout })));
+const CheckoutPage = lazy(() => import('./themes/ThemedPages').then((m) => ({ default: m.ThemedCheckout })));
+const OrderStatusPage = lazy(() => import('./themes/ThemedPages').then((m) => ({ default: m.ThemedOrder })));
 const TenminOrbDemo = lazy(() => import('./pages/TenminOrbDemo'));
 // temporary: the phone's noise suppression on vs off, and what the speech-to-text heard (linked from nowhere)
 const MicTest = lazy(() => import('./pages/MicTest'));

@@ -2,6 +2,7 @@ import React, { type ElementType, useEffect, useRef, useState, useMemo } from 'r
 import { NavLink, Link } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
+  TruckIcon,
   HomeIcon,
   ClipboardDocumentListIcon,
   BellAlertIcon,
@@ -50,6 +51,7 @@ export default function Sidebar(): JSX.Element {
     Dashboard: 'dashboard:view',
     Orders: 'orders:read',
     'Service Requests': 'serviceRequests:read',
+    Riders: 'orders:read', // (the same staff as the order board)
     'Menu Items': 'menuItems:read',
     Categories: 'categories:read',
     'Digital Menu': 'digitalMenu:view', // not in branch caps → hidden there
@@ -75,6 +77,8 @@ export default function Sidebar(): JSX.Element {
         { name: 'Dashboard', to: '/dashboard', icon: HomeIcon, end: true },
         { name: 'Orders', to: '/orders', icon: ClipboardDocumentListIcon },
         { name: 'Service Requests', to: '/service-requests', icon: BellAlertIcon },
+        // the restaurant's own delivery riders — only for restaurants that sell online (delivery)
+        { name: 'Riders', to: '/riders', icon: TruckIcon },
         { name: 'Menu Items', to: '/menu-items', icon: Squares2X2Icon },
         { name: 'Categories', to: '/categories', icon: TagIcon },
         { name: 'Digital Menu', to: '/digital-menu', icon: DocumentTextIcon },
@@ -110,13 +114,14 @@ export default function Sidebar(): JSX.Element {
           if (item.name === 'Locations' && !isMultipleLocations) {
             return false;
           }
+          if (item.name === 'Riders' && tenant?.restaurantInfo?.onlineSalesEnabled === false) return false;
           const cap = REQUIRES[item.name];
           // If not mapped, show it only to members (safety), but we mapped all above.
           return cap ? has(cap) : true;
         }),
       }))
       .filter((section) => section.items.length > 0);
-  }, [sectionsAll, has, isMultipleLocations]);
+  }, [sectionsAll, has, isMultipleLocations, tenant?.restaurantInfo?.onlineSalesEnabled]);
 
   const linkClass = (isActive: boolean): string =>
     `group flex items-center gap-3 rounded-md px-3 py-2.5 text-[14px] transition ${

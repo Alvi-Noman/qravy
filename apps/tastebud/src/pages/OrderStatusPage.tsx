@@ -173,6 +173,33 @@ export default function OrderStatusPage() {
           )
         )}
 
+        {/* the restaurant's own rider: who is bringing it, where they are, and Call */}
+        {delivery && order.delivery && !order.delivery.deliveredAt && !cancelled && (
+          <section className="mt-3 flex items-center gap-3 rounded-3xl bg-white px-5 py-4 shadow-sm">
+            {order.delivery.rider.photoUrl ? (
+              <img src={order.delivery.rider.photoUrl} alt="" className="h-12 w-12 shrink-0 rounded-full object-cover" />
+            ) : (
+              <span aria-hidden="true" className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-rose-50 text-base font-bold text-[#FA2851]">
+                {order.delivery.rider.name.split(/s+/).filter(Boolean).slice(0, 2).map((w) => w[0]?.toUpperCase()).join('')}
+              </span>
+            )}
+            <div className="min-w-0 flex-1">
+              <div className="truncate font-semibold text-gray-900">{order.delivery.rider.name}</div>
+              <div className="truncate text-sm text-gray-600">
+                {order.delivery.pickedUpAt
+                  ? tr(lang, 'আপনার খাবার নিয়ে পথে আছেন', 'On the way with your order')
+                  : tr(lang, 'রেস্টুরেন্ট থেকে খাবার নিচ্ছেন', 'Collecting your order')}
+              </div>
+            </div>
+            <a
+              href={`tel:${order.delivery.rider.phone}`}
+              className="shrink-0 rounded-full bg-[#FA2851] px-4 py-2 text-sm font-semibold text-white"
+            >
+              {tr(lang, 'কল করুন', 'Call')}
+            </a>
+          </section>
+        )}
+
         {online && order.customer && (
           <section className="mt-3 rounded-3xl bg-white px-6 py-4 text-sm text-gray-700 shadow-sm">
             <div>{order.customer.phone}</div>

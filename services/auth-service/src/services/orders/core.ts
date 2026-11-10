@@ -63,7 +63,7 @@ const countersCol = () => client.db('authDB').collection<{ _id: string; seq: num
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
-function businessDay(tz: string, at = new Date()): string {
+export function businessDay(tz: string, at = new Date()): string {
   try {
     return new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(at);
   } catch {
@@ -605,8 +605,19 @@ export function toPublicOrder(o: OrderDoc) {
     payment: o.payment,
     ...(o.notes ? { notes: o.notes } : {}),
     ...(o.eta ? { eta: etaView(o) } : {}),
+    ...(o.delivery ? { delivery: deliveryView(o.delivery) } : {}),
     createdAt: o.createdAt,
     updatedAt: o.updatedAt,
+  };
+}
+
+/** Who is bringing it, and how far it got — for the guest (the rider's name, phone, photo, vehicle; the times). */
+function deliveryView(d: NonNullable<OrderDoc['delivery']>) {
+  return {
+    rider: { name: d.name, phone: d.phone, photoUrl: d.photoUrl ?? null, vehicle: d.vehicle ?? null },
+    assignedAt: d.assignedAt,
+    pickedUpAt: d.pickedUpAt ?? null,
+    deliveredAt: d.deliveredAt ?? null,
   };
 }
 
@@ -623,5 +634,17 @@ export function toAdminOrder(o: OrderDoc) {
     businessDay: o.businessDay,
     // false = the guest typed the table number (didn't scan its QR code) — check it's really them before cooking
     tableVerified: o.dineIn ? o.dineIn.tableVerified !== false : null,
+    // staff also see which rider (to change them), the cash they took, and a "couldn't deliver" report
+    ...(o.delivery
+      ? {
+          delivery: {
+            ...deliveryView(o.delivery),
+            riderId: String(o.delivery.riderId),
+            cashCollected: o.delivery.cashCollected ?? 0,
+            cashSettledAt: o.delivery.cashSettledAt ?? null,
+            problem: o.delivery.problem ?? null,
+          },
+        }
+      : {}),
   };
 }

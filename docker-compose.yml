@@ -214,8 +214,15 @@ services:
       # === OpenAI brain (GPT-4.1) ===
       - OPENAI_API_KEY=${OPENAI_API_KEY:?Set OPENAI_API_KEY in your .env}
       - OPENAI_BASE=https://api.openai.com
-      - OPENAI_CHAT_MODEL=gpt-4.1
-      - WAITER_AI_FIRST=1
+      # the waiter's AI — the same settings as production (compose.production.yml): the model, and the provider when
+      # it isn't OpenAI (Gemini while the OpenAI credits are out). Set in the root .env: WAITER_CHAT_MODEL,
+      # WAITER_CHAT_URL, WAITER_CHAT_KEY, WAITER_CHAT_REASONING — removed → OpenAI again
+      - OPENAI_CHAT_MODEL=${WAITER_CHAT_MODEL:-gpt-6.1-terra}
+      - OPENAI_CHAT_URL=${WAITER_CHAT_URL:-}
+      - WAITER_CHAT_KEY=${WAITER_CHAT_KEY:-}
+      - WAITER_CHAT_REASONING=${WAITER_CHAT_REASONING:-}
+      # rules-first like production (0); WAITER_AI_FIRST=1 in the root .env turns AI-first on to test it
+      - WAITER_AI_FIRST=${WAITER_AI_FIRST:-0}
       # the separate "understand first" call (intent.py): off — it added ~1.5 s to every turn (1 = on)
       - INTENT_AI=0
       # Optional tuning (max tokens is a ceiling — Bangla replies + voice text need room)

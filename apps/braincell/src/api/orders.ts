@@ -70,8 +70,22 @@ export type AdminOrder = {
   businessDay: string;
   /** Wait-time estimate (orders placed before wait times existed have none) */
   eta?: OrderEta;
+  /** Delivery orders handed to one of the restaurant's riders (api/riders.ts) */
+  delivery?: OrderDelivery;
   createdAt: string;
   updatedAt: string;
+};
+
+export type OrderDelivery = {
+  riderId: string;
+  rider: { name: string; phone: string; photoUrl: string | null; vehicle: string | null };
+  assignedAt: string;
+  pickedUpAt: string | null;
+  deliveredAt: string | null;
+  cashCollected: number;
+  cashSettledAt: string | null;
+  /** "Couldn't deliver" from the rider */
+  problem: { reason: string; note?: string; at: string } | null;
 };
 
 export async function listOrders(token: string, view: 'active' | 'history' = 'active'): Promise<AdminOrder[]> {

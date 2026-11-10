@@ -403,6 +403,7 @@ PLAYBOOK = """You are the virtual waiter of the restaurant described below. Gues
 - Never suggest or list again what is already in the CART ("সকালে কি আছে?" with বুটের ডাল in the cart: the paratha, the nehari… — not the dal they already took).
 - If a fact isn't available, say you don't have that information and that a staff member can help. Guessing is worse than saying you don't know.
 - Wait times: how long a dish takes to make is in MENU as "prep ~N min"; live numbers (how busy the kitchen is, the CART if ordered now, the quickest dishes, the guest's PLACED orders) are in WAIT TIMES in THIS TURN. Quote only those, rounded and approximate ("about 15 minutes", "১৫ মিনিটের মতো") — never an exact promise, never a number you made up, never "I've told the kitchen to hurry". A dish without a prep time takes the default given in WAIT TIMES. "Where's my food?" after ordering → answer from GUEST'S PLACED ORDER (its status and minutes left; running late → a short apology and "it's coming soon"). A guest in a hurry → lead with the quickest dishes. Ordering and asking "how long?" in the same breath → do both (topic wait_time only when time is all they asked).
+- Ordering what is already on its way: the guest asks for a dish that is in GUEST'S PLACED ORDER and not served yet → don't add it yet; say in a few words that it's already ordered and on its way, and ask whether they want one more. Add it only when they say yes. No question when they clearly want another ("one more", "another") or it's a drink.
 
 # Allergies & diets (safety first)
 - Menu tags (e.g. spicy, vegetarian) are facts. "has:" / "likely spicy" / "likely mild" / "likely vegetarian" are hints derived from dish names — treat them as likely, not guaranteed, and never read these labels out; say it naturally ("the name suggests it's on the spicier side", "it's usually mild").
@@ -650,7 +651,18 @@ def _parse_model_json(text: str) -> Dict[str, Any]:
     m = re.search(r'"replyText"\s*:\s*"((?:[^"\\]|\\.)*)"', raw)
     if m:
         return {"replyText": json.loads(f'"{m.group(1)}"'), "_partial": True}
+    # the guest gets an apology for this — keep what the model actually sent, to see why (server.py saves it)
+    print(f"[brain] ⚠️ unreadable model reply ({OPENAI_CHAT_MODEL}, {len(raw)} chars): {_safe_snip(raw, 300)}")
+    if ON_UNPARSED is not None:
+        try:
+            ON_UNPARSED(raw)
+        except Exception as e:  # noqa: BLE001 — a failed note never breaks the turn
+            print("[brain] could not keep the unreadable reply:", repr(e)[:120])
     raise ValueError("unable to parse model JSON")
+
+
+# set by server.py: keeps an unreadable model reply for review (model_parse_failures)
+ON_UNPARSED: Optional[Callable[[str], None]] = None
 
 
 # --------------------------- OpenAI call ---------------------------
@@ -1547,16 +1559,24 @@ _ORDINAL_AT = {"প্রথম": 0, "দ্বিতীয়": 1, "দ্ব�
 _TRAY_VERB = re.compile(r"বাদ|কমা|বাড়া|বাড়া|বদল|সরা|ক্যান্সেল|remove|cancel|change|swap|delete|মুছ", re.I)
 
 
-def _ordinal_to_dish(transcript: str, rstate: Any, index: MenuIndex) -> str:
-    """"দ্বিতীয়টার দাম কত?" → "ছোট মাছ দাম কত?" — the place in the list the waiter JUST said (its cards, in order)."""
+def _ordinal_to_dish(transcript: str, rstate: Any, index: MenuIndex, on_screen: Optional[List[str]] = None) -> str:
+    """"দ্বিতীয়টার দাম কত?" → "ছোট মাছ দাম কত?" — the place in the list the guest is looking at: the app's numbered
+    list on screen when it sent one (its cards / the suggestions in the order, in order), else the list the waiter
+    JUST said."""
     m = _ORDINAL.search(transcript or "")
-    offered = [i for i in (getattr(rstate, "last_offered", None) or []) if i in index.by_id]
-    said_at = getattr(rstate, "last_offer_turn", 0)
-    if len(offered) < 2:  # ("প্রথমটা কেমন?" in between answered about one dish — the list is still the one before)
-        offered = [i for i in (getattr(rstate, "last_list", None) or []) if i in index.by_id]
-        said_at = getattr(rstate, "last_list_turn", 0)
-    if not m or len(offered) < 2 or _TRAY_VERB.search(transcript) or getattr(rstate, "turn", 0) - said_at > 3:
-        return transcript
+    screen = [i for i in (on_screen or []) if i in index.by_id]
+    if len(screen) >= 2:
+        if not m or _TRAY_VERB.search(transcript):
+            return transcript
+        offered = screen
+    else:
+        offered = [i for i in (getattr(rstate, "last_offered", None) or []) if i in index.by_id]
+        said_at = getattr(rstate, "last_offer_turn", 0)
+        if len(offered) < 2:  # ("প্রথমটা কেমন?" in between answered about one dish — the list is still the one before)
+            offered = [i for i in (getattr(rstate, "last_list", None) or []) if i in index.by_id]
+            said_at = getattr(rstate, "last_list_turn", 0)
+        if not m or len(offered) < 2 or _TRAY_VERB.search(transcript) or getattr(rstate, "turn", 0) - said_at > 3:
+            return transcript
     word = (m.group(1) or m.group(4) or "").lower()
     at = _ORDINAL_AT.get(word)
     if at is None or at >= len(offered):
@@ -2057,7 +2077,13 @@ _OFFERS_TO_ADD = re.compile(
     r"যোগ করব কি|যোগ করে দেব|অর্ডারে যোগ করতে চান",
     re.I,
 )
-_CLAIMS_ADDED = re.compile(r"\badded\b|\bi'?ve added\b|in your (cart|order|tray)|যোগ করা হয়েছে|যোগ করা হলো|যোগ করলাম", re.I)
+# every common way of SAYING something was put in the order — a check only: a reply that says it while nothing was
+# added is replaced (it never answers the guest by itself). "যোগ করে দেওয়া হয়েছে", "যোগ করে নিয়েছি", "যুক্ত করেছি",
+# "অ্যাড করে দিলাম" … (an offer — "যোগ করে দেব?" — is not a claim)
+_CLAIMS_ADDED = re.compile(
+    r"\badded\b|\bi'?ve added\b|in your (cart|order|tray)|(যোগ|যুক্ত|অ্যাড|এড) (করা|করে) (হয়েছে|হয়েছে|হলো|হল|দেওয়া|দেয়া|দেওয়া|দেয়া|নেওয়া|নেয়া|নেওয়া|নেয়া|দিলাম|দিয়েছি|দিয়েছি|নিলাম|নিয়েছি|নিয়েছি)|(যোগ|যুক্ত|অ্যাড|এড) (করলাম|করেছি|করে দিচ্ছি|হয়েছে|হয়েছে|হলো)",
+    re.I,
+)
 _CLAIMS_CHANGED = re.compile(
     r"\b(removed|changed|updated|reduced|switched|swapped|done)\b|বাদ দিলাম|বাদ দেওয়া হলো|বাদ দিয়েছি|সরিয়ে দিলাম|"
     r"কমিয়ে দিলাম|কমানো হলো|বদলে দিলাম|বদলানো হলো|বদলে দিয়েছি|করে দিলাম|ঠিক করে দিলাম|"
@@ -2300,12 +2326,19 @@ def _held_op(e: Dict[str, Any], index: MenuIndex) -> Dict[str, Any]:
     return op
 
 
-def _held_for_options(problems: List[str], raw_ops: Any, index: MenuIndex, words: str) -> List[Dict[str, Any]]:
+def _held_for_options(problems: List[str], raw_ops: Any, index: MenuIndex, words: str,
+                      rows: Optional[List[Dict[str, Any]]] = None) -> List[Dict[str, Any]]:
     """The dishes the guest ordered but whose size / required choice they haven't said →
-    [{itemId, name, quantity, variant, choices, note}], already filled with what their recent words DO say."""
+    [{itemId, name, quantity, variant, choices, note}], already filled with what their recent words DO say.
+    `rows`: the order's lines (L1, L2 …) — an add pointing at a line counts as a change to that line only when the
+    line really is this dish; a made-up or wrong line ("line": "Hot Wings", or L2 holding another dish) is a new add."""
     out: List[Dict[str, Any]] = []
     order_names = " ".join(str((index.resolve(o.get("item") or o.get("itemId"), o.get("name")) or {}).get("name") or "")
                            for o in (raw_ops if isinstance(raw_ops, list) else []) if isinstance(o, dict))
+
+    def on_its_line(o: Dict[str, Any], it: Dict[str, Any]) -> bool:
+        ref = str(o.get("line") or "").strip().upper()
+        return bool(ref) and any(r.get("line") == ref and str(r.get("itemId")) == index.item_id(it) for r in rows or [])
     for p in problems:
         if not _OPTION_GAP.search(p):
             continue
@@ -2313,8 +2346,9 @@ def _held_for_options(problems: List[str], raw_ops: Any, index: MenuIndex, words
         if not it or any(e["itemId"] == index.item_id(it) for e in out):
             continue
         raw = next((o for o in (raw_ops if isinstance(raw_ops, list) else []) if isinstance(o, dict)
-                    and str(o.get("op") or "").strip().lower() in ("add", "set") and not o.get("line")
-                    and (index.resolve(o.get("item") or o.get("itemId"), o.get("name")) or {}) is it), None)
+                    and str(o.get("op") or "").strip().lower() in ("add", "set")
+                    and (index.resolve(o.get("item") or o.get("itemId"), o.get("name")) or {}) is it
+                    and not on_its_line(o, it)), None)
         if raw is None:
             continue  # a change to a tray line — asked the usual way
         name = str(it.get("name"))
@@ -3566,12 +3600,15 @@ def _said(label: str, transcript: str, dish: str = "") -> bool:
     drop = {w for w in re.findall(r"[a-z]+", str(dish).lower()) if len(w) > 2}
     drop |= {_phon(word_to_bn(w)) for w in list(drop)}
     seq: List[set] = []  # the guest's words in order, each as the forms it can match
+    bn_said: List[str] = []  # the guest's Bangla words (as they sound), in order — for the consonant check below
     for w in re.findall(r"[a-z]+|\d+|[ঀ-৿]+", t):
         forms = {w, _sing(w)} if w.isascii() else {_phon(w), _phon(_BN_SUFFIX.sub("", w) or w)}
         if forms & drop:
             continue
         num = next((_NUM_WORDS[f] for f in forms if f in _NUM_WORDS), None)
         seq.append({num} if num else forms)
+        if not w.isascii() and not num:
+            bn_said.append(_phon(w))
 
     def names(pos: set, w: str) -> bool:
         for a in (w, *_LABEL_ALIASES.get(w, ())):
@@ -3590,7 +3627,26 @@ def _said(label: str, transcript: str, dish: str = "") -> bool:
     if nums:  # "6 pcs" needs the number AND its word together — "দুইটা" (the quantity) is not "2 pcs"
         return any(nums[0] in pos and (not words or (i + 1 < len(seq) and any(names(seq[i + 1], w) for w in words)))
                    for i, pos in enumerate(seq))
-    return bool(words) and any(names(pos, w) for pos in seq for w in words)
+    if not words:
+        return False
+    if any(names(pos, w) for pos in seq for w in words):
+        return True
+    # speech-to-text often runs a choice's words together and drops a vowel mark ("এক্সট্রা হট" heard as
+    # "এক্স্ট্রহট" / "এক্সট্রাহট"): compare the consonants only — the choice's words run together, against each word
+    # the guest said and each two neighbouring words (any choice, any restaurant; numbers never match this way)
+    target = _consonants("".join(_phon(word_to_bn(w)) for w in words))
+    if len(target) < 3:
+        return False
+    heard = [_consonants(w) for w in bn_said]
+    return target in heard or target in [a + b for a, b in zip(heard, heard[1:])]
+
+
+_BN_VOWEL_MARKS = re.compile("[" + chr(0x09BE) + "-" + chr(0x09CC) + chr(0x09D7) + "]")  # the vowel marks
+
+
+def _consonants(w: str) -> str:
+    """A Bangla word without its vowel marks (as it sounds — _phon — first): "এক্সট্রা হট" → "একসতরহত"."""
+    return _BN_VOWEL_MARKS.sub("", w or "")
 
 
 # a question is not an order — unless it's phrased as one ("can I have…", "could you add…")
@@ -6728,7 +6784,7 @@ async def _reply(
     rstate = RecoState.from_dict((dialog_state or {}).get("reco"))
     # "দ্বিতীয়টার দাম কত?" / "প্রথমটা কেমন?" right after a list → THAT dish, by its place in the list just said (the model
     # once priced the third one). Not a tray change ("প্রথমটা বাদ দিন" is the tray's first line).
-    transcript = _ordinal_to_dish(transcript, rstate, index)
+    transcript = _ordinal_to_dish(transcript, rstate, index, [str(x) for x in (ctx.get("shownItems") or [])])
     rstate.continuing = bool(followups.ask_kind(transcript))  # (a follow-up adds to the suggestion thread — to_dict)
     profile = GuestProfile.from_dict(rstate.profile).merge(extract_prefs(transcript))
     # ("মাছ ছাড়া" after the suggestions turns down the fish only — the profile's avoid does that — not the chicken too)
@@ -6777,8 +6833,10 @@ async def _reply(
     owner_pick = _owner_pick(transcript, (restaurant or {}).get("suggestRules"), index, orderable)
     if owner_pick:
         kind_scope = set(owner_pick[1])
-    # already in the tray → never recommended back to them (they chose it) — unless they name it now
-    in_tray = {i for i in cart_qty if cart_qty[i] > 0} - asked_ids
+    # already in the tray — or ordered earlier this visit (in the kitchen or on the table) → never recommended back to
+    # them (they chose it) — unless they name it now
+    ordered_before = {str(i) for i in ((ctx.get("kitchen") or {}).get("myOrderedIds") or [])}
+    in_tray = ({i for i in cart_qty if cart_qty[i] > 0} | ordered_before) - asked_ids
     asked_ids |= kind_scope
     picks, blocked = rank(
         index, orderable, kinds, profile, stats=stats, context_ids=list(cart_qty) + mentioned_now,
@@ -8642,7 +8700,7 @@ async def _reply(
         guards.append("options_with_new_order")
     # a dish ordered without its size / required choice: held with its quantity, asked about in ONE question, and
     # added when the guest answers next turn (see (a0)). Said a turn or two ago already → added now.
-    held_opts = _held_for_options(problems, obj.get("cartOps"), index, guest_words)
+    held_opts = _held_for_options(problems, obj.get("cartOps"), index, guest_words, rows=cart_rows)
     if held_opts and _tray.qty_intent(transcript) == "more":
         # "আরও একটা হট উইংস দেন" with one Hot Wings line (10 pcs, Spicy) in the tray → more of THAT line, not
         # "which size, how spicy?" again

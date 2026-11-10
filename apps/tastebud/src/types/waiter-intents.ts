@@ -208,7 +208,8 @@ export type AiReplyMeta = {
 /** WS → Client messages (subset we care about in the waiter flow). */
 export type WsInboundMessage =
   | { t: 'ack' }
-  | { t: 'stt_partial'; text: string; ts?: number }
+  | { t: 'stt_partial'; text: string; sofar?: string; ts?: number }
+  | { t: 'heard'; text: string }
   | {
       t: 'stt_final';
       text: string;

@@ -39,7 +39,7 @@ SORRY_REPEAT = {
 BN_SCRIPT_NAMES = os.environ.get("BN_SCRIPT_NAMES", "1") == "1"
 from waiter_knowledge import kind_text, meal_kinds, reply_language
 import bangla_meal
-from recommender import OrderStats
+from recommender import GuestProfile, OrderStats, violations
 import wait_time
 import wait_talk
 
@@ -103,6 +103,20 @@ _CLIENT = MongoClient(MONGO_URI)
 # transcripts DB handle
 DB = _CLIENT[TRANS_DB_NAME]
 COLL = DB.transcripts
+
+
+def _keep_unparsed(raw: str) -> None:
+    """A model reply the brain couldn't read (the guest got an apology): kept 30 days in model_parse_failures, with
+    the model's name, to see what the provider sent (Gemini while OpenAI credits are out)."""
+    import brain as _b
+    col = DB["model_parse_failures"]
+    col.create_index("at", expireAfterSeconds=30 * 24 * 60 * 60)  # (once; a no-op after)
+    col.insert_one({"at": datetime.utcnow(), "model": _b.OPENAI_CHAT_MODEL, "raw": raw[:4000]})
+
+
+import brain as _brain_mod  # noqa: E402
+
+_brain_mod.ON_UNPARSED = _keep_unparsed
 
 # menu collection handle
 ITEMS = _CLIENT[MENU_DB_NAME][MENU_COLL]
@@ -369,6 +383,36 @@ def _loose_word(w: str) -> str:
         base = next((b for b, alts in _ACCENTED.items() if ch.lower() == b or ch.lower() in alts), "")
         out.append(f"[{base}{_ACCENTED[base]}]" if base else re.escape(ch))
     return "".join(out)
+
+
+def guest_filter(meta: Dict[str, Any], items: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """What the guest told the waiter they can't or won't eat — diet, allergies, ingredients to avoid — and the dishes
+    that rules out (the recommender's own check), for their app to show as a filter ("No beef ×"). None when they said
+    nothing of the kind. A dish they merely turned down isn't a diet: it doesn't count here."""
+    prof = GuestProfile.from_dict(((meta.get("reco") or {}).get("profile")) or {})
+    if not (prof.diet or prof.allergies or prof.avoid):
+        return None
+    prof.declined = []
+    hide = [str(it.get("id")) for it in items if it.get("id") and violations(it, prof)]
+    return {"diet": list(prof.diet), "allergies": list(prof.allergies), "avoid": list(prof.avoid)[:4], "hide": hide}
+
+
+def dish_said(meta: Dict[str, Any], *, tenant: Optional[str], drop: bool = False) -> List[Dict[str, str]]:
+    """The dishes this reply puts on the guest's screen (suggestion cards, offers) as the VOICE says them — the app
+    moves its suggestion slider to each dish while its name is being spoken. Only the menu's names, converted by the
+    same rules as the voice text (never new words). Nothing the waiter says changes."""
+    out: List[Dict[str, str]] = []
+    seen: set = set()
+    for row in [*(meta.get("suggestions") or []), *(meta.get("upsell") or [])]:
+        if not isinstance(row, dict):
+            continue
+        iid = str(row.get("itemId") or row.get("id") or "")
+        name = str(row.get("title") or row.get("name") or "").strip()
+        if not iid or not name or iid in seen:
+            continue
+        seen.add(iid)
+        out.append({"id": iid, "said": to_bangla_script(_say_learned(name, tenant), spoken=True, drop_code_letter=drop)})
+    return out[:12]
 
 
 def _say_learned(text: str, tenant: Optional[str]) -> str:
@@ -772,6 +816,44 @@ async def handle_now_answers(request: web.Request) -> web.Response:
         return web.json_response({"ok": False, "error": "unavailable"}, status=500, headers=_CORS)
 
 
+_KINDS: Dict[Tuple[str, str], Tuple[float, Dict[str, str]]] = {}
+
+
+def menu_kinds(items: List[Dict[str, Any]]) -> Dict[str, str]:
+    """{itemId: kind} — drink, dessert, rice, curry… — the waiter's own reading of each dish (_dish_kind), for the
+    guest's app: "Same again?" for drinks, something sweet once the mains are served. Dishes of no kind are left out."""
+    out: Dict[str, str] = {}
+    for it in items:
+        iid = str(it.get("id") or "")
+        kind = _dish_kind(it) if iid else ""
+        if kind:
+            out[iid] = kind
+    return out
+
+
+async def handle_menu_kinds(request: web.Request) -> web.Response:
+    """GET /menu/kinds?tenant=<subdomain>[&branch=<slug>] — public, read-only: each dish's kind (see menu_kinds).
+    Kept five minutes per restaurant and branch."""
+    q = request.rel_url.query
+    tenant = q.get("tenant", "").strip()
+    if not tenant:
+        return web.json_response({"ok": False, "error": "tenant required"}, status=400, headers=_CORS)
+    branch = q.get("branch", "").strip() or None
+    key = (tenant, branch or "")
+    hit = _KINDS.get(key)
+    if hit and time.time() - hit[0] < 300:
+        return web.json_response({"ok": True, "kinds": hit[1]}, headers=_CORS)
+    try:
+        snap = await asyncio.to_thread(lambda: fetch_menu_snapshot(tenant, limit=MENU_SNAPSHOT_MAX, branch=branch,
+                                                                    check_orderable=False))
+        kinds = menu_kinds(snap.get("items") or [])
+        _KINDS[key] = (time.time(), kinds)
+        return web.json_response({"ok": True, "kinds": kinds}, headers=_CORS)
+    except Exception as e:
+        print("[menu-kinds] failed:", repr(e))
+        return web.json_response({"ok": False, "error": "unavailable"}, status=500, headers=_CORS)
+
+
 async def handle_alert_options(request: web.Request) -> web.Response:
     return web.Response(status=204, headers={
         "Access-Control-Allow-Origin": "*",
@@ -870,6 +952,7 @@ async def start_http_server():
     app.router.add_get("/upsell/stats", handle_upsell_stats)
     app.router.add_get("/conversations", handle_conversations)
     app.router.add_get("/now-answers", handle_now_answers)  # (Settings → AI Waiter → What to eat now)
+    app.router.add_get("/menu/kinds", handle_menu_kinds)  # (the guest app: "Same again?", dessert after the mains)
     app.router.add_post("/stt-test", handle_stt_test)  # the mic test page (temporary)
     app.router.add_get("/voice-clip", handle_voice_clip)
 
@@ -928,6 +1011,18 @@ def is_junk_transcript(text: str) -> bool:
     """Classic transcriber filler on near-silence ("Thanks for watching!") — never a real order."""
     s = (text or "").strip()
     return len(s) < 2 or bool(_JUNK.match(s))
+
+
+def live_words(text: Optional[str], lang: Optional[str]) -> Optional[str]:
+    """What the phone may show WHILE the guest talks (grey, replaced by the real transcript when they stop): the quick
+    local model's guess for the latest bit of audio, or None when it's noise filler, a known hallucination, another
+    script than the selected language, or not sensible. Display only — the waiter never answers these words."""
+    s = (text or "").strip()
+    if not s or is_hallucination(s) or is_junk_transcript(s) or wrong_script(s):
+        return None
+    if not fits_language(s, lang) or not looks_sane(s, lang):
+        return None
+    return s
 
 
 def looks_sane(text: str, lang: Optional[str]) -> bool:
@@ -1971,7 +2066,19 @@ def order_stats(tenant: Optional[str]) -> Dict[str, Any]:
     return out
 
 
+def _rider_fact(delivery: Any, now: datetime) -> Dict[str, Any]:
+    """The restaurant's own rider on a guest's order ("where's my rider?"): who, and how long ago they set off
+    (None = not picked up yet). {} when no rider has it."""
+    d = delivery if isinstance(delivery, dict) else {}
+    if not d.get("name"):
+        return {}
+    at = d.get("pickedUpAt")
+    return {"rider": {"name": str(d["name"]),
+                      "pickedUpMinAgo": int((now - at).total_seconds() // 60) if isinstance(at, datetime) else None}}
+
+
 KITCHEN_STALE_S = 3 * 60 * 60  # an order "open" for longer is a forgotten ticket, not kitchen load
+VISIT_S = 4 * 60 * 60  # one visit: the guest's orders this long back count as "already ordered"
 
 
 def kitchen_now(
@@ -1981,7 +2088,8 @@ def kitchen_now(
     """Live kitchen view for wait-time answers: minutes until a kitchen station is free, and this guest's own
     orders still in the kitchen (status + minutes left, from the ETA auth-service keeps on every order)."""
     now = now or datetime.utcnow()
-    out: Dict[str, Any] = {"queueMinutes": 0, "ordersInKitchen": 0, "busy": "quiet", "myOrders": [], "settings": settings}
+    out: Dict[str, Any] = {"queueMinutes": 0, "ordersInKitchen": 0, "busy": "quiet", "myOrders": [], "myOrderedIds": [],
+                           "settings": settings}
     try:
         tenant_oid = resolve_tenant_id(tenant)
         if tenant_oid is None:
@@ -1997,7 +2105,7 @@ def kitchen_now(
             q["locationId"] = loc_id
         docs = list(
             menu_db["orders"]
-            .find(q, {"status": 1, "eta": 1, "items": 1, "sessionId": 1, "orderNumber": 1, "createdAt": 1})
+            .find(q, {"status": 1, "eta": 1, "items": 1, "sessionId": 1, "orderNumber": 1, "createdAt": 1, "delivery": 1})
             .sort("createdAt", 1)
             .limit(200)
         )
@@ -2010,6 +2118,16 @@ def kitchen_now(
                 (l.get("prepMinutes") or settings["defaultPrepMinutes"], int(l.get("qty") or 1)) for l in o.get("items") or []
             )
             ahead.append({"status": o.get("status"), "prepMinutes": prep, "readyAt": eta.get("readyAt"), "createdAt": o.get("createdAt")})
+        # every dish this guest ordered this visit — in the kitchen or already on the table — so the waiter never
+        # recommends them back (the cart has only what's not sent yet)
+        if session_id:
+            mine = menu_db["orders"].find(
+                {"tenantId": tenant_oid, "sessionId": session_id, "status": {"$ne": "cancelled"},
+                 "createdAt": {"$gte": now - timedelta(seconds=VISIT_S)}},
+                {"items.itemId": 1},
+            ).limit(20)
+            out["myOrderedIds"] = list(dict.fromkeys(
+                str(l.get("itemId")) for o in mine for l in o.get("items") or [] if l.get("itemId")))
         queue = wait_time.queue_minutes(ahead, settings["parallelOrders"], now)
         active = [o for o in ahead if not wait_time.is_forgotten(o, now)]
         out.update({"queueMinutes": queue, "ordersInKitchen": len(active), "busy": wait_time.busy_level(queue)})
@@ -2029,6 +2147,7 @@ def kitchen_now(
                                        + max(0, o_eta.get("adjustedMinutes") or 0)),
                 "hasEta": isinstance(ready_at, datetime),
                 "items": [str(l.get("name") or "") for l in o.get("items") or []][:8],
+                **_rider_fact(o.get("delivery"), now),
             })
     except Exception as e:
         print("[ai-waiter-service] ⚠️ kitchen status failed:", e)
@@ -2378,11 +2497,16 @@ async def run_text_turn(
         voice_src = _say_learned(reply_text, tenant)
         reply_text = to_bangla_script(reply_text, drop_code_letter=drop, guess=False)
         meta["voiceReplyText"] = to_bangla_script(voice_src, spoken=True, drop_code_letter=drop)
+        meta["dishSaid"] = dish_said(meta, tenant=tenant, drop=drop)
     # H: the waiter's offers and what became of them, for the restaurant's upsell stats (never breaks a reply)
     stats_loc = resolve_location_id(_CLIENT[MENU_DB_NAME], resolve_tenant_id(tenant), branch) if tenant else None
     upsell_stats.record(DB, tenant=tenant, branch=branch, session=session_id, meta=meta,
                         location=str(stats_loc) if stats_loc is not None else None)
-    # the guest profile (allergies, diet…) stays in server memory — not sent to the browser or logged
+    # the guest profile (allergies, diet…) stays in server memory — not sent to the browser or logged; only what the
+    # guest said they can't / won't eat goes to their own app, as a filter they can see and turn off
+    gf = guest_filter(meta, snapshot.get("items") or [])
+    if gf:
+        meta["guestFilter"] = gf
     meta.pop("reco", None)
     meta.pop("guestProfile", None)
     meta.pop("tray", None)  # server-side memory (undo / pending questions), not for the browser
@@ -2442,6 +2566,7 @@ async def handle_conn(ws: WebSocketServerProtocol):
 
     all_pcm = bytearray()
     last_partial_text = None
+    heard_so_far: List[str] = []  # the live words shown on the phone this turn (display only)
 
     closing = False
     final_sent = False
@@ -2496,6 +2621,9 @@ async def handle_conn(ws: WebSocketServerProtocol):
                 last_detected_lang = det
             if text and not final_sent and not ws.closed:
                 last_partial_text = text
+                shown = live_words(text, session_lang or last_detected_lang)
+                if shown:
+                    heard_so_far.append(shown)
                 has_bn = bool(_BENGALI.search(text))
                 has_en = bool(_LATIN.search(text))
                 print(
@@ -2509,6 +2637,8 @@ async def handle_conn(ws: WebSocketServerProtocol):
                             {
                                 "t": "stt_partial",
                                 "text": text,
+                                # the filtered running text for the live caption ("" = nothing worth showing yet)
+                                "sofar": " ".join(heard_so_far)[-400:],
                                 "ts": time.time(),
                             }
                         )
@@ -2963,6 +3093,12 @@ async def handle_conn(ws: WebSocketServerProtocol):
 
             if selected_text and not ws.closed:
                 t_stt = time.monotonic()
+                # what was heard (the accurate transcript) — the phone shows it in place of the grey live words
+                if not typed_text:
+                    try:
+                        await ws.send(json.dumps({"t": "heard", "text": selected_text}))
+                    except Exception:
+                        pass
                 try:
                     await ws.send(json.dumps({"t": "ai_reply_pending"}))
                 except Exception:

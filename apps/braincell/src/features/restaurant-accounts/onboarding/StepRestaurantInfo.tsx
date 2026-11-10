@@ -91,10 +91,14 @@ export default function StepRestaurantInfo({ value, onChange, onNext }: Props) {
     if (!value.address.trim()) return setError('Please enter your address.');
 
     // Send as-is; locationMode may be undefined if not selected.
-    await api.post('/api/v1/auth/tenants/onboarding-step', {
-      step: 'restaurant',
-      data: value,
-    });
+    try {
+      await api.post('/api/v1/auth/tenants/onboarding-step', {
+        step: 'restaurant',
+        data: value,
+      });
+    } catch (err) {
+      return setError((err as any)?.response?.data?.message || (err as any)?.response?.data?.error || (err as Error)?.message || 'Could not save. Please try again.');
+    }
 
     onNext();
   };

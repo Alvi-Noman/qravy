@@ -26,6 +26,11 @@ export function publishOrder(token: string, ev: OrderEvent): void {
   bus.emit(`order:${token}`, ev);
 }
 
+/** A rider's page ("rider:<riderId>"): their deliveries changed (assigned, taken away, updated) — the page reloads. */
+export function publishRider(riderId: string): void {
+  bus.emit(`rider:${riderId}`, { type: 'order.updated', order: { riderId } } as OrderEvent);
+}
+
 /** Open an SSE stream on `res`, forward events from `channel`, heartbeat, clean up on disconnect. */
 export function openStream(
   req: Request,
