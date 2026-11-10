@@ -694,10 +694,24 @@ export default function EmberHome() {
         return tx(lang, 'আপনার অর্ডার পাঠানো হয়েছে — রেস্টুরেন্ট গ্রহণ করার অপেক্ষায়। আর কিছু লাগবে?', 'Your order has been sent — waiting for the restaurant to accept it. Need anything else?');
       return tx(lang, 'আপনার অর্ডার তৈরি হচ্ছে। আর কিছু লাগলে বলুন।', 'Your order is being prepared. Tell me if you need anything else.');
     })();
-    // the welcome shows in full from the start (it is still spoken), with the greeting above it — like the other texts
-    const welcoming = welcomePending;
+    // the welcome: in full from the start, under the greeting, its words lighting up as they're spoken — the same
+    // caption before, while and after it's said (nothing jumps). "Being spoken" is the voice saying the welcome's own
+    // text — not only the first seconds (the 8 s no-voice fallback once ended it mid-sentence: the greeting vanished
+    // and the text restarted from the words said so far)
+    const same = (a: string, b: string) => a.replace(/\s+/g, ' ').trim() === b.replace(/\s+/g, ' ').trim();
+    const welcomeSpeaking = talking && !!w.sayingText && same(w.sayingText, welcome);
+    const welcoming = welcomePending || welcomeSpeaking;
     const talkingReply = talking && !welcoming;
     const line = welcoming ? welcome : talking ? said : said || returnLine || welcome;
+    const isWelcomeText = welcoming || same(line, welcome);
+    // spoken words white, the ones still to come dim; waiting for the voice: all dim; said (or no voice): all white
+    const welcomeSpans = captionSpans({
+      text: welcome,
+      spoken: welcomeSpeaking ? aiLive || '' : welcomePending ? '' : null,
+      dishes: dishNames,
+      dim: EM.faint,
+      firstSentenceBright: false,
+    });
     middle = (
       <div className="em-fade flex flex-col gap-[18px] px-7 pt-[clamp(24px,8dvh,96px)]">
         {!talkingReply && (
@@ -711,6 +725,8 @@ export default function EmberHome() {
         )}
         {talkingReply ? (
           <Caption spans={captionOf(line)} className="em-tight text-[26px] font-medium leading-[1.2] tracking-[-0.4px]" />
+        ) : isWelcomeText ? (
+          <Caption spans={welcomeSpans} className="em-tight text-[24px] leading-[1.3] tracking-[-0.3px]" />
         ) : (
           <p className="em-tight text-[24px] leading-[1.3] tracking-[-0.3px]" style={{ color: EM.text2 }}>
             {line}

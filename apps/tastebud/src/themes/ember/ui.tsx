@@ -148,7 +148,9 @@ export function Shell({
   useEmberFonts();
   return (
     <div className="em-root min-h-[100dvh] w-full" style={{ background: EM.bg, color: EM.text }}>
-      <div className="relative mx-auto flex h-[100dvh] w-full max-w-[480px] flex-col overflow-hidden" style={{ background: EM.bg }}>
+      {/* (clip, not just hidden: "hidden" still lets code scroll the frame — a tab centring itself once slid the whole
+          page sideways; phones without clip keep "hidden") */}
+      <div className="relative mx-auto flex h-[100dvh] w-full max-w-[480px] flex-col overflow-hidden" style={{ background: EM.bg, overflow: 'clip' }}>
         <BottomGlow glow={glow} />
         {header && <div className="relative z-20 shrink-0 px-4 pt-[calc(env(safe-area-inset-top,0px)+14px)]">{header}</div>}
         <div className="relative z-10 flex min-h-0 flex-1 flex-col">{children}</div>
