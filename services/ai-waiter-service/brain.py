@@ -6974,7 +6974,7 @@ async def _reply(
         return offers.plan(moment, offers.Ctx(
             index=index, orderable=orderable, rows=rows_now + placed, added=added, picks=[p.item for p in picks], stats=stats,
             profile=profile, clash=clash, lang=lang, arm=arm, meal_kinds=kinds, done_types=rstate.gaps_offered,
-            owner_rules=list((restaurant or {}).get("upsellRules") or [])), only=only)
+            owner_rules=list((restaurant or {}).get("upsellRules") or []), said=transcript), only=only)
 
     def hold_offer(o: offers.Offer) -> None:
         """Ask it: the guest's "হ্যাঁ" next turn applies its ops exactly (the offer answer below)."""
