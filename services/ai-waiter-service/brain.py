@@ -2590,6 +2590,36 @@ def _unplaced_guess(raw_ops: Any, transcript: str, index: MenuIndex, recent: Opt
     return out, problems
 
 
+def _sold_out_stand_in(raw_ops: Any, transcript: str, index: MenuIndex, orderable: Dict[str, bool],
+                       context_ids: Optional[set] = None) -> Tuple[Any, List[str]]:
+    """The guest asked for a dish that's sold out and the model added ANOTHER dish in its place — "ভাত দাও আর মাটন
+    দাও", the mutton sold out → it added the rice AND সরষে ইলিশ, unasked. A silent swap: a dish the guest never named
+    (no word of its name said, not one talked about before) is never added while their own dish is sold out — it may
+    only be offered."""
+    if not isinstance(raw_ops, list) or not transcript:
+        return raw_ops, []
+    said = _guest_tokens(transcript, _menu_rev(index))
+    off = lambda x: not orderable.get(index.item_id(x), True)  # noqa: E731
+    live = set().union(*[_name_tokens(str(x.get("name") or "")) for x in index.items if not off(x)] or [set()])
+    # (a word only sold-out dishes have: "মাটন" when every mutton dish is gone — "ভাত" is in orderable dishes too)
+    gone = [x for x in index.items if off(x) and (_name_tokens(str(x.get("name") or "")) & said) - live]
+    if not gone:
+        return raw_ops, []
+    out, problems = [], []
+    for o in raw_ops:
+        it = (index.resolve(o.get("item") or o.get("itemId"), o.get("name"))
+              if isinstance(o, dict) and str(o.get("op") or "").lower() in ("add", "set") else None)
+        if (not it or off(it) or index.item_id(it) in (context_ids or set())
+                or _name_tokens(re.sub(r"\s*\(.*?\)", "", str(it.get("name") or ""))) & said):
+            out.append(o)
+            continue
+        problems.append(f"{it.get('name')}: the guest didn't ask for it — they asked for "
+                        f"{' / '.join(str(g.get('name')) for g in gone[:3])}, which is sold out; offer it, never add it unasked")
+    if problems:  # …and the guest hears that their dish is sold out (the dish they asked for, with the closest ones)
+        problems += [f"{g.get('name')} is not orderable now" for g in gone[:3]]
+    return out, problems
+
+
 def _clarify_reply(problems: List[str], index: MenuIndex, lang: str) -> str:
     """Deterministic 'which size / which choice?' when the model still pretended to add something."""
     bn = lang == "bn"
@@ -3830,6 +3860,8 @@ def _validate_ops(
         raw_ops, problems = _same_dish_twice(raw_ops, transcript, index, orderable)
         raw_ops, unheard = _unplaced_guess(raw_ops, transcript, index, said)
         problems += unheard
+        raw_ops, stand_ins = _sold_out_stand_in(raw_ops, transcript, index, orderable, context_ids)
+        problems += stand_ins
     heard = said if said is not None else transcript  # the guest's recent words, not just this sentence
     # WHICH dish ("সিজলিং" → chicken, beef or prawn?) is decided by what the guest says now — plus their answer
     # to the waiter's last question — never by a word from a few turns back ("চিকেন ফ্রাইড রাইস" earlier)
