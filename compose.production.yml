@@ -170,10 +170,8 @@ services:
       WAITER_CHAT_KEY: ${WAITER_CHAT_KEY:-}
       WAITER_CHAT_REASONING: ${WAITER_CHAT_REASONING:-}
       # AI-first: the word-pattern answers become checked facts and the AI writes the reply (on for every restaurant,
-      # 2026-11-04; "0" turns it off again)
-      # (0 since 2026-11-09, for a few days: no OpenAI credits — the code answers more turns itself and the AI is only
-      # asked when needed. Back on: WAITER_AI_FIRST=1 in .env.production)
-      WAITER_AI_FIRST: ${WAITER_AI_FIRST:-0}
+      # 2026-11-04; "0" turns it off again — it was 0 from 2026-11-09 to 11-11 while the OpenAI credits were out)
+      WAITER_AI_FIRST: ${WAITER_AI_FIRST:-1}
       INTENT_AI: "0"
       BRAIN_TIMEOUT_S: "12.0"
       BRAIN_MAX_TOKENS: "1800"
