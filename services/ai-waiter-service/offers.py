@@ -27,7 +27,7 @@ import tray as _tray
 from recommender import GuestProfile, OrderStats, dish_facts, is_packaged
 from upsell import dish_roles
 from upsell import of_bn as upsell_of_bn
-from waiter_knowledge import MenuIndex, _money, kind_text
+from waiter_knowledge import MenuIndex, _money, _norm_bn, find_mentions, kind_text
 
 MAX_OFFERS = 2  # a visit
 MAX_DECLINES = 2  # two "no"s → no more offers this visit
@@ -62,7 +62,7 @@ def arm_for(tenant: Optional[str], session: Optional[str]) -> Dict[str, str]:
 
 @dataclass
 class Offer:
-    type: str  # combo | meal_addon | more_food | rice | main | side | drink | addon | dessert
+    type: str  # combo | meal_addon | more_food | rice | curry | main | side | drink | addon | dessert
     moment: str  # first_add | wrap_up
     text: str
     ops: List[Dict[str, Any]]  # applied on "yes" — the same shape as brain's validated ops
@@ -106,6 +106,7 @@ class Ctx:
     done_types: Iterable[str] = ()  # offered already this visit — never the same kind twice ("a drink?" … "a drink?")
     # the owner's upsells (Settings → Upsell & picks): "a guest orders these → offer these" — they come first
     owner_rules: List[Dict[str, Any]] = field(default_factory=list)
+    said: str = ""  # the guest's words this turn ("ভাত দাও আর মাটন দাও" — what they wanted, sold out or not)
 
 
 def may_offer(reco: Any, moment: str, arm: Dict[str, str]) -> bool:
@@ -153,7 +154,7 @@ def plan(moment: str, c: Ctx, only: Optional[Iterable[str]] = None) -> Optional[
         # a table of four with one burger: "make it four" comes before any extra; with spicy food a cold drink
         # comes before a side
         spicy = bool(_roles(c)["spicy"])
-        steps = (_more_food, _combo_swap, _meal_addon, _rice, _with_bread, _main) + ((_drink, _side) if spicy else (_side, _drink)) + (_addon,)
+        steps = (_more_food, _combo_swap, _meal_addon, _rice, _curry_for_rice, _with_bread, _main) + ((_drink, _side) if spicy else (_side, _drink)) + (_addon,)
     else:
         steps = (_drink, _dessert)
     for step in steps:
@@ -279,6 +280,11 @@ def _label(it: Dict[str, Any]) -> str:
 
 def _card(it: Dict[str, Any], c: Ctx, why: str) -> Dict[str, Any]:
     return {"itemId": c.index.item_id(it), "title": str(it.get("name")), "price": _price(it), "subtitle": why}
+
+
+def _short(name: str, p: str) -> Tuple[str, str]:
+    """The short arm's wording: just the dish and its price."""
+    return f"{name} {p} — দেব?", f"{name} for {p}?"
 
 
 def _say(c: Ctx, reason_bn: str, reason_en: str, short_bn: str, short_en: str) -> str:
@@ -630,9 +636,50 @@ def _rice(moment: str, c: Ctx) -> Optional[Offer]:
     else:
         text = _say(c, f"{dish}-এর সাথে {name} ভালো যাবে ({p}) — দেব?",
                     f"{name} goes well with the {dish} ({p}) — shall I add it?",
-                    f"{name} {p} — দেব?", f"{name} for {p}?")
+                    *_short(name, p))
     return Offer("rice", moment, text, [_add_op(r, c)], [c.index.item_id(r)], _price(r),
                  card=_card(r, c, f"with your {dish}"))
+
+
+def _sold_out_asked(c: Ctx) -> List[Dict[str, Any]]:
+    """Sold-out dishes the guest asked for this turn. A word that fits several dishes (mutton) names no single dish, so
+    also: sold-out dishes sharing a word with the guest's words — a word no orderable dish has."""
+    if not c.said:
+        return []
+    off = lambda x: not c.orderable.get(c.index.item_id(x), True)  # noqa: E731
+    gone = [x for x in find_mentions(c.said, c.index, limit=6) if off(x)]
+    said = set(_norm_bn(c.said).split())
+    live = {w for x in c.index.items if not off(x) for w in _norm_bn(x.get("name")).split()}
+    return gone + [x for x in c.index.items if off(x) and x not in gone
+                   and (set(_norm_bn(x.get("name")).split()) & said) - live]
+
+
+def _curry_for_rice(moment: str, c: Ctx) -> Optional[Offer]:
+    """Rice and nothing to eat it with → a curry for it, never a drink ("ভাত দাও আর মাটন দাও" with the mutton sold out
+    once got "সাদা ভাতের সাথে একটা হজমি লেবুজা নেবেন?"). The kind they asked for first — another meat for the mutton —
+    else the best fit for them and the time."""
+    it, _row = _anchor(c)
+    shape = _roles(c)
+    if not it or not dish_roles(it)["rice"]:
+        return None
+    tray = [c.index.by_id[i] for i in shape["ids"] if i in c.index.by_id]
+    if any(dish_roles(x)["needs_rice"] or (dish_roles(x)["main"] and not dish_roles(x)["rice"]) for x in tray):
+        return None  # (it has its curry)
+    gone = _sold_out_asked(c)
+    wanted = {bangla_meal.role(x) for x in gone} - {None, ""}
+    rank = {c.index.item_id(x): n for n, x in enumerate(c.picks)}
+    pool = [x for x in c.index.items if dish_roles(x)["needs_rice"] and c.orderable.get(c.index.item_id(x), True)
+            and _simple(x) and c.index.item_id(x) not in shape["ids"] and c.index.item_id(x) not in (c.profile.declined or [])
+            and not c.clash(x)]
+    if not pool:
+        return None
+    best = min(pool, key=lambda x: (bool(wanted) and bangla_meal.role(x) not in wanted, rank.get(c.index.item_id(x), 1 << 20),
+                                    not x.get("signature"), _price(x)))
+    name, p = bangla_meal.said_name(best), _money(_price(best))
+    # (the engine's own "সাথে … দেব?" — no new sentence: CLAUDE.md)
+    text = _say(c, f"সাথে {name} দেব? ({p})", f"{name} with it? ({p})", *_short(name, p))
+    return Offer("curry", moment, text, [_add_op(best, c)], [c.index.item_id(best)], _price(best),
+                 card=_card(best, c, "with your rice"))
 
 
 def _main(moment: str, c: Ctx) -> Optional[Offer]:
@@ -715,7 +762,7 @@ def _side(moment: str, c: Ctx) -> Optional[Offer]:
         if one is None:
             return None
         name, p = bangla_meal.said_name(one), _money(_price(one))
-        text = _say(c, f"সাথে {name} দেব? ({p})", f"{name} with it? ({p})", f"{name} {p} — দেব?", f"{name} for {p}?")
+        text = _say(c, f"সাথে {name} দেব? ({p})", f"{name} with it? ({p})", *_short(name, p))
         return Offer("side", moment, text, [_add_op(one, c)], [c.index.item_id(one)], _price(one), card=_card(one, c, "on the side"))
     fam = menu_answers.families(it) if it else set()
     # (+ a pizza / pasta → the garlic bread, fried chicken / wings → the fries: what everyone orders with them)
@@ -764,7 +811,7 @@ def _bite(moment: str, c: Ctx) -> Optional[Offer]:
     name, p = _label(b), _money(_price(b))
     dish = str(it.get("name") or "")
     text = _say(c, f"{_of(dish)} সাথে একটা {name} নেবেন? ({p})", f"A {name} with your {dish}? ({p})",
-                f"{name} {p} — দেব?", f"{name} for {p}?")
+                *_short(name, p))
     return Offer("bite", moment, text, [_add_op(b, c)], [c.index.item_id(b)], _price(b), card=_card(b, c, f"with your {dish}"))
 
 
@@ -860,7 +907,7 @@ def _dessert(moment: str, c: Ctx) -> Optional[Offer]:
         return None
     name, p = _label(d), _money(_price(d))
     text = _say(c, f"শেষে মিষ্টি কিছু হবে? {name} ({p}) — দেব?", f"Something sweet to finish — the {name} ({p})?",
-                f"{name} {p} — দেব?", f"{name} for {p}?")
+                *_short(name, p))
     return Offer("dessert", moment, text, [_add_op(d, c)], [c.index.item_id(d)], _price(d), card=_card(d, c, "to finish"))
 
 

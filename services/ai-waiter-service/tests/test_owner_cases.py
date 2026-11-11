@@ -295,3 +295,32 @@ def test_every_general_suggestion_gets_the_times_answer_and_a_condition_goes_to_
     for said in ["ঝাল ছাড়া কি আছে?", "২ জনের জন্য কি খাব?", "বাচ্চার জন্য কি ভালো?", "হালকা কিছু দিন",
                  "সবচেয়ে জনপ্রিয় কি?", "৫০০ টাকার মধ্যে কি খাব?"]:
         assert ask(said)[1] >= 1, said
+
+
+def test_rice_with_the_asked_curry_sold_out_is_offered_another_curry_not_a_drink():
+    # 2026-11-11: "ভাত দাও আর মাটন দাও", the mutton sold out → rice added, then "সাদা ভাতের সাথে একটা হজমি লেবুজা
+    # নেবেন?" — a drink for plain rice. Rice alone gets a curry, the kind they wanted first (another meat).
+    import asyncio
+    import json
+    items = MENU.items + [{"id": "x1", "name": "মাটন আলু ঝোল", "category": "কারি", "price": 400, "available": False},
+                          {"id": "x2", "name": "মাটন রেজালা", "category": "কারি", "price": 450, "available": False},
+                          {"id": "d1", "name": "বোরহানি", "category": "পানীয়", "price": 100}]
+    ix = MenuIndex(items)
+
+    async def fake(messages):
+        return json.dumps({"topic": "order_change", "intent": "order", "language": "bn", "mentionedItems": [],
+                           "cartOps": [{"op": "add", "item": ix.ref(ix.by_id["r1"]), "quantity": 1, "variant": "",
+                                        "note": "", "choices": []}],
+                           "clearCart": False, "confirmOrder": False, "checkout": "none", "understood": True,
+                           "answerItems": [], "serviceRequest": None, "suggestions": [], "foodsNamed": [],
+                           "guestPrefs": None, "replyText": "একটা সাদা ভাত যোগ করেছি। মাটন আজ শেষ হয়ে গেছে।"})
+    orig, brain._call_openai = brain._call_openai, fake
+    try:
+        out = asyncio.run(brain.generate_reply("ভাত দাও আর মাটন দাও", menu_snapshot={"items": items}, locale="bn",
+                                               context={"cartItems": [], "table": "3", "localTime": "14:00"}))
+    finally:
+        brain._call_openai = orig
+    offer = out["meta"].get("upsellOffer") or {}
+    assert offer.get("type") == "curry", (offer, out["replyText"])
+    assert (offer.get("item_ids") or [""])[0] in ("m1", "m2"), (offer, out["replyText"])
+    assert "বোরহানি" not in out["replyText"], out["replyText"]
