@@ -2523,11 +2523,12 @@ def _unplaced_guess(raw_ops: Any, transcript: str, index: MenuIndex, recent: Opt
 
     rev = _menu_rev(index)
     said = _guest_tokens(f"{transcript} {recent or ''}", rev)
+    plain = _PLAIN_WORDS | knowledge.plain_words()  # (+ each language pack's: "নেই", "থাকলে" — "মাটন নেই, ওটাই দাও")
     odd = []
     for w in re.findall(r"[A-Za-z']+|[ঀ-৿]+", transcript):
         lw = w.lower()
         base = re.sub(r"(ই|ও|টাই|টা|টি|গুলো)$", "", lw)
-        if (lw in _ORDER_FILLER or lw in _PLAIN_WORDS or base in _PLAIN_WORDS or base in _ORDER_FILLER
+        if (lw in _ORDER_FILLER or lw in plain or base in plain or base in _ORDER_FILLER
                 or _said_quantity(w) is not None or _guest_tokens(w, rev)):
             continue
         odd.append(w)
