@@ -324,3 +324,23 @@ def test_rice_with_the_asked_curry_sold_out_is_offered_another_curry_not_a_drink
     assert offer.get("type") == "curry", (offer, out["replyText"])
     assert (offer.get("item_ids") or [""])[0] in ("m1", "m2"), (offer, out["replyText"])
     assert "বোরহানি" not in out["replyText"], out["replyText"]
+
+
+def test_a_sold_out_dish_is_never_silently_swapped_for_another():
+    # 2026-11-11: "ভাত দাও আর মাটন দাও", mutton sold out → the AI added the rice AND সরষে ইলিশ, unasked
+    items = MENU.items + [{"id": "x1", "name": "মাটন আলু ঝোল", "category": "কারি", "price": 400}]
+    ix = MenuIndex(items)
+    on = {ix.item_id(i): i["id"] != "x1" for i in ix.items}
+    add = lambda i: {"op": "add", "item": ix.ref(ix.by_id[i]), "quantity": 1, "variant": "", "note": "", "choices": []}
+    t = "ভাত দাও আর মাটন দাও"
+    ops, problems = brain._validate_ops([add("r1"), add("f2")], ix, {}, on, t, t)
+    assert [o["itemId"] for o in ops] == ["r1"], ops
+    assert any("মাটন আলু ঝোল is not orderable now" in p for p in problems), problems
+    # the guest naming the other dish themselves is an order, and one talked about before is theirs to pick
+    t = "মাটন নেই? তাহলে সরষে ইলিশ দাও"
+    assert [o["itemId"] for o in brain._validate_ops([add("f2")], ix, {}, on, t, t)[0]] == ["f2"]
+    t = "মাটন নেই, ওটাই দাও"  # (the stand-in check alone: an older one asks again at "নেই")
+    assert brain._sold_out_stand_in([add("f2")], t, ix, on, {"f2"}) == ([add("f2")], [])
+    # nothing sold out asked for → untouched
+    t = "ভাত দাও"
+    assert [o["itemId"] for o in brain._validate_ops([add("r1")], ix, {}, on, t, t)[0]] == ["r1"]
