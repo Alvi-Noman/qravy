@@ -339,8 +339,9 @@ def test_a_sold_out_dish_is_never_silently_swapped_for_another():
     # the guest naming the other dish themselves is an order, and one talked about before is theirs to pick
     t = "মাটন নেই? তাহলে সরষে ইলিশ দাও"
     assert [o["itemId"] for o in brain._validate_ops([add("f2")], ix, {}, on, t, t)[0]] == ["f2"]
-    t = "মাটন নেই, ওটাই দাও"  # (the stand-in check alone: an older one asks again at "নেই")
-    assert brain._sold_out_stand_in([add("f2")], t, ix, on, {"f2"}) == ([add("f2")], [])
+    # ("নেই" / "থাকলে" are plain words — knowledge/languages/bn.md — not a misheard dish: no "say it again")
+    for t in ["মাটন নেই, ওটাই দাও", "মাটন না থাকলে ওটাই দাও"]:
+        assert [o["itemId"] for o in brain._validate_ops([add("f2")], ix, {}, on, t, t, context_ids={"f2"})[0]] == ["f2"], t
     # nothing sold out asked for → untouched
     t = "ভাত দাও"
     assert [o["itemId"] for o in brain._validate_ops([add("r1")], ix, {}, on, t, t)[0]] == ["r1"]

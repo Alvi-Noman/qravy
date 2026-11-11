@@ -52,3 +52,9 @@ when: বাদে, ছাড়া, ছাড়া, বাদ দিয়ে,
 "আধা" / "হাফ" = half (half a portion, half a lemon); "আদা" = ginger. "আধা লেবুর রস" is half a lemon's juice — not a
 ginger drink. If the menu has no such thing, say so; never add the nearest-sounding dish.
 when: আধা, আদা, হাফ
+
+## Plain words
+Words guests say around an order that name no dish — never read as a misheard dish name ("মাটন নেই, ওটাই দাও").
+Read by the code only. One line per group, words separated by commas:
+- নেই, নাই, নাইতো, নেইতো, থাকলে, থাকে, যদি, হলে, নাহলে, নইলে, তবে, বরং, তাও, তবুও
+- শেষ, গেছে, গেলে, পাওয়া, যাচ্ছে, যায়, পাব, পাবো, পাবেন

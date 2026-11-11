@@ -43,7 +43,9 @@ class Section:
 #   - morning 06:00-11:30: lead set menu, fried rice; avoid burger
 #   ## Needs a base
 #   - masala, chili onion, sweet and sour -> fried rice, chowmein
-DATA_SECTIONS = {"detect", "schedule", "needs a base"}
+#   ## Plain words                       (a language pack, knowledge/languages/<code>.md)
+#   - নেই, নাই, থাকলে                     (words that name no dish — "মাটন নেই, ওটাই দাও" is no garbled dish name)
+DATA_SECTIONS = {"detect", "schedule", "needs a base", "plain words"}
 MIN_SHARE = 0.08  # (a real section of the menu: 9 Chinese dishes in a 76-dish café)
 
 
@@ -184,6 +186,20 @@ def _data(type_key: Optional[str], title: str) -> List[str]:
     p = load("types", type_key) if type_key else None
     return [line.strip() for s in (p.sections if p else []) if s.title.strip().lower() == title
             for line in s.text.splitlines() if line.strip().startswith("-")]
+
+
+def plain_words() -> set:
+    """Every language pack's "Plain words": the guest's everyday words that name no dish (never garbled speech)."""
+    out: set = set()
+    d = os.path.join(ROOT, "languages")
+    for f in sorted(os.listdir(d)) if os.path.isdir(d) else []:
+        p = load("languages", f[:-3]) if f.endswith(".md") else None
+        for s in (p.sections if p else []):
+            if s.title.strip().lower() == "plain words":
+                for line in s.text.splitlines():
+                    if line.strip().startswith("-"):
+                        out |= set(_words(line.strip()[1:]))
+    return out
 
 
 def type_keys() -> List[str]:
