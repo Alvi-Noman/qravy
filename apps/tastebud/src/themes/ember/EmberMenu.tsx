@@ -645,7 +645,7 @@ export default function EmberMenu() {
               ))}
             </div>
           ) : sections.length === 0 ? (
-            <p className="pt-10 text-center text-[14px]" style={{ color: EM.muted }}>
+            <p className="rr-mask pt-10 text-center text-[14px]" style={{ color: EM.muted }}>
               {query ? tx(lang, `“${query}” পাওয়া যায়নি।`, `Nothing found for “${query}”.`) : tx(lang, 'এখন কোনো খাবার নেই।', 'Nothing on the menu right now.')}
             </p>
           ) : (

@@ -397,7 +397,7 @@ export default function EmberOrder() {
             {delivery ? (
               <div className="flex flex-col gap-2.5 rounded-[20px] p-[18px]" style={{ background: EM.card, border: '1px solid #222225' }}>
                 <span className="text-[13px] font-medium" style={{ color: EM.text3 }}>{tx(lang, 'যেখানে যাবে', 'DELIVERING TO')}</span>
-                <span className="text-[15px] leading-[1.4]">
+                <span className="rr-mask text-[15px] leading-[1.4]">
                   {o.customer?.name} · {o.customer?.phone}
                   <br />
                   {o.customer?.address}

@@ -3,11 +3,13 @@
 import { useEffect } from 'react';
 import { useLocation } from 'react-router-dom';
 import { trackPageView } from '../utils/track';
+import { startReplay } from '../utils/replay';
 
 export default function TrackPageViews() {
   const { pathname, search } = useLocation();
   useEffect(() => {
     trackPageView(pathname, search);
+    startReplay(); // the session recording (once per tab)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pathname]); // a new page, not every query change (the table / key being tidied on the same page)
   return null;

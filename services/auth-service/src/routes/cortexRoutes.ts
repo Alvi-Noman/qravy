@@ -24,6 +24,8 @@ import {
   type Filters,
   type SessionRow,
 } from '../services/cortex/analytics.js';
+import { gzipSync } from 'node:zlib';
+import { replayEventsOf, visitsWithReplay } from './replayRoutes.js';
 import { addMonths, billingDTO, money, newPaymentId, parsePrice, type Billing } from '../services/billing.js';
 
 const router: express.Router = express.Router();
@@ -455,8 +457,16 @@ router.get(
     if (only === 'engaged') rows = rows.filter((r) => r.engaged);
     if (only === 'abandoned') rows = rows.filter((r) => r.checkout && !r.ordered);
     if (only === 'scanned') rows = rows.filter((r) => r.scanned);
+    // which visits have a recording (routes/replayRoutes): all of them for the "recorded" filter, else this page's
+    const recorded = await visitsWithReplay((only === 'recorded' ? rows : rows.slice(0, limit)).map((r) => r.vid));
+    if (only === 'recorded') rows = rows.filter((r) => recorded.has(r.vid));
     const lb = await labels();
-    res.json({ success: true, days: f.days, total: rows.length, items: rows.slice(0, limit).map((r) => sessionView(r, lb)) });
+    res.json({
+      success: true,
+      days: f.days,
+      total: rows.length,
+      items: rows.slice(0, limit).map((r) => ({ ...sessionView(r, lb), replay: recorded.has(r.vid) })),
+    });
   })
 );
 
@@ -501,6 +511,21 @@ router.get(
         items: (o.items ?? []).map((i: Document) => ({ name: i.name, qty: i.qty, variation: i.variation ?? null, lineTotal: i.lineTotal })),
       })),
     });
+  })
+);
+
+// the visit's session recording (rrweb events, played back in Cortex) — empty when it wasn't recorded
+router.get(
+  '/cortex/sessions/:vid/replay',
+  wrap(async (req, res) => {
+    const vid = String(req.params.vid).slice(0, 64);
+    const body = JSON.stringify({ success: true, events: await replayEventsOf(vid) });
+    // several MB of page snapshots: sent gzipped (nothing in front of the API compresses; the browser unpacks it)
+    res.status(200);
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.setHeader('Content-Encoding', 'gzip');
+    res.setHeader('Cache-Control', 'no-store');
+    res.end(gzipSync(body));
   })
 );
 

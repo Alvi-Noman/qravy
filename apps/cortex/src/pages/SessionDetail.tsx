@@ -1,9 +1,11 @@
 // apps/cortex/src/pages/SessionDetail.tsx — one guest visit, step by step: pages, the AI waiter's turns, the order.
+import { useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { api, type OrderItem, type SessionItem, type Turn } from '../api';
 import { Badge, Card, ErrorBox, Loading, Stat, fmt } from '../components/ui';
 import Turns from '../components/Turns';
+import ReplayPlayer, { type ReplayHandle } from '../components/ReplayPlayer';
 
 type Detail = {
   session: SessionItem | null;
@@ -28,6 +30,14 @@ const LABEL: Record<string, string> = {
 export default function SessionDetail() {
   const { vid } = useParams();
   const q = useQuery({ queryKey: ['session', vid], queryFn: () => api<Detail>(`/sessions/${encodeURIComponent(vid ?? '')}`) });
+  // the session recording (can be several MB: its own request, so the steps show first)
+  const rq = useQuery({
+    queryKey: ['session-replay', vid],
+    queryFn: () => api<{ events: Array<{ type: number; timestamp: number }> }>(`/sessions/${encodeURIComponent(vid ?? '')}/replay`),
+    staleTime: Infinity,
+  });
+  const [player, setPlayer] = useState<ReplayHandle | null>(null);
+  const recorded = (rq.data?.events.length ?? 0) >= 2;
   const d = q.data;
   const s = d?.session;
   // (pings and the waiter's voice timings are measurements, not something the guest did)
@@ -60,6 +70,26 @@ export default function SessionDetail() {
             <Stat label="Outcome" value={s.ordered ? 'Ordered' : s.checkout ? 'Left at checkout' : 'No order'} tone={s.checkout && !s.ordered ? 'bad' : undefined} />
           </div>
 
+          <Card title="Recording">
+            {rq.isLoading && <Loading />}
+            {rq.error && <ErrorBox error={rq.error} />}
+            {rq.data && !recorded && (
+              <p className="text-[13px] text-stone-500">
+                No recording for this visit (recordings started on 13 Nov 2026, are kept 30 days, and need a browser that
+                allows them).
+              </p>
+            )}
+            {rq.data && recorded && (
+              <>
+                <ReplayPlayer events={rq.data.events} onReady={setPlayer} />
+                <p className="mt-2 text-[11px] text-stone-500">
+                  Quiet stretches are skipped. Typed text shows as ****; the guest’s name, phone and address are hidden.
+                  Click a step’s ▶ to jump there.
+                </p>
+              </>
+            )}
+          </Card>
+
           <div className="grid gap-4 lg:grid-cols-3">
             <Card title="Steps" className="lg:col-span-1">
               <ol className="relative space-y-3 border-l border-stone-200 pl-4">
@@ -71,7 +101,23 @@ export default function SessionDetail() {
                       {e.page && e.type === 'visit' ? `: ${e.page}` : ''}
                       {e.type === 'order_placed' && e.data?.orderNumber ? ` #${String(e.data.orderNumber)}` : ''}
                     </div>
-                    <div className="text-[11px] text-stone-500">{new Date(e.at).toLocaleTimeString('en-GB')}</div>
+                    <div className="text-[11px] text-stone-500">
+                      {new Date(e.at).toLocaleTimeString('en-GB')}
+                      {player && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            // a second before the step, so what led to it is on screen
+                            player.goto(new Date(e.at).getTime() - player.start - 1000);
+                            window.scrollTo({ top: 0, behavior: 'smooth' });
+                          }}
+                          className="ml-2 rounded px-1 text-stone-500 hover:bg-stone-100 hover:text-stone-900"
+                          title="Play the recording from here"
+                        >
+                          ▶
+                        </button>
+                      )}
+                    </div>
                   </li>
                 ))}
               </ol>

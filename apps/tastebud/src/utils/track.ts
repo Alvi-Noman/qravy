@@ -61,7 +61,7 @@ export function pageOf(pathname: string): Page {
   return 'other';
 }
 
-function contextNow(): Ctx | null {
+export function contextNow(): Ctx | null {
   if (typeof window === 'undefined') return null;
   const path = window.location.pathname;
   const sub = storeSubFromPath(path);
