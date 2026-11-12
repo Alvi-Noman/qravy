@@ -47,7 +47,7 @@ const tenantCache = new Map<string, { at: number; id: ObjectId | null }>();
 const branchCache = new Map<string, { at: number; id: ObjectId | null }>();
 const TTL_MS = 5 * 60 * 1000;
 
-async function tenantIdOf(sub: string): Promise<ObjectId | null> {
+export async function tenantIdOf(sub: string): Promise<ObjectId | null> {
   const hit = tenantCache.get(sub);
   if (hit && Date.now() - hit.at < TTL_MS) return hit.id;
   const t = await client.db('authDB').collection('tenants').findOne({ subdomain: sub }, { projection: { _id: 1 } });

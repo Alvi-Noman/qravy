@@ -21,6 +21,7 @@ import authRoutes from './routes/authRoutes.js';
 import handoverRoutes from './routes/handoverRoutes.js';
 import menuRoutes from './routes/menuItemsRoutes.js';
 import eventsRoutes from './routes/eventsRoutes.js';
+import replayRoutes from './routes/replayRoutes.js';
 import cortexRoutes from './routes/cortexRoutes.js';
 import insightsRoutes from './routes/insightsRoutes.js';
 import domainRoutes from './routes/domainRoutes.js';
@@ -78,6 +79,8 @@ app.get('/health', (_req: Request, res: Response) => {
 /* ---------- Core middleware ---------- */
 // Menu-import drafts (hundreds of items) exceed the default 100kb JSON limit
 app.use('/api/v1/menu-imports', express.json({ limit: '5mb' }));
+// Session recordings (routes/replayRoutes): a page's first snapshot, gzipped, can pass 100kb (the gateway allows 2mb)
+app.use('/api/v1/public/replay', express.json({ limit: '2mb' }));
 app.use(express.json());
 app.use(cookieParser());
 app.use(
@@ -229,13 +232,17 @@ app.use('/api/v1/cortex/login', failedAttempts('failed sign-in attempts', Number
 
 /** Apply the mild limiter to the broader API surface */
 app.use('/api/v1/public/events', eventsLimiter);
-// (the tracker's events are counted above, not here)
-app.use('/api/v1', (req, res, next) => (req.path === '/public/events' ? next() : apiLimiter(req, res, next)));
+app.use('/api/v1/public/replay', eventsLimiter); // session recordings: a chunk every few seconds per guest
+// (the tracker's events and recordings are counted above, not here)
+app.use('/api/v1', (req, res, next) =>
+  req.path === '/public/events' || req.path === '/public/replay' ? next() : apiLimiter(req, res, next)
+);
 
 /* ---------- Routes ---------- */
 // Mount public routes at /api/v1 so router.get('/public/menu') → /api/v1/public/menu
 app.use('/api/v1', publicRoutes);          // ✅ fixed mount
 app.use('/api/v1', eventsRoutes); // POST /public/events — what guests do in the storefront (for Cortex)
+app.use('/api/v1', replayRoutes); // POST /public/replay — storefront session recordings (for Cortex)
 app.use('/api/v1', cortexRoutes); // /cortex/* — the company admin panel (apps/cortex)
 app.use('/api/v1', insightsRoutes); // /insights/* — a restaurant's own performance (dashboard → Insights)
 app.use('/api/v1', pronounceRoutes); // the waiter's pronunciation learner: /public/pronounce, /cortex/pronunciations

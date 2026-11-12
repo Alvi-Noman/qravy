@@ -262,7 +262,9 @@ export default function TenminOrb({ mode = "idle", size = 120, className = "" }:
   };
 
   return (
-    <div className={className} style={{ width: size, height: size }}>
+    // rr-block: session recordings (utils/replay.ts) skip the orb — it changes every frame, which would fill a
+    // recording with animation; the recording shows a plain circle instead (.qv-orb-rec in index.css)
+    <div className={`rr-block qv-orb-rec${className ? ` ${className}` : ''}`} style={{ width: size, height: size }}>
       <svg width={size} height={size} viewBox="0 0 100 100" overflow="visible" role="img" aria-label={`Assistant ${mode}`}>
         <defs>
           <linearGradient id={bodyGrad} x1="0" y1="0" x2="1" y2="1">

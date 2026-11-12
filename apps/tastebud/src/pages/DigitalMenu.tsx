@@ -562,7 +562,7 @@ export default function DigitalMenu() {
             Failed to load menu. {(menuError as Error)?.message ?? 'Unknown error'}
           </div>
         ) : filteredItems.length === 0 ? (
-          <div className="rounded-xl bg-white p-6 text-center text-sm text-gray-600">
+          <div className="rr-mask rounded-xl bg-white p-6 text-center text-sm text-gray-600">
             No results for "{query}".
           </div>
         ) : Object.keys(grouped).length > 0 && !isCatError ? (

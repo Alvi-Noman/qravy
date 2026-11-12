@@ -546,6 +546,11 @@ export async function ensureUserIndexes(client: MongoClient): Promise<void> {
   await guestEvents.createIndex({ tenantId: 1, at: -1 }, { name: 'ix_guest_events_tenant_at' });
   await guestEvents.createIndex({ vid: 1, at: 1 }, { name: 'ix_guest_events_vid' });
   logger.info('Ensured guestEvents indexes (a year TTL)');
+  // Session recordings of the storefront (routes/replayRoutes) — for Cortex; kept 30 days (they are big)
+  const guestReplays = db.collection('guestReplays');
+  await guestReplays.createIndex({ vid: 1, seq: 1 }, { unique: true, name: 'ux_guest_replays_vid_seq' });
+  await guestReplays.createIndex({ at: 1 }, { name: 'ttl_guest_replays', expireAfterSeconds: 30 * 24 * 3600 });
+  logger.info('Ensured guestReplays indexes (30 days TTL)');
   // Cortex (the company admin panel): its admin from the environment
   await ensureCortexAdmin();
 

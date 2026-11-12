@@ -30,6 +30,11 @@ export function SessionsTable({ items, hideRestaurant }: { items: SessionItem[];
                 <Link to={`/sessions/${encodeURIComponent(s.vid)}`} className="font-medium text-stone-900 hover:underline">
                   {fmt.time(s.startedAt)}
                 </Link>
+                {s.replay && (
+                  <span className="ml-1.5" title="Has a session recording">
+                    <Badge tone="info">▶ recording</Badge>
+                  </span>
+                )}
               </Td>
               {!hideRestaurant && (
                 <Td>
@@ -92,7 +97,7 @@ export default function Sessions() {
       <header className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-[22px] font-semibold text-stone-900">Guest sessions</h1>
-          <p className="text-[13px] text-stone-500">One row per guest visit. Open one to see every step and what the AI waiter heard and said.</p>
+          <p className="text-[13px] text-stone-500">One row per guest visit. Open one to watch its recording, every step, and what the AI waiter heard and said.</p>
         </div>
         <DaysSelect value={days} onChange={setDays} />
       </header>
@@ -116,6 +121,7 @@ export default function Sessions() {
           <option value="engaged">Talked to the AI</option>
           <option value="abandoned">Left at checkout</option>
           <option value="scanned">Came from a QR code</option>
+          <option value="recorded">Has a recording</option>
         </select>
         {q.data && <span className="text-[12px] text-stone-500">{q.data.total} sessions{q.data.total > q.data.items.length ? ` · newest ${q.data.items.length} shown` : ''}</span>}
       </div>

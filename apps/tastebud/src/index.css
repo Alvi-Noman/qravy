@@ -41,3 +41,16 @@
   70%  { transform: translateX(-50%) scale(1.08) rotate(-1.5deg); }
   100% { transform: translateX(-50%) scale(1); }
 }
+
+/* Session recordings (utils/replay.ts) skip the AI waiter's animated orb (components/ai-waiter/TenminOrb.tsx):
+   the recording keeps only its empty box, drawn here as a plain circle in the orb's colours. Guests never see
+   this — their orb always has its drawing inside, so :empty never matches on a live page. */
+.qv-orb-rec:empty::after {
+  content: '';
+  display: block;
+  width: 76%;
+  height: 76%;
+  margin: 12%;
+  border-radius: 9999px;
+  background: linear-gradient(135deg, #ffd4da 0%, #ff8ea3 50%, #fa2851 100%);
+}

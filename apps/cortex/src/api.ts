@@ -195,6 +195,8 @@ export type SessionItem = {
   ordered: boolean;
   orders: Array<{ token?: string; orderNumber?: number; total?: number }>;
   calls: number;
+  /** the visit has a session recording (the guest sessions list says; other lists leave it out) */
+  replay?: boolean;
 };
 
 export type Turn = {

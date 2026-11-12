@@ -201,7 +201,7 @@ export default function OrderStatusPage() {
         )}
 
         {online && order.customer && (
-          <section className="mt-3 rounded-3xl bg-white px-6 py-4 text-sm text-gray-700 shadow-sm">
+          <section className="rr-mask mt-3 rounded-3xl bg-white px-6 py-4 text-sm text-gray-700 shadow-sm">
             <div>{order.customer.phone}</div>
             {delivery && order.customer.address && <div className="mt-1 text-gray-600">{order.customer.address}</div>}
           </section>
