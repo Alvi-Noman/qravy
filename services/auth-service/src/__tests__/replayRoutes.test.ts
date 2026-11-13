@@ -11,12 +11,14 @@ describe('session recordings: POST /public/replay', () => {
     const { default: app } = await import('../app.js');
     const ip = '203.0.113.9';
 
-    // ~600kb of page snapshot: past express's default 100kb, inside the gateway's 2mb
+    // ~600kb of page snapshot: past express's default 100kb, inside the gateway's 2mb (a 413 would come from the body
+    // parser, before the route). No restaurant named, so the route stops before the database (CI has none: a lookup
+    // would wait out the driver's 30 s server selection and fail the test).
     const big = JSON.stringify([{ type: 2, timestamp: Date.now(), data: { html: 'x'.repeat(600_000) } }]);
     const r = await request(app)
       .post('/api/v1/public/replay')
       .set('X-Forwarded-For', ip)
-      .send({ sub: 'nobody-here', did: 'd1', vid: 'v1', seq: 0, enc: 'json', data: big });
+      .send({ sub: '', did: 'd1', vid: 'v1', seq: 0, enc: 'json', data: big });
     expect(r.status).toBe(204);
 
     for (let i = 0; i < 20; i++) {
