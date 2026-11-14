@@ -1216,6 +1216,11 @@ export async function deleteCategory(req: Request, res: Response, next: NextFunc
 
     await categoriesCol().deleteOne(filter);
     await categoryVisibilityCol().deleteMany({ tenantId: tenantOid, categoryId: cat._id! });
+    // dishes that were only "also shown" here keep their home category — they just leave this one
+    await menuItemsCol().updateMany(
+      { tenantId: tenantOid, extraCategoryIds: cat._id! },
+      { $pull: { extraCategoryIds: cat._id! } } as any
+    );
 
     await auditLog({
       userId,

@@ -335,6 +335,17 @@ export default function DigitalMenu() {
       } else {
         upsert('__uncategorized__', 'Uncategorized', item);
       }
+
+      // "Also show in" (a collection like রাজভোজ): the same dish again in that section — only while browsing, and
+      // only sections this branch/channel lists; a search shows each dish once
+      if (!query.trim() && Array.isArray(anyItem.extraCategoryIds)) {
+        for (const x of anyItem.extraCategoryIds as string[]) {
+          const extraId = String(x);
+          if (extraId === catId || !catNameById.has(extraId)) continue;
+          if (acc[extraId]?.items.includes(item)) continue;
+          upsert(extraId, catNameById.get(extraId)!, item, extraId);
+        }
+      }
     }
 
     // the sections served at this time of day first (breakfast in the morning), then the owner's order; unknown last
@@ -346,7 +357,7 @@ export default function DigitalMenu() {
           a[1].name.localeCompare(b[1].name),
       ),
     );
-  }, [filteredItems, catNameById, catMetaById]);
+  }, [filteredItems, catNameById, catMetaById, query]);
 
   const sectionState = (g: Group) => {
     const open = isAvailableAt(g.availability, now, tz);

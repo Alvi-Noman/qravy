@@ -154,6 +154,8 @@ export const menuItemSchema = z
     ...itemTimingFields,
     tags: z.array(z.string().min(1).max(30)).max(100).optional(),
     signature: z.boolean().optional(),
+    /** "Also show in" — other categories that list this same dish */
+    extraCategoryIds: z.array(objectId).max(20).optional(),
     prepMinutes: prepMinutesField.optional(),
     /** Import: printed on the menu vs estimated by the AI (manual saves are the owner's) */
     prepSource: z.enum(['menu', 'ai']).optional(),
@@ -262,6 +264,8 @@ export const menuItemUpdateSchema = z
     ...itemTimingFields,
     tags: z.array(z.string().min(1).max(30)).max(100).optional(),
     signature: z.boolean().optional(),
+    /** "Also show in" — other categories that list this same dish ([] clears) */
+    extraCategoryIds: z.array(objectId).max(20).optional(),
     prepMinutes: prepMinutesField.nullable().optional(),
     restaurantId: objectId.optional(),
 

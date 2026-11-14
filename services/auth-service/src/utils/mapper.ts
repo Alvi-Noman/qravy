@@ -44,6 +44,9 @@ export function toMenuItemDTO(
     description: doc.description,
     category: doc.category,
     categoryId: toId(doc.categoryId),
+    ...(Array.isArray(doc.extraCategoryIds) && doc.extraCategoryIds.length
+      ? { extraCategoryIds: doc.extraCategoryIds.map((id) => String(id)) }
+      : {}),
     media: doc.media ?? [],
     variations: (doc.variations ?? []).map((v) => ({
       name: v.name,

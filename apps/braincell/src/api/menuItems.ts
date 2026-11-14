@@ -49,6 +49,8 @@ export type NewMenuItem = {
   tags?: string[];
   /** Star-marked signature dish */
   signature?: boolean;
+  /** "Also show in": other categories that list this same dish ([] clears) */
+  extraCategoryIds?: string[];
   /** Kitchen minutes for one portion (wait-time estimation); null = let the AI estimate it */
   prepMinutes?: number | null;
   restaurantId?: string;

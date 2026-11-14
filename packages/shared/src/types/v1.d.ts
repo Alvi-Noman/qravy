@@ -44,6 +44,8 @@ export interface MenuItemDTO {
     description?: string;
     category?: string;
     categoryId?: string;
+    /** "Also show in": other categories that list this same dish (categoryId stays its home) */
+    extraCategoryIds?: string[];
     media: string[];
     variations: VariationDTO[];
     options?: VariantOptionDTO[];

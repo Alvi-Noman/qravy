@@ -46,6 +46,7 @@ type DrawerSubmitValues = {
   availableUntil?: string | null;
   tags?: string[];
   signature?: boolean;
+  extraCategoryIds?: string[];
   /** Only when changed: minutes, or null = let the AI estimate it */
   prepMinutes?: number | null;
   // Advanced from drawer
@@ -710,6 +711,7 @@ export default function MenuItemsPage(): JSX.Element {
                           availableUntil: values.availableUntil,
                           tags: values.tags,
                           signature: values.signature,
+                          extraCategoryIds: values.extraCategoryIds,
                         };
                         if (typeof values.price === 'number') payload.price = values.price;
                         if (typeof values.prepMinutes === 'number') payload.prepMinutes = values.prepMinutes;
@@ -751,6 +753,7 @@ export default function MenuItemsPage(): JSX.Element {
                         imagePreviews: (openEdit as any).media || [],
                         tags: (openEdit as any).tags || [],
                         signature: !!openEdit.signature,
+                        extraCategoryIds: (openEdit as any).extraCategoryIds || [],
                         prepMinutes: (openEdit as any).prepMinutes,
                         prepSource: (openEdit as any).prepSource,
                         variations:
@@ -806,6 +809,7 @@ export default function MenuItemsPage(): JSX.Element {
                           availableUntil: values.availableUntil,
                           tags: values.tags,
                           signature: values.signature,
+                          extraCategoryIds: values.extraCategoryIds,
                           ...(values.prepMinutes !== undefined ? { prepMinutes: values.prepMinutes } : {}),
                         };
                         if (typeof values.price === 'number') payload.price = values.price;

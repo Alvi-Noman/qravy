@@ -103,6 +103,8 @@ export default function MenuItemModal({
     imagePreviews?: (string | null)[];
     tags?: string[];
     signature?: boolean;
+    /** "Also show in": other categories (ids) that list this same dish */
+    extraCategoryIds?: string[];
     variations?: UiVariation[];
     options?: UiOption[];
     modifierGroups?: ApiModifierGroup[];
@@ -139,6 +141,8 @@ export default function MenuItemModal({
     availableUntil?: string | null;
     tags?: string[];
     signature?: boolean;
+    /** "Also show in": other categories (ids) that list this same dish */
+    extraCategoryIds?: string[];
     /** Only when the owner changed it: minutes, or null = "let the AI estimate it" */
     prepMinutes?: number | null;
     // Advanced selections (optional)
@@ -185,6 +189,7 @@ export default function MenuItemModal({
   );
   const [tags, setTags] = useState<string[]>(initial.tags || []);
   const [signature, setSignature] = useState<boolean>(!!initial.signature);
+  const [extraCategoryIds, setExtraCategoryIds] = useState<string[]>(initial.extraCategoryIds || []);
   const [uiVariations, setUiVariations] = useState<UiVariation[]>(initial.variations || []);
   const [uiOptions, setUiOptions] = useState<UiOption[]>(initial.options || []);
   const [modGroups, setModGroups] = useState<UiModifierGroup[]>(() => toUiModifierGroups(initial.modifierGroups));
@@ -791,6 +796,10 @@ export default function MenuItemModal({
       availableUntil: avail.availableUntil || null,
       tags: tags.length ? tags : undefined,
       signature,
+      // never its own home category (the server drops it too)
+      extraCategoryIds: extraCategoryIds.filter(
+        (id) => id !== selectedCategory?.id && categoriesDetailed.find((c) => c.id === id)?.name !== values.category
+      ),
       ...(prepTouched ? { prepMinutes: prep === 'invalid' ? null : prep } : {}),
     };
 
@@ -1438,6 +1447,45 @@ export default function MenuItemModal({
                 placeholder="Select a Category"
               />
             </Field>
+
+            {/* "Also show in": the same dish listed in more sections (a collection like রাজভোজ) — one dish, one
+                price, one sold-out switch; its hours and branches still come from its own category above */}
+            {categoriesDetailed.some((c) => c.id && c.name !== values.category && c.id !== c.name) && (
+              <Field>
+                <div id="also-show-label" className="text-sm font-medium text-[#2e2e30]">
+                  Also show in
+                </div>
+                <p className="mt-0.5 mb-2 text-xs text-[#6b6b70]">
+                  List this same dish in other sections too, e.g. a “Specials” collection. It stays one dish: its price,
+                  hours and sold-out switch are shared.
+                </p>
+                <div role="group" aria-labelledby="also-show-label" className="flex flex-wrap gap-2">
+                  {categoriesDetailed
+                    .filter((c) => c.id && c.id !== c.name && c.name !== values.category)
+                    .map((c) => {
+                      const id = String(c.id);
+                      const on = extraCategoryIds.includes(id);
+                      return (
+                        <button
+                          key={id}
+                          type="button"
+                          aria-pressed={on}
+                          onClick={() =>
+                            setExtraCategoryIds((prev) => (on ? prev.filter((x) => x !== id) : [...prev, id]))
+                          }
+                          className={`rounded-full border px-3 py-1 text-xs transition ${
+                            on
+                              ? 'border-[#2e2e30] bg-[#2e2e30] text-white'
+                              : 'border-[#e4e4e7] bg-white text-[#2e2e30] hover:border-[#a1a1aa]'
+                          }`}
+                        >
+                          {c.name}
+                        </button>
+                      );
+                    })}
+                </div>
+              </Field>
+            )}
 
             <Field>
               <Label>Description</Label>
