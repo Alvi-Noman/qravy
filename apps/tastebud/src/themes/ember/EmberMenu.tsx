@@ -313,6 +313,16 @@ export default function EmberMenu() {
       const c = catOf(it) || '__other';
       if (!groups.has(c)) groups.set(c, []);
       groups.get(c)!.push(it);
+      // "Also show in" (a collection like রাজভোজ): the same dish again in that section — only while browsing,
+      // and only sections this branch/channel lists; searching shows each dish once
+      if (!query && !pixieIds.length && Array.isArray((it as any).extraCategoryIds)) {
+        for (const x of (it as any).extraCategoryIds as string[]) {
+          const k = String(x);
+          if (k === c || !catName.has(k)) continue;
+          if (!groups.has(k)) groups.set(k, []);
+          if (!groups.get(k)!.includes(it)) groups.get(k)!.push(it);
+        }
+      }
     }
     // browsing an open restaurant: a section with nothing on right now folds to the bottom (soonest to open first)
     const fold = openNow && !query && !pixieIds.length;

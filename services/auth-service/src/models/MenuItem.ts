@@ -85,6 +85,9 @@ export interface MenuItemDoc {
   tags?: string[];
   /** Star-marked signature dish (menu badge + first in virtual-waiter recommendations) */
   signature?: boolean;
+  /** "Also show in": other categories that list this same dish (a collection like রাজভোজ) — one record,
+   *  one price, one sold-out switch; categoryId stays its home category */
+  extraCategoryIds?: ObjectId[];
   /** Minutes the kitchen needs for one portion (wait-time estimation); missing = restaurant default */
   prepMinutes?: number;
   /** Where prepMinutes came from: owner/menu are never overwritten; ai/guess are estimates */

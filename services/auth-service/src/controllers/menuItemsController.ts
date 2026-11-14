@@ -745,6 +745,8 @@ export type CreateMenuItemBody = {
   modifierGroups?: Array<Record<string, unknown>>;
   tags?: string[];
   signature?: boolean;
+  /** "Also show in" — other categories that list this same dish */
+  extraCategoryIds?: string[];
   prepMinutes?: number | string | null;
   /** Import only: 'menu' = printed, 'ai' = estimated */
   prepSource?: 'menu' | 'ai';
@@ -938,6 +940,11 @@ export async function createMenuItemCore(ctx: WriteCtx, body: CreateMenuItemBody
   // --- Category-first scope & channel (patched previously) ---
   let allowedChannels: Array<'dine-in' | 'online'> = ['dine-in', 'online'];
   let categoryLocationId: ObjectId | null = null;
+
+  {
+    const extra = await cleanExtraCategoryIds(tenantOid, body.extraCategoryIds, resolvedCat?._id ?? null);
+    if (extra.length) doc.extraCategoryIds = extra;
+  }
 
   if (resolvedCat) {
     doc.categoryId = resolvedCat._id;
@@ -1320,6 +1327,7 @@ export async function updateMenuItem(req: Request, res: Response, next: NextFunc
       availableUntil?: string | null;
       tags?: string[];
       signature?: boolean;
+      extraCategoryIds?: string[];
       prepMinutes?: number | null;
       restaurantId?: string;
       hidden?: boolean;
@@ -1378,6 +1386,16 @@ export async function updateMenuItem(req: Request, res: Response, next: NextFunc
         body.categoryId && ObjectId.isValid(body.categoryId)
           ? new ObjectId(body.categoryId)
           : undefined;
+    }
+
+    if (body.extraCategoryIds !== undefined || body.categoryId !== undefined) {
+      // "Also show in": the tenant's own categories, never the dish's home one ([] clears)
+      const home = body.categoryId !== undefined ? (setOps.categoryId ?? null) : (before.categoryId ?? null);
+      setOps.extraCategoryIds = await cleanExtraCategoryIds(
+        tenantOid,
+        body.extraCategoryIds !== undefined ? body.extraCategoryIds : (before as any).extraCategoryIds,
+        home
+      );
     }
 
     if (body.media !== undefined) {
@@ -2617,6 +2635,26 @@ export async function bulkChangeCategory(req: Request, res: Response, next: Next
 }
 
 /** Position after the last item in the category (or among uncategorized items). */
+/** "Also show in": keeps only the tenant's own categories, drops the home one and repeats (max 20). */
+async function cleanExtraCategoryIds(
+  tenantOid: ObjectId,
+  raw: unknown,
+  homeCategoryId: ObjectId | null
+): Promise<ObjectId[]> {
+  if (!Array.isArray(raw) || !raw.length) return [];
+  const home = homeCategoryId ? String(homeCategoryId) : '';
+  const ids = Array.from(new Set(raw.map((v) => String(v ?? '')))).filter((v) => ObjectId.isValid(v) && v !== home);
+  if (!ids.length) return [];
+  const found = await client
+    .db('authDB')
+    .collection('categories')
+    .find({ _id: { $in: ids.map((v) => new ObjectId(v)) }, tenantId: tenantOid })
+    .project<{ _id: ObjectId }>({ _id: 1 })
+    .toArray();
+  const ok = new Set(found.map((c) => String(c._id)));
+  return ids.filter((v) => ok.has(v)).slice(0, 20).map((v) => new ObjectId(v));
+}
+
 async function nextItemSortOrder(tenantOid: ObjectId, categoryId: ObjectId | null): Promise<number> {
   const last = await col()
     .find(
