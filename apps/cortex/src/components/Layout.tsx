@@ -11,6 +11,7 @@ import {
   MicrophoneIcon,
   SpeakerWaveIcon,
   LanguageIcon,
+  FlagIcon,
 } from '@heroicons/react/24/outline';
 import { useQuery } from '@tanstack/react-query';
 import { api, setToken, type SttInfo } from '../api';
@@ -22,6 +23,7 @@ const NAV = [
   { to: '/sessions', label: 'Guest sessions', icon: CursorArrowRaysIcon },
   { to: '/transcripts', label: 'Live transcripts', icon: MicrophoneIcon },
   { to: '/conversations', label: 'AI conversations', icon: ChatBubbleLeftRightIcon },
+  { to: '/flagged', label: 'Flagged answers', icon: FlagIcon },
   { to: '/orders', label: 'Orders', icon: ReceiptPercentIcon },
   { to: '/pronunciation', label: 'Pronunciation', icon: SpeakerWaveIcon },
   { to: '/speech-to-text', label: 'Speech-to-text', icon: LanguageIcon },
@@ -37,8 +39,16 @@ export default function Layout({ email, onSignOut }: { email: string; onSignOut:
   // ElevenLabs credits low / used up → a dot on the link and a banner on every page
   const stt = useQuery({ queryKey: ['stt'], queryFn: () => api<SttInfo>('/stt'), refetchInterval: 5 * 60_000 }).data?.status;
   const sttAlert = stt?.configured && (stt.out || stt.low) ? (stt.out ? 'out' : 'low') : null;
+  // the AI waiter's wrong answers (last 7 days) nobody has reviewed yet: a red count on "Flagged answers"
+  const flagged = useQuery({
+    queryKey: ['flagged', 'count'],
+    queryFn: () => api<{ open: number }>('/flagged?days=7&count=1'),
+    refetchInterval: 5 * 60_000,
+  }).data?.open;
   const badge = (to: string) =>
-    to === '/speech-to-text' && sttAlert ? (
+    to === '/flagged' && flagged ? (
+      <span className="ml-auto rounded-full bg-red-600 px-1.5 text-[11px] font-semibold leading-5 text-white">{flagged > 99 ? '99+' : flagged}</span>
+    ) : to === '/speech-to-text' && sttAlert ? (
       <span className={`ml-auto h-2.5 w-2.5 rounded-full ${sttAlert === 'out' ? 'bg-red-500' : 'bg-amber-500'}`} />
     ) : to === '/pronunciation' && waiting ? (
       <span className="ml-auto rounded-full bg-amber-500 px-1.5 text-[11px] font-semibold leading-5 text-white">{waiting}</span>

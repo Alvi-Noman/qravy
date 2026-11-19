@@ -24,6 +24,8 @@ import {
   type Filters,
   type SessionRow,
 } from '../services/cortex/analytics.js';
+import { CHECKS, checkVisit, type Finding } from '../services/cortex/answerChecks.js';
+import { exportVisit, menuLines, toText, type ExportConversation, type MenuLine } from '../services/cortex/conversationExport.js';
 import { gzipSync } from 'node:zlib';
 import { replayEventsOf, visitsWithReplay } from './replayRoutes.js';
 import { addMonths, billingDTO, money, newPaymentId, parsePrice, type Billing } from '../services/billing.js';
@@ -634,6 +636,94 @@ router.get(
 );
 
 /**
+ * GET /cortex/conversations/export?from=<ISO>&to=<ISO>&tz=Asia/Dhaka&tenant=&location=&channel=&format=txt|jsonl&menus=1
+ * Every conversation in the range as a download (services/cortex/conversationExport.ts): what the guest said, what the
+ * waiter said and showed, cart changes, orders — plus each restaurant's menu (menus=0 leaves it out). "txt" is made to
+ * be read or handed to an AI; "jsonl" is one conversation per line (the menus first, as {"menu": …} lines).
+ */
+router.get(
+  '/cortex/conversations/export',
+  wrap(async (req, res) => {
+    const f = filtersOf(req);
+    const to = req.query.to ? new Date(String(req.query.to)) : new Date();
+    const from = req.query.from ? new Date(String(req.query.from)) : new Date(to.getTime() - 7 * 86400_000);
+    if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime()) || from >= to)
+      return res.status(400).json({ success: false, message: 'from / to: a date range' });
+    if (to.getTime() - from.getTime() > 93 * 86400_000) return res.status(400).json({ success: false, message: 'At most 3 months at a time' });
+    let tz = String(req.query.tz || 'Asia/Dhaka');
+    try {
+      new Intl.DateTimeFormat('en', { timeZone: tz });
+    } catch {
+      tz = 'Asia/Dhaka';
+    }
+    const format = req.query.format === 'jsonl' ? 'jsonl' : 'txt';
+    const lb = await labels();
+    const match: Document = { ts: { $gte: from, $lt: to } };
+    if (f.tenantId) match.tenant = lb.tenant.get(String(f.tenantId))?.subdomain ?? '__none__';
+    if (f.locationId) match.location = String(f.locationId);
+    if (f.channel) match.channel = f.channel;
+    const docs = await transcriptsCol().find(match).sort({ ts: 1 }).limit(200_000).toArray();
+
+    const byGuest = new Map<string, Document[]>();
+    for (const d of docs) {
+      const k = `${d.tenant}|${d.session}|${d.location ?? ''}`;
+      const list = byGuest.get(k);
+      if (list) list.push(d);
+      else byGuest.set(k, [d]);
+    }
+    const bySub = new Map([...lb.tenant.entries()].map(([id, t]) => [t.subdomain, { id, name: t.name }]));
+    const conversations: ExportConversation[] = [];
+    for (const guestTurns of byGuest.values())
+      for (const visit of splitVisits(guestTurns)) {
+        const d0 = visit[0];
+        const last = visit[visit.length - 1];
+        const loc = visit.find((v) => v.location)?.location;
+        conversations.push({
+          restaurant: bySub.get(String(d0.tenant))?.name ?? String(d0.tenant ?? '?'),
+          subdomain: String(d0.tenant ?? ''),
+          branch: loc ? lb.branch.get(String(loc)) ?? d0.branch ?? null : d0.branch ?? null,
+          channel: visit.find((v) => v.channel)?.channel ?? null,
+          table: visit.find((v) => v.table)?.table ?? null,
+          startedAt: new Date(d0.ts).toISOString(),
+          endedAt: new Date(last.ts).toISOString(),
+          ordered: visit.some((v) => v.ai?.meta?.decision?.orderPlaced === true),
+          turns: exportVisit(visit),
+        });
+      }
+    conversations.sort((a, b) => a.startedAt.localeCompare(b.startedAt));
+
+    const menus: Array<{ restaurant: string; subdomain: string; lines: MenuLine[] }> = [];
+    if (req.query.menus !== '0') {
+      const subs = [...new Set(conversations.map((c) => c.subdomain))];
+      const ids = subs.map((s) => bySub.get(s)?.id).filter((x): x is string => !!x && ObjectId.isValid(x)).map((x) => new ObjectId(x));
+      const db = client.db('authDB');
+      const [items, cats] = await Promise.all([
+        db.collection('menuItems').find({ tenantId: { $in: ids } }).toArray(),
+        db.collection('categories').find({ tenantId: { $in: ids } }, { projection: { name: 1 } }).toArray(),
+      ]);
+      const catNames = new Map(cats.map((c) => [String(c._id), String(c.name ?? '')]));
+      for (const s of subs) {
+        const id = bySub.get(s)?.id;
+        if (!id) continue;
+        menus.push({ restaurant: bySub.get(s)?.name ?? s, subdomain: s, lines: menuLines(items.filter((m) => String(m.tenantId) === id), catNames) });
+      }
+    }
+
+    const day = (d: Date) => new Intl.DateTimeFormat('en-CA', { timeZone: tz }).format(d);
+    const name = `qravy-conversations-${day(from)}_to_${day(new Date(to.getTime() - 1))}.${format}`;
+    res.setHeader('Content-Disposition', `attachment; filename="${name}"`);
+    res.setHeader('Cache-Control', 'no-store');
+    if (format === 'jsonl') {
+      res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
+      const lines = [...menus.map((m) => JSON.stringify({ menu: m })), ...conversations.map((c, i) => JSON.stringify({ n: i + 1, ...c }))];
+      return res.send(lines.join('\n') + '\n');
+    }
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.send(toText({ from, to, tz, conversations, menus }));
+  })
+);
+
+/**
  * GET /cortex/transcripts/live?after=<cursor>&tenant=&location=&channel=
  * The AI waiter's turns as they happen, every restaurant and branch: what it heard, understood and said. Read-only;
  * the cursor is the last turn's id (ids grow with time — nothing missed, nothing twice). No cursor → the latest 50.
@@ -770,6 +860,117 @@ router.get(
     if (around !== null)
       turns = splitVisits(docs).find((v) => new Date(v[0].ts).getTime() <= around + 1 && new Date(v[v.length - 1].ts).getTime() >= around - 1) ?? [];
     res.json({ success: true, turns: turns.slice(0, 1000).map(turnView) });
+  })
+);
+
+/* ------------------------------------------------------------------ flagged answers: what the AI waiter got wrong */
+
+/** An admin's verdict on a flagged answer (by the turn's id): fixed in the code, or not a problem after all. */
+const answerReviewsCol = () => client.db('authDB').collection<Document>('cortexAnswerReviews');
+const REVIEW_STATUSES = new Set(['fixed', 'not_a_problem']);
+
+/**
+ * GET /cortex/flagged?days=7&tenant=&severity=bad,check&status=open|reviewed|all&code=&limit=
+ * Every answer the checks in services/cortex/answerChecks.ts think is wrong, the latest first, with the turn before
+ * and after it. `counts`: open answers per check (for the filter chips; before `code` narrows the list).
+ * `?count=1`: just the number of open "bad" ones (the sidebar's badge).
+ */
+router.get(
+  '/cortex/flagged',
+  wrap(async (req, res) => {
+    const f = filtersOf(req);
+    const days = Math.min(f.days, 60);
+    const lb = await labels();
+    const match: Document = { ts: { $gte: sinceOf(days) } };
+    if (f.tenantId) match.tenant = lb.tenant.get(String(f.tenantId))?.subdomain ?? '__none__';
+    if (f.locationId) match.location = String(f.locationId);
+    if (f.channel) match.channel = f.channel;
+    const countOnly = req.query.count === '1';
+    const severities = new Set(
+      countOnly ? ['bad'] : String(req.query.severity || 'bad,check').split(',').filter((s) => s === 'bad' || s === 'check' || s === 'caught')
+    );
+    const status = countOnly ? 'open' : ['open', 'reviewed', 'all'].includes(String(req.query.status)) ? String(req.query.status) : 'open';
+    const code = String(req.query.code || '');
+
+    const docs = await transcriptsCol().find(match).sort({ ts: 1 }).limit(50_000).toArray();
+    const byGuest = new Map<string, Document[]>();
+    for (const d of docs) {
+      const k = `${d.tenant}|${d.session}|${d.location ?? ''}`;
+      const list = byGuest.get(k);
+      if (list) list.push(d);
+      else byGuest.set(k, [d]);
+    }
+    type Hit = { d: Document; findings: Finding[]; before: Document | null; after: Document | null; visit: Document[] };
+    const hits: Hit[] = [];
+    for (const guestTurns of byGuest.values()) {
+      for (const visit of splitVisits(guestTurns)) {
+        checkVisit(visit).forEach((fs, i) => {
+          const keep = fs.filter((x) => severities.has(x.severity));
+          if (keep.length) hits.push({ d: visit[i], findings: keep, before: visit[i - 1] ?? null, after: visit[i + 1] ?? null, visit });
+        });
+      }
+    }
+    const reviews = new Map(
+      (await answerReviewsCol().find({ _id: { $in: hits.map((h) => String(h.d._id)) } } as Document).toArray()).map((r) => [String(r._id), r])
+    );
+    const byStatus = hits.filter((h) => {
+      const reviewed = reviews.has(String(h.d._id));
+      return status === 'all' || (status === 'reviewed' ? reviewed : !reviewed);
+    });
+    if (countOnly) return res.json({ success: true, open: byStatus.length });
+
+    const counts: Record<string, number> = {};
+    for (const h of byStatus) for (const x of h.findings) counts[x.code] = (counts[x.code] ?? 0) + 1;
+    const shown = (code ? byStatus.filter((h) => h.findings.some((x) => x.code === code)) : byStatus)
+      .sort((a, b) => new Date(b.d.ts).getTime() - new Date(a.d.ts).getTime())
+      .slice(0, Math.max(1, Math.min(500, Number(req.query.limit) || 200)));
+    const bySub = new Map([...lb.tenant.entries()].map(([id, t]) => [t.subdomain, { id, name: t.name }]));
+    const brief = (d: Document | null) => (d ? { heard: String(d.text ?? ''), said: String(d.ai?.replyText ?? ''), unheard: d.status === 'unheard' } : null);
+    res.json({
+      success: true,
+      days,
+      checks: CHECKS,
+      total: byStatus.length,
+      counts,
+      items: shown.map((h) => {
+        const d = h.d;
+        const t = bySub.get(String(d.tenant));
+        const r = reviews.get(String(d._id));
+        return {
+          id: String(d._id),
+          conversationId: `${d.tenant}|${d.session}|${d.location ?? ''}|${new Date(h.visit[0].ts).getTime()}`,
+          tenantId: t?.id ?? null,
+          restaurant: t?.name ?? String(d.tenant ?? '?'),
+          subdomain: d.tenant ?? null,
+          branch: d.location ? lb.branch.get(String(d.location)) ?? d.branch ?? null : d.branch ?? null,
+          findings: h.findings,
+          turn: turnView(d),
+          before: brief(h.before),
+          after: brief(h.after),
+          // the guest's visit ended right after this answer without an order
+          leftAfter: !h.after && !h.visit.some((v) => v.ai?.meta?.decision?.orderPlaced === true),
+          review: r ? { status: r.status, note: r.note ?? '', by: r.by ?? null, at: r.at ?? null } : null,
+        };
+      }),
+    });
+  })
+);
+
+/** PUT /cortex/flagged/:turnId { status: "fixed" | "not_a_problem" | null, note } — null takes the verdict back. */
+router.put(
+  '/cortex/flagged/:id',
+  wrap(async (req, res) => {
+    const id = String(req.params.id);
+    if (!ObjectId.isValid(id)) return res.status(404).json({ success: false, message: 'Not found' });
+    const status = req.body?.status ?? null;
+    if (status === null) {
+      await answerReviewsCol().deleteOne({ _id: id } as Document);
+      return res.json({ success: true, review: null });
+    }
+    if (!REVIEW_STATUSES.has(String(status))) return res.status(400).json({ success: false, message: 'status: fixed or not_a_problem' });
+    const review = { status: String(status), note: String(req.body?.note ?? '').slice(0, 2000), by: req.cortex?.email ?? null, at: new Date() };
+    await answerReviewsCol().updateOne({ _id: id } as Document, { $set: review }, { upsert: true });
+    res.json({ success: true, review });
   })
 );
 
