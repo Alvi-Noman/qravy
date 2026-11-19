@@ -12,6 +12,7 @@ import RestaurantDetail from './pages/RestaurantDetail';
 import Sessions from './pages/Sessions';
 import SessionDetail from './pages/SessionDetail';
 import Conversations from './pages/Conversations';
+import FlaggedAnswers from './pages/FlaggedAnswers';
 import Orders from './pages/Orders';
 import Pronunciation from './pages/Pronunciation';
 import LiveTranscripts from './pages/LiveTranscripts';
@@ -65,6 +66,7 @@ export default function App() {
           <Route path="sessions/:vid" element={<SessionDetail />} />
           <Route path="transcripts" element={<LiveTranscripts />} />
           <Route path="conversations" element={<Conversations />} />
+          <Route path="flagged" element={<FlaggedAnswers />} />
           <Route path="orders" element={<Orders />} />
           <Route path="pronunciation" element={<Pronunciation />} />
           <Route path="speech-to-text" element={<SpeechToText />} />

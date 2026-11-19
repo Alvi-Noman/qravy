@@ -40,6 +40,29 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   return data as T;
 }
 
+/** Download a file from Cortex's API (with the admin's token — a plain link can't send it), named as the server says. */
+export async function download(path: string, fallbackName: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/cortex${path}`, { headers: getToken() ? { Authorization: `Bearer ${getToken()}` } : {} });
+  if (res.status === 401) {
+    setToken(null);
+    window.dispatchEvent(new Event('cortex:signed-out'));
+    throw new SignedOut('Signed out');
+  }
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data?.message || `Download failed (${res.status})`);
+  }
+  const name = /filename="([^"]+)"/.exec(res.headers.get('Content-Disposition') ?? '')?.[1] ?? fallbackName;
+  const url = URL.createObjectURL(await res.blob());
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10_000);
+}
+
 /** A turn's recording as a playable URL (fetched with the admin's token — an <audio> tag can't send it). null: gone. */
 export async function voiceClipUrl(id: string): Promise<string | null> {
   const res = await fetch(`${API_BASE}/cortex/voice-clips/${encodeURIComponent(id)}`, {
@@ -259,4 +282,29 @@ export type ConversationItem = {
   unheard: number;
   ordered: boolean;
   preview: string;
+};
+
+/** GET /cortex/flagged — the AI waiter's answers that look wrong (auth-service services/cortex/answerChecks.ts). */
+export type FlagSeverity = 'bad' | 'check' | 'caught';
+export type Finding = { code: string; severity: FlagSeverity; label: string; detail?: string };
+export type FlaggedAnswer = {
+  id: string;
+  conversationId: string;
+  tenantId: string | null;
+  restaurant: string;
+  subdomain: string | null;
+  branch: string | null;
+  findings: Finding[];
+  turn: Turn;
+  before: { heard: string; said: string; unheard: boolean } | null;
+  after: { heard: string; said: string; unheard: boolean } | null;
+  leftAfter: boolean;
+  review: { status: 'fixed' | 'not_a_problem'; note: string; by: string | null; at: string | null } | null;
+};
+export type FlaggedList = {
+  days: number;
+  checks: Record<string, { severity: FlagSeverity; label: string }>;
+  total: number;
+  counts: Record<string, number>;
+  items: FlaggedAnswer[];
 };

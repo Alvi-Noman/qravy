@@ -7,12 +7,14 @@ import { useQuery } from '@tanstack/react-query';
 import { api, type ConversationItem, type TenantRow, type Turn } from '../api';
 import { Badge, Card, DaysSelect, Empty, ErrorBox, Loading } from '../components/ui';
 import Turns from '../components/Turns';
+import ExportConversations from '../components/ExportConversations';
 
 export default function Conversations() {
   const [params, setParams] = useSearchParams();
   const [days, setDays] = useState(7);
   const [search, setSearch] = useState('');
   const [q, setQ] = useState('');
+  const [exporting, setExporting] = useState(false);
   const tenant = params.get('tenant') ?? '';
   const open = params.get('open');
   const set = (k: string, v: string | null) => {
@@ -39,8 +41,18 @@ export default function Conversations() {
           <h1 className="text-[22px] font-semibold text-stone-900">AI conversations</h1>
           <p className="text-[13px] text-stone-500">What the AI waiter heard, understood and said — every restaurant, dine-in and online. Each session is one guest's visit (a new one starts after 30 minutes of quiet), the latest at the top.</p>
         </div>
-        <DaysSelect value={days} onChange={setDays} />
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setExporting((v) => !v)}
+            className={`rounded-lg border px-3 py-2 text-[13px] ${exporting ? 'border-stone-900 bg-stone-900 text-white' : 'border-stone-300 bg-white text-stone-700 hover:bg-stone-50'}`}
+          >
+            Export
+          </button>
+          <DaysSelect value={days} onChange={setDays} />
+        </div>
       </header>
+      {exporting && <ExportConversations tenants={tenants.data?.items ?? []} tenant={tenant} />}
       <form
         className="flex flex-wrap items-center gap-2"
         onSubmit={(e) => {
