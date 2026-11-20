@@ -1087,7 +1087,8 @@ export async function createMenuItemCore(ctx: WriteCtx, body: CreateMenuItemBody
             updateOne: {
               filter: { tenantId: tenantOid, itemId: created._id!, locationId: lid, channel: ch },
               update: {
-                $set: { available: false, removed: false, updatedAt: now },
+                // marked, so switching the section back on switches this dish back on too
+                $set: { available: false, removed: false, fromCategory: true, updatedAt: now },
                 $setOnInsert: {
                   tenantId: tenantOid,
                   itemId: created._id!,
@@ -2061,7 +2062,8 @@ export async function bulkSetAvailability(req: Request, res: Response, next: Nex
     }
     // Any other change cancels a pending automatic switch-on
     const resumeSet = resumeAt ? { resumeAt } : {};
-    const resumeUnset = resumeAt ? {} : { $unset: { resumeAt: '' as const } };
+    // (a person's own switch also ends "off because its section was off")
+    const resumeUnset = { $unset: { fromCategory: '' as const, ...(resumeAt ? {} : { resumeAt: '' as const }) } };
 
     // ----- PER-LOCATION BRANCH -----
     if (locationId && ObjectId.isValid(locationId)) {
@@ -2172,7 +2174,7 @@ export async function bulkSetAvailability(req: Request, res: Response, next: Nex
                 filter: { tenantId: tenantOid, itemId: it._id, locationId: locId, channel: ch },
                 update: {
                   $set: { available: true, removed: false, updatedAt: now },
-                  $unset: { resumeAt: '' as const },
+                  $unset: { resumeAt: '' as const, fromCategory: '' as const },
                   $setOnInsert: {
                     tenantId: tenantOid,
                     itemId: it._id,

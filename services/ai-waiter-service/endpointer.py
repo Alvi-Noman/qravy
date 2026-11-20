@@ -62,6 +62,36 @@ def _db(frame: np.ndarray) -> float:
     return 20.0 * np.log10(max(rms, 1e-6))
 
 
+def clip_levels(pcm16: bytes, rate: int = RATE) -> dict:
+    """A whole clip, after the turn: how much of it Silero hears as SPEECH (ms; None without the model), its loudest
+    and its room level (dBFS) and its length. Decides "was anything said?" the way the endpointer does — a loudness
+    bar alone (server.has_speech) threw away real speech: the mic is raw (no auto volume), and in a loud room the
+    voice is rarely 3× the room (Nov 14–19: whole conversations "didn't catch that", the guest giving up)."""
+    x = np.frombuffer(pcm16 or b"", dtype="<i2").astype(np.float32) / 32768.0
+    if rate != RATE and x.size:
+        n = int(round(x.size * RATE / rate))
+        x = np.interp(np.linspace(0, x.size - 1, n), np.arange(x.size), x).astype(np.float32)
+    frames = [x[i:i + FRAME] for i in range(0, x.size - FRAME + 1, FRAME)]
+    dbs = [_db(f) for f in frames]
+    out = {
+        "ms": int(x.size * 1000 / RATE),
+        "peakDb": round(max(dbs), 1) if dbs else None,
+        "roomDb": round(float(np.percentile(np.array(dbs), 10)), 1) if dbs else None,
+        "speechMs": None,
+    }
+    try:
+        model = _model()
+    except Exception:
+        return out
+    state, speech = model.get_initial_state(batch_size=1), 0
+    for f in frames:
+        prob, state = model(f, state, RATE)
+        if float(np.asarray(prob).reshape(-1)[0]) >= SPEECH_PROB:
+            speech += 1
+    out["speechMs"] = speech * 32
+    return out
+
+
 class Endpointer:
     def __init__(self, rate: int = RATE, listen_ms: Optional[int] = None, ref_db: Optional[float] = None,
                  end_ms: int = END_MS, min_speech_ms: int = MIN_SPEECH_MS, margin_db: float = MARGIN_DB):

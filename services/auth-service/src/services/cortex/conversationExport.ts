@@ -13,7 +13,8 @@ type Pick = { name: string; price: number | null; note?: string };
 export type ExportTurn = {
   at: string;
   input: 'voice' | 'typed';
-  guest: { heard: string; cleanedUp: string | null; notHeard: boolean };
+  /** notHeardWhy: an unheard turn's clip as the waiter measured it (ai-waiter endpointer.clip_levels) */
+  guest: { heard: string; cleanedUp: string | null; notHeard: boolean; notHeardWhy?: string | null };
   understood: { language: string | null; intent: string | null; topic: string | null };
   waiter: { said: string; spoke: string | null; aiUnavailable: boolean; error: string | null };
   screen: {
@@ -57,6 +58,17 @@ function cartChange(op: Document): string {
   return `${str(op.op)} ${q}${str(op.name ?? op.itemId)}${v}${extra}`.trim();
 }
 
+/** "clip 2.1 s · voice 0 ms · loudest -52 dB · room -61 dB" — why a turn wasn't heard (a silent mic, too short, loud room) */
+function clipWhy(lv: Document | undefined): string | null {
+  if (!lv || typeof lv !== 'object') return null;
+  const parts: string[] = [];
+  if (typeof lv.ms === 'number') parts.push(`clip ${(lv.ms / 1000).toFixed(1)} s`);
+  if (typeof lv.speechMs === 'number') parts.push(`voice ${lv.speechMs} ms`);
+  if (typeof lv.peakDb === 'number') parts.push(`loudest ${lv.peakDb} dB`);
+  if (typeof lv.roomDb === 'number') parts.push(`room ${lv.roomDb} dB`);
+  return parts.length ? parts.join(' · ') : null;
+}
+
 function checkoutOf(meta: Document): string | null {
   const c = meta.checkout as Document | undefined;
   const parts: string[] = [];
@@ -97,6 +109,7 @@ export function exportVisit(visit: Document[]): ExportTurn[] {
         heard: str(d.text),
         cleanedUp: d.text_norm && d.text_norm !== d.text ? str(d.text_norm) : null,
         notHeard: d.status === 'unheard',
+        notHeardWhy: d.status === 'unheard' ? clipWhy(meta.audioLevels as Document | undefined) : null,
       },
       understood: { language: meta.language ?? null, intent: meta.intent ?? null, topic: meta.topic ?? null },
       waiter: {
@@ -187,8 +200,8 @@ export function toText(opts: {
   menus: Array<{ restaurant: string; subdomain: string; lines: MenuLine[] }>;
 }): string {
   const fmtDate = (d: Date | string) =>
-    new Intl.DateTimeFormat('en-CA', { timeZone: opts.tz, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(d));
-  const fmtTime = (d: Date | string) => new Intl.DateTimeFormat('en-GB', { timeZone: opts.tz, hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).format(new Date(d));
+    new Intl.DateTimeFormat('en-CA', { timeZone: opts.tz, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date(d));
+  const fmtTime = (d: Date | string) => new Intl.DateTimeFormat('en-GB', { timeZone: opts.tz, hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' }).format(new Date(d));
   const turns = opts.conversations.reduce((n, c) => n + c.turns.length, 0);
   const L: string[] = [];
   L.push(`QRAVY AI WAITER — CONVERSATIONS ${fmtDate(opts.from)} to ${fmtDate(opts.to)} (${opts.tz})`);
@@ -216,7 +229,7 @@ export function toText(opts: {
     );
     for (const t of c.turns) {
       const u = t.understood;
-      L.push(`[${fmtTime(t.at)}] GUEST (${t.input}${u.language ? `, ${u.language}` : ''}): ${t.guest.notHeard ? '(not heard)' : t.guest.heard || '(nothing)'}`);
+      L.push(`[${fmtTime(t.at)}] GUEST (${t.input}${u.language ? `, ${u.language}` : ''}): ${t.guest.notHeard ? `(not heard${t.guest.notHeardWhy ? ` — ${t.guest.notHeardWhy}` : ''})` : t.guest.heard || '(nothing)'}`);
       if (t.guest.cleanedUp) L.push(`           cleaned up: ${t.guest.cleanedUp}`);
       if (u.intent || u.topic) L.push(`           understood: ${[u.intent, u.topic].filter(Boolean).join(' / ')}`);
       L.push(`           WAITER: ${t.waiter.said || '(nothing)'}`);

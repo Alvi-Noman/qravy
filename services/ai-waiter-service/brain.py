@@ -63,6 +63,7 @@ import intent as intent_mod
 import upsell as upsell_engine
 import offers
 from menu_profile import glance_line
+from availability import switched_off as _switched_off  # (the restaurant's switch, not the hour — never its wording)
 from waiter_knowledge import (
     MenuIndex,
     _norm,
@@ -399,6 +400,7 @@ PLAYBOOK = """You are the virtual waiter of the restaurant described below. Gues
 - No stock filler: never "গরম গরম প্লেটে আসে" (only a sizzling comes on a hot plate), "দারুণ একটা অপশন", "স্বাদে ভরপুর" — say one real thing about the dish or nothing.
 - Polao, biryani, kacchi, tehari, khichuri and fried rice ARE rice dishes — never suggest rice "with" them (nobody eats ভাত with a পোলাও). Rice / bread goes with a curry, a bhuna, a fish or meat dish, a kebab.
 - Local words: "ঠান্ডা" / "thanda" / "কোল্ড ড্রিংকস" = a cold soft drink (Coke, Sprite…), never a dish; "পানীয়" = drinks.
+- NOT ORDERABLE NOW reasons are exact: say them as given. "এখন পাওয়া যাচ্ছে না" / "isn't available right now" means switched off with no known return — never turn it into "আজ শেষ হয়ে গেছে" / "sold out today". When the dish's own name or description says when it is served (a weekday such as "(শুক্রবার)" / "(Friday)", "weekend", a time), that is the reason: "এটা শুধু শুক্রবার পাওয়া যায়", never "আজ শেষ".
 - NOT ORDERABLE NOW items exist but can't be ordered at the moment: say why (the reason given) and suggest an available alternative. Never add them to the cart. Never list them on your own in an answer about what there is ("ডাল, মুগ ডাল আজ পাওয়া যাচ্ছে না") — name only what CAN be ordered; mention one only when the guest asks for it by name, and then offer the one of its kind that is on.
 - Never suggest or list again what is already in the CART ("সকালে কি আছে?" with বুটের ডাল in the cart: the paratha, the nehari… — not the dal they already took).
 - If a fact isn't available, say you don't have that information and that a staff member can help. Guessing is worse than saying you don't know.
@@ -417,7 +419,7 @@ PLAYBOOK = """You are the virtual waiter of the restaurant described below. Gues
 - Answer the actual question first, in 1–3 short spoken sentences (about 45 words; up to 65 for a meal plan or allergy list; up to 5 dishes, or all dishes an allergy question needs). No lists, markdown, emojis or item refs. Then at most one natural follow-up that fits the question (an offer to add it, or one helpful question). Don't upsell on every turn.
 - PRICES: don't mention prices unless the guest asked the price, gave a budget, asked the total, or you are summarising their order — the screen already shows prices on the dish cards, and reading them out makes answers long. When you do give a price, use it exactly as listed, always as digits in the form ৳230 (never Bangla digits, never rounded). Double-check any arithmetic (budgets, totals). When quoting a total, mention VAT if a menu note says prices exclude it.
 - Resolve "it / that / those / the same / another one" from the conversation and RECENTLY DISCUSSED.
-- Guests speak by voice and the transcript can be garbled. Work out the most likely meaning from the conversation ("কি খাও যেতে ভারে" ≈ "কী খাওয়া যেতে পারে?" = what can I eat). understood = false when you honestly can't tell what the guest wants (nonsense words like "নিউবদ্র সাস্কর ভাব্য়া পাসি") — then change nothing and just ask them kindly to say it again. Never invent a meaning, never comment on their order.
+- Guests speak by voice and the transcript can be garbled. Work out the most likely meaning from the conversation ("কি খাও যেতে ভারে" ≈ "কী খাওয়া যেতে পারে?" = what can I eat). understood = false when you honestly can't tell what the guest wants (nonsense words like "নিউবদ্র সাস্কর ভাব্য়া পাসি") — then change nothing and just ask them kindly to say it again. Never invent a meaning, never comment on their order. A word listed under WORDS THAT ARE PART OF A DISH NAME is not nonsense: it is most likely that dish said short — understood = true; answer about that dish (or ask which, when two are listed).
 # Recommending (the most important thing you do)
 - WHEN: follow RECOMMENDATION MODE in THIS TURN exactly. It already accounts for what the guest asked, what's in the cart, whether they just said no, and how recently you suggested something. QUIET means no suggestions at all.
 - WHAT: recommend from RANKED PICKS — already filtered for this guest (allergies, diet, dislikes, budget, dishes they declined), availability and the meal period, and ranked (signature dishes, time fit, taste fit, popularity, variety). Keep their order unless the guest's latest words clearly favour a lower one. Never recommend a dish that isn't in RANKED PICKS unless the guest explicitly asked for that dish or kind of dish.
@@ -1010,6 +1012,14 @@ def _turn_block(
         lines.append("NOT ORDERABLE NOW:\n" + "\n".join(rows))
     if recent:
         lines.append("RECENTLY DISCUSSED: " + ", ".join(f"{index.ref(it)} {it.get('name')}" for it in recent))
+    # a short message naming no dish in full, with a word from a dish's name: that dish said short (a fact, not a reply)
+    if len((transcript or "").split()) <= 6 and not _dishes_named(transcript, index, limit=1):
+        hints = _word_dish_hints(transcript, index)
+        if hints:
+            lines.append(
+                "WORDS THAT ARE PART OF A DISH NAME (the guest may have said a dish by a short name): "
+                + "; ".join(f"\"{w}\" → " + " / ".join(f"{index.ref(i)} {i.get('name')}" for i in its) for w, its in hints)
+            )
     if missing:
         close = _closest_to(list(missing), index, {})
         lines.append(
@@ -1074,7 +1084,16 @@ def _turn_block(
         if glance:
             lines.append(glance)
     if not any_orderable:
-        lines.append("RANKED PICKS: nothing can be ordered at the moment — say so and when ordering is possible again.")
+        # (told "say when" with no time, it said "I can't say when" in opening hours — Nov 17, 19: the time is a fact)
+        back = context.get("nextOrderable")
+        lines.append(
+            f"RANKED PICKS: nothing can be ordered at the moment — ordering is possible again {back}. Say so with that "
+            "time, and that they can look at the menu meanwhile."
+            if back else
+            "RANKED PICKS: nothing can be ordered at the moment, and no time is set for when it can again (the "
+            "restaurant switched its dishes off) — say so plainly and that the staff can tell when; never invent a "
+            "time and never call it sold out for today."
+        )
     elif picks and mode != "quiet":
         lines.append(
             "RANKED PICKS (already filtered for THIS guest's diet/allergies/dislikes/budget, availability and the "
@@ -2933,6 +2952,27 @@ def _bn_word_tokens(w: str) -> set:
 _MENU_REV: Dict[int, Tuple[MenuIndex, Dict[str, str]]] = {}
 
 
+def _word_dish_hints(transcript: str, index: MenuIndex, limit: int = 3) -> List[Tuple[str, List[Dict[str, Any]]]]:
+    """A word of the guest's that is part of only one or two dishes' names — a dish said by a short name, never
+    garbled speech: a one-word dish ask was taken for nonsense ("please say it again", Nov 14). A word many dishes
+    share (chicken) says nothing. Fact only — the AI decides what the guest meant."""
+    rev = _menu_rev(index)
+    by_tok: Dict[str, List[Dict[str, Any]]] = {}
+    for it in index.items:
+        for tok in _name_tokens(str(it.get("name") or "")):
+            by_tok.setdefault(tok, []).append(it)
+    out: List[Tuple[str, List[Dict[str, Any]]]] = []
+    for raw in re.findall(r"[A-Za-z]+|[ঀ-৿]+", transcript or ""):
+        for tok in _guest_tokens(raw, rev):
+            hits = by_tok.get(tok) or []
+            if 1 <= len(hits) <= 2 and len(tok) >= 3 and not tok.isdigit():
+                out.append((raw, hits))
+                break
+        if len(out) >= limit:
+            break
+    return out
+
+
 def _menu_rev(index: MenuIndex) -> Dict[str, str]:
     """This menu's own words in Bangla script → the English word ('স্প্রিং' → spring), cached per menu."""
     from bn_translit import word_to_bn
@@ -4587,7 +4627,12 @@ def _general_pick_ask(transcript: str, index: MenuIndex, kind_scope: Iterable[st
     t = (transcript or "").strip()
     if not t or len(t.split()) > 9:
         return False
-    if not (asks_for_recommendation(t) or _WANTS_A_PICK.search(t) or _EAT_ASK.search(t)):
+    asked = asks_for_recommendation(t) or _EAT_ASK.search(t)
+    if not (asked or _WANTS_A_PICK.search(t)):
+        return False
+    # one word of praise on its own ("ভালো", "good") answers the waiter — it asks for nothing: after a list it got the
+    # whole "what's on now" again (Nov 14) — the AI reads it in the conversation
+    if not asked and len(re.sub(r"[^\w\sঀ-৿]", " ", t).split()) < 2:
         return False
     if (kind_scope or _dishes_named(t, index, limit=1) or _kind_ids_in(t, index) or _orders_now(t) or _EXCEPT.search(t)
             or _WITH_WHAT.search(t) or _POPULAR_Q.search(t) or reco_format.taste_asked(t) or reco_format.audience_asked(t)
@@ -5205,6 +5250,7 @@ def _period_menu_reply(transcript: str, index: MenuIndex, orderable: Dict[str, b
     # never what's already in the tray, never a dish the restaurant switched off or sold out today — at any hour
     on_menu = lambda it: (index.item_id(it) not in (in_tray or set()) and not it.get("hidden")  # noqa: E731
                           and it.get("status") in (None, "active")
+                          and not _switched_off(it)
                           and not re.search(r"শেষ হয়ে গেছে|sold out", str(it.get("unavailableReason") or ""), re.I))
     in_order = [it for it in in_order if on_menu(it)]
     set_for = [it for it in in_order if set(it.get("periods") or []) & target and in_scope(it) and now_ok(it)]
@@ -5661,6 +5707,7 @@ def _dish_at_time(transcript: str, index: MenuIndex, orderable: Dict[str, bool],
         when = hours_of(list(mine or []))
         # what IS served then, of the same course (never a side for a main)
         at_then = {index.item_id(x): (x.get("periods") is None or bool(set(x.get("periods") or []) & target))
+                   and not _switched_off(x)
                    and "শেষ হয়ে গেছে" not in str(x.get("unavailableReason") or "") for x in index.items}
         alts = menu_answers.alternatives(it, index, at_then, skip={iid}, ok=lambda _x: True, limit=2)
         if not alts:  # nothing of its kind then (no fish in the morning) — what there IS to eat at that time
@@ -5683,7 +5730,9 @@ def _dish_at_time(transcript: str, index: MenuIndex, orderable: Dict[str, bool],
         return text, [], "dish_time_day", []
     if bn:
         text = f"জি, {label} {name} পাওয়া যায়" + (f" ({when})" if when else "") + "।"
-        if "শেষ হয়ে গেছে" in reason:
+        if _switched_off(it) and reason:
+            text += f" তবে {reason}"  # (its own reason: "sold out — back at …" or "not available right now")
+        elif "শেষ হয়ে গেছে" in reason:
             text += " তবে আজকেরটা শেষ হয়ে গেছে।"
         elif not open_now:
             first = min((a for a, _b in spans), default=None)
@@ -5692,13 +5741,15 @@ def _dish_at_time(transcript: str, index: MenuIndex, orderable: Dict[str, bool],
             text += " এখনই দেব?"
     else:
         text = f"Yes, the {name} is served then" + (f" ({when})" if when else "") + "."
-        if "শেষ হয়ে গেছে" in reason or "sold out" in reason.lower():
+        if _switched_off(it) and reason:
+            text += f" {reason}"
+        elif "শেষ হয়ে গেছে" in reason or "sold out" in reason.lower():
             text += " But today's is sold out."
         elif not open_now:
             text += " We're closed right now."
         elif orderable.get(iid, True):
             text += " Shall I add one now?"
-    offer = [iid] if open_now and orderable.get(iid, True) and "শেষ হয়ে গেছে" not in reason else []
+    offer = [iid] if open_now and orderable.get(iid, True) and not _switched_off(it) and "শেষ হয়ে গেছে" not in reason else []
     return text, [_suggestion_row(it)], "dish_time_yes", offer
 
 
@@ -5749,6 +5800,7 @@ def _kind_at_time(kind: List[Dict[str, Any]], *, label: str, at: int, t: str, in
         return text, [], "dish_time_closed", []
     target = set(periods_at(at, {"periods": periods})) if periods else set()
     then = [x for x in kind if (x.get("periods") is None or set(x.get("periods") or []) & target)
+            and not _switched_off(x)
             and "শেষ হয়ে গেছে" not in str(x.get("unavailableReason") or "")]
     word = _kind_word(t, index, {index.item_id(x) for x in kind}) or ""
     names = list(dict.fromkeys(bangla_meal.said_name(x) for x in then))[:4]
@@ -7609,7 +7661,7 @@ async def _reply(
             and not re.search(r"পান|ড্রিংক|(?<![ঀ-৿])চা(?![ঀ-৿])|কফি|মিষ্টি|ডেজার্ট|জুস|লাচ্ছি|\b(drink|coffee|tea|dessert|sweet|juice)",
                               transcript, re.I):
         live = [it for it in sorted(index.items, key=lambda it: index.position.get(index.item_id(it), 1 << 20))
-                if not it.get("hidden") and it.get("status") in (None, "active")
+                if not it.get("hidden") and it.get("status") in (None, "active") and not _switched_off(it)
                 and not re.search(r"শেষ হয়ে গেছে|sold out", str(it.get("unavailableReason") or ""), re.I)]
         period_menu = _between_meals(index, orderable, list((menu_snapshot or {}).get("periods") or []),
                                      int(lt.group(1)) * 60 + int(lt.group(2)), bn, live)

@@ -28,7 +28,7 @@ when: breakfast, lunch, dinner, evening, afternoon, morning, night, tonight, now
 ## Light food
 "Light" means soups, salads, small sides, fries, momos, tea or coffee, yogurt, a dessert or a drink — never wings,
 burgers, curries or rich mains, and never a full rice meal (biryani, polao, khichuri, a curry with rice).
-when: light, হালকা, halka
+when: light, হালকা, halka, লাইট, লাইত, লাইটের, lite
 
 ## Healthy / diet
 "Healthy" or "diet" means grilled, steamed, soups, salads, fruit, plain lentils, vegetables — never fries, fried

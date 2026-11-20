@@ -1325,6 +1325,25 @@ export async function bulkSetCategoryVisibility(req: Request, res: Response, nex
         }
       }
       if (ops.length) await categoryVisibilityCol().bulkWrite(ops, { ordered: false });
+
+      // 4) Dishes added while this section was off here were switched off with it ("fromCategory") — back on now.
+      //    Dishes a person switched off themselves stay off.
+      const sectionItems = await menuItemsCol()
+        .find({ tenantId: tenantOid, categoryId: { $in: oids } }, { projection: { _id: 1 } })
+        .toArray();
+      if (sectionItems.length) {
+        await client
+          .db('authDB')
+          .collection('itemAvailability')
+          .deleteMany({
+            tenantId: tenantOid,
+            itemId: { $in: sectionItems.map((d) => d._id) },
+            channel: { $in: chs },
+            locationId: base.locationId ?? { $in: locLoop },
+            available: false,
+            fromCategory: true,
+          });
+      }
     };
 
     const softHideEverywhere = async (locIds: ObjectId[] | null) => {

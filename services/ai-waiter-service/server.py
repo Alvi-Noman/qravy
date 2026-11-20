@@ -59,14 +59,17 @@ import stt_engines
 from availability import (
     DEFAULT_PERIODS,
     DEFAULT_TZ,
+    format_when,
     format_windows,
     is_within,
     load_rules,
     local_now,
+    next_orderable_at,
     on_branch_menu,
     on_channel_menu,
     resolve_location_id,
     served_periods,
+    switched_off,
     unavailable_reason,
 )
 
@@ -1297,11 +1300,18 @@ async def _timed(coro) -> Tuple[Optional[str], int]:
 
 async def cloud_transcribe(
     pcm_bytes: bytes, lang: Optional[str], rate: int = 16000, tenant: Optional[str] = None,
-    session: Optional[str] = None, branch: Optional[str] = None,
+    session: Optional[str] = None, branch: Optional[str] = None, levels: Optional[Dict[str, Any]] = None,
 ) -> Tuple[Optional[str], str]:
     """(text, engine) — OpenAI (OPENAI_STT_MODEL, gpt-4o-transcribe) with the menu as a hint; Groq Whisper if that fails.
-    In A/B mode both run on the same audio and both results (+ the clip) are saved to qravy.stt_ab."""
-    if not has_speech(pcm_bytes, rate):
+    In A/B mode both run on the same audio and both results (+ the clip) are saved to qravy.stt_ab.
+    `levels` (endpointer.clip_levels): the voice model's "was anything said?" — it decides when it ran; the loudness bar
+    (has_speech) only without it."""
+    speech_ms = (levels or {}).get("speechMs")
+    if speech_ms is not None:
+        if speech_ms < endpointer.MIN_SPEECH_MS:
+            print(f"[ai-waiter-service] 🔇 no speech in the clip ({speech_ms} ms voiced) — not transcribing")
+            return None, "no-speech"
+    elif not has_speech(pcm_bytes, rate):
         print("[ai-waiter-service] 🔇 no speech in the clip — not transcribing (avoids invented text)")
         return None, "no-speech"
     # the restaurants switched to ElevenLabs in Cortex: Scribe, listening for this menu's dish names; nothing back in
@@ -1498,7 +1508,7 @@ def build_menu_query(tenant: Optional[str]) -> Dict[str, Any]:
 
 _OFFICIAL: Dict[Tuple[str, str, str], Tuple[float, Dict[str, Dict[str, Any]]]] = {}
 _OFFICIAL_TTL_S = float(os.environ.get("ORDERABLE_CACHE_S", "15"))
-_OFF_REASON_BN = {"sold-out": "আজ শেষ হয়ে গেছে", "closed": "এখন রেস্টুরেন্ট বন্ধ", "not-at-branch": "এই শাখার মেনুতে নেই"}
+_OFF_REASON_BN = {"sold-out": "এখন পাওয়া যাচ্ছে না", "closed": "এখন রেস্টুরেন্ট বন্ধ", "not-at-branch": "এই শাখার মেনুতে নেই"}
 
 
 def _official_orderable(items: List[Dict[str, Any]], tenant: Optional[str], branch: Optional[str],
@@ -1536,12 +1546,25 @@ def _official_orderable(items: List[Dict[str, Any]], tenant: Optional[str], bran
                   f"the menu says orderable → orderable")
             it["available"] = True
             it.pop("unavailableReason", None)
+            it.pop("switchedOff", None)
         elif not ok and it.get("available", True):
             code = str((o.get("unavailable") or {}).get("reason") or "")
             print(f"[ai-waiter-service] ⚖️ {it.get('name')!r}: we said orderable, the menu says off ({code}) → off")
             it["available"] = False
+            if code in ("sold-out", "hidden", "not-at-branch") or o.get("hidden"):
+                # the restaurant's switch (not the hour): "sold out — back at …" only with the owner's time
+                it["switchedOff"] = True
+                if o.get("soldOutUntil"):
+                    it["soldOutUntil"] = o.get("soldOutUntil")
+                if code == "sold-out":
+                    it["unavailableReason"] = unavailable_reason(it, {}, lang=lang)
+                    continue
             it["unavailableReason"] = (_OFF_REASON_BN.get(code, "এখন পাওয়া যাচ্ছে না") if bn else
                                        str((o.get("unavailable") or {}).get("message") or "not available right now"))
+        elif not ok and o.get("soldOutUntil") and it.get("switchedOff"):
+            # both say sold out — theirs knows when it comes back
+            it["soldOutUntil"] = o.get("soldOutUntil")
+            it["unavailableReason"] = unavailable_reason(it, {}, lang=lang)
 
 
 def fetch_menu_snapshot(
@@ -1586,6 +1609,7 @@ def fetch_menu_snapshot(
                 "tags": 1,
                 "availability": 1,
                 "offline": 1,
+                "offlineResumeAt": 1,
                 "servicePeriodIds": 1,
                 "availableFrom": 1,
                 "availableUntil": 1,
@@ -1630,6 +1654,7 @@ def fetch_menu_snapshot(
                     "tags": tags,
                     "availability": d.get("availability") or [],
                     "offline": bool(d.get("offline")),
+                    "offlineResumeAt": d.get("offlineResumeAt"),
                     "servicePeriodIds": d.get("servicePeriodIds") or [],
                     "availableFrom": d.get("availableFrom"),
                     "availableUntil": d.get("availableUntil"),
@@ -1642,6 +1667,7 @@ def fetch_menu_snapshot(
 
         # Time-based availability: opening hours, category/item hours, sold out
         snapshot_periods: Optional[List[Dict[str, Any]]] = None
+        snapshot_next: Optional[str] = None
         tenant_oid = q.get("tenantId")
         if tenant_oid is not None and items:
             menu_db = _CLIENT[MENU_DB_NAME]
@@ -1651,6 +1677,8 @@ def fetch_menu_snapshot(
             items = [it for it in items if on_branch_menu(it, rules) and on_channel_menu(it, rules, channel)]
             now = now or datetime.utcnow()
             for it in items:
+                if switched_off(it, rules):
+                    it["switchedOff"] = True  # (the restaurant's switch, not the hour — no time of day brings it back)
                 reason = unavailable_reason(it, rules, now=now, lang=(lang or "en"))
                 if reason:
                     it["available"] = False
@@ -1665,6 +1693,13 @@ def fetch_menu_snapshot(
             # — never "available" here and "unavailable" there. Our own reading above only gives the words for why.
             if now_given is None and check_orderable:
                 _official_orderable(items, tenant, branch, channel, lang or "en")
+            # nothing at all can be ordered: WHEN it can again — the AI was told "say when" with no time and said "I
+            # can't say when" in opening hours (Nov 17, 19). "" = no hour brings anything back (all switched off).
+            if items and not any(it.get("available", True) for it in items):
+                back = next_orderable_at(items, rules, now)
+                snapshot_next = format_when(back, rules.get("tz"), now, lang or "en") if back else ""
+            else:
+                snapshot_next = None
 
         print("[debug] snapshot items count =", len(items))
 
@@ -1688,6 +1723,8 @@ def fetch_menu_snapshot(
         }
         if snapshot_periods:
             snapshot["periods"] = snapshot_periods
+        if snapshot_next is not None:
+            snapshot["nextOrderable"] = snapshot_next
         return snapshot
     except Exception as e:
         print("[ai-waiter-service] ⚠️ fetch_menu_snapshot failed:", e)
@@ -2393,6 +2430,8 @@ async def run_text_turn(
     ]
     if unavailable_now:
         ctx["unavailableNow"] = unavailable_now
+    if snapshot.get("nextOrderable") is not None:
+        ctx["nextOrderable"] = snapshot["nextOrderable"]  # nothing can be ordered now: when it can ("" = unknown)
 
     ctx["orderStats"] = order_stats(tenant)  # popularity + ordered-together (empty until orders exist)
     # wait times: the kitchen queue right now + this guest's orders still in the kitchen
@@ -2913,6 +2952,15 @@ async def handle_conn(ws: WebSocketServerProtocol):
                 cap_buffer()
 
             final_bytes = bytes(all_pcm) if all_pcm else b""
+            # the clip as the voice model hears it (speech ms, loudest, room, length) — decides "was anything said?",
+            # and an unheard turn keeps it, so Cortex shows WHY (a silent mic, too short, a loud room)
+            clip_level: Optional[Dict[str, Any]] = None
+            if final_bytes and not typed_text:
+                try:
+                    clip_level = await asyncio.get_event_loop().run_in_executor(
+                        None, endpointer.clip_levels, final_bytes, rate)
+                except Exception as e:  # noqa: BLE001 — never lose a turn over a measurement
+                    print("[ai-waiter-service] clip levels failed:", e)
             print(
                 f"[ai-waiter-service] finalization: total_bytes={len(final_bytes)}, "
                 f"last_partial='{last_partial_text}' lang={session_lang or 'auto'}"
@@ -2939,7 +2987,8 @@ async def handle_conn(ws: WebSocketServerProtocol):
                     )
                     stt_calls += 1
                     groq_text, stt_engine = await cloud_transcribe(
-                        final_bytes, lang_pref, rate=rate, tenant=tenant_hint, session=session_id, branch=branch_hint
+                        final_bytes, lang_pref, rate=rate, tenant=tenant_hint, session=session_id, branch=branch_hint,
+                        levels=clip_level,
                     )
 
                     # wrong language entirely (Punjabi / Hindi script for a Bangla phrase) → the same audio again,
@@ -3084,7 +3133,8 @@ async def handle_conn(ws: WebSocketServerProtocol):
                     await writer_q.put({
                         "user": user_id, "session": session_id, "text": "", "ts": datetime.utcnow(),
                         "status": conversations.UNHEARD, "engine": stt_engine, "tenant": tenant_hint,
-                        "ai": {"replyText": sorry, "meta": {"language": sorry_lang, "guards": [stt_engine]}},
+                        "ai": {"replyText": sorry, "meta": {"language": sorry_lang, "guards": [stt_engine],
+                                                            **({"audioLevels": clip_level} if clip_level else {})}},
                         **({"audio": clip} if clip else {}),
                         **place,
                     })

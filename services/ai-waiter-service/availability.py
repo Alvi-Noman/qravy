@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import re
 import time
-from datetime import datetime, timezone as dt_timezone
+from datetime import datetime, timedelta, timezone as dt_timezone
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
@@ -195,6 +195,88 @@ def next_opening(windows: Optional[Iterable[Dict[str, Any]]], tz: Optional[str],
     return None
 
 
+def _as_datetime(v: Any) -> Optional[datetime]:
+    if isinstance(v, datetime):
+        return v if v.tzinfo else v.replace(tzinfo=dt_timezone.utc)
+    if isinstance(v, str) and v.strip():
+        try:
+            d = datetime.fromisoformat(v.strip().replace("Z", "+00:00"))
+            return d if d.tzinfo else d.replace(tzinfo=dt_timezone.utc)
+        except ValueError:
+            return None
+    return None
+
+
+def switched_off(item: Dict[str, Any], rules: Optional[Dict[str, Any]] = None) -> bool:
+    """Switched off by the restaurant (sold out, or off at this branch) — not a matter of the hour: no time of day
+    brings it back. `switchedOff` is set on the menu snapshot (our reading or the public menu's)."""
+    return bool(item.get("switchedOff") or item.get("offline")
+                or str(item.get("id")) in ((rules or {}).get("sold_out") or set()))
+
+
+def back_at(item: Dict[str, Any], rules: Optional[Dict[str, Any]] = None, now: Optional[datetime] = None) -> Optional[datetime]:
+    """When a sold-out dish comes back (the owner's "Sold out → until …"); None when no time was set or it passed."""
+    base = now or datetime.now(dt_timezone.utc)
+    base = base if base.tzinfo else base.replace(tzinfo=dt_timezone.utc)
+    for v in (((rules or {}).get("sold_out_until") or {}).get(str(item.get("id"))), item.get("offlineResumeAt"),
+              item.get("soldOutUntil")):
+        d = _as_datetime(v)
+        if d and d > base:
+            return d
+    return None
+
+
+def format_when(at: datetime, tz: Optional[str], now: Optional[datetime] = None, lang: str = "en") -> str:
+    """A moment as a waiter says it, from now: "বিকাল ৫টা" / "কাল সকাল ৬টা" / "শুক্রবার দুপুর ১২টা";
+    "at 5pm" / "tomorrow at 6am" / "on Fri at 12pm"."""
+    bn = (lang or "").lower() == "bn"
+    t, cur = local_now(tz, at), local_now(tz, now)
+    hhmm = f"{t.hour:02d}:{t.minute:02d}"
+    clock = _fmt_time_bn(hhmm) if bn else _fmt_time(hhmm)
+    days = (t.date() - cur.date()).days
+    if days <= 0:
+        return clock if bn else f"at {clock}"
+    if days == 1:
+        return f"কাল {clock}" if bn else f"tomorrow at {clock}"
+    return f"{_DAY_BN[_weekday_sun0(t)]}বার {clock}" if bn else f"on {_DAY_EN[_weekday_sun0(t)]} at {clock}"
+
+
+def next_orderable_at(items: List[Dict[str, Any]], rules: Dict[str, Any], now: Optional[datetime] = None,
+                      days: int = 7) -> Optional[datetime]:
+    """When nothing can be ordered now: the first moment (within `days`) something on this menu can be — from the
+    opening hours, the sections' and the dishes' own hours. None when no hour brings anything back (every dish is
+    switched off): then nobody knows when, and the waiter must not make a time up."""
+    tz = rules.get("tz") or DEFAULT_TZ
+    t0 = local_now(tz, now)
+    live = [it for it in items if not switched_off(it, rules) and not it.get("hidden")
+            and it.get("status") in (None, "active")]
+    if not live:
+        return None
+    periods = rules.get("periods") or DEFAULT_PERIODS
+    windows: List[Dict[str, Any]] = list(rules.get("opening") or [])
+    for c in (rules.get("categories") or {}).values():
+        windows += list(c.get("hours") or [])
+    for it in live:
+        windows += resolve_windows(it.get("servicePeriodIds"), it.get("availability"), periods)
+    starts = set()
+    for w in windows:
+        try:
+            m = _to_min(str(w["start"]))
+            on_days = [int(x) for x in (w.get("days") or [])]
+        except (KeyError, TypeError, ValueError):
+            continue
+        for off in range(days + 1):
+            d = t0 + timedelta(days=off)
+            if _weekday_sun0(d) in on_days:
+                at = d.replace(hour=m // 60, minute=m % 60, second=0, microsecond=0)
+                if at > t0:
+                    starts.add(at)
+    for at in sorted(starts):
+        if any(unavailable_reason(it, rules, now=at) is None for it in live):
+            return at
+    return None
+
+
 # ------------------------------------------------------------------ rules
 
 _LOCATION_ID_CACHE: Dict[Tuple[str, str], Tuple[float, Any]] = {}
@@ -313,16 +395,21 @@ def load_rules(db, tenant_oid, location_id=None, channel: Optional[str] = None) 
             ch_q: Dict[str, Any] = {"channel": channel} if channel in ("dine-in", "online") else {}
             q: Dict[str, Any] = {"tenantId": tenant_oid, "locationId": location_id, **ch_q}
             sold_out: set = set()
+            sold_out_until: Dict[str, datetime] = {}
             removed: Dict[str, set] = {}
             turned_on: Dict[str, set] = {}
-            for o in db["itemAvailability"].find(q, {"itemId": 1, "channel": 1, "available": 1, "removed": 1}):
+            for o in db["itemAvailability"].find(q, {"itemId": 1, "channel": 1, "available": 1, "removed": 1, "resumeAt": 1}):
                 if o.get("removed") is True:
                     removed.setdefault(str(o["itemId"]), set()).add(o.get("channel"))
                 elif o.get("available") is False:
                     sold_out.add(str(o["itemId"]))
+                    # "Sold out → until 6pm": when it comes back (none = switched off with no time — not "sold out today")
+                    if isinstance(o.get("resumeAt"), datetime):
+                        sold_out_until[str(o["itemId"])] = o["resumeAt"]
                 elif o.get("available") is True:
                     turned_on.setdefault(str(o["itemId"]), set()).add(o.get("channel"))
             rules["sold_out"] = sold_out
+            rules["sold_out_until"] = sold_out_until
             rules["removed_items"] = removed
             # switched on at this branch for a channel the dish is otherwise not on ("online only" → also dine-in here)
             rules["turned_on"] = turned_on
@@ -419,8 +506,14 @@ def unavailable_reason(item: Dict[str, Any], rules: Dict[str, Any], now: Optiona
     name = item.get("name") or "That item"
     bn = (lang or "").lower() == "bn"
 
-    if item.get("offline") or str(item.get("id")) in rules.get("sold_out", set()):
-        return f"{name} আজ শেষ হয়ে গেছে।" if bn else f"Sorry, {name} is sold out right now."
+    if switched_off(item, rules):
+        # sold out WITH a time it comes back ("until 6pm") is "sold out — back at 6pm"; switched off with no time is
+        # only "not available right now" — a branch that never serves kebabs is not "kebabs sold out today" (Nov 14–16)
+        back = back_at(item, rules, now)
+        if back:
+            when = format_when(back, tz, now, lang)
+            return f"{name} শেষ হয়ে গেছে — আবার পাওয়া যাবে {when}।" if bn else f"Sorry, {name} is sold out right now — back {when}."
+        return f"{name} এখন পাওয়া যাচ্ছে না।" if bn else f"Sorry, {name} isn't available right now."
 
     opening = rules.get("opening") or []
     if not is_within(opening, tz, now):
