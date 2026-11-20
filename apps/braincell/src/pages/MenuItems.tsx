@@ -868,9 +868,10 @@ export default function MenuItemsPage(): JSX.Element {
                       }
 
                       if (isBranchView) {
-                        // Branch scope: remove from this location only
+                        // Branch scope: take them off this branch's menu (it used to only switch them off, so
+                        // the storefront and the waiter called them "sold out" every day)
                         bulkAvailabilityMut.mutate(
-                          { ids: raw, active: false },
+                          { ids: raw, active: false, hardExclude: true },
                           {
                             onSettled: () => {
                               setOpenDeleteMany(false);

@@ -204,10 +204,12 @@ export async function bulkUpdateAvailability(
   locationId?: string,
   channel?: Channel,
   /** untilReset: with active=false, switch back on automatically at the daily reset ("sold out today") */
-  opts?: { untilReset?: boolean }
+  opts?: { untilReset?: boolean; hardExclude?: boolean }
 ): Promise<{ items: MenuItem[]; matchedCount: number; modifiedCount: number }> {
   const body: any = { ids, active };
   if (opts?.untilReset && !active) body.untilReset = true;
+  // take off this branch's menu (removed), not "switched off" (which the storefront and waiter show as unavailable)
+  if (opts?.hardExclude && !active) body.hardExclude = true;
   if (locationId) body.locationId = locationId;
   if (channel) body.channel = channel;
 

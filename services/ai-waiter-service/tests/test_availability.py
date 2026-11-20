@@ -1,7 +1,7 @@
 """Tests for availability.py — run: python -m pytest tests  (or: python tests/test_availability.py)"""
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -47,17 +47,21 @@ def test_unavailable_reasons_in_priority_order():
     assert unavailable_reason(item, rules, MON_0830) == "We're closed right now — we open at 11am."
     # 12:00 → open, but breakfast is over
     assert unavailable_reason(item, rules, MON_1200) == "Breakfast is served Mon–Fri 7am–11am."
-    # sold out beats everything
-    assert unavailable_reason({**item, "id": "i9"}, rules, MON_1200) == "Sorry, Paratha is sold out right now."
+    # switched off beats everything — with no time to come back it's "not available right now", never "sold out today"
+    # (a branch that never serves kebabs said "কাবাব আজ শেষ হয়ে গেছে" every day, Nov 14–16)
+    assert unavailable_reason({**item, "id": "i9"}, rules, MON_1200) == "Sorry, Paratha isn't available right now."
+    # the owner's "Sold out → until 3pm": sold out, and when it's back
+    until = {**rules, "sold_out_until": {"i9": MON_1200 + timedelta(hours=3)}}
+    assert unavailable_reason({**item, "id": "i9"}, until, MON_1200) == "Sorry, Paratha is sold out right now — back at 3pm."
     # item's own hours
     special = {"id": "i2", "name": "Friday Biryani", "availability": [{"days": [5], "start": "12:00", "end": "15:00"}]}
     assert unavailable_reason(special, rules, MON_1200) == "Friday Biryani is available Fri 12pm–3pm."
-    # switched off restaurant-wide (no branches) counts as sold out
-    assert unavailable_reason({"id": "i4", "name": "Fries", "offline": True}, rules, MON_1200) == "Sorry, Fries is sold out right now."
+    # switched off restaurant-wide (no branches), no time set
+    assert unavailable_reason({"id": "i4", "name": "Fries", "offline": True}, rules, MON_1200) == "Sorry, Fries isn't available right now."
     # orderable
     assert unavailable_reason({"id": "i3", "name": "Coke"}, rules, MON_1200) is None
     # Bangla
-    assert unavailable_reason({**item, "id": "i9"}, rules, MON_1200, lang="bn") == "Paratha আজ শেষ হয়ে গেছে।"
+    assert unavailable_reason({**item, "id": "i9"}, rules, MON_1200, lang="bn") == "Paratha এখন পাওয়া যাচ্ছে না।"
 
 
 def test_service_periods_and_dates():

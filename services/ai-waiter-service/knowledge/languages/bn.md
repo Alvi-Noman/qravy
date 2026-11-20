@@ -29,6 +29,12 @@ Fried rice is "ফ্রাইড রাইস" — never "ভাত" (ভাত
 ("নুডলস") are different dishes — never call one the other.
 when: ফ্রাইড রাইস, রাইস, চাওমিন, নুডলস, ভাত
 
+## ভাজাপোড়া is fried snacks
+"ভাজাপোড়া" / "ভাজা পোড়া" / "bhaja pora" = fried snacks eaten on their own — singara, samosa, chop, puri, pakora,
+fries, fried chicken, kebabs, rolls. Never vegetable ভাজি (a side for rice). If none is on now, say so and offer the
+closest snack that is.
+when: ভাজাপোড়া, ভাজা পোড়া, ভাজা-পোড়া, ভাজাপোরা, bhaja pora, bhajapora, vaja pora
+
 ## Food that starts later today
 When the asked dishes start later today, say "কাবাব আইটেম এখনো সার্ভ করা শুরু হয়নি — বিকেল ৫টা থেকে পাওয়া যাবে",
 never "আজ বিকেলে কাবাব পাওয়া যাবে না" (it sounds like never today). When it's over for today: "আজকের মতো শেষ".

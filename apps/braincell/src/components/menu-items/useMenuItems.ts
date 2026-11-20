@@ -468,18 +468,21 @@ export function useMenuItems() {
   const bulkAvailabilityMut = useMutation<
     BulkAvailRes,
     Error,
-    { ids: string[]; active: boolean },
+    // hardExclude: take the dishes off this branch's menu (not "switched off" — that reads as sold out)
+    { ids: string[]; active: boolean; hardExclude?: boolean },
     { snapshot?: TMenuItem[] }
   >({
-    mutationFn: ({ ids, active }) =>
+    mutationFn: ({ ids, active, hardExclude }) =>
       bulkUpdateAvailability(
         ids,
         active,
         token as string,
         locationIdForQuery || undefined,
-        channelForQuery || undefined
+        channelForQuery || undefined,
+        hardExclude ? { hardExclude: true } : undefined
       ),
-    onMutate: async ({ ids, active }) => {
+    onMutate: async ({ ids, active, hardExclude }) => {
+      if (hardExclude) return {}; // lists refresh once the server has removed them
       const isGlobal = !locationIdForQuery;
       if (isGlobal) {
         if (!channelForQuery) {
@@ -517,10 +520,16 @@ export function useMenuItems() {
       });
     },
     onSuccess: (res, vars) => {
-      // Show "Removed from this location" when doing branch-scope unavailable
-      if (locationIdForQuery && vars.active === false) {
+      // "Removed from this location" only when they really were taken off this branch's menu
+      if (vars.hardExclude) {
+        queryClient.invalidateQueries({
+          predicate: (q) => {
+            const k = q.queryKey as any[];
+            return Array.isArray(k) && k[0] === 'menu-items' && k[1] === token;
+          },
+        });
         toastSuccess(
-          `Removed ${res.matchedCount} item${res.matchedCount === 1 ? '' : 's'} from this location.`
+          `Removed ${vars.ids.length} item${vars.ids.length === 1 ? '' : 's'} from this location.`
         );
       } else {
         const chan = channelForQuery

@@ -50,6 +50,24 @@ describe('exportVisit', () => {
     expect(turns[3].screen.orderPlaced).toBe(42);
   });
 
+  it('an unheard turn says why; midnight is 00:00, not 24:00', () => {
+    const [u] = exportVisit([
+      {
+        ts: new Date(Date.UTC(2026, 10, 18, 18, 0, 5)), // 00:00:05 in Dhaka
+        text: '',
+        status: 'unheard',
+        ai: { replyText: 'দুঃখিত', meta: { guards: ['no-speech'], audioLevels: { ms: 2100, speechMs: 0, peakDb: -52.3, roomDb: -61 } } },
+      },
+    ]);
+    expect(u.guest.notHeardWhy).toBe('clip 2.1 s · voice 0 ms · loudest -52.3 dB · room -61 dB');
+    const txt = toText({ from: at(0), to: at(60), tz: 'Asia/Dhaka', menus: [], conversations: [
+      { restaurant: 'R', subdomain: 'r', branch: null, channel: 'online', table: null, startedAt: u.at, endedAt: u.at, ordered: false, turns: [u] },
+    ] });
+    expect(txt).toContain('[00:00:05] GUEST (voice): (not heard — clip 2.1 s · voice 0 ms');
+    expect(txt).toContain('2026-11-19, 00:00');
+    expect(txt).not.toContain('24:00');
+  });
+
   it('the readable file has the menu, the turns and what was shown', () => {
     const txt = toText({
       from: at(0),

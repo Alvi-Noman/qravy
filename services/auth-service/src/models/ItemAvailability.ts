@@ -24,6 +24,10 @@ export interface ItemAvailabilityDoc {
   // "Sold out until tomorrow": switch back on (available:true) at this time
   resumeAt?: Date;
 
+  // Off only because its section was off at this branch when the dish was added: switching that section back on
+  // switches the dish back on too. A person's own on/off switch clears it.
+  fromCategory?: boolean;
+
   createdAt: Date;
   updatedAt: Date;
 }
