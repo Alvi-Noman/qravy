@@ -109,13 +109,18 @@ export function useCategories() {
 
   const usageMap = useMemo(() => {
     const m = new Map<string, number>();
+    const nameById = new Map(categories.map((c) => [String(c.id), c.name]));
     for (const it of items) {
       const key = (it.category || '').trim();
-      if (!key) continue;
-      m.set(key, (m.get(key) ?? 0) + 1);
+      if (key) m.set(key, (m.get(key) ?? 0) + 1);
+      // "Also show in" sections (a collection like রাজভোজ has no dish of its own — it showed 0 and greyed out)
+      for (const x of ((it as any).extraCategoryIds as string[] | undefined) ?? []) {
+        const extra = nameById.get(String(x));
+        if (extra && extra !== key) m.set(extra, (m.get(extra) ?? 0) + 1);
+      }
     }
     return m;
-  }, [items]);
+  }, [items, categories]);
 
   const findById = (id: string) => categories.find((c) => c.id === id) || null;
   const findByName = (name: string) =>

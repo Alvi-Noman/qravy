@@ -238,6 +238,11 @@ export default function MenuItemsPage(): JSX.Element {
     if (nextScope !== channel) setChannel(nextScope as any);
   };
 
+  const selectedCategoryId = useMemo(
+    () => String((categoriesQuery.data ?? []).find((c) => c.name === selectedCategory)?.id ?? ''),
+    [categoriesQuery.data, selectedCategory]
+  );
+
   const viewItems = useMemo(() => {
     const qnorm = q.trim().toLowerCase();
     let list = sourceItems.filter((it) => {
@@ -247,7 +252,11 @@ export default function MenuItemsPage(): JSX.Element {
         it.name.toLowerCase().includes(qnorm) ||
         (it.description || '').toLowerCase().includes(qnorm) ||
         (it.category || '').toLowerCase().includes(qnorm);
-      const matchesCategory = !selectedCategory || it.category === selectedCategory;
+      // its home section, or a section it's also shown in ("Also show in" — a collection like রাজভোজ)
+      const matchesCategory =
+        !selectedCategory ||
+        it.category === selectedCategory ||
+        (!!selectedCategoryId && ((itAny.extraCategoryIds as string[] | undefined) ?? []).includes(selectedCategoryId));
 
       const isHidden = itAny.hidden || itAny.status === 'hidden';
       const matchesStatus = status.size === 0 || status.has(isHidden ? 'hidden' : 'active');
@@ -270,7 +279,7 @@ export default function MenuItemsPage(): JSX.Element {
         .sort((a: any, b: any) => (b.usageCount || b.ordersCount || 0) - (a.usageCount || a.ordersCount || 0));
     }
     return list;
-  }, [sourceItems, q, status, selectedCategory, sortBy, signatureOnly]);
+  }, [sourceItems, q, status, selectedCategory, selectedCategoryId, sortBy, signatureOnly]);
 
   const signatureCount = useMemo(() => sourceItems.filter((it) => it.signature).length, [sourceItems]);
 

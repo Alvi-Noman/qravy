@@ -6,9 +6,10 @@ export default function CategoryList({
   categories,
   usageByName,
   activeByName,
+  ownDishNames,
   toggling,
   selectedIds,
-  highlightId, 
+  highlightId,
   onToggleSelect,
   onToggleSelectAll,
   onToggleAvailability,
@@ -18,6 +19,8 @@ export default function CategoryList({
   categories: Category[];
   usageByName: Map<string, number>;
   activeByName: Map<string, boolean>;
+  /** sections with dishes of their own: the on/off switch acts on those (a collection's switch would do nothing) */
+  ownDishNames?: Set<string>;
   toggling: boolean;
   selectedIds: Set<string>;
   highlightId?: string | null; 
@@ -63,7 +66,7 @@ export default function CategoryList({
                   usageCount={usageCount}
                   selected={selectedIds.has(c.id)}
                   active={active}
-                  disabled={toggling || usageCount === 0}
+                  disabled={toggling || usageCount === 0 || (!!ownDishNames && !ownDishNames.has(c.name))}
                   isNew={highlightId === c.id} // NEW
                   onToggleSelect={onToggleSelect}
                   onToggleAvailability={onToggleAvailability}
