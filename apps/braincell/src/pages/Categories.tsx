@@ -203,18 +203,29 @@ export default function CategoriesPage() {
     () => categories.map((c) => c.name),
     [categories]
   );
+  const ownDishNames = useMemo(
+    () => new Set(items.map((it) => (it.category || '').trim()).filter(Boolean)),
+    [items]
+  );
   const activeByName = useMemo(() => {
     const m = new Map<string, boolean>();
+    const nameById = new Map(categories.map((c) => [String(c.id), c.name]));
     for (const it of items) {
-      const name = (it.category || '').trim();
-      if (!name) continue;
       const itAny = it as any;
       const isActive = !(itAny.hidden || itAny.status === 'hidden');
-      if (isActive) m.set(name, true);
-      else if (!m.has(name)) m.set(name, false);
+      // its home section and its "Also show in" sections (a collection like রাজভোজ)
+      const names = [
+        (it.category || '').trim(),
+        ...((itAny.extraCategoryIds as string[] | undefined) ?? []).map((x) => nameById.get(String(x)) ?? ''),
+      ];
+      for (const name of names) {
+        if (!name) continue;
+        if (isActive) m.set(name, true);
+        else if (!m.has(name)) m.set(name, false);
+      }
     }
     return m;
-  }, [items]);
+  }, [items, categories]);
 
   // Keep categories visible; hide only when they don't belong to the selected channel,
   // or when we know all items for that category are off in this channel.
@@ -486,6 +497,7 @@ export default function CategoriesPage() {
                       categories={viewCategories}
                       usageByName={usageMap}
                       activeByName={activeByName}
+                      ownDishNames={ownDishNames}
                       toggling={availabilityMut.isPending}
                       selectedIds={selectedIds}
                       onToggleSelect={toggleSelect}
