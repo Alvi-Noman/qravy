@@ -1512,7 +1512,7 @@ _OFF_REASON_BN = {"sold-out": "এখন পাওয়া যাচ্ছে �
 
 
 def _official_orderable(items: List[Dict[str, Any]], tenant: Optional[str], branch: Optional[str],
-                        channel: Optional[str], lang: str) -> None:
+                        channel: Optional[str], lang: str, rules: Optional[Dict[str, Any]] = None) -> None:
     """Each item's "can it be ordered now" from the public menu (auth-service: the menu page's and checkout's own
     decision) — kept 15 s. Where our reading differs, theirs wins and it's logged; unreachable → ours stands."""
     if not tenant or not items:
@@ -1557,14 +1557,14 @@ def _official_orderable(items: List[Dict[str, Any]], tenant: Optional[str], bran
                 if o.get("soldOutUntil"):
                     it["soldOutUntil"] = o.get("soldOutUntil")
                 if code == "sold-out":
-                    it["unavailableReason"] = unavailable_reason(it, {}, lang=lang)
+                    it["unavailableReason"] = unavailable_reason(it, rules or {}, lang=lang)
                     continue
             it["unavailableReason"] = (_OFF_REASON_BN.get(code, "এখন পাওয়া যাচ্ছে না") if bn else
                                        str((o.get("unavailable") or {}).get("message") or "not available right now"))
         elif not ok and o.get("soldOutUntil") and it.get("switchedOff"):
             # both say sold out — theirs knows when it comes back
             it["soldOutUntil"] = o.get("soldOutUntil")
-            it["unavailableReason"] = unavailable_reason(it, {}, lang=lang)
+            it["unavailableReason"] = unavailable_reason(it, rules or {}, lang=lang)
 
 
 def fetch_menu_snapshot(
@@ -1692,7 +1692,8 @@ def fetch_menu_snapshot(
             # ONE decision: what the menu page and checkout say can be ordered now (auth-service, the same function)
             # — never "available" here and "unavailable" there. Our own reading above only gives the words for why.
             if now_given is None and check_orderable:
-                _official_orderable(items, tenant, branch, channel, lang or "en")
+                # (with the hours: a switched-off kebab at noon is "from 5pm", not "not available")
+                _official_orderable(items, tenant, branch, channel, lang or "en", rules)
             # nothing at all can be ordered: WHEN it can again — the AI was told "say when" with no time and said "I
             # can't say when" in opening hours (Nov 17, 19). "" = no hour brings anything back (all switched off).
             if items and not any(it.get("available", True) for it in items):

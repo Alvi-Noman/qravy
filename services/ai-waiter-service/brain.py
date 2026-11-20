@@ -1088,7 +1088,10 @@ def _turn_block(
         back = context.get("nextOrderable")
         lines.append(
             f"RANKED PICKS: nothing can be ordered at the moment — ordering is possible again {back}. Say so with that "
-            "time, and that they can look at the menu meanwhile."
+            "time. If the guest wants to see the menu or decide for later (\"for tomorrow\", \"show the regular "
+            "menu\"), help them as you would during service: name a few MENU dishes they can order then (its "
+            "signatures, what that time of day is for) — never only tell them to look at the menu themselves (a guest "
+            "asked three times and got no dish, Nov 19)."
             if back else
             "RANKED PICKS: nothing can be ordered at the moment, and no time is set for when it can again (the "
             "restaurant switched its dishes off) — say so plainly and that the staff can tell when; never invent a "
@@ -1334,6 +1337,9 @@ def _asked_count(transcript: str) -> Optional[int]:
     return n if n and 1 <= n <= 8 else None
 _SEE_MENU = re.compile(
     r"\b(show|see|open|view|look at|check)\b.{0,15}\bmenu\b|\bfull menu\b|\bmenu (please|card)\b"
+    # typed in English letters: "Menue dekhan", "regular menu ta dekhan ektu?", "menu ta dao" (Nov 19, 23:46 — the
+    # menu never opened, the guest asked three times)
+    r"|\bmen[uy]e?\b.{0,20}\b(dekh(an|ao|aben|abe|ate|te|bo|i)|dao|dite|din|den)\b"
     # "মেনু দেখতে চাচ্ছি / চাইছিলাম", "মেনুটা দেখব", "মেনু দেখাতে পারবেন?", "মেনু কোথায়?" — every way of asking to see it
     r"|মেনু(টা|টি|গুলো)?\s*(একটু\s*)?(দেখান|দেখাও|দেখাবেন|দেখাবে|দেখাতে\s*পারবেন|দেখাতে\s*পারেন"
     r"|দেখতে\s*(চাই|চাচ্ছি|চাচ্ছিলাম|চাইছি|চাইছিলাম|চেয়েছিলাম|পারি)|দেখবো?|দেখতাম|দেখা\s*যাবে|দেখি|দেখ(?![ঀ-৿])"
