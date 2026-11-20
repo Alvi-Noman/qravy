@@ -37,7 +37,7 @@ DISH = {"id": "d1", "name": "Paratha", "categoryId": CAT}
 
 def test_automatic_follows_the_category_hours():
     rules = load_rules(_db(), T)
-    assert unavailable_reason(DISH, rules, NOON_DHAKA) == "Breakfast is served 7am–11am."
+    assert unavailable_reason(DISH, rules, NOON_DHAKA) == "Breakfast is over for today — served 7am–11am."
 
 
 def test_by_hand_ignores_the_category_hours():

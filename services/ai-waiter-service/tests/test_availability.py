@@ -45,14 +45,17 @@ def test_unavailable_reasons_in_priority_order():
     item = {"id": "i1", "name": "Paratha", "categoryId": "c1", "availability": []}
     # 08:30 → restaurant closed (opens 11am) wins over breakfast hours
     assert unavailable_reason(item, rules, MON_0830) == "We're closed right now — we open at 11am."
-    # 12:00 → open, but breakfast is over
-    assert unavailable_reason(item, rules, MON_1200) == "Breakfast is served Mon–Fri 7am–11am."
-    # switched off beats everything — with no time to come back it's "not available right now", never "sold out today"
+    # 12:00 → open, but breakfast is over (for today)
+    assert unavailable_reason(item, rules, MON_1200) == "Breakfast is over for today — served Mon–Fri 7am–11am."
+    # switched off within its hours — with no time to come back it's "not available right now", never "sold out today"
     # (a branch that never serves kebabs said "কাবাব আজ শেষ হয়ে গেছে" every day, Nov 14–16)
-    assert unavailable_reason({**item, "id": "i9"}, rules, MON_1200) == "Sorry, Paratha isn't available right now."
+    anytime = {"id": "i9", "name": "Paratha"}
+    assert unavailable_reason(anytime, rules, MON_1200) == "Sorry, Paratha isn't available right now."
+    # switched off outside its hours: the hours say why (staff switch the breakfast off once it's over)
+    assert unavailable_reason({**item, "id": "i9"}, rules, MON_1200) == "Breakfast is over for today — served Mon–Fri 7am–11am."
     # the owner's "Sold out → until 3pm": sold out, and when it's back
     until = {**rules, "sold_out_until": {"i9": MON_1200 + timedelta(hours=3)}}
-    assert unavailable_reason({**item, "id": "i9"}, until, MON_1200) == "Sorry, Paratha is sold out right now — back at 3pm."
+    assert unavailable_reason(anytime, until, MON_1200) == "Sorry, Paratha is sold out right now — back at 3pm."
     # item's own hours
     special = {"id": "i2", "name": "Friday Biryani", "availability": [{"days": [5], "start": "12:00", "end": "15:00"}]}
     assert unavailable_reason(special, rules, MON_1200) == "Friday Biryani is available Fri 12pm–3pm."
@@ -61,18 +64,28 @@ def test_unavailable_reasons_in_priority_order():
     # orderable
     assert unavailable_reason({"id": "i3", "name": "Coke"}, rules, MON_1200) is None
     # Bangla
-    assert unavailable_reason({**item, "id": "i9"}, rules, MON_1200, lang="bn") == "Paratha এখন পাওয়া যাচ্ছে না।"
+    assert unavailable_reason(anytime, rules, MON_1200, lang="bn") == "Paratha এখন পাওয়া যাচ্ছে না।"
 
 
 def test_service_periods_and_dates():
     rules = {"tz": TZ, "opening": [], "categories": {}, "sold_out": set(), "periods": DEFAULT_PERIODS}
     # Breakfast item at noon → not served
     b = {"id": "b1", "name": "Paratha", "servicePeriodIds": ["breakfast"]}
-    assert unavailable_reason(b, rules, MON_1200) == "Paratha is available 7am–11am."
+    assert unavailable_reason(b, rules, MON_1200) == "Paratha is over for today — available 7am–11am."
     assert unavailable_reason(b, rules, MON_0830) is None
     # Breakfast time edited in Settings → follows
     edited = {**rules, "periods": [{"id": "breakfast", "name": "Breakfast", "days": [1], "start": "07:00", "end": "08:00"}]}
-    assert unavailable_reason(b, edited, MON_0830) == "Paratha is available Mon 7am–8am."
+    assert unavailable_reason(b, edited, MON_0830) == "Paratha is over for today — available Mon 7am–8am."
+    # not started yet today: from when (never "sold out today" — kebabs at noon, Nov 20)
+    dinner = {"id": "d1", "name": "Kebab", "servicePeriodIds": ["dinner"]}
+    assert unavailable_reason(dinner, rules, MON_1200) == "Kebab hasn't started yet — from 6pm."
+    assert unavailable_reason(dinner, rules, MON_1200, lang="bn") == "Kebab এখনো শুরু হয়নি — পাওয়া যাবে সন্ধ্যা ৬টা থেকে।"
+    # switched off by the staff until the evening: still "from 6pm", not "not available"
+    off = {**rules, "sold_out": {"d1"}}
+    assert unavailable_reason(dinner, off, MON_1200) == "Kebab hasn't started yet — from 6pm."
+    # a Friday-only dish on a Monday: the day it's served
+    friday = {"id": "f1", "name": "Friday Biryani", "availability": [{"days": [5], "start": "12:00", "end": "15:00"}]}
+    assert unavailable_reason(friday, off, MON_1200, lang="bn") == "Friday Biryani পাওয়া যায় শুক্র দুপুর ১২টা–বিকাল ৩টা।"
     # deleted period is ignored → always
     assert resolve_windows(["gone"], [], DEFAULT_PERIODS) == []
     # dates (Dhaka date)

@@ -50,8 +50,8 @@ when: ডাল, dal, daal
 
 ## Bhorta and bhaji
 "কি কি ভর্তা আছে?" — list the bhortas (mashed) only; bhajis (fried vegetables) are a separate list. "ভর্তা দিন" with
-several bhortas → ask which one. Bhorta/bhaji are good add-ons to a rice meal. "ভাজাপোড়া" is fried snacks
-(kebab, chop, singara, fries) — not bhaji.
+several bhortas → ask which one. Bhorta/bhaji are good add-ons to a rice meal. "ভাজাপোড়া" is deep-fried
+snacks (পুরি, সিঙ্গারা, সামুচা, লুচি) — never a bhaji or সবজি.
 when: ভর্তা, ভাজি, ভাজা, bhorta, vorta, bhaji
 
 ## Chicken

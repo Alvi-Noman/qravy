@@ -14,7 +14,9 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import bangla_meal
 
 BHORTA = re.compile(r"ভর্তা|ভর্ত্তা|ভরতা|\b(bhorta|bharta|vorta|borta)s?\b", re.I)
-BHAJI = re.compile(r"ভাজি|ভাজা|\b(bhaji|bhaja|vaji|vaja)s?\b", re.I)
+# (never the "ভাজা" of "ভাজাপোড়া" — that is deep-fried snacks, পুরি / সিঙ্গারা; it got the ভাজি list, Nov 20)
+_PORA = "(?![ \\-]?(?:\u09aa\u09cb(?:\u09dc|\u09a1\u09bc|\u09b0)))"
+BHAJI = re.compile(r"ভাজি|ভাজা" + _PORA + r"|\b(bhaji|vaji)s?\b|\b(bhaja|vaja)s?\b(?![ \-]?pora)", re.I)
 _SOBJI = re.compile(r"সবজি|\b(sobji|sabji|shobji)\b", re.I)
 _SPICY = re.compile(r"🌶|ঝাল")
 # "আর কি কি ভর্তা আছে?" / "আরও ভাজি?" / "অন্য কোন ভর্তা?" — more of the same kind than what was just said

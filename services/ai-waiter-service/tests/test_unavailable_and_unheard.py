@@ -107,6 +107,23 @@ def test_the_turn_block_tells_when_ordering_is_possible_again():
     assert "no time is set" in no_time and "never invent a time" in no_time
 
 
+def test_closed_a_guest_planning_for_later_gets_dishes_and_the_menu():
+    # Nov 19, 23:46, closed: "Menue dekhan, kalker jonne dekhbo" / "regular menue ta dekhan ektu?" — the menu never
+    # opened and no dish was named, three times
+    import brain
+    from waiter_knowledge import MenuIndex
+
+    for t in ("Menue dekhan,kalker jonne dekhbo.", "Thikache,but regular menue ta dekhan ektu?", "menu ta dao"):
+        assert brain._SEE_MENU.search(t), t
+    for t in ("menu te ki ache?", "biryani den"):
+        assert not brain._SEE_MENU.search(t), t
+    index = MenuIndex([{"id": "a", "name": "Plain Rice", "price": 40}])
+    block = brain._turn_block(transcript="Menue dekhan, kalker jonne dekhbo.", lang="bn", index=index, cart_rows=[],
+                              subtotal=0, context={"nextOrderable": "কাল সকাল ৬টা"}, recent=[], asked_to_confirm=False,
+                              any_orderable=False)
+    assert "name a few MENU dishes they can order then" in block and "never only tell them to look" in block
+
+
 def test_a_lone_good_asks_for_nothing():
     import brain
     from waiter_knowledge import MenuIndex
@@ -135,6 +152,17 @@ def test_a_word_from_one_dish_name_is_that_dish():
     block = brain._turn_block(transcript="ওরিও", lang="bn", index=index, cart_rows=[], subtotal=0, context={},
                               recent=[], asked_to_confirm=False)
     assert "WORDS THAT ARE PART OF A DISH NAME" in block and "ওরিও ব্লাস্ট" in block
+
+
+def test_bhaja_pora_is_not_a_bhaji_ask():
+    # "ভাজাপোড়া কিছু নাই?" is deep-fried snacks (পুরি, সিঙ্গারা) — it got "ডিম ভাজি, ঢ্যাঁড়স ভাজি…" (Nov 20)
+    import bhorta_bhaji as bb
+
+    for t in ("ভাজাপোড়া কিছু নাই?", "ভাজা পোড়া আছে?", "ভাজা-পোড়া", "ভাজাপোরা কিছু আছে", "bhaja pora ache?", "bhajapora"):
+        assert bb.asked(t) == [], t
+    for t in ("ভাজি কি আছে?", "লাউ ভাজা আছে?", "bhaja ache"):
+        assert bb.asked(t) == ["bhaji"], t
+    assert bb.group({"name": "ঝুরি ভাজা আলু"}) == "bhaji"
 
 
 # ------------------------------------------------------------------ was anything said?

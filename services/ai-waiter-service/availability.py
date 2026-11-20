@@ -500,21 +500,49 @@ def periods_at(minute_of_day: int, rules: Dict[str, Any]) -> List[str]:
             if any(a <= minute_of_day < b for a, b in _spans([p]))]
 
 
-def unavailable_reason(item: Dict[str, Any], rules: Dict[str, Any], now: Optional[datetime] = None, lang: str = "en") -> Optional[str]:
-    """None when the item can be ordered now; otherwise a short customer-facing reason."""
-    tz = rules.get("tz") or DEFAULT_TZ
-    name = item.get("name") or "That item"
+def _next_start(windows: Iterable[Dict[str, Any]], tz: Optional[str], now: Optional[datetime] = None) -> Optional[datetime]:
+    """When the windows next begin (later today or on a coming day), as an aware datetime; None without windows."""
+    t = local_now(tz, now)
+    cur = t.hour * 60 + t.minute
+    for offset in range(8):
+        day = (_weekday_sun0(t) + offset) % 7
+        starts = sorted(_to_min(w["start"]) for w in windows if isinstance(w, dict) and w.get("start")
+                        and day in [int(x) for x in (w.get("days") or [])] and (offset > 0 or _to_min(w["start"]) > cur))
+        if starts:
+            base = (t + timedelta(days=offset)).replace(hour=0, minute=0, second=0, microsecond=0)
+            return base + timedelta(minutes=starts[0])
+    return None
+
+
+def _ended_today(windows: Iterable[Dict[str, Any]], tz: Optional[str], now: Optional[datetime] = None) -> bool:
+    """A window of today's has already closed (its time is over for today)."""
+    t = local_now(tz, now)
+    cur, day = t.hour * 60 + t.minute, _weekday_sun0(t)
+    return any(isinstance(w, dict) and w.get("start") and w.get("end") and day in [int(x) for x in (w.get("days") or [])]
+               and _to_min(w["start"]) < _to_min(w["end"]) <= cur for w in windows)
+
+
+def _not_now(label: str, windows: List[Dict[str, Any]], tz: Optional[str], now: Optional[datetime], lang: str,
+             served: str) -> str:
+    """Outside its hours, said by WHEN: not started yet today ("from 5pm"), over for today, or the days it's served.
+    "আজ শেষ হয়ে গেছে" is never an hour's reason — that is sold out (Nov 20: kebabs at noon)."""
     bn = (lang or "").lower() == "bn"
+    hours = format_windows(windows, lang)
+    nxt = _next_start(windows, tz, now)
+    if nxt is not None and nxt.date() == local_now(tz, now).date():
+        when = format_when(nxt, tz, now, lang)
+        return f"{label} এখনো শুরু হয়নি — পাওয়া যাবে {when} থেকে।" if bn else f"{label} hasn't started yet — from {when[3:]}."
+    if _ended_today(windows, tz, now):
+        return f"{label} আজকের মতো শেষ — পাওয়া যায় {hours}।" if bn else f"{label} is over for today — {served} {hours}."
+    return f"{label} পাওয়া যায় {hours}।" if bn else f"{label} is {served} {hours}."
 
-    if switched_off(item, rules):
-        # sold out WITH a time it comes back ("until 6pm") is "sold out — back at 6pm"; switched off with no time is
-        # only "not available right now" — a branch that never serves kebabs is not "kebabs sold out today" (Nov 14–16)
-        back = back_at(item, rules, now)
-        if back:
-            when = format_when(back, tz, now, lang)
-            return f"{name} শেষ হয়ে গেছে — আবার পাওয়া যাবে {when}।" if bn else f"Sorry, {name} is sold out right now — back {when}."
-        return f"{name} এখন পাওয়া যাচ্ছে না।" if bn else f"Sorry, {name} isn't available right now."
 
+def _hours_reason(item: Dict[str, Any], rules: Dict[str, Any], now: Optional[datetime], lang: str,
+                  usual: bool = False) -> Optional[str]:
+    """Why the item is outside its hours now (restaurant closed, its section's hours, its own), or None.
+    `usual`: a section switched by hand still has its usual hours — they say when a switched-off dish is served."""
+    tz = rules.get("tz") or DEFAULT_TZ
+    bn = (lang or "").lower() == "bn"
     opening = rules.get("opening") or []
     if not is_within(opening, tz, now):
         when = next_opening(opening, tz, now)
@@ -523,15 +551,39 @@ def unavailable_reason(item: Dict[str, Any], rules: Dict[str, Any], now: Optiona
         return "We're closed right now" + (f" — we open at {when}." if when else ".")
 
     cat = rules.get("categories", {}).get(str(item.get("categoryId") or ""))
-    if cat and not is_within(cat.get("hours"), tz, now):
-        hours = format_windows(cat.get("hours"), lang)
-        cname = cat.get("name") or "This section"
-        return f"{cname} পাওয়া যায় {hours}।" if bn else f"{cname} is served {hours}."
+    cat_hours = (cat.get("hours") or (cat.get("usualHours") if usual else None)) if cat else None
+    if cat_hours and not is_within(cat_hours, tz, now):
+        return _not_now(cat.get("name") or "This section", cat_hours, tz, now, lang, "served")
 
     own = resolve_windows(item.get("servicePeriodIds"), item.get("availability"), rules.get("periods") or DEFAULT_PERIODS)
-    if not is_within(own, tz, now):
-        hours = format_windows(own, lang)
-        return f"{name} পাওয়া যায় {hours}।" if bn else f"{name} is available {hours}."
+    if own and not is_within(own, tz, now):
+        return _not_now(item.get("name") or "That item", own, tz, now, lang, "available")
+    return None
+
+
+def unavailable_reason(item: Dict[str, Any], rules: Dict[str, Any], now: Optional[datetime] = None, lang: str = "en") -> Optional[str]:
+    """None when the item can be ordered now; otherwise a short customer-facing reason."""
+    tz = rules.get("tz") or DEFAULT_TZ
+    name = item.get("name") or "That item"
+    bn = (lang or "").lower() == "bn"
+
+    if switched_off(item, rules):
+        # sold out WITH a time it comes back ("until 6pm") is "sold out — back at 6pm"
+        back = back_at(item, rules, now)
+        if back:
+            when = format_when(back, tz, now, lang)
+            return f"{name} শেষ হয়ে গেছে — আবার পাওয়া যাবে {when}।" if bn else f"Sorry, {name} is sold out right now — back {when}."
+        # switched off with no time, outside its own hours: the hours are the reason — staff switch kebabs off until
+        # the evening, and "কাবাব আজ শেষ হয়ে গেছে" at noon was wrong: "এখনো শুরু হয়নি — বিকাল ৫টা থেকে" (Nov 20)
+        hours = _hours_reason(item, rules, now, lang, usual=True)
+        if hours:
+            return hours
+        # within its hours: only "not available right now" — never "sold out today" (a branch that never serves kebabs)
+        return f"{name} এখন পাওয়া যাচ্ছে না।" if bn else f"Sorry, {name} isn't available right now."
+
+    hours = _hours_reason(item, rules, now, lang)
+    if hours:
+        return hours
 
     frm, until = item.get("availableFrom"), item.get("availableUntil")
     if not _within_dates(frm, until, tz, now):
