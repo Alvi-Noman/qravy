@@ -285,7 +285,8 @@ MODE_INSTRUCTIONS = {
                  "few words, then ask whether to confirm the order.",
     "greet": "Greet warmly in one sentence and offer help; you may mention ONE signature dish from RANKED PICKS as a "
              "highlight. Don't list the menu.",
-    "answer": "Answer the question. Suggest at most ONE alternative dish from RANKED PICKS, and only when it genuinely "
+    "answer": "Answer the question. Suggest at most ONE alternative dish from RANKED PICKS (for a dish the menu doesn't have: "
+              "from the closest dishes its NOT ON THIS MENU fact names), and only when it genuinely "
               "helps (unavailable, too spicy, over budget, clashes with their diet).",
     "quiet": "Do NOT recommend, upsell or suggest any dish this turn. Just help.",
     "compare": "The guest is asking about the dishes ON SCREEN / JUST LISTED (below). Answer ONLY about those, and judge "
@@ -1013,7 +1014,9 @@ def _turn_block(
     if recent:
         lines.append("RECENTLY DISCUSSED: " + ", ".join(f"{index.ref(it)} {it.get('name')}" for it in recent))
     # a short message naming no dish in full, with a word from a dish's name: that dish said short (a fact, not a reply)
-    if len((transcript or "").split()) <= 6 and not _dishes_named(transcript, index, limit=1):
+    # (not for a dish the menu doesn't have — that one has its own fact: "থাই স্যুপ" is not the চিকেন স্যুপ)
+    if (len((transcript or "").split()) <= 6 and not _dishes_named(transcript, index, limit=1)
+            and not _off_menu_asks(understood, index)):
         hints = _word_dish_hints(transcript, index)
         if hints:
             lines.append(
@@ -2989,6 +2992,119 @@ def _bn_word_tokens(w: str) -> set:
 _MENU_REV: Dict[int, Tuple[MenuIndex, Dict[str, str]]] = {}
 
 
+# ---- a dish the guest named that this menu doesn't have at all (not one that's off now): the fact, and what's closest
+# (every word the guest said must be in ONE dish: "মাটন বিরিয়ানি" is not on a menu with চিকেন বিরিয়ানি and মাটন কাচ্চি
+# — the word hints once pointed the AI at the chicken one, and "পেপসি", "আইসক্রিম", "সুশি" got no fact at all)
+_SIZE_WORDS = {"half", "full", "small", "medium", "large", "big", "regular", "plate", "piece", "pc", "pcs", "glass", "cup"}
+_SAYS_NO = re.compile(r"নেই|নাই|(?<![ঀ-৿])না(?![ঀ-৿])|\b(don'?t|do not|doesn'?t|not|isn'?t|aren'?t|no|sorry)\b", re.I)
+
+
+def _asked_tokens(name: str, index: MenuIndex) -> set:
+    """The words of a dish the guest named, as menu tokens — and a word no menu knows kept as it is ("সুশি", "পেপসি"
+    were dropped, and an empty word list looked like a dish we have)."""
+    rev, out = _menu_rev(index), set()
+    for raw in re.findall(r"[A-Za-z]+|[ঀ-৿]+", name or ""):
+        out |= _guest_tokens(raw, rev) or {raw.lower()}
+    return {t for t in out if not t.isdigit() and t not in _SIZE_WORDS}
+
+
+def _dish_tokens(it: Dict[str, Any]) -> set:
+    n = str(it.get("name") or "")
+    return _name_tokens(n) | _name_tokens(kind_text({"name": n}))
+
+
+def _on_this_menu(name: str, index: MenuIndex) -> bool:
+    """The guest's words name a dish this menu has: ONE dish has every word (its name or its kind's words — "চিকেন
+    ফ্রাই" is চিকেন ঝাল ফ্রাই, "কাচ্চি" the kacchis), or the whole name is a dish's name misheard ("চিকেন ঝালফ্রাই")."""
+    from rapidfuzz import fuzz
+
+    said = _asked_tokens(name, index)
+    if not said:
+        return True  # (nothing to judge by — never "not on the menu" on a guess)
+    k = _norm(re.sub(r"\s*\(.*?\)", " ", name))
+    for it in index.items:
+        if it.get("hidden"):
+            continue
+        if said <= _dish_tokens(it) or (len(k) >= 4 and any(
+                fuzz.ratio(k, _norm(re.sub(r"\s*\(.*?\)", " ", str(x)))) >= 85 for x in (it.get("name"), *(it.get("aliases") or [])) if x)):
+            return True
+    return False
+
+
+def _off_menu_asks(understood: Optional[Dict[str, Any]], index: MenuIndex) -> List[Tuple[str, str]]:
+    """(the guest's words, what kind of food it is) for each dish they asked about or ordered that the menu lacks."""
+    out: List[Tuple[str, str]] = []
+    for d in (understood or {}).get("dishes") or []:
+        if not isinstance(d, dict) or d.get("change") in ("remove", "less"):
+            continue
+        name = str(d.get("name") or "").strip()
+        if name and not _on_this_menu(name, index) and name not in [a for a, _k in out]:
+            out.append((name, str(d.get("kind") or "").strip()))
+    return out[:3]
+
+
+def _nearest_on_menu(asked: str, kind: str, index: MenuIndex, orderable: Dict[str, bool], limit: int = 3
+                    ) -> List[Dict[str, Any]]:
+    """The menu's dishes nearest to one it doesn't have: the same kind of food (its family), sharing the guest's words
+    ("মাটন বিরিয়ানি" → চিকেন বিরিয়ানি, মাটন কাচ্চি), orderable now first. [] when nothing is like it — never a
+    stand-in of another kind."""
+    said = _asked_tokens(asked, index)
+    fam = menu_answers.families_of_text(f"{asked} {kind}")
+    kind_toks = _name_tokens(kind) if kind else set()
+    scored = []
+    for it in index.items:
+        if it.get("hidden"):
+            continue
+        toks = _dish_tokens(it)
+        share, same = len(said & toks), bool(fam & menu_answers.families(it))
+        if not same and (fam or not share):
+            continue  # (a shared word in another kind of dish — "ইলিশ" for a sweet — is no stand-in)
+        score = share + (2 if same else 0) + 0.5 * len(kind_toks & toks) + (0.5 if orderable.get(index.item_id(it), True) else 0)
+        scored.append((-score, index.position.get(index.item_id(it), 1 << 20), it))
+    scored.sort(key=lambda x: (x[0], x[1]))
+    # (only the kind in common — "পায়েস" and the desserts: all of them, so the AI picks the closest, the ফিরনি)
+    if scored and not any(said & _dish_tokens(it) for _s, _p, it in scored):
+        limit = max(limit, 8)
+    out, seen = [], set()
+    for _s, _p, it in scored:
+        said_as = bangla_meal.said_name(it)
+        if said_as not in seen:
+            seen.add(said_as)
+            out.append(it)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _off_menu_facts(asks: List[Tuple[str, str]], index: MenuIndex, orderable: Dict[str, bool]) -> List[str]:
+    facts = []
+    for asked, kind in asks:
+        near = _nearest_on_menu(asked, kind, index, orderable)
+        head = (f'NOT ON THIS MENU AT ALL: "{asked}"' + (f" ({kind})" if kind else "") + " — no dish here is that. Say so "
+                "plainly (it isn't on the menu — never \"sold out\" or \"not available today\")")
+        if near:
+            names = "; ".join(
+                f"{index.ref(x)} {x.get('name')} ({_money(x.get('price'))}"
+                + ("" if orderable.get(index.item_id(x), True) else f" — not orderable now: {x.get('unavailableReason') or 'off'}")
+                + ")" for x in near)
+            facts.append(f"{head}, then offer the closest of these real dishes (they come before RANKED PICKS here — the "
+                         f"same kind of food the guest wants): {names}. Never add or serve one in its place unless the guest "
+                         "says yes.")
+        else:
+            facts.append(f"{head}. Nothing on this menu is like it — say so and ask what else they'd like; never offer "
+                         "a dish of another kind in its place.")
+    return facts
+
+
+def _sounds_available(reply: str, asked: str) -> bool:
+    """The reply talks about a dish the menu doesn't have as if it had it (a sentence with it and no "no" in it)."""
+    k = _norm(asked)
+    for sentence in re.split(r"[।.!?\n]+", reply or ""):
+        if k and k in _norm(sentence) and not _SAYS_NO.search(sentence):
+            return True
+    return False
+
+
 def _word_dish_hints(transcript: str, index: MenuIndex, limit: int = 3) -> List[Tuple[str, List[Dict[str, Any]]]]:
     """A word of the guest's that is part of only one or two dishes' names — a dish said by a short name, never
     garbled speech: a one-word dish ask was taken for nonsense ("please say it again", Nov 14). A word many dishes
@@ -2999,9 +3115,11 @@ def _word_dish_hints(transcript: str, index: MenuIndex, limit: int = 3) -> List[
         for tok in _name_tokens(str(it.get("name") or "")):
             by_tok.setdefault(tok, []).append(it)
     out: List[Tuple[str, List[Dict[str, Any]]]] = []
+    # (another menu word said that the dish doesn't have: "মাটন বিরিয়ানি" is not the চিকেন বিরিয়ানি — no hint)
+    menu_words = {t for t in _guest_tokens(transcript, rev) if t in by_tok}
     for raw in re.findall(r"[A-Za-z]+|[ঀ-৿]+", transcript or ""):
         for tok in _guest_tokens(raw, rev):
-            hits = by_tok.get(tok) or []
+            hits = [it for it in by_tok.get(tok) or [] if menu_words <= _dish_tokens(it) | {tok}]
             if 1 <= len(hits) <= 2 and len(tok) >= 3 and not tok.isdigit():
                 out.append((raw, hits))
                 break
@@ -7632,6 +7750,10 @@ async def _reply(
         facts += _later_today_fact(asked_kind, index, orderable, list((menu_snapshot or {}).get("periods") or []),
                                    int(lt_now.group(1)) * 60 + int(lt_now.group(2)) if lt_now else None)
         facts += _which_one_fact(transcript, index, orderable)
+    # dishes the guest named that this menu doesn't have at all — said so, with the closest real ones (any stage: an
+    # order of a biryani and a pizza is half of it)
+    off_asks = _off_menu_asks(understood, index)
+    facts += _off_menu_facts(off_asks, index, orderable)
         if _WITH_WHAT.search(transcript):
             named_with = _dishes_named(transcript, index, limit=1) or [index.by_id[i] for i in list(asked_kind)[:1] if i in index.by_id]
             facts.append(f"The guest asks what to have WITH {named_with[0].get('name') if named_with else 'that'} — not whether "
@@ -7665,7 +7787,8 @@ async def _reply(
                              int(lt.group(1)) * 60 + int(lt.group(2)) if lt else None,
                              list((restaurant or {}).get("opening") or []), lang)
                if stage in ("none", "readback") and not tstate.get("pending") and not side_ans else None)
-    period_menu = None if (at_time or side_ans or stage not in ("none", "readback") or _dishes_named(transcript, index, limit=1) or _orders_now(transcript)
+    # (a dish the menu doesn't have — "ফুচকা চটপটি আছে?" — is the AI's, with its fact: it got the evening list, Nov 20)
+    period_menu = None if (at_time or side_ans or stage not in ("none", "readback") or _dishes_named(transcript, index, limit=1) or _orders_now(transcript) or off_asks
                            or _ABOUT_MINE.search(transcript) or profile.allergies  # (an allergy → the model)
                            # (a plain "ভালো কি খাওয়া যায়?" is still what there is to eat NOW — the time first; a pick
                            # with a taste / audience / popularity in it is the recommender's)
@@ -7687,7 +7810,7 @@ async def _reply(
     # every general suggestion — "কিছু সাজেস্ট করেন", "ভালো কি আছে?", "কি নেওয়া যায়?", "খিদে পেয়েছে" — is "what's on now":
     # the time's answer (the owner's way), not a pick of the AI's; only a question with a condition goes on to the AI
     if (not period_menu and not at_time and not side_ans and stage in ("none", "readback") and lt
-            and not tstate.get("pending") and not profile.allergies and _general_pick_ask(transcript, index, kind_scope)):
+            and not tstate.get("pending") and not profile.allergies and not off_asks and _general_pick_ask(transcript, index, kind_scope)):
         period_menu = _period_menu_reply("what can I eat now?", index, orderable, list((menu_snapshot or {}).get("periods") or []),
                                          int(lt.group(1)) * 60 + int(lt.group(2)), set(), lang,
                                          opening=list((restaurant or {}).get("opening") or []), in_tray=set(cart_qty))
@@ -8446,6 +8569,22 @@ async def _reply(
                               "guest asked for it, say plainly it isn't on the menu and offer the closest dish that IS.")
             # a dish never eaten alone, suggested alone ("Chicken Masala ভালো হবে") — with its base, or a complete meal
             named_now = [x for x in (index.resolve(None, n) for n in obj.get("foodsNamed") or []) if x]
+            # a dish the menu doesn't have, talked about as if it had it ("জি, মাটন বিরিয়ানি আছে") — or another
+            # dish put in the tray in its place, unasked
+            named_by_guest = {index.item_id(x) for x in _dishes_named(transcript, index, limit=6)} | {
+                index.item_id(x) for x in (index.resolve(None, str(d.get("name") or ""))
+                                           for d in (understood or {}).get("dishes") or [] if isinstance(d, dict)
+                                           and _on_this_menu(str(d.get("name") or ""), index)) if x}
+            for asked, _kind in off_asks:
+                if _sounds_available(first_reply, asked):
+                    issues.append(f'"{asked}" is NOT on this menu — you wrote as if it were. Say plainly it isn\'t on '
+                                  "the menu, then offer the closest real dishes from the facts.")
+                swapped = [x for x in (index.resolve(o.get("item"), o.get("name")) for o in obj.get("cartOps") or []
+                                       if isinstance(o, dict) and str(o.get("op") or "") == "add")
+                           if x and index.item_id(x) not in named_by_guest]
+                if swapped:
+                    issues.append(f'The guest asked for "{asked}", which is not on the MENU — don\'t add '
+                                  f"{swapped[0].get('name')} in its place. Offer it; add it only when the guest says yes.")
             adding = {index.item_id(x) for x in (index.resolve(o.get("item"), o.get("name"))
                                                  for o in obj.get("cartOps") or [] if isinstance(o, dict)) if x}
             in_tray_now = [index.by_id[i] for i in cart_qty if i in index.by_id]

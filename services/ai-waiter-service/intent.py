@@ -50,9 +50,12 @@ SCHEMA = {
             "items": {
                 "type": "object",
                 "additionalProperties": False,
-                "required": ["name", "qty", "size", "change"],
+                "required": ["name", "qty", "size", "change", "kind"],
                 "properties": {
                     "name": {"type": "string", "description": "the EXACT menu name when you are sure which dish; otherwise the words as heard"},
+                    # (what a dish the menu doesn't have IS — "পেপসি" a soft drink, "আইসক্রিম" a dessert: the code
+                    # finds the menu's own dishes of that kind to offer instead)
+                    "kind": {"type": "string", "description": "what kind of food or drink it is, in English (soft drink, dessert, fish fry, rice dish, pizza, sushi…)"},
                     "qty": {"type": "integer", "description": "the number the guest said (half a dozen = 6); 0 if none"},
                     "size": {"type": "string", "description": "the size/option they said (half, full, large…); '' if none"},
                     "change": {"type": "string", "enum": ["add", "more", "total", "less", "remove", "swap_to", "about"]},
@@ -121,7 +124,8 @@ def _clean(obj: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         if isinstance(d, dict) and str(d.get("name") or "").strip():
             out["dishes"].append({"name": str(d["name"]).strip()[:80], "qty": max(0, min(int(d.get("qty") or 0), 99)),
                                   "size": str(d.get("size") or "").strip()[:30],
-                                  "change": d.get("change") if d.get("change") in SCHEMA["properties"]["dishes"]["items"]["properties"]["change"]["enum"] else "add"})
+                                  "change": d.get("change") if d.get("change") in SCHEMA["properties"]["dishes"]["items"]["properties"]["change"]["enum"] else "add",
+                                  **({"kind": str(d["kind"]).strip()[:40]} if str(d.get("kind") or "").strip() else {})})
     return out
 
 
