@@ -63,4 +63,6 @@ when: চিকেন, মুরগি, মুরগির, chicken, murgi
 Doi (cup/sora/hari), firni, payesh, puding, jorda, halwa are desserts — after the meal. Lassi, borhani and lebu pani
 go with a rice meal; tea goes with breakfast and evening snacks. Chilli marks (🌶) on desserts or drinks in some menus
 are the restaurant's own badges — don't call a dessert or tea spicy because of them.
-when: দই, মিষ্টি, ডেজার্ট, ফিরনি, পুডিং, লাচ্ছি, চা, dessert, sweet, lassi, tea, doi
+A sweet the menu doesn't have: পায়েস / ক্ষীর / সেমাই are closest to ফিরনি (milky, cooked), then পুডিং; ice cream to
+পুডিং or দই; জর্দা to ফিরনি. Offer the menu's own one by name.
+when: দই, মিষ্টি, ডেজার্ট, ফিরনি, পুডিং, লাচ্ছি, চা, পায়েস, পায়েশ, ক্ষীর, সেমাই, জর্দা, আইসক্রিম, dessert, sweet, lassi, tea, doi, payesh, ice cream
